@@ -83,12 +83,12 @@ export interface PipelineExecutionSnapshot {
    * Context-budget strategy version frozen at task start (Schema 44+).
    * undefined / 1 → Legacy budget; 2–4 → historical elastic protocols;
    * 5 → current independent elastic reservation for all five stages;
-   * 6 → V3 hierarchical board/item elastic allocator (new V3 tasks only; see
-   *   `docs/optimization/Tavo-Mini-Context-Budget-V3-Hierarchical-Elastic-Optimization-Plan.md`).
+   * 6 → V3 hierarchical board/item elastic allocator;
+   * 7 → Phase-2 Global Awareness / Detail dual-layer budget.
    * Frozen with the workflow version; resume must never re-read the live
    * default. Missing on historical snapshots → Legacy (1).
    */
-  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6;
+  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
   /**
    * Frozen Final Reviser reasoning policy. Missing / 1 is historical Legacy;

@@ -253,6 +253,13 @@ function parseFrozenAuditCandidates(
         cfg.worldbookRecursive != null
           ? Boolean(cfg.worldbookRecursive)
           : undefined,
+      resourceDetailIntensity:
+        cfg.resourceDetailIntensity === 'save' ||
+        cfg.resourceDetailIntensity === 'rich'
+          ? cfg.resourceDetailIntensity
+          : cfg.resourceDetailIntensity === 'balanced'
+            ? 'balanced'
+            : undefined,
     },
     chapterPosition: Number(raw.chapterPosition) || 0,
     chapterTitle: String(raw.chapterTitle || ''),
@@ -502,6 +509,60 @@ export function parsePipelineContextSnapshotStrict(
         ? raw.outlineBlockingReason
         : undefined,
     ...(contextBudgetV3Summary ? { contextBudgetV3Summary } : {}),
+    resourceContextVersion:
+      Number(raw.resourceContextVersion) === 2 ? 2 : Number(raw.resourceContextVersion) === 1 ? 1 : undefined,
+    characterAwarenessText:
+      typeof raw.characterAwarenessText === 'string'
+        ? raw.characterAwarenessText
+        : undefined,
+    worldbookAwarenessText:
+      typeof raw.worldbookAwarenessText === 'string'
+        ? raw.worldbookAwarenessText
+        : undefined,
+    globalResourceAwarenessText:
+      typeof raw.globalResourceAwarenessText === 'string'
+        ? raw.globalResourceAwarenessText
+        : undefined,
+    resourceAwarenessItems: Array.isArray(raw.resourceAwarenessItems)
+      ? (raw.resourceAwarenessItems as PipelineContextSnapshot['resourceAwarenessItems'])
+      : undefined,
+    resourceDetailItems: Array.isArray(raw.resourceDetailItems)
+      ? (raw.resourceDetailItems as PipelineContextSnapshot['resourceDetailItems'])
+      : undefined,
+    resourceSelectionTrace: Array.isArray(raw.resourceSelectionTrace)
+      ? (raw.resourceSelectionTrace as PipelineContextSnapshot['resourceSelectionTrace'])
+      : undefined,
+    presetSystemText:
+      typeof raw.presetSystemText === 'string' ? raw.presetSystemText : undefined,
+    presetWritingStyleText:
+      typeof raw.presetWritingStyleText === 'string'
+        ? raw.presetWritingStyleText
+        : undefined,
+    presetExtraInstructionsText:
+      typeof raw.presetExtraInstructionsText === 'string'
+        ? raw.presetExtraInstructionsText
+        : undefined,
+    presetSourceFingerprint:
+      typeof raw.presetSourceFingerprint === 'string'
+        ? raw.presetSourceFingerprint
+        : undefined,
+    presetSource:
+      raw.presetSource === 'user_selected' ||
+      raw.presetSource === 'default_runtime_baseline'
+        ? raw.presetSource
+        : undefined,
+    includeResources:
+      typeof raw.includeResources === 'boolean' ? raw.includeResources : undefined,
+    resourcesDisabledWarning:
+      typeof raw.resourcesDisabledWarning === 'string'
+        ? raw.resourcesDisabledWarning
+        : undefined,
+    ...(isPlainObject(raw.contextBudgetV7Summary)
+      ? {
+          contextBudgetV7Summary:
+            raw.contextBudgetV7Summary as unknown as PipelineContextSnapshot['contextBudgetV7Summary'],
+        }
+      : {}),
   };
 
   assertOwnership(snap, ownership);
@@ -664,7 +725,7 @@ export function parsePipelineExecutionSnapshot(
     );
   }
   const contextBudgetRaw = raw.contextBudgetVersion;
-  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | undefined;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | undefined;
   if (
     contextBudgetRaw === 1 ||
     contextBudgetRaw === 2 ||
@@ -672,14 +733,16 @@ export function parsePipelineExecutionSnapshot(
     contextBudgetRaw === 4 ||
     contextBudgetRaw === 5 ||
     contextBudgetRaw === 6 ||
+    contextBudgetRaw === 7 ||
     contextBudgetRaw === '1' ||
     contextBudgetRaw === '2' ||
     contextBudgetRaw === '3' ||
     contextBudgetRaw === '4' ||
     contextBudgetRaw === '5' ||
-    contextBudgetRaw === '6'
+    contextBudgetRaw === '6' ||
+    contextBudgetRaw === '7'
   ) {
-    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4 | 5 | 6;
+    contextBudgetVersion = Number(contextBudgetRaw) as 1 | 2 | 3 | 4 | 5 | 6 | 7;
   } else if (contextBudgetRaw != null && contextBudgetRaw !== '') {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
@@ -702,7 +765,7 @@ export function parsePipelineExecutionSnapshot(
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
       isCurrentWorkflow
-        ? '当前统一流水线必须与上下文预算版本 5/6 成对冻结，已阻止恢复。'
+        ? '当前统一流水线必须与上下文预算版本 5/6/7 成对冻结，已阻止恢复。'
         : '工作流版本 3 必须与上下文预算版本 3/4 成对冻结，已阻止恢复。',
       'restart_task',
     );

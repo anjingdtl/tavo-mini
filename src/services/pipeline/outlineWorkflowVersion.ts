@@ -15,7 +15,7 @@
  * resume semantics; the Schema 44 columns are never dropped.
  */
 export type OutlineWorkflowVersion = 1 | 2 | 3 | 4;
-export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5 | 6;
+export type ContextBudgetVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /**
  * Protocol versions written to NEW outline chapter tasks / batches.
@@ -41,6 +41,13 @@ export const CURRENT_CONTEXT_BUDGET_VERSION: ContextBudgetVersion = 5;
  * opt-in until end-to-end validation promotes it to the global default.
  */
 export const V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION = 6 as const;
+/**
+ * Phase-2 Global Awareness / Detail dual-layer budget.
+ * New outline tasks freeze 7. Historical V6 tasks resume on 6 and are
+ * never auto-upgraded.
+ */
+export const PHASE2_CONTEXT_BUDGET_VERSION = 7 as const;
+export const PHASE2_RESOURCE_CONTEXT_VERSION = 2 as const;
 
 /**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that
@@ -117,7 +124,7 @@ export const STRUCTURED_OUTLINE_WORKFLOW_VERSIONS = [3, 4] as const;
  * produce a Brief stage checkpoint. 3/4 = historical V3.x; 5 = V2 elastic;
  * 6 = V3 hierarchical. All create the Brief checkpoint.
  */
-export const STRUCTURED_CONTEXT_BUDGET_VERSIONS = [3, 4, 5, 6] as const;
+export const STRUCTURED_CONTEXT_BUDGET_VERSIONS = [3, 4, 5, 6, 7] as const;
 
 export function isStructuredOutlineWorkflowVersion(value: unknown): boolean {
   return (
@@ -147,7 +154,11 @@ export function isCurrentOutlinePipelineContextBudgetVersion(
   value: unknown,
 ): boolean {
   const n = Number(value);
-  return n === 5 || n === 6;
+  return n === 5 || n === 6 || n === 7;
+}
+
+export function isPhase2ContextBudgetVersion(value: unknown): boolean {
+  return Number(value) >= 7;
 }
 
 /**
@@ -187,6 +198,7 @@ export function normalizePersistedContextBudgetVersion(
   value: unknown,
 ): ContextBudgetVersion {
   const n = Number(value);
+  if (n === 7) return 7;
   if (n === 6) return 6;
   if (n === 5) return 5;
   if (n === 4) return 4;

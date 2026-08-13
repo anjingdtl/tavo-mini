@@ -105,23 +105,25 @@ describe('Closure §5 — contextBudgetVersion = 6 unified semantics', () => {
   test('isResumableContextBudgetVersion: 5 and 6 resume; legacy blocked', () => {
     expect(isResumableContextBudgetVersion(5)).toBe(true);
     expect(isResumableContextBudgetVersion(6)).toBe(true);
+    expect(isResumableContextBudgetVersion(7)).toBe(true);
     for (const v of [1, 2, 3, 4]) {
       expect(isResumableContextBudgetVersion(v)).toBe(false);
     }
   });
 
   test('structured version helpers cover the Brief-bearing set', () => {
-    for (const cbv of [3, 4, 5, 6]) {
+    for (const cbv of [3, 4, 5, 6, 7]) {
       expect(isStructuredContextBudgetVersion(cbv)).toBe(true);
     }
     for (const owv of [3, 4]) {
       expect(isStructuredOutlineWorkflowVersion(owv)).toBe(true);
     }
-    expect(isStructuredContextBudgetVersion(7)).toBe(false);
+    expect(isStructuredContextBudgetVersion(8)).toBe(false);
     expect(isStructuredOutlineWorkflowVersion(2)).toBe(false);
   });
 
   test('normalizePersistedContextBudgetVersion preserves 6/5 instead of collapsing to 1', () => {
+    expect(normalizePersistedContextBudgetVersion(7)).toBe(7);
     expect(normalizePersistedContextBudgetVersion(6)).toBe(6);
     expect(normalizePersistedContextBudgetVersion(5)).toBe(5);
     expect(normalizePersistedContextBudgetVersion('6')).toBe(6);

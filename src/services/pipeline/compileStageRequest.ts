@@ -132,6 +132,29 @@ export type CompiledStageRequest = {
   ready: boolean;
 };
 
+function phase2Fields(context: {
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
+}): {
+  characterAwarenessText: string;
+  worldbookAwarenessText: string;
+} {
+  return {
+    characterAwarenessText: context.characterAwarenessText || '',
+    worldbookAwarenessText: context.worldbookAwarenessText || '',
+  };
+}
+
+function phase2AwarenessTokens(context: {
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
+}): number {
+  return (
+    estimateTokens(context.characterAwarenessText || '') +
+    estimateTokens(context.worldbookAwarenessText || '')
+  );
+}
+
 function asLegacy(result: StageCompileResult): CompiledStageRequest {
   if (result.ready) {
     return {
@@ -520,7 +543,8 @@ export function compileReviewStageRequest(params: {
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
-    PARTITION_OVERHEAD;
+    PARTITION_OVERHEAD +
+    phase2AwarenessTokens(params.context);
 
   const optionalSections = [
     {
@@ -583,6 +607,7 @@ export function compileReviewStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ReviewContext = {
+    ...phase2Fields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -625,6 +650,7 @@ export function compileReviewStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ReviewContext = {
+      ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -804,6 +830,7 @@ function compileReviewWithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const ctx: ReviewContext = {
+      ...phase2Fields(params.context),
         presetText: clipped.get('preset') || '',
         characterText: clipped.get('character') || '',
         noteText: clipped.get('note') || '',
@@ -850,7 +877,8 @@ export function compileFactCheckStageRequest(params: {
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
-    PARTITION_OVERHEAD;
+    PARTITION_OVERHEAD +
+    phase2AwarenessTokens(params.context);
 
   const optionalSections = [
     {
@@ -913,6 +941,7 @@ export function compileFactCheckStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: FactCheckContext = {
+    ...phase2Fields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -954,6 +983,7 @@ export function compileFactCheckStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: FactCheckContext = {
+      ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -1132,6 +1162,8 @@ function compileFactCheckWithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const ctx: FactCheckContext = {
+        ...phase2Fields(params.context),
+      ...phase2Fields(params.context),
         presetText: clipped.get('preset') || '',
         currentInstructionText: clipped.get('currentInstruction') || '',
         retrievalUserPrompt: clipped.get('userPrompt') || '',
@@ -1196,7 +1228,8 @@ export function compileReviewV2StageRequest(params: {
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
-    PARTITION_OVERHEAD;
+    PARTITION_OVERHEAD +
+    phase2AwarenessTokens(params.context);
 
   const optionalSections = [
     {
@@ -1259,6 +1292,7 @@ export function compileReviewV2StageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ReviewContext = {
+    ...phase2Fields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -1298,6 +1332,7 @@ export function compileReviewV2StageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ReviewContext = {
+      ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -1424,7 +1459,8 @@ export function compileFactCheckV2StageRequest(params: {
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
-    PARTITION_OVERHEAD;
+    PARTITION_OVERHEAD +
+    phase2AwarenessTokens(params.context);
 
   const optionalSections = [
     {
@@ -1487,6 +1523,7 @@ export function compileFactCheckV2StageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: FactCheckContext = {
+    ...phase2Fields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -1526,6 +1563,7 @@ export function compileFactCheckV2StageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: FactCheckContext = {
+      ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -2108,7 +2146,8 @@ export function compileProofStageRequest(params: {
   const PARTITION_OVERHEAD = 128;
   const fixedMessagesTokens =
     Math.max(0, estimateStageInputTokens(scaffold) - bodyTokens) +
-    PARTITION_OVERHEAD;
+    PARTITION_OVERHEAD +
+    phase2AwarenessTokens(params.constraints);
 
   const optionalSections = [
     {
@@ -2171,6 +2210,7 @@ export function compileProofStageRequest(params: {
 
   const am = allocMap(budget.optionalAllocations);
   const clipped: ProofConstraints = {
+    ...phase2Fields(params.constraints),
     presetText: clipByAllocation(
       params.constraints.presetText,
       am.get('preset') || 0,
@@ -2216,6 +2256,7 @@ export function compileProofStageRequest(params: {
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
     const ctx: ProofConstraints = {
+      ...phase2Fields(params.constraints),
       presetText: clipByAllocation(
         params.constraints.presetText,
         m.get('preset') || 0,
@@ -2735,6 +2776,8 @@ function compileProofWithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const ctx: ProofConstraints = {
+        ...phase2Fields(params.constraints),
+      ...phase2Fields(params.constraints),
         presetText: clipped.get('preset') || '',
         currentInstructionText: clipped.get('currentInstruction') || '',
         retrievalUserPrompt: clipped.get('userPrompt') || '',

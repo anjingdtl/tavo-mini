@@ -158,6 +158,8 @@ export interface ContextConfig {
   recentChapterCount?: number;
   worldbookRecursive?: boolean;
   worldbookScanDepth?: number;
+  /** V7 only: Detail soft preference. Awareness is never user-scaled. */
+  resourceDetailIntensity?: 'save' | 'balanced' | 'rich';
 }
 
 export interface SummaryConfig {

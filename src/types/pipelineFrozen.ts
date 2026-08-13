@@ -65,6 +65,7 @@ export interface FrozenContextConfig {
   episodicMemoryBudgetTokens?: number;
   memoryTopK?: number;
   worldbookRecursive?: boolean;
+  resourceDetailIntensity?: ContextConfig['resourceDetailIntensity'];
 }
 
 /**

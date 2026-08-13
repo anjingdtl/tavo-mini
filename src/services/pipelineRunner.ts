@@ -35,6 +35,7 @@ import { getPipelineTaskResumePayload } from '../data/repositories/pipelineTaskR
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from './pipeline/outlineWorkflowVersion';
 
@@ -47,7 +48,8 @@ function isTaskContextBudgetVersionResumable(version: unknown): boolean {
   const n = Number(version);
   return (
     n === CURRENT_CONTEXT_BUDGET_VERSION ||
-    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
+    n === PHASE2_CONTEXT_BUDGET_VERSION
   );
 }
 

@@ -21,10 +21,14 @@ import {
 import {
   buildReviewContextFromSnapshot,
   buildFactCheckContextFromSnapshot,
-  buildProofConstraintsFromSnapshot,
   buildFinalContinuityCapsule,
   type PipelineContextSnapshot,
 } from '../../types/pipelineContext';
+import {
+  resolveFactCheckContext,
+  resolveProofConstraints,
+  resolveReviewContext,
+} from './stageResourceContextV4';
 import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
@@ -737,7 +741,7 @@ function buildExecutionSnapshot(params: {
   proofPreset: Preset | null;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3 | 4;
-  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6;
+  contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   contextAutomationPolicyV3?: ContextAutomationPolicyV3;
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
@@ -2038,7 +2042,7 @@ async function actionPersistInitialSnapshot(
   // snapshots interprets an absent field as 1.
   const existingExecution = runtime.parsed?.execution;
   let outlineWorkflowVersion: 1 | 2 | 3 | 4;
-  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6;
+  let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   if (existingExecution) {
     outlineWorkflowVersion =
       existingExecution.outlineWorkflowVersion === 4
@@ -2707,7 +2711,7 @@ async function runReviewV2Stage(params: {
     runtime.config.pipelineMode === 'full'
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
-  const context = buildReviewContextFromSnapshot(ctxSnap);
+  const context = resolveReviewContext(ctxSnap);
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -2872,7 +2876,7 @@ async function runFactCheckV2Stage(params: {
     runtime.config.pipelineMode === 'full'
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
-  const context = buildFactCheckContextFromSnapshot(ctxSnap);
+  const context = resolveFactCheckContext(ctxSnap);
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -3113,8 +3117,8 @@ async function runV3AuditStage(params: {
       : runtime.parsed.draftContext;
   const baseContext =
     stage === 'review'
-      ? buildReviewContextFromSnapshot(snapshot)
-      : buildFactCheckContextFromSnapshot(snapshot);
+      ? resolveReviewContext(snapshot)
+      : resolveFactCheckContext(snapshot);
   // V3 audit requests must retain the independently frozen seam. Put the
   // ending first because the conservation clip keeps the prefix; this keeps
   // the immediately preceding scene visible even when the optional bridge is
@@ -3967,7 +3971,7 @@ async function actionRunReview(
         runtime.config.pipelineMode === 'full'
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
-      const context = buildReviewContextFromSnapshot(ctxSnap);
+      const context = resolveReviewContext(ctxSnap);
       const start = Date.now();
       let tokens = { input: 0, output: 0, total: 0 };
 
@@ -4231,7 +4235,7 @@ async function actionRunFactCheck(
         runtime.config.pipelineMode === 'full'
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
-      const context = buildFactCheckContextFromSnapshot(ctxSnap);
+      const context = resolveFactCheckContext(ctxSnap);
       const start = Date.now();
       let tokens = { input: 0, output: 0, total: 0 };
 
@@ -5140,7 +5144,7 @@ async function runFinalReviserV2Stage(params: {
     runtime.config.pipelineMode === 'full'
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
-  const constraints = buildProofConstraintsFromSnapshot(ctxSnap);
+  const constraints = resolveProofConstraints(ctxSnap);
   const start = Date.now();
   const tokens = { input: 0, output: 0, total: 0 };
 
@@ -5854,7 +5858,7 @@ async function actionRunProof(
         runtime.config.pipelineMode === 'full'
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
-      const constraints = buildProofConstraintsFromSnapshot(ctxSnap);
+      const constraints = resolveProofConstraints(ctxSnap);
       const start = Date.now();
       const compiled = compileProofStageRequest({
         draftText,

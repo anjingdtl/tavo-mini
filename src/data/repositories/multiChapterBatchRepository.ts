@@ -14,6 +14,7 @@ import { executeTransaction, type SqlStatement } from '../../services/database/t
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../../services/pipeline/outlineWorkflowVersion';
 import type {
@@ -332,7 +333,8 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
   const contextBudgetVersion =
     input.contextBudgetVersion ?? CURRENT_CONTEXT_BUDGET_VERSION;
   const frozenPolicy =
-    Number(contextBudgetVersion) === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+    Number(contextBudgetVersion) === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
+    Number(contextBudgetVersion) === PHASE2_CONTEXT_BUDGET_VERSION
       ? input.contextAutomationPolicyV3 &&
         isContextAutomationPolicyV3(input.contextAutomationPolicyV3)
         ? input.contextAutomationPolicyV3

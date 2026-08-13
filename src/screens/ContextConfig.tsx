@@ -231,7 +231,7 @@ export const ContextConfigScreen: React.FC = () => {
             <Text
               style={[styles.switchHint, { color: theme.colors.textSecondary }]}
             >
-              关闭后只使用章节前文和记忆摘要。
+              关闭后角色 / 世界书 / 笔记不进入新任务。写作预设仍生效。
             </Text>
           </View>
           <Switch
@@ -241,6 +241,33 @@ export const ContextConfigScreen: React.FC = () => {
             }
           />
         </View>
+        <Text
+          style={[styles.switchTitle, { color: theme.colors.textPrimary }]}
+        >
+          资料详情强度
+        </Text>
+        <Text
+          style={[styles.switchHint, { color: theme.colors.textSecondary }]}
+        >
+          只影响角色 / 世界书详情展开，不会丢掉全局感知骨架。
+        </Text>
+        <SegmentedControl
+          value={draft.resourceDetailIntensity || 'balanced'}
+          options={[
+            { value: 'save', label: '节省' },
+            { value: 'balanced', label: '均衡' },
+            { value: 'rich', label: '丰富' },
+          ]}
+          onChange={resourceDetailIntensity =>
+            updateDraft({
+              ...draft,
+              resourceDetailIntensity: resourceDetailIntensity as
+                | 'save'
+                | 'balanced'
+                | 'rich',
+            })
+          }
+        />
         <View style={styles.switchRow}>
           <View style={styles.switchText}>
             <Text

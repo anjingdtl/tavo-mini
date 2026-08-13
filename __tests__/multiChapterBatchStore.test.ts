@@ -77,7 +77,7 @@ import { createBatchChapterPlan } from '../src/services/multiChapterBatch/planne
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
 } from '../src/services/pipeline/outlineWorkflowVersion';
 
 let testDb: InMemorySqliteDb | null = null;
@@ -285,7 +285,7 @@ describe('multiChapterBatchStore', () => {
       CURRENT_OUTLINE_WORKFLOW_VERSION,
     );
     expect(newBatch?.contextBudgetVersion).toBe(
-      V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+      PHASE2_CONTEXT_BUDGET_VERSION,
     );
     expect(newBatch?.contextAutomationPolicyVersion).toBe(
       'context-automation-v3',

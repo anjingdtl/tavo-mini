@@ -17,7 +17,7 @@ import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
 import { useProjectStore } from '../../../store/projectStore';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
 } from '../../../services/pipeline/outlineWorkflowVersion';
 import {
   cancelContinuationRun,
@@ -57,7 +57,7 @@ type CreateTask = (
   targetId: number,
   versions?: {
     outlineWorkflowVersion: 1 | 2 | 3 | 4;
-    contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6;
+    contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   },
 ) => Promise<string>;
 
@@ -293,7 +293,7 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         const project = useProjectStore.getState().currentProject;
         const isOutlineChapter = project?.mode === 'outline' && chapter.id > 0;
         const contextBudgetVersion = isOutlineChapter
-          ? V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+          ? PHASE2_CONTEXT_BUDGET_VERSION
           : 1;
         taskId = await createTask('chapter', chapter.id, {
           outlineWorkflowVersion: isOutlineChapter

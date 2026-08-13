@@ -153,6 +153,21 @@ function styleTraceReason(
 }
 
 function statusBadge(item: ContextTraceItem) {
+  if (item.resourcePreviewStatus === 'DISABLED') {
+    return <Text style={styles.badgeEmpty}>已关闭</Text>;
+  }
+  if (item.resourcePreviewStatus === 'ERROR') {
+    return <Text style={styles.badgeExcluded}>错误</Text>;
+  }
+  if (item.resourcePreviewStatus === 'AWARENESS_ONLY') {
+    return <Text style={styles.badgeClipped}>仅全局感知</Text>;
+  }
+  if (item.resourcePreviewStatus === 'DETAIL_CLIPPED') {
+    return <Text style={styles.badgeClipped}>详情已裁剪</Text>;
+  }
+  if (item.resourcePreviewStatus === 'DETAIL_FULL') {
+    return <Text style={styles.badgeIncluded}>详情已展开</Text>;
+  }
   if (item.empty) {
     return <Text style={styles.badgeEmpty}>暂无内容</Text>;
   }
@@ -180,6 +195,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   // outlines do not fit, capture the reason so the preview can show an
   // actionable panel (with a link to 大纲 management) instead of just a Toast.
   const [outlineBlock, setOutlineBlock] = useState<string | null>(null);
+  const [outlineBlockCode, setOutlineBlockCode] = useState<string>('');
   // Non-blocking Story Memory degradation (V2.11.38 repair plan P0):
   // missing / dirty / failed checkpoint or partially omitted history.
   const [storyMemoryWarnings, setStoryMemoryWarnings] = useState<
@@ -371,11 +387,11 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       setContinuationBudgetSummary('');
       setContinuationStageBudgets(null);
       setContinuationFreezeSummary(null);
-      // Match the chapter send path: new outline chapter tasks use V6, while
-      // historical/freeform paths keep their legacy protocol. The old global
-      // auto-mode switch is not a Preview input anymore.
+      // Match the chapter send path: new outline chapter tasks freeze V7,
+      // while historical/freeform paths keep their legacy protocol. The old
+      // global auto-mode switch is not a Preview input anymore.
       const contextBudgetVersion =
-        project?.mode === 'outline' && chapter.id > 0 ? 6 : undefined;
+        project?.mode === 'outline' && chapter.id > 0 ? 7 : undefined;
       let contextAutomationPolicyV3: any;
       if (contextBudgetVersion != null && contextBudgetVersion >= 6) {
         try {
@@ -415,8 +431,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             compiled.draftCompile?.blockingReason ||
             '请求超出模型上下文窗口',
         );
+        setOutlineBlockCode(String(compiled.error.code || ''));
       } else {
         setOutlineBlock(null);
+        setOutlineBlockCode('');
       }
     } catch (e: any) {
       const message = e?.message ? String(e.message) : '构建上下文失败';
@@ -430,9 +448,16 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         code === 'OUTLINE_SNAPSHOT_INVALID' ||
         code === 'OUTLINE_SNAPSHOT_PERSIST_FAILED' ||
         code === 'OUTLINE_EXECUTION_CONFIG_INVALID' ||
-        e?.name === 'OutlineContextError';
+        code === 'RESOURCE_AWARENESS_OVER_BUDGET' ||
+        code === 'RESOURCE_AWARENESS_READ_FAILED' ||
+        code === 'RESOURCE_AWARENESS_COMPILE_FAILED' ||
+        code === 'PRESET_SOURCE_READ_FAILED' ||
+        code === 'RESOURCE_SOURCE_CHANGED_DURING_BUILD' ||
+        e?.name === 'OutlineContextError' ||
+        e?.name === 'ResourceContextError';
       if (isOutlineBlock) {
         setOutlineBlock(message);
+        setOutlineBlockCode(code);
         setTrace([]);
         setMessages([]);
       } else {
@@ -640,7 +665,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           ]}
         >
           <Text style={[styles.outlineBlockTitle, { color: theme.colors.danger }]}>
-            大纲超出上下文预算，已阻止生成
+            {outlineBlockCode.startsWith('RESOURCE') ||
+            outlineBlockCode.startsWith('PRESET')
+              ? '资料上下文无法安全构建，已阻止生成'
+              : '大纲超出上下文预算，已阻止生成'}
           </Text>
           <Text style={[styles.outlineBlockText, { color: theme.colors.textPrimary }]}>
             {outlineBlock}
@@ -733,6 +761,15 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               弹性池 {hierarchicalBudgetTrace.envelope.softElasticPool.toLocaleString()} ·
               突发池 {hierarchicalBudgetTrace.envelope.burstElasticPool.toLocaleString()} ·
               风险等级 {hierarchicalBudgetTrace.riskLevel}
+            </Text>
+            <Text
+              style={[
+                styles.outlineBlockText,
+                { color: theme.colors.textSecondary, marginTop: spacing.xs },
+              ]}
+            >
+              Context Protocol V7 · Resource Context V2 · Snapshot V4 ·
+              全局感知为保护区，详情才进入弹性分配
             </Text>
             <Text
               style={[

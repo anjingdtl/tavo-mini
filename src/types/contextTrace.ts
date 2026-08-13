@@ -25,6 +25,13 @@ export type ContextAllocationReason =
   | 'manual_cap'
   | 'not_activated';
 
+export type ResourcePreviewStatus =
+  | 'AWARENESS_ONLY'
+  | 'DETAIL_FULL'
+  | 'DETAIL_CLIPPED'
+  | 'DISABLED'
+  | 'ERROR';
+
 export interface ContextTraceItem {
   kind: ContextSourceKind;
   sourceId: number | null;
@@ -46,4 +53,8 @@ export interface ContextTraceItem {
   allocatedTokens?: number;
   borrowedTokens?: number;
   allocationReason?: ContextAllocationReason;
+  /** Phase-2 Preview: distinguish awareness-only from unused/disabled. */
+  resourcePreviewStatus?: ResourcePreviewStatus;
+  sourceFingerprint?: string;
+  awarenessMode?: 'global_awareness' | 'detail' | 'preset';
 }

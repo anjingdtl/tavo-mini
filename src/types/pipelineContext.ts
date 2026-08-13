@@ -12,8 +12,10 @@
  * are valid (e.g. a project with no characters) and MUST be filtered by the
  * message builders, not silently dropped here.
  */
-/** Current persisted pipeline context snapshot schema version. */
+/** Historical V3 snapshot written by Context Budget V6 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
+/** Phase-2 frozen resource contract written by Context Budget V7 tasks. */
+export const PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4 = 4 as const;
 
 /**
  * Context Budget V3 hierarchical allocator summary embedded in the snapshot
@@ -49,6 +51,47 @@ export interface ContextBudgetV3Summary {
     borrowedTokens: number;
     reason: string;
   }[];
+}
+
+export interface ContextBudgetV7Summary {
+  contextBudgetVersion: 7;
+  resourceContextVersion: 2;
+  contextAutomationPolicyVersion: 'context-automation-v3';
+  policyHash: string;
+  contextAutomationPolicyHash: string;
+  contextAutomationPolicySnapshot: unknown;
+  protectedAwarenessTokens: number;
+  resourceDetailDemandTokens: number;
+  resourceDetailAllocatedTokens: number;
+  envelope: ContextBudgetV3Summary['envelope'];
+  boards: ContextBudgetV3Summary['boards'];
+}
+
+export interface FrozenResourceAwarenessItem {
+  id: string;
+  sourceKind: 'character' | 'worldbook';
+  sourceId: number;
+  title: string;
+  content: string;
+  sourceFingerprint: string;
+  compilerVersion: string;
+  constraintClasses: string[];
+  fallbackMode?: string;
+  estimatedTokens?: number;
+  legacyCharacterFallback?: boolean;
+}
+
+export interface FrozenResourceDetailItem {
+  id: string;
+  sourceKind: 'character' | 'worldbook' | 'note';
+  sourceId: number | null;
+  title: string;
+  content: string;
+  actualTokens: number;
+  allocatedTokens: number;
+  activationReason: string;
+  sourceFingerprint?: string;
+  clipped?: boolean;
 }
 
 export interface PipelineContextSnapshot {
@@ -108,6 +151,27 @@ export interface PipelineContextSnapshot {
   chapterUpdatedAt?: string | number;
   createdAt?: number;
   snapshotVersion?: 1 | 3 | 4;
+  resourceContextVersion?: 1 | 2;
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
+  globalResourceAwarenessText?: string;
+  resourceAwarenessItems?: FrozenResourceAwarenessItem[];
+  resourceDetailItems?: FrozenResourceDetailItem[];
+  resourceSelectionTrace?: Array<Record<string, unknown> | {
+    id: string;
+    title: string;
+    status?: string;
+    mode?: string;
+    included?: boolean;
+  }>;
+  presetSystemText?: string;
+  presetWritingStyleText?: string;
+  presetExtraInstructionsText?: string;
+  presetSourceFingerprint?: string;
+  presetSource?: 'user_selected' | 'default_runtime_baseline';
+  includeResources?: boolean;
+  resourcesDisabledWarning?: string;
+  contextBudgetV7Summary?: ContextBudgetV7Summary;
   /**
    * Context Budget V3 hierarchical allocator summary (Plan §13). Present only
    * when the task was frozen with context_budget_version >= 6. Downstream
@@ -126,6 +190,8 @@ export interface ReviewContext {
   characterText: string;
   noteText: string;
   worldbookText: string;
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
   storyMemoryText: string;
   episodicMemoryText: string;
   recentBridgeText: string;
@@ -143,6 +209,8 @@ export interface ReviewContext {
  */
 export interface FactCheckContext {
   presetText: string;
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
   recentBridgeText: string;
@@ -167,6 +235,8 @@ export interface FactCheckContext {
  */
 export interface ProofConstraints {
   presetText: string;
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
   currentInstructionText: string;
   retrievalUserPrompt: string;
   relevantCharacterConstraints: string;
@@ -189,6 +259,8 @@ export function buildReviewContextFromSnapshot(
     characterText: snapshot.characterText,
     noteText: snapshot.noteText,
     worldbookText: snapshot.worldbookText,
+    characterAwarenessText: snapshot.characterAwarenessText || '',
+    worldbookAwarenessText: snapshot.worldbookAwarenessText || '',
     storyMemoryText: snapshot.storyMemoryText,
     episodicMemoryText: snapshot.episodicMemoryText,
     recentBridgeText: snapshot.recentBridgeText,
@@ -212,6 +284,8 @@ export function buildFactCheckContextFromSnapshot(
     episodicMemoryText: snapshot.episodicMemoryText,
     worldbookText: snapshot.worldbookText,
     characterText: snapshot.characterText,
+    characterAwarenessText: snapshot.characterAwarenessText || '',
+    worldbookAwarenessText: snapshot.worldbookAwarenessText || '',
     noteText: snapshot.noteText,
     outlineText: snapshot.outlineText,
     immediatePreviousChapterText: snapshot.immediatePreviousChapterText || '',
@@ -226,6 +300,8 @@ export function buildProofConstraintsFromSnapshot(
     presetText: snapshot.presetText,
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
+    characterAwarenessText: snapshot.characterAwarenessText || '',
+    worldbookAwarenessText: snapshot.worldbookAwarenessText || '',
     // Characters + worldbook + Story Memory carry the hard "must not violate"
     // facts the proof needs to respect while applying the audit fixes.
     relevantCharacterConstraints: snapshot.characterText,

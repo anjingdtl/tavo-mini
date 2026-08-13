@@ -3,6 +3,7 @@
  */
 import type { PipelineError, PipelineErrorCode } from './types';
 import { OutlineContextError } from '../outlineContextBuilder';
+import { ResourceContextError } from '../context/resources/resourceContextErrors';
 
 export function pipelineError(
   code: PipelineErrorCode,
@@ -35,6 +36,19 @@ export function mapOutlineErrorToPipelineError(
       codeMap[error.code] || 'CONTEXT_WINDOW_EXCEEDED';
     return pipelineError(code, error.message, {
       userAction: (error.userAction as PipelineError['userAction']) || 'none',
+    });
+  }
+  if (error instanceof ResourceContextError) {
+    const codeMap: Record<string, PipelineErrorCode> = {
+      RESOURCE_AWARENESS_OVER_BUDGET: 'RESOURCE_AWARENESS_OVER_BUDGET',
+      RESOURCE_AWARENESS_READ_FAILED: 'RESOURCE_AWARENESS_READ_FAILED',
+      RESOURCE_AWARENESS_COMPILE_FAILED: 'RESOURCE_AWARENESS_COMPILE_FAILED',
+      PRESET_SOURCE_READ_FAILED: 'PRESET_SOURCE_READ_FAILED',
+      RESOURCE_SOURCE_CHANGED_DURING_BUILD: 'RESOURCE_SOURCE_CHANGED_DURING_BUILD',
+    };
+    return pipelineError(codeMap[error.code] || 'CONTEXT_WINDOW_EXCEEDED', error.message, {
+      userAction: 'none',
+      diagnostics: error.diagnostics,
     });
   }
   return null;

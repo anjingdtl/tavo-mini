@@ -14,9 +14,7 @@ import type {
 } from '../../data/repositories/multiChapterBatchRepository';
 import type { PipelineStageAttemptRow } from '../../data/repositories/pipelineStageAttemptRepository';
 import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   isResumableContextBudgetVersion,
 } from '../pipeline/outlineWorkflowVersion';
 
@@ -26,10 +24,7 @@ import {
  */
 function isBatchContextBudgetVersionResumable(version: unknown): boolean {
   const n = Number(version);
-  return (
-    n === CURRENT_CONTEXT_BUDGET_VERSION ||
-    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
-  );
+  return isResumableContextBudgetVersion(n);
 }
 
 export type MultiChapterBatchAction =

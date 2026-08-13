@@ -13,6 +13,24 @@ import {
   type ResourceContextCandidate,
 } from './context/resourceContextCandidates';
 import {
+  allocateAndFreezeDetails,
+  buildFrozenPresetContext,
+  buildPhase2ContextTrace,
+  buildResourceSelectionTrace,
+  collectPhase2BudgetResources,
+  freezeAwarenessItems,
+  intensityToDetailSoftRatio,
+  projectCharacterText,
+  projectNoteText,
+  projectWorldbookText,
+  ResourceContextError,
+  RESOURCE_AWARENESS_OVER_BUDGET_MESSAGE,
+  type FrozenPresetContext,
+  type FrozenResourceDetailItem,
+  type GlobalAwarenessCandidate,
+  type Phase2BudgetResources,
+} from './context/resources';
+import {
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
   hashContextAutomationPolicyV3,
   type ContextBudgetBoardKey,
@@ -124,6 +142,8 @@ export interface BuildContextOptions {
    * V3 takes precedence.
    */
   contextBudgetVersion?: number;
+  /** Explicit pipeline preset id. Null means no explicit selection (V7). */
+  requestedPresetId?: number | null;
   /**
    * Optional V3 policy override. When omitted the default balanced preset is
    * used; auto-config persists the chosen policy under `context_auto_policy_v3`
@@ -388,9 +408,10 @@ export async function buildContext(
 ): Promise<BuildContextResult> {
   const trace: ContextTraceItem[] = [];
   let chapters = await db.getChaptersByProject(projectId);
-  const useV3Hierarchical =
-    typeof options.contextBudgetVersion === 'number' &&
-    options.contextBudgetVersion >= 6;
+  const budgetVersion = Number(options.contextBudgetVersion) || 0;
+  const useV7 = budgetVersion >= 7;
+  const useV3Hierarchical = budgetVersion === 6;
+  const useHierarchicalBoards = budgetVersion >= 6;
 
   // Checkpoint / pending bridge / seam preparation. This is local-only:
   // generation mode may signal background maintenance, but never waits for
@@ -427,7 +448,7 @@ export async function buildContext(
   );
   let episodicCandidates = excludeRawFromEpisodicCandidates(
     previousChapters,
-    useV3Hierarchical && coverageCandidates
+    useHierarchicalBoards && coverageCandidates
       ? []
       : rawChapterIds,
   );
@@ -449,7 +470,7 @@ export async function buildContext(
     currentChapter,
     {
       strategy: 'sliding',
-      recentChapterCount: useV3Hierarchical
+      recentChapterCount: useHierarchicalBoards
         ? STORY_MEMORY_MAX_RAW_CHAPTERS
         : config.worldbookScanDepth ?? 4,
     },
@@ -487,6 +508,10 @@ export async function buildContext(
   let v3ResourceItemAllocations: ReadonlyMap<string, number> | undefined;
   let v3ResourceItemTraces: HierarchicalBudgetResult['resourceItemTraces'];
   let v3HierarchicalInput: HierarchicalBudgetInput | undefined;
+  let v7Resources: Phase2BudgetResources | undefined;
+  let v7FrozenPreset: FrozenPresetContext | undefined;
+  let v7FrozenDetails: FrozenResourceDetailItem[] = [];
+  let v7Awareness: GlobalAwarenessCandidate[] = [];
   const applyV3Allocation = (result: HierarchicalBudgetResult) => {
     hierarchicalBudgetTrace = result;
     v3ResourceItemAllocations = result.resourceItemAllocations;
@@ -499,19 +524,19 @@ export async function buildContext(
     effectiveEpisodicBudget =
       result.boardAllocations.episodic.allocatedTokens;
   };
-  let effectiveResourceBudget = useV3Hierarchical
+  let effectiveResourceBudget = useHierarchicalBoards
     ? V3_DEMAND_PROBE_BUDGET
     : config.resourceBudget;
-  let effectiveStoryStateBudget = useV3Hierarchical
+  let effectiveStoryStateBudget = useHierarchicalBoards
     ? V3_DEMAND_PROBE_BUDGET
     : config.storyStateBudgetTokens ?? 8000;
-  let effectiveSlidingWindow = useV3Hierarchical
+  let effectiveSlidingWindow = useHierarchicalBoards
     ? V3_DEMAND_PROBE_BUDGET
     : config.slidingWindowSize;
-  let effectiveMemoryTopK = useV3Hierarchical
+  let effectiveMemoryTopK = useHierarchicalBoards
     ? Math.max(episodicCandidates.length, 1)
     : config.memoryTopK ?? 10;
-  let effectiveEpisodicBudget = useV3Hierarchical
+  let effectiveEpisodicBudget = useHierarchicalBoards
     ? V3_DEMAND_PROBE_BUDGET
     : config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
   const resolvedContextWindow =
@@ -531,30 +556,29 @@ export async function buildContext(
       resolvedContextWindow - safety - reservedOut - fixedProtocol,
     );
     const remainingAfterOutline = Math.max(0, availableInput - outlineTokens);
-    if (useV3Hierarchical) {
-      // ----- Context Budget V3 hierarchical branch (Closure Plan §3-§10) -----
-      // Every board now reports REAL demand (Closure Plan §7-§10):
-      //   - Story State: natural render size of the prepared checkpoint; 0 when
-      //     missing / dirty / empty / unusable (no config-ceiling proxy).
-      //   - Episodic: natural token total of the retrieved TopK candidates; 0
-      //     when retrieval is empty (no MAX_EPISODIC cap as demand).
-      //   - Sliding: real selected raw-bridge token sum from the coverage plan
-      //     (≤ 10 chapters); no config slidingWindowSize hard cap as demand.
-      //   - Resources: candidate-first (unchanged) — sum of activated candidate
-      //     tokens.
-      // The allocator's per-board elastic ceiling (policy ratios × envelope) is
-      // the ONLY place demand gets clipped back; demand itself is never a
-      // config ceiling.
-      //
-      // Worldbook activation (Closure Plan §13): resources are collected with a
-      // FULL scan haystack that includes the episodic memory text, so Episodic /
-      // historical-event keywords can trigger worldbook entries — restoring the
-      // V2 trigger surface without a Worldbook → Episodic → Worldbook cycle
-      // (episodic retrieval never depends on worldbook).
+    if (useHierarchicalBoards) {
+      // ----- Hierarchical boards (V6 resource-candidate / V7 awareness+detail)
       const presetTextForEstimate =
         typeof preset === 'string' ? preset : buildPresetPrompt(preset);
-      const mandatoryTokens =
-        estimateTokens(presetTextForEstimate || DEFAULT_SYSTEM_PROMPT) +
+      if (useV7) {
+        v7FrozenPreset =
+          typeof preset === 'string'
+            ? {
+                ...buildFrozenPresetContext({ requestedPresetId: null }),
+                combinedText: preset,
+                systemText: preset,
+              }
+            : buildFrozenPresetContext({
+                requestedPresetId: options.requestedPresetId,
+                preset: preset || null,
+              });
+      }
+      let mandatoryTokens =
+        estimateTokens(
+          useV7
+            ? v7FrozenPreset?.combinedText || DEFAULT_SYSTEM_PROMPT
+            : presetTextForEstimate || DEFAULT_SYSTEM_PROMPT,
+        ) +
         outlineTokens +
         fixedProtocol;
 
@@ -608,9 +632,50 @@ export async function buildContext(
         .filter(Boolean)
         .join('\n\n');
 
-      // --- Resources demand (candidate-first, full scan) ---------------------
+      // --- Resources demand --------------------------------------------------
       let resourcesActualDemand = 0;
-      if (useV3Hierarchical || config.includeResources) {
+      if (useV7) {
+        v7Resources = await collectPhase2BudgetResources({
+          projectId,
+          config,
+          preset: typeof preset === 'string' ? undefined : preset || null,
+          haystack: {
+            chapter: currentChapter,
+            retrievalUserPrompt: options.retrievalUserPrompt,
+            previousChaptersText: worldbookScanContent,
+            storyMemoryText: '',
+            outlineText: preOutlineContext.text || '',
+            episodicText: v3ScanMemoryText,
+          },
+        });
+        v7Awareness = v7Resources.awareness;
+        mandatoryTokens += v7Resources.awarenessTokens;
+        const hardInputLimit = Math.max(
+          0,
+          resolvedContextWindow - safety - reservedOut,
+        );
+        if (mandatoryTokens > hardInputLimit) {
+          throw new ResourceContextError(
+            'RESOURCE_AWARENESS_OVER_BUDGET',
+            RESOURCE_AWARENESS_OVER_BUDGET_MESSAGE,
+            'open_llm_settings',
+            {
+              mandatoryTokens,
+              hardInputLimit,
+              awarenessTokens: v7Resources.awarenessTokens,
+              overBudgetSources: v7Awareness
+                .filter(item => item.fallbackMode === 'full_source_protected')
+                .map(item => `${item.sourceKind}:${item.title}`),
+            },
+          );
+        }
+        const intensity = intensityToDetailSoftRatio(
+          config.resourceDetailIntensity,
+        );
+        resourcesActualDemand = Math.ceil(
+          v7Resources.detailDemandTokens * Math.min(intensity, 1),
+        );
+      } else if (useV3Hierarchical || config.includeResources) {
         try {
           const collected = await collectAllResourceCandidates(
             projectId,
@@ -624,9 +689,7 @@ export async function buildContext(
           v3ResourceCandidates = collected.candidates;
           resourcesActualDemand = collected.totalActualTokens;
         } catch {
-          // Resource collection failure must never block generation; fall back
-          // to an empty candidate list and let the allocator grant 0 to
-          // Resources.
+          // V6: Resource collection failure must never block generation.
           v3ResourceCandidates = [];
           resourcesActualDemand = 0;
         }
@@ -656,18 +719,35 @@ export async function buildContext(
           slidingWindow: { actualDemandTokens: slidingDemand },
           episodic: { actualDemandTokens: episodicDemand },
         },
-        resourceItems: v3ResourceCandidates.map(c => ({
-          id: c.id,
-          sourceKind: c.sourceKind,
-          actualTokens: c.actualTokens,
-          explicitSelected: c.explicitSelected,
-          activated: c.activated,
-          activationReason: c.activationReason,
-          sourceOrder: c.sourceOrder,
-        })),
+        resourceItems: useV7
+          ? (v7Resources?.details || []).map(item => ({
+              id: item.id,
+              sourceKind: item.sourceKind,
+              actualTokens: item.actualTokens,
+              explicitSelected: item.explicitSelected,
+              activated: true,
+              activationReason: item.activationReason as any,
+              sourceOrder: item.sourceOrder,
+              relevance: item.relevance,
+            }))
+          : v3ResourceCandidates.map(c => ({
+              id: c.id,
+              sourceKind: c.sourceKind,
+              actualTokens: c.actualTokens,
+              explicitSelected: c.explicitSelected,
+              activated: c.activated,
+              activationReason: c.activationReason,
+              sourceOrder: c.sourceOrder,
+            })),
       };
       const v3Result = allocateHierarchicalContextBudget(v3HierarchicalInput);
       applyV3Allocation(v3Result);
+      if (useV7 && v7Resources) {
+        v7FrozenDetails = allocateAndFreezeDetails(
+          v7Resources.details,
+          v3Result.resourceItemAllocations || new Map(),
+        );
+      }
       // Wire board grants into the effective budgets consumed by the shared
       // downstream rendering path. The allocator grant (not the config ceiling)
       // is the final clip authority.
@@ -828,7 +908,7 @@ export async function buildContext(
   // Episodic fallbacks. Legacy ContextConfig slidingWindowSize is not used for
   // this decision.
   if (
-    useV3Hierarchical &&
+    useHierarchicalBoards &&
     coverageCandidates &&
     coverageCandidates.pendingChapters.length > 0
   ) {
@@ -939,8 +1019,11 @@ export async function buildContext(
     .filter(Boolean)
     .join('\n\n');
 
-  const systemPrompt =
-    typeof preset === 'string' ? preset : buildPresetPrompt(preset);
+  const systemPrompt = useV7
+    ? v7FrozenPreset?.combinedText || DEFAULT_SYSTEM_PROMPT
+    : typeof preset === 'string'
+      ? preset
+      : buildPresetPrompt(preset);
   const rawSystemPrompt = systemPrompt || DEFAULT_SYSTEM_PROMPT;
   // 宏替换覆盖系统提示词修复：preset.system_prompt / writing_style / extra_instructions
   // 里的 {{char}}/{{user}}/{{chapter}}/{{synopsis}} 也需要替换，否则以字面量进入 LLM
@@ -1053,7 +1136,63 @@ export async function buildContext(
   let snapshotNoteText = '';
   let snapshotWorldbookText = '';
 
-  if ((useV3Hierarchical || config.includeResources) && effectiveResourceBudget > 0) {
+  if (useV7 && v7Resources) {
+    const awarenessText = v7Resources.globalResourceAwarenessText;
+    if (awarenessText) {
+      messages.push({
+        role: 'system',
+        content: awarenessText,
+      });
+    }
+    const detailBodies: string[] = [];
+    for (const item of v7FrozenDetails) {
+      if (item.content) {
+        detailBodies.push(item.content);
+      }
+    }
+    if (detailBodies.length > 0) {
+      messages.push({
+        role: 'system',
+        content: `以下是本次写作可展开的资料详情（全局骨架已单独注入）：\n\n${detailBodies.join('\n\n')}`,
+      });
+    }
+    snapshotCharacterText = projectCharacterText('', v7FrozenDetails);
+    snapshotWorldbookText = projectWorldbookText('', v7FrozenDetails);
+    snapshotNoteText = projectNoteText(v7FrozenDetails);
+    if (!v7Resources.includeResources) {
+      trace.push({
+        kind: 'character',
+        sourceId: null,
+        title: '资料上下文已关闭',
+        reason: '用户关闭了角色 / 世界书 / 笔记；全局感知未生成。预设仍生效。',
+        estimatedTokens: 0,
+        included: false,
+        clipped: false,
+        preview: '',
+        empty: true,
+        resourcePreviewStatus: 'DISABLED',
+      });
+    } else {
+      const selection = buildResourceSelectionTrace({
+        awareness: v7Awareness,
+        details: v7Resources.details,
+        frozenDetails: v7FrozenDetails,
+        includeResources: true,
+      });
+      if (v7FrozenPreset) {
+        trace.push(
+          ...buildPhase2ContextTrace({
+            preset: v7FrozenPreset,
+            awareness: v7Awareness,
+            details: v7FrozenDetails,
+            selection,
+            includeResources: true,
+            styleNotePresent: v7Resources.styleNotePresent,
+          }).filter(item => item.kind !== 'preset'),
+        );
+      }
+    }
+  } else if ((useV3Hierarchical || config.includeResources) && effectiveResourceBudget > 0) {
     if (useV3Hierarchical && v3ResourceCandidates.length > 0) {
       // ----- V3 candidate-first resource rendering (Plan §6 / §15) ----------
       // Each candidate is clipped to its item-allocator grant; no fixed
@@ -1168,7 +1307,7 @@ export async function buildContext(
         : seamBlock;
     }
   } else {
-    if (useV3Hierarchical) {
+    if (useHierarchicalBoards) {
       // V6 has no manual strategy/full/custom path. When there is no pending
       // checkpoint bridge, render the bounded recent candidate set and let the
       // allocator grant below clip the rendered bytes.
@@ -1211,7 +1350,7 @@ export async function buildContext(
       chapterTitle: currentChapter.title,
       chapterSynopsis: currentChapter.synopsis,
     });
-    const processed = useV3Hierarchical
+    const processed = useHierarchicalBoards
       ? clipTextTailToTokenBudget(
           processedBeforeBudget,
           effectiveSlidingWindow,
@@ -1274,7 +1413,7 @@ export async function buildContext(
   const immediatePreviousChapter = chapters
     .filter(chapter => chapter.position < currentChapter.position && chapter.content)
     .sort((a, b) => b.position - a.position)[0];
-  const immediatePreviousChapterText = useV3Hierarchical
+  const immediatePreviousChapterText = useHierarchicalBoards
     ? ''
     : immediatePreviousChapter?.content || '';
   const immediatePreviousChapterEnding =
@@ -1304,9 +1443,51 @@ export async function buildContext(
     outlineBlockingReason: outlineContext.blockingReason,
     outlineEstimatedTokens: outlineContext.estimatedTokens,
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
-    contextBudgetV3Summary: hierarchicalBudgetTrace
-      ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
-      : undefined,
+    contextBudgetV3Summary:
+      hierarchicalBudgetTrace && useV3Hierarchical
+        ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
+        : undefined,
+    ...(useV7
+      ? {
+          resourceContextVersion: 2 as const,
+          characterAwarenessText: v7Resources?.characterAwarenessText || '',
+          worldbookAwarenessText: v7Resources?.worldbookAwarenessText || '',
+          globalResourceAwarenessText:
+            v7Resources?.globalResourceAwarenessText || '',
+          resourceAwarenessItems: freezeAwarenessItems(v7Awareness),
+          resourceDetailItems: v7FrozenDetails,
+          resourceSelectionTrace: v7Resources
+            ? buildResourceSelectionTrace({
+                awareness: v7Awareness,
+                details: v7Resources.details,
+                frozenDetails: v7FrozenDetails,
+                includeResources: v7Resources.includeResources,
+              })
+            : [],
+          presetSystemText: v7FrozenPreset?.systemText,
+          presetWritingStyleText: v7FrozenPreset?.writingStyleText,
+          presetExtraInstructionsText: v7FrozenPreset?.extraInstructionsText,
+          presetSourceFingerprint: v7FrozenPreset?.sourceFingerprint,
+          presetSource: v7FrozenPreset?.presetSource,
+          includeResources: config.includeResources !== false,
+          resourcesDisabledWarning:
+            config.includeResources === false
+              ? '资料上下文已关闭：角色 / 世界书 / 笔记不会进入本次任务。预设仍生效。'
+              : undefined,
+          contextBudgetV7Summary: hierarchicalBudgetTrace
+            ? buildV7Summary(
+                hierarchicalBudgetTrace,
+                options.contextAutomationPolicyV3,
+                v7Resources?.awarenessTokens || 0,
+                v7Resources?.detailDemandTokens || 0,
+                v7FrozenDetails.reduce(
+                  (sum, item) => sum + (item.allocatedTokens || 0),
+                  0,
+                ),
+              )
+            : undefined,
+        }
+      : {}),
   };
 
   return {
@@ -1327,6 +1508,24 @@ export async function buildContext(
  * allocation view the draft saw, without re-running the allocator. Pure /
  * deterministic — never touches the DB.
  */
+function buildV7Summary(
+  trace: HierarchicalBudgetResult,
+  policy: ContextAutomationPolicyV3 | undefined,
+  protectedAwarenessTokens: number,
+  resourceDetailDemandTokens: number,
+  resourceDetailAllocatedTokens: number,
+): import('../types/pipelineContext').ContextBudgetV7Summary {
+  const base = buildV3Summary(trace, policy);
+  return {
+    ...base,
+    contextBudgetVersion: 7,
+    resourceContextVersion: 2,
+    protectedAwarenessTokens,
+    resourceDetailDemandTokens,
+    resourceDetailAllocatedTokens,
+  };
+}
+
 function buildV3Summary(
   trace: HierarchicalBudgetResult,
   policy: ContextAutomationPolicyV3 | undefined,

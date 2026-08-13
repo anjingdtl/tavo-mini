@@ -127,6 +127,22 @@ function partition(blocks: Array<[string, string]>): string {
     .join('\n\n');
 }
 
+function awarenessPartitions(ctx: {
+  characterAwarenessText?: string;
+  worldbookAwarenessText?: string;
+}): Array<[string, string]> {
+  return [
+    [
+      '【人物全局骨架｜一致性约束，不是已发生事实】',
+      ctx.characterAwarenessText || '',
+    ],
+    [
+      '【世界全局约束｜一致性约束；可变状态服从更晚剧情】',
+      ctx.worldbookAwarenessText || '',
+    ],
+  ];
+}
+
 /**
  * Literary review messages. Review receives every enabled draft source so it
  * judges style and continuity against the same project view as the author.
@@ -170,11 +186,14 @@ export function buildReviewMessages(
     ),
     // Full frozen outline — never silently truncated across stages.
     outlineText: context.outlineText ? String(context.outlineText) : '',
+    characterAwarenessText: context.characterAwarenessText || '',
+    worldbookAwarenessText: context.worldbookAwarenessText || '',
   };
 
   const contextBlock = partition([
     ['【项目大纲｜未来规划，最高创作约束】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
+    ...awarenessPartitions(ctx),
     ['【人物设定】', ctx.characterText],
     ['【项目笔记 / 仿写资料】', ctx.noteText],
     ['【世界书 / 世界规则】', ctx.worldbookText],
@@ -297,12 +316,15 @@ export function buildFactCheckMessages(
     noteText: clip(context.noteText, FACTCHECK_BUDGET.note),
     // Full frozen outline — never silently truncated across stages.
     outlineText: context.outlineText ? String(context.outlineText) : '',
+    characterAwarenessText: context.characterAwarenessText || '',
+    worldbookAwarenessText: context.worldbookAwarenessText || '',
   };
 
   const hasOutline = !!ctx.outlineText.trim();
   const contextBlock = partition([
     ['【项目大纲｜未来规划，非已发生事实】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
+    ...awarenessPartitions(ctx),
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
     ['【近期正文 / Pending Bridge】', ctx.recentBridgeText],
@@ -424,12 +446,15 @@ export function buildProofMessages(
     ),
     // Full frozen outline — never silently truncated across stages.
     outlineText: constraints.outlineText ? String(constraints.outlineText) : '',
+    characterAwarenessText: constraints.characterAwarenessText || '',
+    worldbookAwarenessText: constraints.worldbookAwarenessText || '',
   };
 
   const hasOutline = !!c.outlineText.trim();
   const constraintBlock = partition([
     ['【项目大纲｜未来规划，最高创作约束】', c.outlineText],
     ['【写作预设与文风】', c.presetText],
+    ...awarenessPartitions(c),
     ['【当前章节目标】', c.currentInstructionText],
     ['【用户本轮要求】', c.retrievalUserPrompt],
     ['【近期正文 / 衔接】', c.recentBridgeText],
@@ -692,11 +717,14 @@ export function buildReviewV2Messages(params: {
     outlineText: params.context.outlineText
       ? String(params.context.outlineText)
       : '',
+    characterAwarenessText: params.context.characterAwarenessText || '',
+    worldbookAwarenessText: params.context.worldbookAwarenessText || '',
   };
 
   const contextBlock = partition([
     ['【项目大纲｜未来规划，最高创作约束】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
+    ...awarenessPartitions(ctx),
     ['【人物设定】', ctx.characterText],
     ['【项目笔记 / 仿写资料】', ctx.noteText],
     ['【世界书 / 世界规则】', ctx.worldbookText],
@@ -808,11 +836,14 @@ export function buildFactCheckV2Messages(params: {
     outlineText: params.context.outlineText
       ? String(params.context.outlineText)
       : '',
+    characterAwarenessText: params.context.characterAwarenessText || '',
+    worldbookAwarenessText: params.context.worldbookAwarenessText || '',
   };
 
   const contextBlock = partition([
     ['【项目大纲｜未来规划，非已发生事实】', ctx.outlineText],
     ['【写作预设与文风】', ctx.presetText],
+    ...awarenessPartitions(ctx),
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
     ['【近期正文 / Pending Bridge】', ctx.recentBridgeText],

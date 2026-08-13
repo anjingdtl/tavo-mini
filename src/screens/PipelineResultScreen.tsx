@@ -17,7 +17,7 @@ import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdop
 import { resumePipeline, runChapterPipeline } from '../services/pipelineRunner';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
   isCurrentOutlinePipelineContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
 import {
@@ -566,7 +566,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         task.targetId,
         {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
-          contextBudgetVersion: V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+          contextBudgetVersion: PHASE2_CONTEXT_BUDGET_VERSION,
         },
       );
       Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');

@@ -82,7 +82,19 @@ export async function getContextConfig(): Promise<ContextConfig> {
       (await getSetting('worldbook_scan_depth')) ||
         DEFAULT_CONTEXT_CONFIG.worldbookScanDepth,
     ),
+    resourceDetailIntensity: await readResourceDetailIntensity(),
   };
+}
+
+async function readResourceDetailIntensity(): Promise<
+  'save' | 'balanced' | 'rich'
+> {
+  const raw = String(
+    (await getSetting('resource_detail_intensity')) ||
+      DEFAULT_CONTEXT_CONFIG.resourceDetailIntensity ||
+      'balanced',
+  );
+  return raw === 'save' || raw === 'rich' ? raw : 'balanced';
 }
 
 export async function setContextConfig(config: ContextConfig): Promise<void> {
@@ -145,6 +157,10 @@ export async function setContextConfig(config: ContextConfig): Promise<void> {
     String(
       config.worldbookScanDepth ?? DEFAULT_CONTEXT_CONFIG.worldbookScanDepth,
     ),
+  );
+  await setSetting(
+    'resource_detail_intensity',
+    String(config.resourceDetailIntensity ?? 'balanced'),
   );
 }
 

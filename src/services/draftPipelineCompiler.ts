@@ -20,7 +20,12 @@ import { resolveLLMRequestConfig } from './llm';
 import type { ChatMessage, LLMRequestConfig } from './llm';
 import type { Chapter, Preset } from '../types/novel';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
-import { PIPELINE_CONTEXT_SNAPSHOT_VERSION } from '../types/pipelineContext';
+import {
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4,
+} from '../types/pipelineContext';
+import { ResourceContextError } from './context/resources/resourceContextErrors';
+import { isPhase2ContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import type { ContextTraceItem } from '../types/contextTrace';
 
 export interface CompileDraftPipelineRequestResult {
@@ -68,6 +73,26 @@ function resolvePreset(
   return presets[0] || null;
 }
 
+function resolvePresetForPhase2(
+  presetId: number | null,
+  presets: Preset[],
+): Preset | null {
+  const requested = Number(presetId);
+  if (!Number.isInteger(requested) || requested <= 0) {
+    return null;
+  }
+  const found = presets.find(p => p.id === requested);
+  if (!found) {
+    throw new ResourceContextError(
+      'PRESET_SOURCE_READ_FAILED',
+      `已选择的写作预设 #${requested} 读取失败，已阻止生成，以免静默换成默认文风。`,
+      'open_resources',
+      { requestedPresetId: requested },
+    );
+  }
+  return found;
+}
+
 /**
  * Compile the exact Draft-stage messages for a chapter pipeline run.
  *
@@ -112,10 +137,19 @@ export async function compileDraftPipelineRequest(params: {
   )) as Preset[];
   const requestConfig =
     params.requestConfig || (await resolveLLMRequestConfig());
+  const phase2 = isPhase2ContextBudgetVersion(params.contextBudgetVersion);
+  const rawRequested =
+    params.draftPreset !== undefined
+      ? params.draftPreset?.id ?? null
+      : pipelineConfig.draftPresetId ?? null;
+  const requestedPresetId =
+    Number(rawRequested) > 0 ? Number(rawRequested) : null;
   const draftPreset =
     params.draftPreset !== undefined
       ? params.draftPreset
-      : resolvePreset(pipelineConfig.draftPresetId, presets);
+      : phase2
+        ? resolvePresetForPhase2(pipelineConfig.draftPresetId, presets)
+        : resolvePreset(pipelineConfig.draftPresetId, presets);
   const reservedOutputTokens =
     params.draftMaxTokens ?? pipelineConfig.draftMaxTokens;
   const contextWindow = Number(requestConfig.context_window) || 0;
@@ -157,6 +191,7 @@ export async function compileDraftPipelineRequest(params: {
       elasticBudget: params.elasticBudget,
       contextBudgetVersion: params.contextBudgetVersion,
       contextAutomationPolicyV3: params.contextAutomationPolicyV3,
+      requestedPresetId: phase2 ? requestedPresetId : undefined,
     },
   );
 
@@ -167,7 +202,9 @@ export async function compileDraftPipelineRequest(params: {
     chapterUpdatedAt:
       (chapter as any).updated_at ?? (chapter as any).updatedAt ?? '',
     createdAt: Date.now(),
-    snapshotVersion: PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    snapshotVersion: phase2
+      ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
+      : PIPELINE_CONTEXT_SNAPSHOT_VERSION,
   };
 
   const prevChapter = allChapters

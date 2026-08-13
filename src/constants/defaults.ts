@@ -33,6 +33,7 @@ export const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
   customRangeEnd: -1,
   includeResources: true,
   worldbookRecursive: true,
+  resourceDetailIntensity: 'balanced',
 };
 
 export const PLOTLINE_COLORS = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];

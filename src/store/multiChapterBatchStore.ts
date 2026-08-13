@@ -15,6 +15,7 @@ import type {
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   type ContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
@@ -33,7 +34,7 @@ import { cloneDefaultContextAutomationPolicyV3 } from '../services/contextAutoma
 async function resolveBatchContextBudgetVersion(): Promise<ContextBudgetVersion> {
   // New batches expose one automated policy. V2 remains readable only through
   // already-frozen historical rows; it is never selected for a new batch.
-  return V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION;
+  return PHASE2_CONTEXT_BUDGET_VERSION;
 }
 
 /**
@@ -46,7 +47,8 @@ function isBatchContextBudgetVersionResumable(version: unknown): boolean {
   const n = Number(version);
   return (
     n === CURRENT_CONTEXT_BUDGET_VERSION ||
-    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
+    n === PHASE2_CONTEXT_BUDGET_VERSION
   );
 }
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
@@ -235,7 +237,8 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         const pipelineConfig = await db.getPipelineConfig();
         const contextBudgetVersion = await resolveBatchContextBudgetVersion();
         const contextAutomationPolicyV3 =
-          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
+          contextBudgetVersion === PHASE2_CONTEXT_BUDGET_VERSION
             ? await ensureContextAutomationPolicyV3().catch(() =>
                 cloneDefaultContextAutomationPolicyV3(),
               )
@@ -573,7 +576,8 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           .slice(2, 8)}`;
         const contextBudgetVersion = await resolveBatchContextBudgetVersion();
         const contextAutomationPolicyV3 =
-          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION
+          contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
+          contextBudgetVersion === PHASE2_CONTEXT_BUDGET_VERSION
             ? await ensureContextAutomationPolicyV3().catch(() =>
                 cloneDefaultContextAutomationPolicyV3(),
               )
