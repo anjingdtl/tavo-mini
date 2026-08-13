@@ -76,6 +76,7 @@ import {
   getDetailConstraints,
   type ConstructionDetailLevel,
 } from '../services/construction/quality';
+import { readNovelCharacterDraft } from '../services/construction/characterDraftAdapter';
 import { useThemeStore } from '../store/themeStore';
 
 type BuildMode = 'independent' | 'fromWorldbook' | 'fromCharacter' | 'fromText';
@@ -142,14 +143,21 @@ export const BuildScreen: React.FC = () => {
   const [charName, setCharName] = useState('');
   const [charTheme, setCharTheme] = useState('');
   const [charRole, setCharRole] = useState('');
+  const [charIdentity, setCharIdentity] = useState('');
+  const [charAppearance, setCharAppearance] = useState('');
+  const [charBackground, setCharBackground] = useState('');
   const [charPersonality, setCharPersonality] = useState('');
-  const [charAtmosphere, setCharAtmosphere] = useState('');
+  const [charMotivation, setCharMotivation] = useState('');
+  const [charConflict, setCharConflict] = useState('');
+  const [charRelationships, setCharRelationships] = useState('');
   // 独立世界书字段
   const [wbName, setWbName] = useState('');
   const [wbTheme, setWbTheme] = useState('');
   const [wbWorldview, setWbWorldview] = useState('');
   const [wbCategories, setWbCategories] = useState('');
-  const [wbUsage, setWbUsage] = useState('');
+  const [wbImpactScope, setWbImpactScope] = useState('');
+  const [wbForbiddenRules, setWbForbiddenRules] = useState('');
+  const [wbStableRelations, setWbStableRelations] = useState('');
   // 通用补充需求
   const [extra, setExtra] = useState('');
   const [entryCount, setEntryCount] = useState(DEFAULT_ENTRY_COUNT);
@@ -224,8 +232,13 @@ export const BuildScreen: React.FC = () => {
     charName,
     charTheme,
     charRole,
+    charIdentity,
+    charAppearance,
+    charBackground,
     charPersonality,
-    charAtmosphere,
+    charMotivation,
+    charConflict,
+    charRelationships,
     extra,
   ].some(v => v.trim().length > 0);
 
@@ -238,8 +251,13 @@ export const BuildScreen: React.FC = () => {
           name: charName,
           theme: charTheme,
           role: charRole,
+          identity: charIdentity,
+          appearance: charAppearance,
+          background: charBackground,
           personality: charPersonality,
-          atmosphere: charAtmosphere,
+          motivation: charMotivation,
+          conflict: charConflict,
+          relationships: charRelationships,
           extra,
           detailLevel,
         };
@@ -250,7 +268,9 @@ export const BuildScreen: React.FC = () => {
         theme: wbTheme,
         worldview: wbWorldview,
         categories: wbCategories,
-        usage: wbUsage,
+        impactScope: wbImpactScope,
+        forbiddenRules: wbForbiddenRules,
+        stableRelations: wbStableRelations,
         extra,
         entryCount: clampEntryCount(entryCount),
         detailLevel,
@@ -303,14 +323,21 @@ export const BuildScreen: React.FC = () => {
     charName,
     charTheme,
     charRole,
+    charIdentity,
+    charAppearance,
+    charBackground,
     charPersonality,
-    charAtmosphere,
+    charMotivation,
+    charConflict,
+    charRelationships,
     extra,
     wbName,
     wbTheme,
     wbWorldview,
     wbCategories,
-    wbUsage,
+    wbImpactScope,
+    wbForbiddenRules,
+    wbStableRelations,
     entryCount,
     source,
     detailLevel,
@@ -784,10 +811,20 @@ export const BuildScreen: React.FC = () => {
                 setThemeText={setCharTheme}
                 role={charRole}
                 setRole={setCharRole}
+                identity={charIdentity}
+                setIdentity={setCharIdentity}
+                appearance={charAppearance}
+                setAppearance={setCharAppearance}
+                background={charBackground}
+                setBackground={setCharBackground}
                 personality={charPersonality}
                 setPersonality={setCharPersonality}
-                atmosphere={charAtmosphere}
-                setAtmosphere={setCharAtmosphere}
+                motivation={charMotivation}
+                setMotivation={setCharMotivation}
+                conflict={charConflict}
+                setConflict={setCharConflict}
+                relationships={charRelationships}
+                setRelationships={setCharRelationships}
               />
             ) : null}
             {mode === 'independent' && target === 'worldbook' ? (
@@ -800,8 +837,12 @@ export const BuildScreen: React.FC = () => {
                 setWorldview={setWbWorldview}
                 categories={wbCategories}
                 setCategories={setWbCategories}
-                usage={wbUsage}
-                setUsage={setWbUsage}
+                impactScope={wbImpactScope}
+                setImpactScope={setWbImpactScope}
+                forbiddenRules={wbForbiddenRules}
+                setForbiddenRules={setWbForbiddenRules}
+                stableRelations={wbStableRelations}
+                setStableRelations={setWbStableRelations}
                 entryCount={entryCount}
                 onEntryStep={handleEntryStep}
               />
@@ -862,7 +903,7 @@ export const BuildScreen: React.FC = () => {
               label="补充需求（可选）"
               value={extra}
               onChangeText={setExtra}
-              placeholder="例如：职业、阵营、希望扩展的地区或剧情冲突"
+              placeholder="例如：职业、阵营、希望补充的稳定事实或关系"
               multiline
               inputStyle={styles.largeInput}
             />
@@ -1054,10 +1095,20 @@ const IndependentCharacterForm: React.FC<{
   setThemeText: (v: string) => void;
   role: string;
   setRole: (v: string) => void;
+  identity: string;
+  setIdentity: (v: string) => void;
+  appearance: string;
+  setAppearance: (v: string) => void;
+  background: string;
+  setBackground: (v: string) => void;
   personality: string;
   setPersonality: (v: string) => void;
-  atmosphere: string;
-  setAtmosphere: (v: string) => void;
+  motivation: string;
+  setMotivation: (v: string) => void;
+  conflict: string;
+  setConflict: (v: string) => void;
+  relationships: string;
+  setRelationships: (v: string) => void;
 }> = ({
   name,
   setName,
@@ -1065,10 +1116,20 @@ const IndependentCharacterForm: React.FC<{
   setThemeText,
   role,
   setRole,
+  identity,
+  setIdentity,
+  appearance,
+  setAppearance,
+  background,
+  setBackground,
   personality,
   setPersonality,
-  atmosphere,
-  setAtmosphere,
+  motivation,
+  setMotivation,
+  conflict,
+  setConflict,
+  relationships,
+  setRelationships,
 }) => (
   <>
     <Field
@@ -1093,20 +1154,67 @@ const IndependentCharacterForm: React.FC<{
       placeholder="例如：反派机关师"
     />
     <Field
+      testID="build-char-identity"
+      label="身份 / 社会位置"
+      value={identity}
+      onChangeText={setIdentity}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：旧王朝遗民、港口工会登记的修理师"
+    />
+    <Field
+      testID="build-char-background"
+      label="成长环境 / 关键经历"
+      value={background}
+      onChangeText={setBackground}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：在雾港底层长大，经历过一次工坊事故"
+    />
+    <Field
+      testID="build-char-appearance"
+      label="外貌与辨识特征（可选）"
+      value={appearance}
+      onChangeText={setAppearance}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：左手戴银色义肢，衣领总有机油味"
+    />
+    <Field
       testID="build-char-personality"
-      label="核心性格 / 矛盾"
+      label="核心性格"
       value={personality}
       onChangeText={setPersonality}
       multiline
       inputStyle={styles.largeInput}
-      placeholder="例如：表面温和、记仇"
+      placeholder="例如：表面温和，遇到背叛会冷静记账"
     />
     <Field
-      testID="build-char-atmosphere"
-      label="叙事氛围"
-      value={atmosphere}
-      onChangeText={setAtmosphere}
-      placeholder="例如：阴郁、悬念"
+      testID="build-char-motivation"
+      label="目标 / 动机"
+      value={motivation}
+      onChangeText={setMotivation}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：找到导致工坊事故的真正责任人"
+    />
+    <Field
+      testID="build-char-conflict"
+      label="主要矛盾 / 弱点"
+      value={conflict}
+      onChangeText={setConflict}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：不信任权威，却必须依赖工会资源"
+    />
+    <Field
+      testID="build-char-relationships"
+      label="关键关系（可选）"
+      value={relationships}
+      onChangeText={setRelationships}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：与工会会长合作但互相提防；与妹妹保持秘密通信"
     />
   </>
 );
@@ -1120,8 +1228,12 @@ const IndependentWorldbookForm: React.FC<{
   setWorldview: (v: string) => void;
   categories: string;
   setCategories: (v: string) => void;
-  usage: string;
-  setUsage: (v: string) => void;
+  impactScope: string;
+  setImpactScope: (v: string) => void;
+  forbiddenRules: string;
+  setForbiddenRules: (v: string) => void;
+  stableRelations: string;
+  setStableRelations: (v: string) => void;
   entryCount: number;
   onEntryStep: (delta: number) => void;
 }> = ({
@@ -1133,8 +1245,12 @@ const IndependentWorldbookForm: React.FC<{
   setWorldview,
   categories,
   setCategories,
-  usage,
-  setUsage,
+  impactScope,
+  setImpactScope,
+  forbiddenRules,
+  setForbiddenRules,
+  stableRelations,
+  setStableRelations,
   entryCount,
   onEntryStep,
 }) => (
@@ -1160,21 +1276,41 @@ const IndependentWorldbookForm: React.FC<{
       onChangeText={setWorldview}
       multiline
       inputStyle={styles.largeInput}
-      placeholder="例如：海雾笼罩的港口城邦"
+      placeholder="例如：海雾笼罩的港口城邦，机械与旧贵族共同维持秩序"
     />
     <Field
       testID="build-wb-categories"
-      label="希望覆盖的类别"
+      label="重点覆盖领域"
       value={categories}
       onChangeText={setCategories}
       placeholder="例如：地点、组织、世界铁律"
     />
     <Field
-      testID="build-wb-usage"
-      label="叙事用途"
-      value={usage}
-      onChangeText={setUsage}
-      placeholder="例如：悬疑群像"
+      testID="build-wb-impact-scope"
+      label="影响范围 / 长期世界后果"
+      value={impactScope}
+      onChangeText={setImpactScope}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：影响整座港口城的贸易、夜间治安和市民传闻"
+    />
+    <Field
+      testID="build-wb-forbidden-rules"
+      label="不可违反的规则"
+      value={forbiddenRules}
+      onChangeText={setForbiddenRules}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：雾灯熄灭后，任何机械不得自行启动"
+    />
+    <Field
+      testID="build-wb-stable-relations"
+      label="稳定关系（可选）"
+      value={stableRelations}
+      onChangeText={setStableRelations}
+      multiline
+      inputStyle={styles.mediumInput}
+      placeholder="例如：工会控制维修许可，旧贵族控制航运税"
     />
     <EntryCountStepper entryCount={entryCount} onStep={onEntryStep} />
   </>
@@ -1446,18 +1582,18 @@ const PreviewPanel: React.FC<{
             目标 {qualityReport.requiredMinOutput.toLocaleString('en-US')}{' '}
             Token。仍可预览、保存或导入；如需更丰富内容，可重新生成。
           </Text>
-          {qualityReport.failures.length > 0 ? (
+          {qualityReport.failures.length > 0 || qualityReport.warnings.length > 0 ? (
             <Text
               style={[styles.hint, { color: theme.colors.textSecondary }]}
               numberOfLines={3}
             >
               建议补强：
-              {qualityReport.failures
+              {[...qualityReport.failures, ...qualityReport.warnings]
                 .slice(0, 2)
                 .map(item => item.message)
                 .join('；')}
-              {qualityReport.failures.length > 2
-                ? `；另有 ${qualityReport.failures.length - 2} 项`
+              {qualityReport.failures.length + qualityReport.warnings.length > 2
+                ? `；另有 ${qualityReport.failures.length + qualityReport.warnings.length - 2} 项`
                 : ''}
             </Text>
           ) : null}
@@ -1506,22 +1642,37 @@ const CharacterPreview: React.FC<{
   artifact: Extract<ConstructionArtifact, { kind: 'character' }>;
 }> = ({ artifact }) => {
   const { theme } = useThemeStore();
+  const novel = readNovelCharacterDraft(artifact.card);
+  const novelRows = novel
+    ? [
+        ['角色定位', novel.role],
+        ['身份背景', novel.identity || novel.background],
+        ['核心性格', novel.personality],
+        ['动机', novel.motivation],
+        ['矛盾', novel.conflict],
+        ['关系', Array.isArray(novel.relationships) ? novel.relationships.join('、') : novel.relationships],
+        ['人物弧', novel.arc],
+        ['连续性事实', Array.isArray(novel.continuity) ? novel.continuity.join('、') : novel.continuity],
+      ].filter(([, value]) => String(value || '').trim())
+    : [];
   return (
     <View>
       <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
         {artifact.card.data.name}
       </Text>
-      {artifact.card.data.description ? (
-        <Text
-          style={[styles.previewText, { color: theme.colors.textSecondary }]}
-        >
-          简介：{artifact.card.data.description}
-        </Text>
-      ) : null}
-      {artifact.card.data.personality ? (
-        <Text
-          style={[styles.previewText, { color: theme.colors.textSecondary }]}
-        >
+      {novelRows.length > 0
+        ? novelRows.map(([label, value]) => (
+            <Text key={label} style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+              {label}：{value}
+            </Text>
+          ))
+        : artifact.card.data.description ? (
+            <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+              简介：{artifact.card.data.description}
+            </Text>
+          ) : null}
+      {!novel && artifact.card.data.personality ? (
+        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
           性格：{artifact.card.data.personality}
         </Text>
       ) : null}
@@ -1532,7 +1683,7 @@ const CharacterPreview: React.FC<{
           标签：{artifact.card.data.tags.join('、')}
         </Text>
       ) : null}
-      {artifact.card.data.first_mes ? (
+      {!novel && artifact.card.data.first_mes ? (
         <Text
           style={[styles.previewText, { color: theme.colors.textSecondary }]}
           numberOfLines={4}
@@ -1546,9 +1697,8 @@ const CharacterPreview: React.FC<{
         >
           质量：约{' '}
           {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')}{' '}
-          Token · 描述{' '}
-          {artifact.qualityReport.character.fieldLengths.description} 字 ·{' '}
-          {artifact.qualityReport.character.dialogueTurns} 轮对话
+          Token · 覆盖维度{' '}
+          {artifact.qualityReport.character.dimensionCoverage.length} 项
         </Text>
       ) : null}
     </View>
@@ -1620,6 +1770,7 @@ const styles = StyleSheet.create({
   bodyText: { fontSize: 14, lineHeight: 21, flex: 1 },
   label: { fontSize: 12, fontWeight: '700', marginBottom: spacing.xs },
   hint: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
+  mediumInput: { minHeight: 72, textAlignVertical: 'top' },
   largeInput: { minHeight: 96, textAlignVertical: 'top' },
   actions: { gap: spacing.sm },
   statusText: { fontSize: 15, fontWeight: '700' },

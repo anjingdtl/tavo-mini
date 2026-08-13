@@ -13,15 +13,24 @@ import {
 
 const CHARACTER_JSON = JSON.stringify({
   name: '沈砚',
-  description: '雾港机关师的身份、经历、关系与矛盾。'.repeat(80),
-  personality: '表面克制，实际记仇，会因旧债与承诺动摇底线。'.repeat(12),
-  scenario: '雾港码头深处的工坊正被盐税之争波及，他需要决定是否交出机关图纸。'.repeat(8),
-  first_mes: '你推开门时，沈砚正把一枚齿轮放回暗格。他没有立刻抬头，只用指节敲了敲桌面，示意你先说明来意。'.repeat(3),
-  mes_example: '{{char}}: 需要什么？先说清楚代价。\n{{user}}: 我想看看机关图纸。\n{{char}}: 图纸可以看，但你得先回答谁让你来的。\n{{user}}: 没有人，我只是想救港口。\n{{char}}: 救港口的人很多，肯承担后果的人很少。\n{{user}}: 那我愿意承担。\n{{char}}: 好，别让我后悔把钥匙交给你。\n{{user}}: 我不会让你失望。'.repeat(3),
-  system_prompt: '扮演沈砚：保持克制、敏锐和带条件的善意；先评估风险，再作答；不轻易交出机关术秘密。'.repeat(3),
-  post_history_instructions: '保持角色的克制语气、风险意识与对旧债的敏感，不要突然变得轻率或全知。'.repeat(2),
+  aliases: ['雾港的锁匠', '沈工'],
+  role: '负责维修港口核心机关、同时暗中追查旧事故真相的关键人物。'.repeat(10),
+  identity: '出身底层工坊，现为机关行会登记的高级修理师，身份使他既受保护又受监视。'.repeat(10),
+  appearance: '左手为银色义肢，袖口常有机油和盐霜，观察别人时习惯先看手而不是脸。'.repeat(8),
+  background: '少年时期在雾港底层工坊长大，曾亲历一次被行会掩盖的爆炸事故，从此不再相信官方记录。'.repeat(10),
+  personality: '表面克制，实际记仇；面对承诺极其认真，但会用冷淡和讥讽保护自己的恐惧。'.repeat(12),
+  motivation: '查明旧事故的真正责任人，保护妹妹和仍在底层工作的学徒，并让被掩盖的证据重新进入公共记录。'.repeat(10),
+  conflict: '不信任任何权威却必须依赖行会资源；渴望公正却害怕复仇会牵连无辜，常在沉默和冒险之间摇摆。'.repeat(10),
+  relationships: ['与工会会长互相利用', '与妹妹保持秘密通信', '把一名年轻学徒视为未完成的补偿'],
+  abilities: '精通机械机关、潮汐计和旧式密码，能从磨损痕迹还原设备最近的操作顺序。'.repeat(8),
+  limitations: '义肢在高湿环境下会失灵；不擅长公开演说，也无法同时保护多个秘密。'.repeat(8),
+  secrets: '他曾在事故当夜拿走一枚关键齿轮，错误地认为沉默能保护妹妹。'.repeat(8),
+  speech_style: '说话短促，先问代价和证据；遇到真正关心的人会用维修术语回避直白情绪。',
+  behavior_habits: '思考时反复擦拭同一枚齿轮，进陌生房间先检查出口和钟表。'.repeat(6),
+  arc: '从以沉默换取局部安全，逐渐转向承担公开真相会带来的连锁代价。'.repeat(8),
+  continuity: ['左手义肢不能长时间接触海水', '妹妹住在北码头', '旧事故记录缺少一枚齿轮'],
+  initial_situation: '工坊即将被盐税官查封，他必须决定是否交出机关图纸换取暂时安全。'.repeat(6),
   tags: ['反派', '机关术', '雾港', '克制'],
-  alternate_greetings: ['另一场开场'],
 });
 
 const WORLDBOOK_JSON = JSON.stringify({
@@ -59,8 +68,17 @@ describe('constructionAiGenerator', () => {
       expect(artifact.card.spec_version).toBe('3.0');
       expect(artifact.card.data.creator).toBe('ShineWriter 构建');
       expect(artifact.card.data.tags).toEqual(['反派', '机关术', '雾港', '克制']);
-      expect(artifact.card.data.alternate_greetings).toEqual(['另一场开场']);
-      expect(artifact.card.data.mes_example).toContain('{{char}}');
+      expect(artifact.card.data.alternate_greetings).toEqual([]);
+      expect(artifact.card.data.first_mes).toBe('');
+      expect(artifact.card.data.mes_example).toBe('');
+      expect(artifact.card.data.system_prompt).toBe('');
+      expect(artifact.card.data.post_history_instructions).toBe('');
+      expect(artifact.card.data.extensions).toEqual(expect.objectContaining({
+        shinewriter_novel_character_v1: expect.objectContaining({
+          role: expect.any(String),
+          personality: expect.any(String),
+        }),
+      }));
     });
 
     it('calls the LLM with the construction scenario and reserved tokens', async () => {
@@ -153,8 +171,10 @@ describe('constructionAiGenerator', () => {
         detailLevel: 'full',
       });
       const system = messages.find(message => message.role === 'system')!.content;
-      expect(system).toContain('description 至少 1000');
-      expect(system).toContain('至少 3 轮');
+      expect(system).toContain('小说化角色资料');
+      expect(system).toContain('role、identity、appearance、background');
+      expect(system).not.toContain('first_mes');
+      expect(system).not.toContain('mes_example');
     });
 
     it('keeps deep TXT worldbook output always-on in the prompt', () => {
@@ -167,9 +187,10 @@ describe('constructionAiGenerator', () => {
       const system = messages.find(message => message.role === 'system')!.content;
       const user = messages.find(message => message.role === 'user')!.content;
       expect(system).toContain('每条至少 920');
-      expect(system).toContain('constant：布尔值，必须全部为 true');
+      expect(system).toContain('title');
+      expect(system).not.toContain('constant');
       expect(user).toContain('TXT 素材');
-      expect(user).toContain('常驻设定');
+      expect(user).toContain('独立世界书条目');
     });
   });
 
@@ -234,21 +255,15 @@ describe('constructionAiGenerator', () => {
           { mode: 'character_independent', theme: 'x' },
           { maxTokens: 1000 },
         ),
-      ).rejects.toThrow('缺少或错误填写字段');
+      ).rejects.toThrow('核心信息');
     });
 
     it('keeps a structurally valid character when it misses the quality target', async () => {
       const shortCharacter = JSON.stringify({
         name: '沈砚',
-        description: '雾港机关师，背负旧债。',
+        role: '雾港机关师。',
         personality: '克制而警惕。',
-        scenario: '工坊正被卷入盐税冲突。',
-        first_mes: '先说明你的来意。',
-        mes_example: '{{char}}: 谁让你来的？\n{{user}}: 没有人。',
-        system_prompt: '保持克制、敏锐的角色声音。',
-        post_history_instructions: '记住旧债与承诺。',
         tags: ['机关师'],
-        alternate_greetings: [],
       });
       (callLLMResult as jest.Mock).mockResolvedValue({ text: shortCharacter });
 
@@ -263,11 +278,7 @@ describe('constructionAiGenerator', () => {
 
       expect(artifact.kind).toBe('character');
       expect(artifact.qualityReport?.passed).toBe(false);
-      expect(
-        artifact.qualityReport?.failures.some(
-          item => item.code === 'output_tokens_short',
-        ),
-      ).toBe(true);
+      expect(artifact.qualityReport?.warnings.some(item => item.code === 'output_tokens_short')).toBe(true);
     });
 
     it('rejects a length-truncated response even if its JSON is otherwise valid', async () => {
@@ -319,6 +330,21 @@ describe('constructionAiGenerator', () => {
       ).rejects.toThrow('重复主触发词');
     });
 
+    it('rejects a worldbook with empty content as a hard quality failure', async () => {
+      (callLLMResult as jest.Mock).mockResolvedValue({
+        text: JSON.stringify({
+          name: '雾港',
+          entries: [{ title: '港口规则', keywords: ['雾港'], content: '' }],
+        }),
+      });
+      await expect(
+        generateConstruction(
+          { mode: 'worldbook_independent', entryCount: 1 },
+          { maxTokens: 4096 },
+        ),
+      ).rejects.toThrow('正文为空');
+    });
+
     it('preserves compatible boolean forms for worldbook entries', async () => {
       const response = JSON.stringify({
         name: '雾港',
@@ -335,7 +361,7 @@ describe('constructionAiGenerator', () => {
       if (artifact.kind !== 'worldbook') throw new Error('expected worldbook');
       expect(artifact.lorebook.data.entries[0]).toMatchObject({
         constant: true,
-        enabled: false,
+        enabled: true,
       });
       expect(artifact.lorebook.data.entries[1]).toMatchObject({
         constant: true,

@@ -74,8 +74,8 @@ describe('construction quality', () => {
     artifact.card.data.description = '很短';
     const report = assessConstructionArtifact(artifact, 'full', 100000);
     expect(report.passed).toBe(false);
-    expect(report.failures.some(item => item.code === 'output_tokens_short')).toBe(true);
-    expect(report.failures.some(item => item.code === 'character_description_short')).toBe(true);
+    expect(report.warnings.some(item => item.code === 'output_tokens_short')).toBe(true);
+    expect(report.failures.some(item => item.code === 'character_description_short')).toBe(false);
   });
 
   test('worldbook content remains a hard always-on invariant', () => {
