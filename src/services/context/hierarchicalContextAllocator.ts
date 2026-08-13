@@ -91,6 +91,12 @@ export interface HierarchicalBudgetInput {
   /** Optional safety margin; auto-derived from window when omitted. */
   safetyMargin?: number;
   policy?: ContextAutomationPolicyV3;
+  /**
+   * V7-only detail preference. It changes the Resources board's elastic
+   * ceiling inside the shared allocator; the envelope hard limit remains the
+   * final authority. Undefined preserves the V6/default behavior.
+   */
+  resourceDetailIntensity?: 'save' | 'balanced' | 'rich';
   boards: {
     storyState: BoardDemandInput;
     resources: BoardDemandInput;
@@ -235,6 +241,7 @@ function allocateAcrossBoards(
   envelope: HierarchicalBudgetEnvelope,
   policy: ContextAutomationPolicyV3,
   boards: HierarchicalBudgetInput['boards'],
+  resourceDetailIntensity?: HierarchicalBudgetInput['resourceDetailIntensity'],
 ): {
   allocations: Record<ContextBudgetBoardKey, number>;
   traces: Record<ContextBudgetBoardKey, BoardAllocationTrace>;
@@ -256,8 +263,18 @@ function allocateAcrossBoards(
     const softTarget = Math.floor(
       envelope.softElasticPool * boardPolicy.softRatio,
     );
+    const intensityRatio =
+      key === 'resources' && resourceDetailIntensity === 'save'
+        ? 0.55
+        : key === 'resources' && resourceDetailIntensity === 'rich'
+          ? 1.15
+          : 1;
+    const elasticCeilingRatio = Math.min(
+      1,
+      boardPolicy.elasticCeilingRatio * intensityRatio,
+    );
     const elasticMax = Math.floor(
-      envelope.softElasticPool * boardPolicy.elasticCeilingRatio,
+      envelope.softElasticPool * elasticCeilingRatio,
     );
     const defaultMin = Math.floor(softTarget * 0.3);
     const min = Math.min(
@@ -485,7 +502,12 @@ export function allocateHierarchicalContextBudget(
     policy,
   });
 
-  const board = allocateAcrossBoards(envelope, policy, input.boards);
+  const board = allocateAcrossBoards(
+    envelope,
+    policy,
+    input.boards,
+    input.resourceDetailIntensity,
+  );
   let resourceItemAllocations: ReadonlyMap<string, number> | undefined;
   let resourceItemTraces:
     | HierarchicalBudgetResult['resourceItemTraces']

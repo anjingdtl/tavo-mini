@@ -29,6 +29,7 @@ export type ResourcePreviewStatus =
   | 'AWARENESS_ONLY'
   | 'DETAIL_FULL'
   | 'DETAIL_CLIPPED'
+  | 'NOT_SELECTED'
   | 'DISABLED'
   | 'ERROR';
 
@@ -57,4 +58,8 @@ export interface ContextTraceItem {
   resourcePreviewStatus?: ResourcePreviewStatus;
   sourceFingerprint?: string;
   awarenessMode?: 'global_awareness' | 'detail' | 'preset';
+  /** Non-blocking resource read/compile warning surfaced in Preview. */
+  warning?: string;
+  warningCode?: string;
+  warningAction?: 'open_resources' | 'retry' | 'none';
 }

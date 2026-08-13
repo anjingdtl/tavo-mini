@@ -159,10 +159,14 @@ export interface PipelineContextSnapshot {
   resourceDetailItems?: FrozenResourceDetailItem[];
   resourceSelectionTrace?: Array<Record<string, unknown> | {
     id: string;
+    sourceId?: number | null;
     title: string;
     status?: string;
     mode?: string;
     included?: boolean;
+    warning?: string;
+    warningCode?: string;
+    warningAction?: 'open_resources' | 'retry' | 'none';
   }>;
   presetSystemText?: string;
   presetWritingStyleText?: string;

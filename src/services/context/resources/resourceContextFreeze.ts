@@ -5,6 +5,7 @@ import type {
   FrozenResourceDetailItem,
   GlobalAwarenessCandidate,
   ResourceDetailCandidate,
+  ResourceContextWarning,
   ResourceSelectionTraceItem,
 } from './resourceAwarenessTypes';
 
@@ -78,7 +79,7 @@ export function buildResourceSelectionTrace(input: {
   details: ResourceDetailCandidate[];
   frozenDetails: FrozenResourceDetailItem[];
   includeResources: boolean;
-  warnings?: string[];
+  warnings?: ResourceContextWarning[];
 }): ResourceSelectionTraceItem[] {
   if (!input.includeResources) {
     return [
@@ -113,6 +114,7 @@ export function buildResourceSelectionTrace(input: {
     return {
       id: item.id,
       sourceKind: item.sourceKind,
+      sourceId: item.sourceId,
       title: item.title,
       mode: 'global_awareness',
       status,
@@ -130,11 +132,14 @@ export function buildResourceSelectionTrace(input: {
     traces.push({
       id: item.id,
       sourceKind: item.sourceKind,
+      sourceId: item.sourceId,
       title: item.title,
       mode: 'detail',
       status:
         !frozen || frozen.allocatedTokens <= 0
-          ? 'AWARENESS_ONLY'
+          ? item.sourceKind === 'note'
+            ? 'NOT_SELECTED'
+            : 'AWARENESS_ONLY'
           : frozen.clipped
             ? 'DETAIL_CLIPPED'
             : 'DETAIL_FULL',
@@ -144,6 +149,24 @@ export function buildResourceSelectionTrace(input: {
       allocatedTokens: frozen?.allocatedTokens || 0,
       activationReason: item.activationReason,
       sourceFingerprint: item.sourceFingerprint,
+    });
+  }
+  for (const [index, warning] of (input.warnings || []).entries()) {
+    traces.push({
+      id: `resource-warning:${warning.code}:${warning.sourceId ?? index}`,
+      sourceKind: 'note',
+      sourceId: warning.sourceId ?? null,
+      title: warning.title || '笔记资料',
+      mode: 'error',
+      status: 'ERROR',
+      included: false,
+      clipped: false,
+      demandTokens: 0,
+      allocatedTokens: 0,
+      activationReason: warning.code,
+      warning: warning.message,
+      warningCode: warning.code,
+      warningAction: warning.action,
     });
   }
   return traces;

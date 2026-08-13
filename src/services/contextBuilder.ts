@@ -673,7 +673,10 @@ export async function buildContext(
           config.resourceDetailIntensity,
         );
         resourcesActualDemand = Math.ceil(
-          v7Resources.detailDemandTokens * Math.min(intensity, 1),
+          // The intensity is a soft demand signal for the final hierarchical
+          // allocator. Keep rich > balanced > save visible in competition;
+          // the allocator still enforces the hard context envelope.
+          v7Resources.detailDemandTokens * intensity,
         );
       } else if (useV3Hierarchical || config.includeResources) {
         try {
@@ -712,6 +715,9 @@ export async function buildContext(
         reservedOutputTokens: reservedOut,
         mandatoryTokens,
         safetyMargin: safety,
+        resourceDetailIntensity: useV7
+          ? config.resourceDetailIntensity
+          : undefined,
         policy: options.contextAutomationPolicyV3 ?? DEFAULT_CONTEXT_AUTOMATION_POLICY_V3,
         boards: {
           storyState: { actualDemandTokens: storyStateDemand },
@@ -1178,6 +1184,7 @@ export async function buildContext(
         details: v7Resources.details,
         frozenDetails: v7FrozenDetails,
         includeResources: true,
+        warnings: v7Resources.warnings,
       });
       if (v7FrozenPreset) {
         trace.push(
@@ -1462,6 +1469,7 @@ export async function buildContext(
                 details: v7Resources.details,
                 frozenDetails: v7FrozenDetails,
                 includeResources: v7Resources.includeResources,
+                warnings: v7Resources.warnings,
               })
             : [],
           presetSystemText: v7FrozenPreset?.systemText,

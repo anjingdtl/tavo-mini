@@ -1,8 +1,13 @@
 import * as db from '../../database';
 import type { Preset } from '../../../types/novel';
-import { computeResourceSourceFingerprint } from './resourceFingerprint';
+import { computeResourceSourceFingerprint, stableJson } from './resourceFingerprint';
 import { ResourceContextError } from './resourceContextErrors';
-import type { FrozenSourceRecord, ResourceSourceSnapshot } from './resourceAwarenessTypes';
+import type {
+  FrozenNoteConfig,
+  FrozenSourceRecord,
+  ResourceContextWarning,
+  ResourceSourceSnapshot,
+} from './resourceAwarenessTypes';
 import {
   characterSemanticSource,
   parseCharacterSourcePayload,
@@ -20,6 +25,60 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function createNoteWarning(
+  code: ResourceContextWarning['code'],
+  message: string,
+  source?: { id?: number | null; title?: string },
+): ResourceContextWarning {
+  return {
+    code,
+    sourceKind: 'note',
+    sourceId: source?.id,
+    title: source?.title,
+    message,
+    action: code === 'NOTE_DETAIL_COMPILE_FAILED' ? 'retry' : 'open_resources',
+  };
+}
+
+function normalizeFrozenNoteConfig(raw: unknown): FrozenNoteConfig | undefined {
+  const record = asRecord(raw);
+  if (Object.keys(record).length === 0) return undefined;
+  const mode =
+    record.mode === 'style' || record.mode === 'retrieval' || record.mode === 'none'
+      ? record.mode
+      : 'none';
+  const styleWeights = asRecord(record.styleWeights);
+  const normalizedWeights = Object.fromEntries(
+    Object.entries(styleWeights).filter(
+      ([, value]) => typeof value === 'number' && Number.isFinite(value),
+    ),
+  ) as Record<string, number>;
+  const enabledNoteIds = Array.isArray(record.enabledNoteIds)
+    ? Array.from(
+        new Set(
+          record.enabledNoteIds
+            .map(value => Number(value))
+            .filter(value => Number.isSafeInteger(value) && value > 0),
+        ),
+      )
+    : undefined;
+  const retrievalTopK = Number(record.retrievalTopK);
+  const retrievalFragmentChars = Number(record.retrievalFragmentChars);
+  return {
+    mode,
+    ...(Object.keys(normalizedWeights).length > 0
+      ? { styleWeights: normalizedWeights }
+      : {}),
+    ...(Number.isFinite(retrievalTopK) && retrievalTopK >= 0
+      ? { retrievalTopK: Math.floor(retrievalTopK) }
+      : {}),
+    ...(Number.isFinite(retrievalFragmentChars) && retrievalFragmentChars > 0
+      ? { retrievalFragmentChars: Math.floor(retrievalFragmentChars) }
+      : {}),
+    ...(enabledNoteIds ? { enabledNoteIds } : {}),
+  };
 }
 
 function freezeCharacter(raw: unknown, index: number): FrozenSourceRecord {
@@ -57,17 +116,30 @@ function freezeWorldbook(raw: unknown, index: number): FrozenSourceRecord {
   };
 }
 
-function freezeNote(raw: unknown, content: string, index: number): FrozenSourceRecord {
+function freezeNote(
+  raw: unknown,
+  content: string,
+  contentAvailable: boolean,
+  index: number,
+): FrozenSourceRecord {
   const record = asRecord(raw);
   const id = Number(record.id) || index + 1;
   const title = String(record.title || `笔记#${id}`);
-  const body = content || String(record.content || '');
+  // `getNotesByProject()` only returns a list preview. If the full-content
+  // read failed, never promote that preview to a supposedly complete frozen
+  // detail body. The warning is carried alongside the source view and the
+  // pure note compiler will skip this record.
+  const body = contentAvailable ? content : '';
   return {
     kind: 'note',
     id,
     title,
     updatedAt: (record.updated_at ?? record.updatedAt) as string | number | undefined,
-    payload: JSON.stringify({ ...record, content: body }),
+    payload: JSON.stringify({
+      ...record,
+      content: body,
+      __contentAvailable: contentAvailable,
+    }),
     fingerprint: computeResourceSourceFingerprint({
       kind: 'note',
       id,
@@ -103,6 +175,10 @@ export function snapshotFingerprint(snapshot: ResourceSourceSnapshot): string {
     ...snapshot.worldbookEntries.map(item => item.fingerprint),
     ...snapshot.notes.map(item => item.fingerprint),
     snapshot.preset?.fingerprint || '',
+    stableJson(snapshot.noteConfig || null),
+    ...(snapshot.warnings || []).map(warning =>
+      [warning.code, warning.sourceId ?? '', warning.title ?? '', warning.message].join('\\u001f'),
+    ),
     snapshot.includeResources ? '1' : '0',
   ];
   return computeResourceSourceFingerprint({
@@ -127,6 +203,23 @@ async function readSourcePayloads(
       capturedAt: Date.now(),
       includeResources: false,
     };
+  }
+
+  const warnings: ResourceContextWarning[] = [];
+  let noteConfig: FrozenNoteConfig | undefined;
+  if (typeof db.getProjectNoteConfig === 'function') {
+    try {
+      noteConfig = normalizeFrozenNoteConfig(
+        await db.getProjectNoteConfig(projectId),
+      );
+    } catch {
+      warnings.push(
+        createNoteWarning(
+          'NOTE_LIST_READ_FAILED',
+          '笔记配置本轮读取失败，已跳过可选笔记详情，不影响角色/世界书全局设定。',
+        ),
+      );
+    }
   }
 
   let characters: unknown[] = [];
@@ -154,20 +247,63 @@ async function readSourcePayloads(
       { cause: error instanceof Error ? error.message : String(error) },
     );
   }
+  let notesRead = true;
   try {
     notes = (await db.getNotesByProject(projectId)) as unknown[];
   } catch {
     notes = [];
+    notesRead = false;
+    warnings.push(
+      createNoteWarning(
+        'NOTE_LIST_READ_FAILED',
+        '笔记资料本轮读取失败，已跳过，不影响角色/世界书全局设定。',
+      ),
+    );
   }
 
   let contents: Record<number, string> = {};
+  const contentReadAvailable = typeof db.getNotesContentByIds === 'function';
+  const contentReadFailedIds = new Set<number>();
   try {
     const ids = notes.map(note => Number(asRecord(note).id)).filter(Boolean);
-    if (ids.length > 0 && typeof db.getNotesContentByIds === 'function') {
+    if (ids.length > 0 && contentReadAvailable) {
       contents = await db.getNotesContentByIds(ids);
     }
   } catch {
     contents = {};
+    notes.forEach(note => {
+      const id = Number(asRecord(note).id);
+      if (id > 0) contentReadFailedIds.add(id);
+    });
+  }
+
+  if (contentReadFailedIds.size > 0) {
+    for (const row of notes) {
+      const record = asRecord(row);
+      const id = Number(record.id);
+      if (!contentReadFailedIds.has(id)) continue;
+      warnings.push(
+        createNoteWarning(
+          'NOTE_CONTENT_READ_FAILED',
+          '笔记正文本轮读取失败，相关笔记已跳过，不影响角色/世界书全局设定。',
+          { id, title: String(record.title || `笔记#${id}`) },
+        ),
+      );
+    }
+  } else if (notesRead && contentReadAvailable) {
+    for (const row of notes) {
+      const record = asRecord(row);
+      const id = Number(record.id);
+      if (id <= 0 || Object.prototype.hasOwnProperty.call(contents, id)) continue;
+      contentReadFailedIds.add(id);
+      warnings.push(
+        createNoteWarning(
+          'NOTE_CONTENT_READ_FAILED',
+          '笔记正文本轮读取失败，相关笔记已跳过，不影响角色/世界书全局设定。',
+          { id, title: String(record.title || `笔记#${id}`) },
+        ),
+      );
+    }
   }
 
   return {
@@ -175,10 +311,22 @@ async function readSourcePayloads(
     worldbookEntries: worldbookEntries.map((row, index) =>
       freezeWorldbook(row, index),
     ),
-    notes: notes.map((row, index) =>
-      freezeNote(row, contents[Number(asRecord(row).id)] || '', index),
-    ),
+    notes: notes.map((row, index) => {
+      const id = Number(asRecord(row).id);
+      const contentAvailable = contentReadAvailable
+        ? !contentReadFailedIds.has(id) &&
+          Object.prototype.hasOwnProperty.call(contents, id)
+        : true;
+      return freezeNote(
+        row,
+        contentAvailable ? String(contents[id] ?? asRecord(row).content ?? '') : '',
+        contentAvailable,
+        index,
+      );
+    }),
     preset: preset ? freezePreset(preset) : undefined,
+    noteConfig,
+    warnings: warnings.length > 0 ? warnings : undefined,
     capturedAt: Date.now(),
     includeResources: true,
   };

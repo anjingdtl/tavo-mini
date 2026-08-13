@@ -18,10 +18,12 @@ import {
   type CharacterScoreHaystack,
 } from './resourceDetailScorer';
 import { parseFrozenSourcePayload } from './resourceSourceSnapshot';
+import { compileNoteDetailCandidatesFromSnapshot } from './noteDetailCompiler';
 import type {
   GlobalAwarenessCandidate,
   ResourceDetailCandidate,
   ResourceDetailIntensity,
+  ResourceContextWarning,
   ResourceSourceSnapshot,
 } from './resourceAwarenessTypes';
 
@@ -40,7 +42,7 @@ export interface ResourceContextV2BuildResult {
   globalResourceAwarenessText: string;
   awarenessTokens: number;
   detailDemandTokens: number;
-  warnings: string[];
+  warnings: ResourceContextWarning[];
   styleNotePresent: boolean;
 }
 
@@ -53,7 +55,7 @@ function parseRecord(record: { payload: string; kind?: string; id?: number | nul
 export function buildResourceContextV2(
   input: ResourceContextV2BuildInput,
 ): ResourceContextV2BuildResult {
-  const warnings: string[] = [];
+  const warnings: ResourceContextWarning[] = [...(input.source.warnings || [])];
   const awareness: GlobalAwarenessCandidate[] = [];
   const details: ResourceDetailCandidate[] = [];
 
@@ -207,37 +209,23 @@ export function buildResourceContextV2(
     });
   }
 
-  let styleNotePresent = false;
-  input.source.notes.forEach((record, index) => {
-    const raw = parseRecord(record) as {
-      id?: number;
-      title?: string;
-      content?: string;
-      mode?: string;
-    };
-    const title = String(raw.title || record.title || '笔记');
-    const body = String(raw.content || '');
-    if (!body.trim()) return;
-    const isStyle =
-      /风格画像|仿写/.test(title) || String(raw.mode || '') === 'style';
-    if (isStyle) styleNotePresent = true;
-    const content = isStyle
-      ? `【风格画像笔记｜补充参考，不得覆盖已选写作预设】\n${body}`
-      : `笔记「${title}」：${body}`;
-    details.push({
-      id: `note-detail:${record.id ?? index}`,
-      sourceKind: 'note',
-      sourceId: record.id,
-      title,
-      content,
-      actualTokens: estimateTokens(content),
-      activationReason: isStyle ? 'style_note' : 'explicit',
-      relevance: isStyle ? 0.42 : 0.5,
-      explicitSelected: !isStyle,
-      sourceOrder: 2000 + index,
-      sourceFingerprint: record.fingerprint,
-    });
+  const noteResult = compileNoteDetailCandidatesFromSnapshot({
+    notes: input.source.notes,
+    noteConfig: input.source.noteConfig,
+    haystack: {
+      title: input.haystack.title,
+      synopsis: input.haystack.synopsis,
+      currentBody: input.haystack.currentBody,
+      userPrompt: input.haystack.userPrompt,
+      previousChapters: input.haystack.previousChapters,
+      storyMemory: input.haystack.storyMemory,
+      outline: input.haystack.outline,
+      episodic: input.haystack.episodic,
+    },
   });
+  details.push(...noteResult.candidates);
+  warnings.push(...noteResult.warnings);
+  const styleNotePresent = noteResult.styleNotePresent;
 
   const boosted = applyRelationNeighborBoost(details, relationHints, namesById);
   const characterAwarenessText = awareness

@@ -9,6 +9,7 @@ export * from './resourceDetailScorer';
 export * from './resourceSourceSnapshot';
 export * from './presetContextCompiler';
 export * from './resourceContextV2';
+export * from './noteDetailCompiler';
 export * from './resourceContextFreeze';
 export * from './resourceContextTrace';
 export * from './buildPhase2BudgetResources';

@@ -13,6 +13,35 @@ export const PHASE2_RESOURCE_CONTEXT_VERSION = 2 as const;
 export type ResourceAwarenessSourceKind = 'character' | 'worldbook';
 export type ResourceDetailSourceKind = 'character' | 'worldbook' | 'note';
 
+export type ResourceContextWarningCode =
+  | 'NOTE_LIST_READ_FAILED'
+  | 'NOTE_CONTENT_READ_FAILED'
+  | 'NOTE_DETAIL_COMPILE_FAILED';
+
+export interface ResourceContextWarning {
+  code: ResourceContextWarningCode;
+  sourceKind: 'note';
+  sourceId?: number | null;
+  title?: string;
+  message: string;
+  action?: 'open_resources' | 'retry' | 'none';
+}
+
+export type FrozenNoteMode = 'none' | 'style' | 'retrieval';
+
+/**
+ * Note selection settings captured together with the source view. Keeping
+ * this in the snapshot lets the V7 compiler preserve the existing note modes
+ * without querying project_note_config after the source view is frozen.
+ */
+export interface FrozenNoteConfig {
+  mode: FrozenNoteMode;
+  styleWeights?: Record<string, number>;
+  retrievalTopK?: number;
+  retrievalFragmentChars?: number;
+  enabledNoteIds?: number[];
+}
+
 export type ResourceConstraintClass =
   | 'identity'
   | 'relationship'
@@ -31,6 +60,7 @@ export type ResourcePreviewStatus =
   | 'AWARENESS_ONLY'
   | 'DETAIL_FULL'
   | 'DETAIL_CLIPPED'
+  | 'NOT_SELECTED'
   | 'DISABLED'
   | 'ERROR';
 
@@ -89,6 +119,8 @@ export interface ResourceSourceSnapshot {
   worldbookEntries: FrozenSourceRecord[];
   notes: FrozenSourceRecord[];
   preset?: FrozenSourceRecord;
+  noteConfig?: FrozenNoteConfig;
+  warnings?: ResourceContextWarning[];
   capturedAt: number;
   includeResources: boolean;
 }
@@ -170,6 +202,7 @@ export interface FrozenResourceDetailItem {
 export interface ResourceSelectionTraceItem {
   id: string;
   sourceKind: ResourceDetailSourceKind | ResourceAwarenessSourceKind | 'preset';
+  sourceId?: number | null;
   title: string;
   mode: 'global_awareness' | 'detail' | 'preset' | 'disabled' | 'error';
   status: ResourcePreviewStatus;
@@ -181,6 +214,8 @@ export interface ResourceSelectionTraceItem {
   sourceFingerprint?: string;
   compilerVersion?: string;
   warning?: string;
+  warningCode?: ResourceContextWarningCode;
+  warningAction?: 'open_resources' | 'retry' | 'none';
 }
 
 export type PipelineResourceStage =

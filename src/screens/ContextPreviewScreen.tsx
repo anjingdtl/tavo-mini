@@ -162,6 +162,9 @@ function statusBadge(item: ContextTraceItem) {
   if (item.resourcePreviewStatus === 'AWARENESS_ONLY') {
     return <Text style={styles.badgeClipped}>仅全局感知</Text>;
   }
+  if (item.resourcePreviewStatus === 'NOT_SELECTED') {
+    return <Text style={styles.badgeExcluded}>未选入详情</Text>;
+  }
   if (item.resourcePreviewStatus === 'DETAIL_CLIPPED') {
     return <Text style={styles.badgeClipped}>详情已裁剪</Text>;
   }
@@ -531,6 +534,18 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             >
               {item.reason}
             </Text>
+            {item.warning ? (
+              <Text
+                style={{
+                  color: theme.colors.warning,
+                  fontSize: 11,
+                  marginTop: 3,
+                }}
+                numberOfLines={3}
+              >
+                {item.warning}
+              </Text>
+            ) : null}
             {hasV3Detail ? (
               <Text
                 style={{

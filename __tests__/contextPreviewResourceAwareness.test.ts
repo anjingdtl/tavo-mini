@@ -9,6 +9,9 @@ test('Context Preview distinguishes awareness-only from unused resources', () =>
   expect(source).toContain('AWARENESS_ONLY');
   expect(source).toContain('DETAIL_FULL');
   expect(source).toContain('DETAIL_CLIPPED');
+  expect(source).toContain('NOT_SELECTED');
+  expect(source).toContain('未选入详情');
+  expect(source).toContain('item.warning');
   expect(source).toContain('仅全局感知');
   expect(source).toContain('详情已展开');
   expect(source).toContain('Resource Context V2');

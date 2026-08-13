@@ -83,7 +83,9 @@ export function buildPhase2ContextTrace(input: {
       title: `${item.title}（详情）`,
       reason: item.allocatedTokens > 0
         ? `详情展开｜${item.activationReason}`
-        : `详情未展开，全局感知已保留｜${item.activationReason}`,
+        : item.sourceKind === 'note'
+          ? `详情未展开，未进入本次注入｜${item.activationReason}`
+          : `详情未展开，全局感知已保留｜${item.activationReason}`,
       estimatedTokens: item.allocatedTokens || item.actualTokens,
       included: item.allocatedTokens > 0,
       clipped: item.clipped,
@@ -92,12 +94,32 @@ export function buildPhase2ContextTrace(input: {
       allocatedTokens: item.allocatedTokens,
       resourcePreviewStatus:
         item.allocatedTokens <= 0
-          ? 'AWARENESS_ONLY'
+          ? item.sourceKind === 'note'
+            ? 'NOT_SELECTED'
+            : 'AWARENESS_ONLY'
           : item.clipped
             ? 'DETAIL_CLIPPED'
             : 'DETAIL_FULL',
       sourceFingerprint: item.sourceFingerprint,
       awarenessMode: 'detail',
+    });
+  }
+  for (const item of input.selection.filter(row => row.mode === 'error')) {
+    if (!item.warning) continue;
+    items.push({
+      kind: 'note',
+      sourceId: item.sourceId ?? null,
+      title: item.title,
+      reason: `资料警告｜${item.warningCode || item.activationReason || 'unknown'}`,
+      estimatedTokens: 0,
+      included: false,
+      clipped: false,
+      preview: item.warning,
+      empty: true,
+      resourcePreviewStatus: 'ERROR',
+      warning: item.warning,
+      warningCode: item.warningCode,
+      warningAction: item.warningAction,
     });
   }
   return items;
