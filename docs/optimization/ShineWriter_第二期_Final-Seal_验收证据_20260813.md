@@ -8,7 +8,9 @@
 > 应用版本：`V2.11.50` / versionCode `2115000`  
 > 数据库 Schema：**51（未升 52）**  
 > 新任务契约：Context Budget **7** / Resource Context **2** / Pipeline Snapshot **4**  
-> 最终结论：**GO。第二期剩余 NO-GO = 0。**
+> 历史结论：**GO。第二期剩余 NO-GO = 0（转交前口径，非当前工作树结论）。**
+
+> **当前状态警示（2026-08-13 本机续接）**：上面的 GO 是转交前历史验收口径，不是本机续接后的最终结论。当前结果已记录在 [`ShineWriter_第二期工程收尾_PROGRESS_20260813.md`](ShineWriter_第二期工程收尾_PROGRESS_20260813.md)：本机 Coverage、verify、Round 6、Debug 覆盖安装、Schema 51 数据保留和 V7 Preview 均通过；但当前模拟器没有续写源/Canon/Style 前置条件，且当前改动尚未形成远端 CI 对应提交，因此本文件暂不得作为“第二期剩余 NO-GO = 0”的新鲜封板证据。
 
 ---
 
@@ -349,6 +351,6 @@ Maestro 流程：`e2e/maestro/13-phase2-resource-context.yaml`（无 `clearState
 
 ## 11. 封板声明
 
-实施者按方案从第一页核对 Character / Worldbook / Preset / Notes 兼容 / 五阶段 / Preview / Freeze-Resume / 异常流 / 升级兼容，完成 PDCA 至 P0 全过。
+以下声明属于转交前历史证据；本机续接的当前判定以 Progress 文档为准。实施者按方案从第一页核对 Character / Worldbook / Preset / Notes 兼容 / 五阶段 / Preview / Freeze-Resume / 异常流 / 升级兼容，完成转交前 PDCA 至 P0 全过。
 
-**ShineWriter 第二期剩余 NO-GO = 0。允许合入 `main`。**
+**当前工作树不重新宣称“第二期剩余 NO-GO = 0”；待当前 HEAD 的远端 CI 与真实续写前置条件补齐后再更新本节。**

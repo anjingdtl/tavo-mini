@@ -9,6 +9,7 @@ import { buildV8toV9Statements, migrateV8toV9 } from '../src/services/migrations
 import { buildV9toV10Statements, migrateV9toV10 } from '../src/services/migrations/v9-to-v10';
 import { buildV10toV11Statements, migrateV10toV11 } from '../src/services/migrations/v10-to-v11';
 import { buildV13toV14Statements, migrateV13ToV14 } from '../src/services/migrations/v13-to-v14';
+import { buildV47toV48Statements } from '../src/services/migrations/v47-to-v48';
 import {
   buildV31toV32Statements,
   migrateV31ToV32,
@@ -95,6 +96,14 @@ describe('migration statement coverage', () => {
     ]);
     expect(buildV31toV32Statements().length).toBeGreaterThan(0);
     await migrateV31ToV32(database);
+  });
+
+  test('covers the canonical Schema 47→48 statement plan', () => {
+    const statements = buildV47toV48Statements();
+    expect(statements).toHaveLength(4);
+    expect(statements.map(statement => statement.sql).join('\n')).toContain(
+      'idx_pipeline_tasks_parent_task',
+    );
   });
 
   test('runs the migration engine with and without the breaking backup path', async () => {

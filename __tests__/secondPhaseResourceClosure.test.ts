@@ -45,6 +45,7 @@ import * as db from '../src/services/database';
 import { buildContext } from '../src/services/contextBuilder';
 import {
   buildPhase2ContextTrace,
+  buildFrozenPresetContextFromSource,
   buildResourceContextV2,
   buildResourceSelectionTrace,
   captureResourceSourceSnapshot,
@@ -232,6 +233,28 @@ test('T-03 Snapshot A→B→C fail-closed before any LLM call', async () => {
   ).rejects.toMatchObject({ code: 'RESOURCE_SOURCE_CHANGED_DURING_BUILD' });
   expect(contentReads).toBe(3);
   expect(llmCall).not.toHaveBeenCalled();
+});
+
+test('V7 Preset fingerprint and injected text both come from the frozen payload', async () => {
+  const snapshot = await captureResourceSourceSnapshot(7, {
+    includeResources: true,
+    preset: {
+      id: 21,
+      name: '带空白的预设',
+      system_prompt: '  中文悬疑作者  ',
+      writing_style: '  冷峻  ',
+      extra_instructions: '  不得跳过线索  ',
+    } as any,
+  });
+
+  const frozen = buildFrozenPresetContextFromSource(snapshot.preset, {
+    requestedPresetId: 21,
+  });
+
+  expect(snapshot.preset?.fingerprint).toBe(frozen.sourceFingerprint);
+  expect(frozen.combinedText).toContain('中文悬疑作者');
+  expect(frozen.combinedText).toContain('冷峻');
+  expect(frozen.combinedText).toContain('不得跳过线索');
 });
 
 test('T-04 Notes 列表失败软降级，Character/Worldbook Awareness 和 Preview Warning 保持', async () => {

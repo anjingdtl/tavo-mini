@@ -15,6 +15,7 @@ import {
 import {
   allocateAndFreezeDetails,
   buildFrozenPresetContext,
+  buildFrozenPresetContextFromSource,
   buildPhase2ContextTrace,
   buildResourceSelectionTrace,
   collectPhase2BudgetResources,
@@ -648,6 +649,27 @@ export async function buildContext(
             episodicText: v3ScanMemoryText,
           },
         });
+        if (v7Resources.source.preset) {
+          const capturedPreset = buildFrozenPresetContextFromSource(
+            v7Resources.source.preset,
+            { requestedPresetId: options.requestedPresetId },
+          );
+          if (
+            v7FrozenPreset &&
+            capturedPreset.sourceFingerprint !== v7FrozenPreset.sourceFingerprint
+          ) {
+            throw new ResourceContextError(
+              'RESOURCE_SOURCE_CHANGED_DURING_BUILD',
+              '构建上下文时预设发生变化，已阻止把两个版本拼进同一次冻结。请稍后重试。',
+              'restart_task',
+              {
+                before: v7FrozenPreset.sourceFingerprint,
+                after: capturedPreset.sourceFingerprint,
+              },
+            );
+          }
+          v7FrozenPreset = capturedPreset;
+        }
         v7Awareness = v7Resources.awareness;
         mandatoryTokens += v7Resources.awarenessTokens;
         const hardInputLimit = Math.max(

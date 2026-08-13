@@ -23,19 +23,17 @@ import { buildV21toV22Statements } from './v21-to-v22';
 import { buildV22toV23Statements } from './v22-to-v23';
 import { buildV23toV24Statements } from './v23-to-v24';
 import { buildV24toV25Statements } from './v24-to-v25';
-import { buildV25toV26Statements, migrateV25ToV26 } from './v25-to-v26';
+import { migrateV25ToV26 } from './v25-to-v26';
 import { buildV26toV27Statements } from './v26-to-v27';
 import { buildV27toV28Statements } from './v27-to-v28';
-import { buildV28toV29Statements, migrateV28ToV29 } from './v28-to-v29';
+import { migrateV28ToV29 } from './v28-to-v29';
 import { buildV29toV30Statements } from './v29-to-v30';
 import { buildV30toV31Statements } from './v30-to-v31';
 import {
-  buildV31toV32Statements,
   migrateV31ToV32,
 } from './v31-to-v32';
-import { buildV32toV33Statements, migrateV32ToV33 } from './v32-to-v33';
+import { migrateV32ToV33 } from './v32-to-v33';
 import {
-  buildV33toV34Statements,
   migrateV33ToV34,
 } from './v33-to-v34';
 import { buildV34toV35Statements } from './v34-to-v35';
@@ -43,20 +41,16 @@ import { buildV35toV36Statements } from './v35-to-v36';
 import { buildV36toV37Statements } from './v36-to-v37';
 import { buildV37toV38Statements } from './v37-to-v38';
 import {
-  buildV38toV39Statements,
   migrateV38ToV39,
 } from './v38-to-v39';
 import { migrateV39ToV40 } from './v39-to-v40';
 import {
-  buildV40toV41Statements,
   migrateV40ToV41,
 } from './v40-to-v41';
 import {
-  buildV41toV42Statements,
   migrateV41ToV42,
 } from './v41-to-v42';
 import {
-  buildV42toV43Statements,
   migrateV42ToV43,
 } from './v42-to-v43';
 import { migrateV43ToV44 } from './v43-to-v44';
@@ -66,13 +60,18 @@ import { migrateV46ToV47 } from './v46-to-v47';
 import { migrateV47ToV48 } from './v47-to-v48';
 import { migrateV48ToV49 } from './v48-to-v49';
 import {
-  buildV49toV50Statements,
   migrateV49ToV50,
 } from './v49-to-v50';
 import { migrateV50ToV51 } from './v50-to-v51';
 
 export const SCHEMA_VERSION = 51;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
+
+// Logic migrations own their idempotent statement plan. Keeping a shared
+// no-op builder here avoids presenting an unreachable duplicate schema plan in
+// the registry while preserving the Migration interface for statement-only
+// migrations.
+const noSchemaStatements = async () => [];
 
 const MIGRATIONS: Migration[] = [
   { from: 2, to: 3, breaking: true, buildStatements: async () => [] },
@@ -202,7 +201,7 @@ const MIGRATIONS: Migration[] = [
     from: 25,
     to: 26,
     breaking: false,
-    buildStatements: async () => buildV25toV26Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 26,
@@ -220,7 +219,7 @@ const MIGRATIONS: Migration[] = [
     from: 28,
     to: 29,
     breaking: false,
-    buildStatements: async () => buildV28toV29Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 29,
@@ -238,19 +237,19 @@ const MIGRATIONS: Migration[] = [
     from: 31,
     to: 32,
     breaking: false,
-    buildStatements: async () => buildV31toV32Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 32,
     to: 33,
     breaking: false,
-    buildStatements: async () => buildV32toV33Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 33,
     to: 34,
     breaking: false,
-    buildStatements: async () => buildV33toV34Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 34,
@@ -281,27 +280,27 @@ const MIGRATIONS: Migration[] = [
     to: 39,
     breaking: false,
     // Logic migration (JSON backfill) via migrateV38ToV39.
-    buildStatements: async () => buildV38toV39Statements(),
+    buildStatements: noSchemaStatements,
   },
   {
     from: 39,
     to: 40,
     breaking: false,
     // Logic migration: idempotent canon_evidence provenance drift repair.
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
   },
   {
     from: 40,
     to: 41,
     breaking: false,
-    buildStatements: async () => buildV40toV41Statements(),
+    buildStatements: noSchemaStatements,
     migrate: migrateV40ToV41,
   },
   {
     from: 41,
     to: 42,
     breaking: false,
-    buildStatements: async () => buildV41toV42Statements(),
+    buildStatements: noSchemaStatements,
     migrate: migrateV41ToV42,
   },
   {
@@ -309,7 +308,7 @@ const MIGRATIONS: Migration[] = [
     to: 43,
     breaking: false,
     // Logic migration: one-time smart policy interval unification (42→43).
-    buildStatements: async () => buildV42toV43Statements(),
+    buildStatements: noSchemaStatements,
     migrate: migrateV42ToV43,
   },
   {
@@ -318,21 +317,21 @@ const MIGRATIONS: Migration[] = [
     breaking: false,
     // Logic migration: idempotent pipeline task / batch version-freeze
     // columns (43→44). ALTERs run only when a column is missing.
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV43ToV44,
   },
   {
     from: 44,
     to: 45,
     breaking: false,
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV44ToV45,
   },
   {
     from: 45,
     to: 46,
     breaking: false,
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV45ToV46,
   },
   {
@@ -342,28 +341,28 @@ const MIGRATIONS: Migration[] = [
     // boundary. runMigrations therefore requests a schema-recovery backup
     // before invoking this migration.
     breaking: true,
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV46ToV47,
   },
   {
     from: 47,
     to: 48,
     breaking: false,
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV47ToV48,
   },
   {
     from: 48,
     to: 49,
     breaking: false,
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV48ToV49,
   },
   {
     from: 49,
     to: 50,
     breaking: false,
-    buildStatements: async () => buildV49toV50Statements(),
+    buildStatements: noSchemaStatements,
     migrate: migrateV49ToV50,
   },
   {
@@ -371,7 +370,7 @@ const MIGRATIONS: Migration[] = [
     to: 51,
     breaking: false,
     // Logic migration: idempotent nullable cache-telemetry columns (50→51).
-    buildStatements: async () => [],
+    buildStatements: noSchemaStatements,
     migrate: migrateV50ToV51,
   },
 ];

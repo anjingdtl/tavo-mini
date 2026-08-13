@@ -18,6 +18,7 @@ import {
 } from './worldbookAwarenessCompiler';
 import { CHARACTER_AWARENESS_COMPILER_VERSION } from './resourceAwarenessTypes';
 import { WORLDBOOK_AWARENESS_COMPILER_VERSION } from './resourceAwarenessTypes';
+import { PRESET_CONTEXT_COMPILER_VERSION } from './presetContextCompiler';
 
 const SOURCE_SNAPSHOT_COMPILER = 'resource-source-snapshot-v1';
 
@@ -150,10 +151,13 @@ function freezeNote(
 }
 
 function freezePreset(preset: Preset): FrozenSourceRecord {
+  const systemText = String(preset.system_prompt || '').trim();
+  const writingStyleText = String(preset.writing_style || '').trim();
+  const extraInstructionsText = String(preset.extra_instructions || '').trim();
   const semantic = [
-    preset.system_prompt || '',
-    preset.writing_style || '',
-    preset.extra_instructions || '',
+    systemText,
+    writingStyleText,
+    extraInstructionsText,
   ].join('\n');
   return {
     kind: 'preset',
@@ -164,7 +168,7 @@ function freezePreset(preset: Preset): FrozenSourceRecord {
       kind: 'preset',
       id: Number(preset.id),
       semanticContent: semantic,
-      compilerVersion: 'preset-context-v1',
+      compilerVersion: PRESET_CONTEXT_COMPILER_VERSION,
     }),
   };
 }
@@ -277,7 +281,20 @@ async function readSourcePayloads(
     });
   }
 
-  if (contentReadFailedIds.size > 0) {
+  if (!contentReadAvailable && notes.length > 0) {
+    for (const row of notes) {
+      const record = asRecord(row);
+      const id = Number(record.id);
+      contentReadFailedIds.add(id);
+      warnings.push(
+        createNoteWarning(
+          'NOTE_CONTENT_READ_FAILED',
+          '笔记正文读取能力不可用，相关笔记已跳过，不影响角色/世界书全局设定。',
+          { id, title: String(record.title || `笔记#${id}`) },
+        ),
+      );
+    }
+  } else if (contentReadFailedIds.size > 0) {
     for (const row of notes) {
       const record = asRecord(row);
       const id = Number(record.id);
@@ -313,10 +330,10 @@ async function readSourcePayloads(
     ),
     notes: notes.map((row, index) => {
       const id = Number(asRecord(row).id);
-      const contentAvailable = contentReadAvailable
-        ? !contentReadFailedIds.has(id) &&
-          Object.prototype.hasOwnProperty.call(contents, id)
-        : true;
+      const contentAvailable =
+        contentReadAvailable &&
+        !contentReadFailedIds.has(id) &&
+        Object.prototype.hasOwnProperty.call(contents, id);
       return freezeNote(
         row,
         contentAvailable ? String(contents[id] ?? asRecord(row).content ?? '') : '',
