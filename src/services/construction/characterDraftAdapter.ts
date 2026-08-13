@@ -51,6 +51,18 @@ const RESERVED_FIELDS = new Set([
 function asString(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (value == null) return '';
+  if (Array.isArray(value)) {
+    return value.map(asString).filter(Boolean).join('、');
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, nested]) => {
+        const rendered = asString(nested);
+        return rendered ? `${key}：${rendered}` : '';
+      })
+      .filter(Boolean)
+      .join('；');
+  }
   return String(value).trim();
 }
 

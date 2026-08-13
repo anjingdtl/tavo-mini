@@ -26,10 +26,17 @@ interface WorldbookDetailConstraints {
   defaultEntryCount: number;
 }
 
+interface PresetDetailConstraints {
+  minOutputTokens: number;
+  /** 作家风格机制建议规模，只产生 warning，不是保存硬门禁。 */
+  softTargetChars: number;
+}
+
 export interface ConstructionDetailConstraints {
   label: string;
   character: CharacterDetailConstraints;
   worldbook: WorldbookDetailConstraints;
+  preset: PresetDetailConstraints;
 }
 
 const DETAIL_CONSTRAINTS: Record<
@@ -44,6 +51,7 @@ const DETAIL_CONSTRAINTS: Record<
       minContentChars: 300,
       defaultEntryCount: 6,
     },
+    preset: { minOutputTokens: 1200, softTargetChars: 1500 },
   },
   full: {
     label: '丰满',
@@ -53,6 +61,7 @@ const DETAIL_CONSTRAINTS: Record<
       minContentChars: 550,
       defaultEntryCount: 4,
     },
+    preset: { minOutputTokens: 2000, softTargetChars: 2500 },
   },
   deep: {
     label: '深度',
@@ -62,6 +71,7 @@ const DETAIL_CONSTRAINTS: Record<
       minContentChars: 800,
       defaultEntryCount: 4,
     },
+    preset: { minOutputTokens: 3200, softTargetChars: 4000 },
   },
 };
 
@@ -95,6 +105,18 @@ export interface ConstructionQualityReport {
     entryLengths: number[];
     totalEstimatedPersistentTokens: number;
   };
+  preset?: {
+    fieldLengths: Record<string, number>;
+    mechanismCoverage: string[];
+  };
+}
+
+interface ConstructionInspection {
+  character?: ConstructionQualityReport['character'];
+  worldbook?: ConstructionQualityReport['worldbook'];
+  preset?: ConstructionQualityReport['preset'];
+  failures: ConstructionQualityFailure[];
+  warnings: ConstructionQualityFailure[];
 }
 
 export function normalizeDetailLevel(
@@ -125,6 +147,7 @@ export function requiredConstructionOutput(
 ): number {
   const constraints = getDetailConstraints(detailLevel);
   if (target === 'character') return constraints.character.minOutputTokens;
+  if (target === 'preset') return constraints.preset.minOutputTokens;
   const count = Math.max(1, Math.floor(entryCount || 0));
   return (
     WORLDBOOK_COLLECTION_OVERHEAD_TOKENS +
@@ -183,12 +206,7 @@ function extensionData(data: CharaCardV3Data): Record<string, unknown> | null {
 function inspectCharacter(
   data: CharaCardV3Data,
   detailLevel: ConstructionDetailLevel,
-): {
-  character?: ConstructionQualityReport['character'];
-  worldbook?: ConstructionQualityReport['worldbook'];
-  failures: ConstructionQualityFailure[];
-  warnings: ConstructionQualityFailure[];
-} {
+): ConstructionInspection {
   const extension = extensionData(data);
   let novel: ReturnType<typeof parseNovelCharacterDraft> | null = null;
   if (extension && asString(data.name)) {
@@ -300,12 +318,7 @@ function inspectCharacter(
 function inspectWorldbook(
   entries: LorebookEntry[],
   detailLevel: ConstructionDetailLevel,
-): {
-  character?: ConstructionQualityReport['character'];
-  worldbook?: ConstructionQualityReport['worldbook'];
-  failures: ConstructionQualityFailure[];
-  warnings: ConstructionQualityFailure[];
-} {
+): ConstructionInspection {
   const rules = getDetailConstraints(detailLevel).worldbook;
   const failures: ConstructionQualityFailure[] = [];
   const warnings: ConstructionQualityFailure[] = [];
@@ -355,6 +368,96 @@ function inspectWorldbook(
   };
 }
 
+const PRESET_MECHANISMS: Array<[string, RegExp]> = [
+  ['叙述视角', /视角|叙述者/],
+  ['叙述距离', /距离|贴近|全知|限知/],
+  ['句法与词汇', /句法|句式|词汇|用词/],
+  ['段落组织', /段落|段落组织/],
+  ['场景与环境', /场景|环境/],
+  ['人物与对白', /人物|对白|声音/],
+  ['节奏与冲突', /节奏|冲突/],
+  ['信息与悬念', /信息|悬念|伏笔/],
+  ['章节结构', /章节|章结构/],
+  ['意象与感官', /意象|感官/],
+  ['禁止项与反模式', /禁止|反模式|避免|不要/],
+];
+
+function inspectPreset(
+  preset: {
+    spec: string;
+    name: string;
+    system_prompt: string;
+    writing_style: string;
+    extra_instructions: string;
+  },
+  detailLevel: ConstructionDetailLevel,
+): ConstructionInspection {
+  const fieldLengths = {
+    name: visibleCharacterCount(preset.name),
+    system_prompt: visibleCharacterCount(preset.system_prompt),
+    writing_style: visibleCharacterCount(preset.writing_style),
+    extra_instructions: visibleCharacterCount(preset.extra_instructions),
+  };
+  const failures: ConstructionQualityFailure[] = [];
+  const warnings: ConstructionQualityFailure[] = [];
+  if (preset.spec !== 'shinewriter-preset-v1') {
+    failures.push({
+      code: 'preset_spec_invalid',
+      message: '预设不是 shinewriter-preset-v1 格式。',
+    });
+  }
+  for (const field of [
+    'name',
+    'system_prompt',
+    'writing_style',
+    'extra_instructions',
+  ] as const) {
+    if (fieldLengths[field] === 0) {
+      failures.push({
+        code: `preset_${field}_empty`,
+        message: `预设字段「${field}」不能为空。`,
+      });
+    }
+  }
+  const combined = [
+    preset.system_prompt,
+    preset.writing_style,
+    preset.extra_instructions,
+  ].join('\n');
+  if (
+    /shinewriter-preset-v1|(?:temperature|top_p|max_tokens|is_default)\s*[:=]|```(?:json)?/i.test(
+      combined,
+    )
+  ) {
+    failures.push({
+      code: 'preset_contract_leakage',
+      message: '预设内容包含导出协议、采样参数或 Prompt 合同元数据。',
+    });
+  }
+  const mechanismCoverage = PRESET_MECHANISMS.filter(([, pattern]) =>
+    pattern.test(combined),
+  ).map(([label]) => label);
+  if (mechanismCoverage.length < 6) {
+    warnings.push({
+      code: 'preset_mechanism_coverage_sparse',
+      message: `预设当前只显式覆盖 ${mechanismCoverage.length} 类写作机制，建议补充视角、节奏、信息揭示、章节结构和反模式等维度。`,
+    });
+  }
+  const actualChars = visibleCharacterCount(combined);
+  const softTarget = getDetailConstraints(detailLevel).preset.softTargetChars;
+  if (actualChars < softTarget) {
+    warnings.push({
+      code: 'preset_content_short',
+      message: `预设文学机制约 ${actualChars} 字，低于“${getDetailConstraints(detailLevel).label}”建议规模 ${softTarget} 字；结果仍可保存。`,
+    });
+  }
+  return {
+    failures,
+    warnings,
+    preset: { fieldLengths, mechanismCoverage },
+  };
+}
+
 export function assessConstructionArtifact(
   artifact: ConstructionArtifact,
   detailLevel?: ConstructionDetailLevel,
@@ -367,11 +470,20 @@ export function assessConstructionArtifact(
     level,
   );
   const actualOutputTokens = estimateTokens(
-    JSON.stringify(artifact.kind === 'character' ? artifact.card : artifact.lorebook),
+    JSON.stringify(
+      artifact.kind === 'character'
+        ? artifact.card
+        : artifact.kind === 'worldbook'
+          ? artifact.lorebook
+          : artifact.preset,
+    ),
   );
-  const inspection = artifact.kind === 'character'
-    ? inspectCharacter(artifact.card.data, level)
-    : inspectWorldbook(artifact.lorebook.data.entries, level);
+  const inspection =
+    artifact.kind === 'character'
+      ? inspectCharacter(artifact.card.data, level)
+      : artifact.kind === 'worldbook'
+        ? inspectWorldbook(artifact.lorebook.data.entries, level)
+        : inspectPreset(artifact.preset, level);
   const failures = inspection.failures;
   const warnings = [...inspection.warnings];
   if (actualOutputTokens < requiredMinOutput) {
@@ -391,5 +503,6 @@ export function assessConstructionArtifact(
     warnings,
     ...(inspection.character ? { character: inspection.character } : {}),
     ...(inspection.worldbook ? { worldbook: inspection.worldbook } : {}),
+    ...(inspection.preset ? { preset: inspection.preset } : {}),
   };
 }

@@ -3,15 +3,22 @@ import {
   errorCodes,
   isErrorWithCode,
   saveDocuments,
+  types,
 } from '@react-native-documents/picker';
 import * as db from './database';
 import {
   importCharacterFromJSON,
   importWorldBookFromJSON,
+  pickSourceFile,
 } from './fileImport';
+import {
+  parseShineWriterPresetV1,
+} from './construction/presetDraftAdapter';
 import type {
   CharacterArtifact,
   ConstructionArtifact,
+  PresetArtifact,
+  ShineWriterPresetV1,
   WorldbookArtifact,
 } from './construction/targets';
 
@@ -39,15 +46,19 @@ function safeFileName(name: string): string {
 /** 序列化产物为两空格缩进的 UTF-8 JSON 字符串。 */
 export function serializeArtifact(artifact: ConstructionArtifact): string {
   const payload =
-    artifact.kind === 'character' ? artifact.card : artifact.lorebook;
+    artifact.kind === 'character'
+      ? artifact.card
+      : artifact.kind === 'worldbook'
+        ? artifact.lorebook
+        : artifact.preset;
   return JSON.stringify(payload, null, 2);
 }
 
 export function buildConstructionFileName(artifact: ConstructionArtifact): string {
   const base = safeFileName(artifact.name);
-  return artifact.kind === 'character'
-    ? `${base}-角色卡.json`
-    : `${base}-世界书.json`;
+  if (artifact.kind === 'character') return `${base}-角色卡.json`;
+  if (artifact.kind === 'worldbook') return `${base}-世界书.json`;
+  return `${base}-预设.json`;
 }
 
 export interface SaveArtifactSuccess {
@@ -111,7 +122,42 @@ export async function saveConstructionArtifact(
 
 export type ImportToLibraryResult =
   | { kind: 'character'; id: number; name: string }
+  | { kind: 'preset'; id: number; name: string }
   | { kind: 'worldbook'; name: string; entriesImported: number };
+
+/** 为用户预设生成不覆盖旧资料的名称。 */
+export function avoidPresetNameCollision(
+  baseName: string,
+  existingNames: Iterable<string>,
+): string {
+  const normalizedBase = baseName.trim() || '未命名预设';
+  const used = new Set(
+    Array.from(existingNames, name => String(name || '').trim()).filter(Boolean),
+  );
+  if (!used.has(normalizedBase)) return normalizedBase;
+  let suffix = 2;
+  let candidate = `${normalizedBase} (${suffix})`;
+  while (used.has(candidate)) {
+    suffix += 1;
+    candidate = `${normalizedBase} (${suffix})`;
+  }
+  return candidate;
+}
+
+/** 读取一个 shinewriter-preset-v1 JSON 为构建产物。 */
+export function parsePresetArtifactJSON(
+  jsonText: string,
+  sourceName = 'preset.json',
+): PresetArtifact {
+  let value: unknown;
+  try {
+    value = JSON.parse(jsonText);
+  } catch {
+    throw new Error(`预设文件「${sourceName}」不是有效 JSON。`);
+  }
+  const preset = parseShineWriterPresetV1(value);
+  return { kind: 'preset', name: preset.name, preset };
+}
 
 /**
  * 将构建预览产物直接写入资料库，并绑定到当前项目启用。
@@ -145,6 +191,26 @@ export async function importConstructionArtifactToLibrary(
     };
   }
 
+  if (artifact.kind === 'preset') {
+    const existing = await db.getAllPresets();
+    const name = avoidPresetNameCollision(
+      artifact.name || artifact.preset.name,
+      existing.map(item => item.name),
+    );
+    const id = await db.createPreset(projectId, name);
+    await db.updatePreset(id, {
+      name,
+      is_default: 0,
+      system_prompt: artifact.preset.system_prompt,
+      writing_style: artifact.preset.writing_style,
+      extra_instructions: artifact.preset.extra_instructions,
+      temperature: artifact.preset.temperature,
+      top_p: artifact.preset.top_p,
+      max_tokens: artifact.preset.max_tokens,
+    });
+    return { kind: 'preset', id, name };
+  }
+
   const imported = await importWorldBookFromJSON(projectId, json);
   return {
     kind: 'worldbook',
@@ -154,4 +220,40 @@ export async function importConstructionArtifactToLibrary(
   };
 }
 
-export type { CharacterArtifact, WorldbookArtifact };
+/** 从已保存的 Preset v1 文件直接导入“我的预设”。 */
+export async function importPresetFromJSON(
+  projectId: number,
+  jsonText: string,
+  sourceName = 'preset.json',
+): Promise<ImportToLibraryResult> {
+  return importConstructionArtifactToLibrary(
+    parsePresetArtifactJSON(jsonText, sourceName),
+    projectId,
+  );
+}
+
+/** 复用现有 Storage Access Framework 选择器导入 Preset v1。 */
+export async function importSelectedPreset(
+  projectId: number,
+): Promise<ImportToLibraryResult | null> {
+  let copiedPath: string | null = null;
+  try {
+    const file = await pickSourceFile([types.json]);
+    if (!file) return null;
+    copiedPath = file.localPath;
+    return await importPresetFromJSON(
+      projectId,
+      await RNFS.readFile(file.localPath, 'utf8'),
+      file.name,
+    );
+  } finally {
+    if (copiedPath) RNFS.unlink(copiedPath).catch(() => {});
+  }
+}
+
+export type {
+  CharacterArtifact,
+  PresetArtifact,
+  ShineWriterPresetV1,
+  WorldbookArtifact,
+};

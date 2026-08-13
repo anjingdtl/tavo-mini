@@ -9,7 +9,7 @@ import type {
  */
 
 /** 构建产物的目标类型。 */
-export type ConstructionTarget = 'character' | 'worldbook';
+export type ConstructionTarget = 'character' | 'worldbook' | 'preset';
 
 /**
  * 四种构建模式（SPEC §5）。场景标识同时作为 LLM 用量日志的 scenario：
@@ -17,6 +17,8 @@ export type ConstructionTarget = 'character' | 'worldbook';
  * - character_from_worldbook       → construction_character_from_worldbook
  * - worldbook_independent          → construction_worldbook_independent
  * - worldbook_from_character       → construction_worldbook_from_character
+ * - preset_independent              → construction_preset_independent
+ * - preset_from_text                → construction_preset_from_text
  */
 export type ConstructionMode =
   | 'character_independent'
@@ -24,7 +26,9 @@ export type ConstructionMode =
   | 'worldbook_independent'
   | 'worldbook_from_character'
   | 'character_from_text'
-  | 'worldbook_from_text';
+  | 'worldbook_from_text'
+  | 'preset_independent'
+  | 'preset_from_text';
 
 export function modeScenario(mode: ConstructionMode): string {
   switch (mode) {
@@ -40,13 +44,25 @@ export function modeScenario(mode: ConstructionMode): string {
       return 'construction_character_from_text';
     case 'worldbook_from_text':
       return 'construction_worldbook_from_text';
+    case 'preset_independent':
+      return 'construction_preset_independent';
+    case 'preset_from_text':
+      return 'construction_preset_from_text';
   }
 }
 
 export function modeTarget(mode: ConstructionMode): ConstructionTarget {
-  return mode === 'worldbook_independent' || mode === 'worldbook_from_character' || mode === 'worldbook_from_text'
-    ? 'worldbook'
-    : 'character';
+  if (
+    mode === 'worldbook_independent' ||
+    mode === 'worldbook_from_character' ||
+    mode === 'worldbook_from_text'
+  ) {
+    return 'worldbook';
+  }
+  if (mode === 'preset_independent' || mode === 'preset_from_text') {
+    return 'preset';
+  }
+  return 'character';
 }
 
 /**
@@ -142,6 +158,31 @@ export interface IndependentWorldbookInput extends ConstructionSharedInput {
   entryCount: number;
 }
 
+/** 用户填写的需求字段（独立作家风格预设）。 */
+export interface IndependentPresetInput extends ConstructionSharedInput {
+  mode: 'preset_independent';
+  name?: string;
+  genre?: string;
+  audience?: string;
+  pointOfView?: string;
+  narratorDistance?: string;
+  languageTexture?: string;
+  syntax?: string;
+  vocabulary?: string;
+  paragraphStructure?: string;
+  sceneEnvironment?: string;
+  characterVoice?: string;
+  dialogue?: string;
+  pacing?: string;
+  conflict?: string;
+  suspense?: string;
+  chapterStructure?: string;
+  imagery?: string;
+  sensory?: string;
+  prohibitions?: string;
+  extra?: string;
+}
+
 /** 基于角色卡构建世界书合集（SPEC §5.3）。 */
 export interface WorldbookFromCharacterInput extends ConstructionSharedInput {
   mode: 'worldbook_from_character';
@@ -171,13 +212,23 @@ export interface WorldbookFromTextInput extends ConstructionSharedInput {
   entryCount: number;
 }
 
+/** 从 TXT 中提炼写作机制的预设构建输入。 */
+export interface PresetFromTextInput extends ConstructionSharedInput {
+  mode: 'preset_from_text';
+  sourceSnapshot: string;
+  sourceName?: string;
+  extra?: string;
+}
+
 export type ConstructionInput =
   | IndependentCharacterInput
   | CharacterFromWorldbookInput
   | IndependentWorldbookInput
   | WorldbookFromCharacterInput
   | CharacterFromTextInput
-  | WorldbookFromTextInput;
+  | WorldbookFromTextInput
+  | IndependentPresetInput
+  | PresetFromTextInput;
 
 // ---------- 产物结构（与资料库导入格式一致） ----------
 
@@ -235,4 +286,34 @@ export interface WorldbookArtifact {
   qualityReport?: ConstructionQualityReport;
 }
 
-export type ConstructionArtifact = CharacterArtifact | WorldbookArtifact;
+/** 现有资料库 / 导出协议的 Preset v1。由本地 Adapter 补齐协议与采样元数据。 */
+export interface ShineWriterPresetV1 {
+  spec: 'shinewriter-preset-v1';
+  name: string;
+  system_prompt: string;
+  writing_style: string;
+  extra_instructions: string;
+  temperature: number;
+  top_p: number;
+  max_tokens: number;
+}
+
+/** 构建层临时 DTO；不是新的持久化 schema。 */
+export interface NovelPresetDraft {
+  name: string;
+  system_prompt: string;
+  writing_style: string;
+  extra_instructions: string;
+}
+
+export interface PresetArtifact {
+  kind: 'preset';
+  name: string;
+  preset: ShineWriterPresetV1;
+  qualityReport?: ConstructionQualityReport;
+}
+
+export type ConstructionArtifact =
+  | CharacterArtifact
+  | WorldbookArtifact
+  | PresetArtifact;

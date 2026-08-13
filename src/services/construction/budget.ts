@@ -187,14 +187,19 @@ export function computeConstructionBudget(input: BudgetInput): BudgetResult {
           ? `输出上限（${ceiling} Token）不足以生成 ${entryCount} 条世界书条目（至少需要 ${requiredMin} Token）。请减少条目数，或使用输出更大的在线模型。`
           : `需要超过 ${RESERVE_PERCENT_MAX}% 的输出预留才能生成 ${entryCount} 条世界书条目（至少需要 ${requiredMin} Token）。请减少条目数，或使用上下文更大的在线模型。`;
     } else {
+      const targetLabel = target === 'preset' ? '作家风格预设' : '角色卡';
       reason =
         ceiling < requiredMin
-          ? `输出上限（${ceiling} Token）不足以生成角色卡（至少需要 ${requiredMin} Token）。请使用输出更大的在线模型。`
-          : `需要超过 ${RESERVE_PERCENT_MAX}% 的输出预留才能生成角色卡（至少需要 ${requiredMin} Token）。请使用上下文更大的在线模型。`;
+          ? `输出上限（${ceiling} Token）不足以生成${targetLabel}（至少需要 ${requiredMin} Token）。请使用输出更大的在线模型。`
+          : `需要超过 ${RESERVE_PERCENT_MAX}% 的输出预留才能生成${targetLabel}（至少需要 ${requiredMin} Token）。请使用上下文更大的在线模型。`;
     }
   } else if (!generatable) {
     const label =
-      target === 'worldbook' ? '世界书合集' : '角色卡';
+      target === 'worldbook'
+        ? '世界书合集'
+        : target === 'preset'
+          ? '作家风格预设'
+          : '角色卡';
     reason = `输出预留不足，${label}至少需要 ${requiredMin} Token。请将输出预留提高到 ${minReservePercent}%。`;
   } else {
     reason = '容量校验通过。';

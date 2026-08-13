@@ -80,7 +80,7 @@ import { readNovelCharacterDraft } from '../services/construction/characterDraft
 import { useThemeStore } from '../store/themeStore';
 
 type BuildMode = 'independent' | 'fromWorldbook' | 'fromCharacter' | 'fromText';
-type IndependentTarget = 'character' | 'worldbook';
+type IndependentTarget = 'character' | 'worldbook' | 'preset';
 type GenerateStatus = 'idle' | 'queued' | 'running' | 'preview';
 
 interface SourceState {
@@ -106,6 +106,7 @@ const MODE_OPTIONS: { value: BuildMode; label: string }[] = [
 const TARGET_OPTIONS: { value: IndependentTarget; label: string }[] = [
   { value: 'character', label: '角色卡' },
   { value: 'worldbook', label: '世界书' },
+  { value: 'preset', label: '预设' },
 ];
 
 const DETAIL_OPTIONS: { value: ConstructionDetailLevel; label: string }[] = [
@@ -158,6 +159,26 @@ export const BuildScreen: React.FC = () => {
   const [wbImpactScope, setWbImpactScope] = useState('');
   const [wbForbiddenRules, setWbForbiddenRules] = useState('');
   const [wbStableRelations, setWbStableRelations] = useState('');
+  // 独立作家风格预设字段
+  const [presetName, setPresetName] = useState('');
+  const [presetGenre, setPresetGenre] = useState('');
+  const [presetAudience, setPresetAudience] = useState('');
+  const [presetPointOfView, setPresetPointOfView] = useState('');
+  const [presetNarratorDistance, setPresetNarratorDistance] = useState('');
+  const [presetLanguageTexture, setPresetLanguageTexture] = useState('');
+  const [presetSyntax, setPresetSyntax] = useState('');
+  const [presetVocabulary, setPresetVocabulary] = useState('');
+  const [presetParagraphStructure, setPresetParagraphStructure] = useState('');
+  const [presetSceneEnvironment, setPresetSceneEnvironment] = useState('');
+  const [presetCharacterVoice, setPresetCharacterVoice] = useState('');
+  const [presetDialogue, setPresetDialogue] = useState('');
+  const [presetPacing, setPresetPacing] = useState('');
+  const [presetConflict, setPresetConflict] = useState('');
+  const [presetSuspense, setPresetSuspense] = useState('');
+  const [presetChapterStructure, setPresetChapterStructure] = useState('');
+  const [presetImagery, setPresetImagery] = useState('');
+  const [presetSensory, setPresetSensory] = useState('');
+  const [presetProhibitions, setPresetProhibitions] = useState('');
   // 通用补充需求
   const [extra, setExtra] = useState('');
   const [entryCount, setEntryCount] = useState(DEFAULT_ENTRY_COUNT);
@@ -241,6 +262,28 @@ export const BuildScreen: React.FC = () => {
     charRelationships,
     extra,
   ].some(v => v.trim().length > 0);
+  const independentPresetFilled = [
+    presetName,
+    presetGenre,
+    presetAudience,
+    presetPointOfView,
+    presetNarratorDistance,
+    presetLanguageTexture,
+    presetSyntax,
+    presetVocabulary,
+    presetParagraphStructure,
+    presetSceneEnvironment,
+    presetCharacterVoice,
+    presetDialogue,
+    presetPacing,
+    presetConflict,
+    presetSuspense,
+    presetChapterStructure,
+    presetImagery,
+    presetSensory,
+    presetProhibitions,
+    extra,
+  ].some(v => v.trim().length > 0);
 
   const input: ConstructionInput | null = useMemo(() => {
     if (mode === 'independent') {
@@ -258,6 +301,33 @@ export const BuildScreen: React.FC = () => {
           motivation: charMotivation,
           conflict: charConflict,
           relationships: charRelationships,
+          extra,
+          detailLevel,
+        };
+      }
+      if (target === 'preset') {
+        if (!independentPresetFilled) return null;
+        return {
+          mode: 'preset_independent',
+          name: presetName,
+          genre: presetGenre,
+          audience: presetAudience,
+          pointOfView: presetPointOfView,
+          narratorDistance: presetNarratorDistance,
+          languageTexture: presetLanguageTexture,
+          syntax: presetSyntax,
+          vocabulary: presetVocabulary,
+          paragraphStructure: presetParagraphStructure,
+          sceneEnvironment: presetSceneEnvironment,
+          characterVoice: presetCharacterVoice,
+          dialogue: presetDialogue,
+          pacing: presetPacing,
+          conflict: presetConflict,
+          suspense: presetSuspense,
+          chapterStructure: presetChapterStructure,
+          imagery: presetImagery,
+          sensory: presetSensory,
+          prohibitions: presetProhibitions,
           extra,
           detailLevel,
         };
@@ -305,6 +375,15 @@ export const BuildScreen: React.FC = () => {
         detailLevel,
       };
     }
+    if (mode === 'fromText' && target === 'preset') {
+      return {
+        mode: 'preset_from_text',
+        sourceSnapshot: source.snapshot,
+        sourceName: source.name,
+        extra,
+        detailLevel,
+      };
+    }
     if (mode === 'fromText') {
       return {
         mode: 'worldbook_from_text',
@@ -320,6 +399,7 @@ export const BuildScreen: React.FC = () => {
     mode,
     target,
     independentCharFilled,
+    independentPresetFilled,
     charName,
     charTheme,
     charRole,
@@ -338,6 +418,25 @@ export const BuildScreen: React.FC = () => {
     wbImpactScope,
     wbForbiddenRules,
     wbStableRelations,
+    presetName,
+    presetGenre,
+    presetAudience,
+    presetPointOfView,
+    presetNarratorDistance,
+    presetLanguageTexture,
+    presetSyntax,
+    presetVocabulary,
+    presetParagraphStructure,
+    presetSceneEnvironment,
+    presetCharacterVoice,
+    presetDialogue,
+    presetPacing,
+    presetConflict,
+    presetSuspense,
+    presetChapterStructure,
+    presetImagery,
+    presetSensory,
+    presetProhibitions,
     entryCount,
     source,
     detailLevel,
@@ -520,6 +619,12 @@ export const BuildScreen: React.FC = () => {
               sourceSnapshot: snapshot,
               detailLevel,
             }
+          : target === 'preset'
+            ? {
+                mode: 'preset_from_text' as const,
+                sourceSnapshot: snapshot,
+                detailLevel,
+              }
           : {
               mode: 'worldbook_from_text' as const,
               sourceSnapshot: snapshot,
@@ -582,6 +687,12 @@ export const BuildScreen: React.FC = () => {
               sourceSnapshot: snapshot,
               detailLevel,
             }
+          : target === 'preset'
+            ? {
+                mode: 'preset_from_text' as const,
+                sourceSnapshot: snapshot,
+                detailLevel,
+              }
           : {
               mode: 'worldbook_from_text' as const,
               sourceSnapshot: snapshot,
@@ -714,6 +825,12 @@ export const BuildScreen: React.FC = () => {
           text1: '已导入资料库',
           text2: `角色卡「${result.name}」已写入并在当前项目启用。`,
         });
+      } else if (result.kind === 'preset') {
+        Toast.show({
+          type: 'success',
+          text1: '已导入资料库',
+          text2: `预设「${result.name}」已加入我的预设。`,
+        });
       } else {
         Toast.show({
           type: 'success',
@@ -825,6 +942,31 @@ export const BuildScreen: React.FC = () => {
                 setConflict={setCharConflict}
                 relationships={charRelationships}
                 setRelationships={setCharRelationships}
+              />
+            ) : null}
+            {mode === 'independent' && target === 'preset' ? (
+              <IndependentPresetForm
+                fields={[
+                  { key: 'name', label: '预设名称', value: presetName, setValue: setPresetName, placeholder: '例如：克制悬疑叙事' },
+                  { key: 'genre', label: '适用题材 / 类型', value: presetGenre, setValue: setPresetGenre, placeholder: '例如：都市悬疑、历史群像' },
+                  { key: 'audience', label: '目标读者 / 整体气质', value: presetAudience, setValue: setPresetAudience },
+                  { key: 'pointOfView', label: '叙述视角', value: presetPointOfView, setValue: setPresetPointOfView, multiline: true },
+                  { key: 'narratorDistance', label: '叙述者距离', value: presetNarratorDistance, setValue: setPresetNarratorDistance, multiline: true },
+                  { key: 'languageTexture', label: '语言质感', value: presetLanguageTexture, setValue: setPresetLanguageTexture, multiline: true },
+                  { key: 'syntax', label: '句法倾向', value: presetSyntax, setValue: setPresetSyntax, multiline: true },
+                  { key: 'vocabulary', label: '词汇倾向', value: presetVocabulary, setValue: setPresetVocabulary, multiline: true },
+                  { key: 'paragraphStructure', label: '段落组织', value: presetParagraphStructure, setValue: setPresetParagraphStructure, multiline: true },
+                  { key: 'sceneEnvironment', label: '场景与环境描写', value: presetSceneEnvironment, setValue: setPresetSceneEnvironment, multiline: true },
+                  { key: 'characterVoice', label: '人物描写', value: presetCharacterVoice, setValue: setPresetCharacterVoice, multiline: true },
+                  { key: 'dialogue', label: '对白与人物声音', value: presetDialogue, setValue: setPresetDialogue, multiline: true },
+                  { key: 'pacing', label: '节奏', value: presetPacing, setValue: setPresetPacing, multiline: true },
+                  { key: 'conflict', label: '冲突推进', value: presetConflict, setValue: setPresetConflict, multiline: true },
+                  { key: 'suspense', label: '悬念 / 信息揭示 / 伏笔', value: presetSuspense, setValue: setPresetSuspense, multiline: true },
+                  { key: 'chapterStructure', label: '章节结构', value: presetChapterStructure, setValue: setPresetChapterStructure, multiline: true },
+                  { key: 'imagery', label: '意象', value: presetImagery, setValue: setPresetImagery, multiline: true },
+                  { key: 'sensory', label: '感官', value: presetSensory, setValue: setPresetSensory, multiline: true },
+                  { key: 'prohibitions', label: '禁止项 / 反模式', value: presetProhibitions, setValue: setPresetProhibitions, multiline: true },
+                ]}
               />
             ) : null}
             {mode === 'independent' && target === 'worldbook' ? (
@@ -984,6 +1126,15 @@ export const BuildScreen: React.FC = () => {
                     请至少填写一个有效的角色设定字段。
                   </Text>
                 ) : null}
+                {mode === 'independent' &&
+                target === 'preset' &&
+                !independentPresetFilled ? (
+                  <Text
+                    style={[styles.hint, { color: theme.colors.textSecondary }]}
+                  >
+                    请至少填写一个有效的预设构建要求。
+                  </Text>
+                ) : null}
                 {mode !== 'independent' && !source ? (
                   <Text
                     style={[styles.hint, { color: theme.colors.textSecondary }]}
@@ -1061,11 +1212,13 @@ export const BuildScreen: React.FC = () => {
               <Text
                 style={[styles.jsonText, { color: theme.colors.textSecondary }]}
               >
-                {artifact
+                  {artifact
                   ? JSON.stringify(
                       artifact.kind === 'character'
                         ? artifact.card
-                        : artifact.lorebook,
+                        : artifact.kind === 'worldbook'
+                          ? artifact.lorebook
+                          : artifact.preset,
                       null,
                       2,
                     )
@@ -1218,6 +1371,40 @@ const IndependentCharacterForm: React.FC<{
     />
   </>
 );
+
+interface PresetFormField {
+  key: string;
+  label: string;
+  value: string;
+  setValue: (value: string) => void;
+  placeholder?: string;
+  multiline?: boolean;
+}
+
+const IndependentPresetForm: React.FC<{ fields: PresetFormField[] }> = ({
+  fields,
+}) => {
+  const { theme } = useThemeStore();
+  return (
+    <>
+      <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+        可按需填写；生成结果会把这些要求抽象成系统提示词、写作风格和额外约束三部分。
+      </Text>
+      {fields.map(field => (
+        <Field
+          key={field.key}
+          testID={`build-preset-${field.key}`}
+          label={field.label}
+          value={field.value}
+          onChangeText={field.setValue}
+          placeholder={field.placeholder}
+          multiline={field.multiline}
+          inputStyle={field.multiline ? styles.mediumInput : undefined}
+        />
+      ))}
+    </>
+  );
+};
 
 const IndependentWorldbookForm: React.FC<{
   name: string;
@@ -1601,8 +1788,10 @@ const PreviewPanel: React.FC<{
       ) : null}
       {artifact.kind === 'character' ? (
         <CharacterPreview artifact={artifact} />
-      ) : (
+      ) : artifact.kind === 'worldbook' ? (
         <WorldbookPreview artifact={artifact} />
+      ) : (
+        <PresetPreview artifact={artifact} />
       )}
       <View style={styles.previewActions}>
         <Button
@@ -1699,6 +1888,40 @@ const CharacterPreview: React.FC<{
           {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')}{' '}
           Token · 覆盖维度{' '}
           {artifact.qualityReport.character.dimensionCoverage.length} 项
+        </Text>
+      ) : null}
+    </View>
+  );
+};
+
+const PresetPreview: React.FC<{
+  artifact: Extract<ConstructionArtifact, { kind: 'preset' }>;
+}> = ({ artifact }) => {
+  const { theme } = useThemeStore();
+  const fields = [
+    ['系统提示词', artifact.preset.system_prompt],
+    ['写作风格', artifact.preset.writing_style],
+    ['额外约束', artifact.preset.extra_instructions],
+  ];
+  return (
+    <View>
+      <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
+        {artifact.name}
+      </Text>
+      {fields.map(([label, value]) => (
+        <View key={label} style={styles.presetPreviewBlock}>
+          <Text style={[styles.previewText, { color: theme.colors.textPrimary }]}>
+            {label}
+          </Text>
+          <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+            {value}
+          </Text>
+        </View>
+      ))}
+      {artifact.qualityReport?.preset ? (
+        <Text style={[styles.previewText, { color: theme.colors.textSecondary }]}>
+          质量：约 {artifact.qualityReport.actualOutputTokens.toLocaleString('en-US')} Token ·
+          覆盖机制 {artifact.qualityReport.preset.mechanismCoverage.length} 项
         </Text>
       ) : null}
     </View>
@@ -1853,6 +2076,7 @@ const styles = StyleSheet.create({
   },
   previewTitle: { fontSize: 17, fontWeight: '800', marginBottom: spacing.xs },
   previewText: { fontSize: 13, lineHeight: 20, marginBottom: 4 },
+  presetPreviewBlock: { marginBottom: spacing.sm },
   entryRow: {
     paddingVertical: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,

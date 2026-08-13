@@ -1,83 +1,151 @@
 /**
- * Verify the repaired device database after overwrite-install.
- * Reads test-logs/repaired_device.db (pulled from emulator-5554) and asserts
- * the Schema 40 repair landed correctly on a real Android SQLite.
+ * Verify the real device database after overwrite-install.
+ *
+ * The artifact is intentionally local-only: a connected emulator produces it
+ * under test-logs/repaired_device.db. CI without an Android data artifact
+ * skips this evidence test, while SHINE_WRITER_REQUIRE_DEVICE_DB=1 makes a
+ * missing artifact a hard failure for the local Final Seal.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import initSqlJsNs from 'sql.js';
+import { SCHEMA_VERSION } from '../src/services/migrations';
 
 const initSqlJs: any = (initSqlJsNs as any).default ?? initSqlJsNs;
+const requireDeviceDb = process.env.SHINE_WRITER_REQUIRE_DEVICE_DB === '1';
+const deviceDbPath =
+  process.env.SHINE_WRITER_DEVICE_DB_PATH ||
+  path.join(__dirname, '..', 'test-logs', 'repaired_device.db');
+const beforeDbPath =
+  process.env.SHINE_WRITER_PRE_DEVICE_DB_PATH ||
+  path.join(
+    __dirname,
+    '..',
+    'test-logs',
+    'phase1-closure',
+    'overwrite-pre',
+    'pre-upgrade-device.db',
+  );
 
-describe('repaired device database (overwrite-install verification)', () => {
-  it('schema_version is 40 and canon_evidence has provenance columns', async () => {
-    const dbPath = path.join(__dirname, '..', 'test-logs', 'repaired_device.db');
-    if (!fs.existsSync(dbPath)) {
-      console.warn('repaired_device.db not found — run the emulator overwrite-install test first');
-      return;
-    }
+const runDeviceDbTest =
+  requireDeviceDb || fs.existsSync(deviceDbPath) ? it : it.skip;
 
-    const SQL = await initSqlJs({
-      locateFile: (file: string) =>
-        path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', file),
-    });
-    const buf = fs.readFileSync(dbPath);
-    const db = new SQL.Database(buf);
+function rows(db: any, sql: string): unknown[][] {
+  const result = db.exec(sql);
+  return result.length > 0 ? result[0].values : [];
+}
 
-    // Schema version
-    const ver = db.exec("SELECT value FROM settings WHERE key = 'schema_version'");
-    const schemaVersion = ver.length > 0 ? Number(ver[0].values[0][0]) : 0;
-    expect(schemaVersion).toBe(40);
+function scalar(db: any, sql: string): number {
+  const result = rows(db, sql);
+  return Number(result[0]?.[0] || 0);
+}
 
-    // canon_evidence columns
-    const cols = db.exec('PRAGMA table_info(canon_evidence)');
-    const colNames: string[] = [];
-    if (cols.length > 0) {
-      for (const row of cols[0].values) {
-        colNames.push(row[1] as string);
+function assertPreRowsRemain(
+  before: any,
+  after: any,
+  label: string,
+  sql: string,
+): void {
+  const beforeRows = rows(before, sql);
+  const afterRows = rows(after, sql);
+  expect(afterRows).toEqual(expect.arrayContaining(beforeRows));
+  console.log(`   ${label}: before=${beforeRows.length}, after=${afterRows.length}`);
+}
+
+describe('real device database (overwrite-install verification)', () => {
+  runDeviceDbTest(
+    'keeps Schema 51 and preserves pre-upgrade user rows',
+    async () => {
+      if (!fs.existsSync(deviceDbPath)) {
+        throw new Error(
+          `device DB evidence is required but missing: ${deviceDbPath}`,
+        );
       }
-    }
-    expect(colNames).toContain('source_origin');
-    expect(colNames).toContain('rescan_operation_id');
+      if (!fs.existsSync(beforeDbPath)) {
+        throw new Error(
+          `pre-upgrade device DB evidence is required but missing: ${beforeDbPath}`,
+        );
+      }
 
-    // Index exists
-    const idx = db.exec(
-      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_canon_evidence_rescan_op'",
-    );
-    expect(idx.length).toBeGreaterThan(0);
-    expect(idx[0].values.length).toBe(1);
+      const SQL = await initSqlJs({
+        locateFile: (file: string) =>
+          path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', file),
+      });
+      const after = new SQL.Database(fs.readFileSync(deviceDbPath));
+      const before = new SQL.Database(fs.readFileSync(beforeDbPath));
 
-    // User data intact
-    const charCount = db.exec('SELECT COUNT(*) FROM characters')[0].values[0][0];
-    const wbCount = db.exec('SELECT COUNT(*) FROM worldbook_entries')[0].values[0][0];
-    const ccCount = db.exec('SELECT COUNT(*) FROM character_collections')[0].values[0][0];
-    const wbcCount = db.exec('SELECT COUNT(*) FROM worldbook_collections')[0].values[0][0];
-    expect(charCount).toBe(2);
-    expect(wbCount).toBe(2);
-    expect(ccCount).toBe(1);
-    expect(wbcCount).toBe(1);
+      try {
+        const schemaVersion = scalar(
+          after,
+          "SELECT value FROM settings WHERE key = 'schema_version'",
+        );
+        expect(SCHEMA_VERSION).toBe(51);
+        expect(schemaVersion).toBe(SCHEMA_VERSION);
 
-    // Character names preserved
-    const charNames = db.exec('SELECT name FROM characters ORDER BY id')[0].values.map(
-      (v: any[]) => v[0],
-    );
-    expect(charNames).toEqual(['林小白', '苏雨晴']);
+        const columnNames = rows(
+          after,
+          'PRAGMA table_info(canon_evidence)',
+        ).map(row => String(row[1]));
+        expect(columnNames).toContain('source_origin');
+        expect(columnNames).toContain('rescan_operation_id');
+        expect(
+          scalar(
+            after,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_canon_evidence_rescan_op'",
+          ),
+        ).toBe(1);
 
-    // source_origin backfilled (no NULL/empty)
-    const emptyOrigin = db.exec(
-      "SELECT COUNT(*) FROM canon_evidence WHERE source_origin IS NULL OR TRIM(source_origin) = ''",
-    );
-    expect(Number(emptyOrigin[0].values[0][0])).toBe(0);
+        const preservedTables: Array<[string, string]> = [
+          ['projects', 'SELECT id, name FROM projects ORDER BY id'],
+          [
+            'chapters',
+            'SELECT id, project_id, title, status, length(content) FROM chapters ORDER BY id',
+          ],
+          [
+            'characters',
+            'SELECT id, project_id, collection_id, name, data_json FROM characters ORDER BY id',
+          ],
+          [
+            'worldbook_entries',
+            'SELECT id, project_id, collection_id, keyword_primary, keyword_secondary, constant, content FROM worldbook_entries ORDER BY id',
+          ],
+          [
+            'presets',
+            'SELECT id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions FROM presets ORDER BY id',
+          ],
+          [
+            'project_resources',
+            'SELECT project_id, resource_type, resource_id, enabled FROM project_resources ORDER BY project_id, resource_type, resource_id',
+          ],
+          [
+            'outlines',
+            'SELECT id, project_id, title, content, source_type, enabled, position, estimated_tokens, content_hash FROM outlines ORDER BY id',
+          ],
+        ];
+        for (const [label, sql] of preservedTables) {
+          assertPreRowsRemain(before, after, label, sql);
+        }
 
-    // Note: PRAGMA foreign_keys is a per-connection setting, not persisted in
-    // the DB file. The app sets it at runtime in initializeDatabase; a static
-    // file inspection will always see 0. Skip this check here.
+        expect(scalar(after, 'SELECT COUNT(*) FROM projects')).toBeGreaterThan(0);
+        expect(scalar(after, 'SELECT COUNT(*) FROM chapters')).toBeGreaterThan(0);
+        expect(scalar(after, 'SELECT COUNT(*) FROM characters')).toBeGreaterThan(0);
+        expect(scalar(after, 'SELECT COUNT(*) FROM worldbook_entries')).toBeGreaterThan(0);
+        expect(scalar(after, 'SELECT COUNT(*) FROM presets')).toBeGreaterThan(0);
+        expect(scalar(after, 'SELECT COUNT(*) FROM project_resources')).toBeGreaterThan(0);
 
-    console.log('✅ Device DB verified: Schema 40, provenance columns present,');
-    console.log(`   characters=${charCount}, worldbook=${wbCount},`);
-    console.log(`   char_collections=${ccCount}, worldbook_collections=${wbcCount}`);
-    console.log(`   character names: ${JSON.stringify(charNames)}`);
-
-    db.close();
-  });
+        const emptyOrigin = scalar(
+          after,
+          "SELECT COUNT(*) FROM canon_evidence WHERE source_origin IS NULL OR TRIM(source_origin) = ''",
+        );
+        expect(emptyOrigin).toBe(0);
+        console.log(`✅ Device DB verified: schema=${schemaVersion}`);
+        console.log(
+          `   characters=${scalar(after, 'SELECT COUNT(*) FROM characters')}, worldbook=${scalar(after, 'SELECT COUNT(*) FROM worldbook_entries')}, presets=${scalar(after, 'SELECT COUNT(*) FROM presets')}`,
+        );
+      } finally {
+        before.close();
+        after.close();
+      }
+    },
+  );
 });

@@ -28,6 +28,11 @@ import {
   parseNovelWorldbookDraft,
 } from './construction/worldbookDraftAdapter';
 import {
+  novelPresetDraftToPreset,
+  parseNovelPresetDraft,
+  parseShineWriterPresetV1,
+} from './construction/presetDraftAdapter';
+import {
   modeScenario,
   modeTarget,
   type CharacterArtifact,
@@ -38,6 +43,7 @@ import {
   type ConstructionTarget,
   type LorebookEntry,
   type LorebookV3,
+  type PresetArtifact,
   type WorldbookArtifact,
 } from './construction/targets';
 
@@ -264,6 +270,23 @@ function worldbookSystemPrompt(
   ].join('\n');
 }
 
+function presetSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
+  const level = normalizeDetailLevel(detailLevel);
+  const rules = getDetailConstraints(level).preset;
+  return [
+    '你是长篇中文小说的作家风格设计助手。请把用户需求或 TXT 样本抽象为可长期复用的写作机制预设。',
+    '只能返回一个 JSON 对象，禁止 Markdown、解释、代码块、data 包装层或任何导入协议。',
+    '对象只能包含以下四个文学语义字段：',
+    '{"name":"预设名称","system_prompt":"作者身份、总体叙事目标与核心原则","writing_style":"视角、句法、词汇、段落、场景、人物、对白、节奏、意象和感官等写法","extra_instructions":"冲突、信息揭示、悬念、伏笔、章节结构、长篇一致性、禁止项与反模式"}',
+    'name、system_prompt、writing_style、extra_instructions 均必须是非空字符串。',
+    '不要输出 spec、temperature、top_p、max_tokens、is_default、数据库 id、项目绑定或 schema 字段；这些由本地适配器补齐。',
+    `本次为“${getDetailConstraints(level).label}”档，文学机制建议至少 ${rules.softTargetChars} 个有效字符，输出下限为 ${rules.minOutputTokens} Token；建议用结构化小标题清楚覆盖各维度。`,
+    '预设描述写“怎么写小说”，不要写某一章剧情、某个角色事实、具体地名、专有设定或世界书规则。',
+    '若来源为 TXT，只提炼叙述视角、叙述距离、句法、词汇、段落、场景、对白、人物声音、节奏、冲突、信息揭示、悬念、伏笔、意象、感官和章节组织；不得复述故事、人物姓名、地名、事件，也不得长段复制原文。',
+    '只依据用户提供的需求或样本生成，不要虚构“模型合同”或解释你的分析过程。',
+  ].join('\n');
+}
+
 /** 组装本次请求的完整消息（纯函数，供 UI 预估 Token 与测试断言）。 */
 export function buildConstructionMessages(input: ConstructionInput): {
   messages: ChatMessage[];
@@ -272,20 +295,24 @@ export function buildConstructionMessages(input: ConstructionInput): {
   const system =
     target === 'character'
       ? characterSystemPrompt(input.detailLevel)
-      : worldbookSystemPrompt(
-          input.mode === 'worldbook_independent' ||
-            input.mode === 'worldbook_from_character' ||
-            input.mode === 'worldbook_from_text'
-            ? input.entryCount
-            : 0,
-          input.detailLevel,
-        );
+      : target === 'preset'
+        ? presetSystemPrompt(input.detailLevel)
+        : worldbookSystemPrompt(
+            input.mode === 'worldbook_independent' ||
+              input.mode === 'worldbook_from_character' ||
+              input.mode === 'worldbook_from_text'
+              ? input.entryCount
+              : 0,
+            input.detailLevel,
+          );
 
   const userParts: string[] = [];
   if (input.mode === 'character_independent') {
     userParts.push(buildIndependentCharacterBrief(input));
   } else if (input.mode === 'worldbook_independent') {
     userParts.push(buildIndependentWorldbookBrief(input));
+  } else if (input.mode === 'preset_independent') {
+    userParts.push(buildIndependentPresetBrief(input));
   } else if (input.mode === 'character_from_worldbook') {
     userParts.push('请基于下方世界书设定，设计一张符合该世界观的原创角色卡。');
     userParts.push(input.sourceSnapshot);
@@ -304,6 +331,12 @@ export function buildConstructionMessages(input: ConstructionInput): {
   } else if (input.mode === 'character_from_text') {
     userParts.push(
       '请基于下方 TXT 素材设计原创角色卡。素材中明确出现的事实视为既定设定；只可在不冲突的空白处合理创作，不要逐段复制原文。',
+    );
+    userParts.push(input.sourceSnapshot);
+    if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
+  } else if (input.mode === 'preset_from_text') {
+    userParts.push(
+      '请从下方 TXT 素材提炼一份原创作家风格预设。只总结可迁移的写作机制，不要把来源故事中的人物、地名、事件、专有设定或剧情事实写成规则，也不要复制原文。',
     );
     userParts.push(input.sourceSnapshot);
     if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
@@ -368,6 +401,38 @@ function buildIndependentWorldbookBrief(
   }
   if (input.extra?.trim()) lines.push(`补充需求：${input.extra.trim()}`);
   return lines.join('\n');
+}
+
+function buildIndependentPresetBrief(
+  input: Extract<ConstructionInput, { mode: 'preset_independent' }>,
+): string {
+  const fields: Array<[string, string | undefined]> = [
+    ['预设名称', input.name],
+    ['适用题材 / 类型', input.genre],
+    ['目标读者 / 整体气质', input.audience],
+    ['叙述视角', input.pointOfView],
+    ['叙述者距离', input.narratorDistance],
+    ['语言质感', input.languageTexture],
+    ['句法倾向', input.syntax],
+    ['词汇倾向', input.vocabulary],
+    ['段落组织', input.paragraphStructure],
+    ['场景与环境描写', input.sceneEnvironment],
+    ['人物描写', input.characterVoice],
+    ['对白与人物声音', input.dialogue],
+    ['节奏', input.pacing],
+    ['冲突推进', input.conflict],
+    ['悬念 / 信息揭示 / 伏笔', input.suspense],
+    ['章节结构', input.chapterStructure],
+    ['意象 / 感官', [input.imagery, input.sensory].filter(Boolean).join('；')],
+    ['禁止项 / 反模式', input.prohibitions],
+    ['补充要求', input.extra],
+  ];
+  return [
+    '请根据以下创作意图生成一份可复用的作家风格预设。',
+    ...fields
+      .filter(([, value]) => value?.trim())
+      .map(([label, value]) => `${label}：${value!.trim()}`),
+  ].join('\n');
 }
 
 /** 预估本次请求的输入 Token（含系统提示词、来源快照与用户需求）。 */
@@ -510,10 +575,44 @@ function parseWorldbookResponse(
   return { ...artifact, qualityReport };
 }
 
+function parsePresetResponse(
+  text: string,
+  detailLevel?: ConstructionDetailLevel,
+  providerOutputTokens?: number,
+): PresetArtifact {
+  const raw = parseJsonObject(text);
+  const draft = parseNovelPresetDraft(raw);
+  const preset = novelPresetDraftToPreset(draft);
+  const readBack = parseShineWriterPresetV1(preset);
+  if (readBack.name !== draft.name) {
+    throw new Error('预设兼容适配回读失败：名称不一致。');
+  }
+  const artifact: PresetArtifact = {
+    kind: 'preset',
+    name: readBack.name,
+    preset: readBack,
+  };
+  const qualityReport = assessConstructionArtifact(
+    artifact,
+    detailLevel,
+    providerOutputTokens,
+  );
+  if (!qualityReport.hardPassed) {
+    throw new Error(
+      `预设未通过结构硬门禁：${qualityReport.failures
+        .map(item => item.message)
+        .join('；')}`,
+    );
+  }
+  return { ...artifact, qualityReport };
+}
+
 // ---------- 对外入口 ----------
 
 /** 世界书模式的输入类型（三种 worldbook 模式都有必填 entryCount）。 */
 type WorldbookInput = Extract<ConstructionInput, { entryCount: number }>;
+type PresetInput = Extract<ConstructionInput, { mode: 'preset_independent' | 'preset_from_text' }>;
+type CharacterInput = Exclude<ConstructionInput, WorldbookInput | PresetInput>;
 
 function isWorldbookInput(
   input: ConstructionInput,
@@ -532,10 +631,13 @@ function isWorldbookInput(
 export async function generateConstruction(
   input: ConstructionInput,
   options: GenerateOptions,
-): Promise<CharacterArtifact | WorldbookArtifact> {
+): Promise<CharacterArtifact | WorldbookArtifact | PresetArtifact> {
+  if (modeTarget(input.mode) === 'preset') {
+    return generatePresetSingle(input as PresetInput, options);
+  }
   // 角色卡：保持单次调用
   if (!isWorldbookInput(input)) {
-    return generateCharacterSingle(input, options);
+    return generateCharacterSingle(input as CharacterInput, options);
   }
 
   // 世界书：根据预算决定单次 or 分批
@@ -556,7 +658,7 @@ export async function generateConstruction(
 
 /** 角色卡单次生成（原 generateConstruction 的角色卡分支）。 */
 async function generateCharacterSingle(
-  input: ConstructionInput,
+  input: CharacterInput,
   options: GenerateOptions,
 ): Promise<CharacterArtifact> {
   const { messages } = buildConstructionMessages(input);
@@ -583,6 +685,41 @@ async function generateCharacterSingle(
     throw new Error('模型未返回生成内容。');
   }
   return parseCharacterResponse(
+    result.text,
+    input.detailLevel,
+    result.outputTokens,
+  );
+}
+
+/** 预设单次生成；模型只负责四个文学语义字段，协议由本地 Adapter 补齐。 */
+async function generatePresetSingle(
+  input: PresetInput,
+  options: GenerateOptions,
+): Promise<PresetArtifact> {
+  const { messages } = buildConstructionMessages(input);
+  const result = await callLLMResult(
+    messages,
+    Math.max(1, Math.floor(options.maxTokens)),
+    {
+      scenario: modeScenario(input.mode),
+      temperature: 0.7,
+      queueClass: 'normal',
+      queuePriority: 'manual',
+      onQueueState: options.onQueueState,
+    },
+    options.signal,
+  );
+
+  if (options.signal?.aborted) {
+    throw new Error('已取消生成。');
+  }
+  if (result.finishReason === 'length') {
+    throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
+  }
+  if (!result.text || !result.text.trim()) {
+    throw new Error('模型未返回生成内容。');
+  }
+  return parsePresetResponse(
     result.text,
     input.detailLevel,
     result.outputTokens,
@@ -823,5 +960,6 @@ export type {
   ConstructionMode,
   ConstructionTarget,
   LorebookV3,
+  PresetArtifact,
   WorldbookArtifact,
 };

@@ -55,6 +55,17 @@ describe('construction adapters', () => {
     expect(draft.arc).toBeUndefined();
   });
 
+  test('renders structured relationship values without leaking object coercion', () => {
+    const draft = parseNovelCharacterDraft({
+      name: '结构关系角色',
+      role: '调查者',
+      personality: '谨慎',
+      relationships: [{ name: '港务长', nature: '互相利用' }],
+    });
+    expect(draft.relationships).toEqual(['name：港务长；nature：互相利用']);
+    expect(JSON.stringify(draft)).not.toContain('[object Object]');
+  });
+
   test('maps novel world facts to Lorebook v3 deterministically', () => {
     const lorebook = novelWorldbookDraftToLorebook({
       name: '雾港纪事',

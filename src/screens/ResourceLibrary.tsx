@@ -71,6 +71,10 @@ import {
   pickLocalFiles,
   withCharacterImageAsset,
 } from '../services/fileImport';
+import {
+  avoidPresetNameCollision,
+  importSelectedPreset,
+} from '../services/constructionFileService';
 import { BatchImportResultModal } from '../components/BatchImportResultModal';
 import * as exportService from '../services/exportService';
 import { ContinuationHomeBody } from './continuation/ContinuationHomeScreen';
@@ -759,15 +763,28 @@ export const ResourceLibrary: React.FC<{
     }
   };
 
+  const importPreset = async () => {
+    try {
+      const result = await importSelectedPreset(projectId);
+      if (result?.kind === 'preset') {
+        Toast.show({
+          type: 'success',
+          text1: '预设已导入',
+          text2: `「${result.name}」已加入我的预设。`,
+        });
+      }
+      await loadData();
+    } catch (error: any) {
+      Toast.show({ type: 'error', text1: '导入预设失败', text2: error.message });
+    }
+  };
+
   const copyCatalogPreset = async (catalogItem: PresetCatalogItem) => {
     const baseName = catalogItem.name.trim();
-    const existingNames = new Set(items.presets.map(item => String(item.name || '').trim()));
-    let name = baseName;
-    let suffix = 2;
-    while (existingNames.has(name)) {
-      name = `${baseName}（${suffix}）`;
-      suffix += 1;
-    }
+    const name = avoidPresetNameCollision(
+      baseName,
+      items.presets.map(item => String(item.name || '').trim()),
+    );
     try {
       const id = await db.createPreset(projectId, name);
       await db.updatePreset(id, {
@@ -1303,6 +1320,20 @@ export const ResourceLibrary: React.FC<{
                   onPress={() => setSelectedNoteCollectionId(null)}
                 />
               ) : null}
+            </ScrollView>
+          ) : null}
+          {tab === 'presets' ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.actionScroll}
+            >
+              <Button
+                label="导入预设"
+                icon={Import}
+                compact
+                onPress={importPreset}
+              />
             </ScrollView>
           ) : null}
           {tab === 'notes' && currentProject ? (
