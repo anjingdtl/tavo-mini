@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.50] - 2026-08-13
+
+### Added — Context Budget V3 Final Seal
+
+- 完成 Context Budget V3 分层弹性分配、候选优先压缩与最终收口，补齐高负载上下文预览和预算证据链。
+- 修复冷启动恢复时 frozen pipeline snapshot 未保持的问题，并关闭 post-coverage episodic demand reclaim 收口缺口。
+- 补充 DeepSeek V4 prompt cache 字节稳定性与可观测性验证。
+
+### Validation
+
+- `npm run verify`、Context Budget V3、pipeline 恢复与最终收口专项测试已通过。
+
 ## [2.11.49] - 2026-08-11
 
 ### Fixed — Story Memory Protocol V2 Evidence Temporal Boundary
