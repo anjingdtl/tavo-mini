@@ -168,6 +168,26 @@ async function attemptCount(): Promise<number> {
   return Number(rows[0].c ?? 0);
 }
 
+async function waitForPersistedRetry(taskId: string): Promise<void> {
+  const row = await one<{ next_retry_at: number | null }>(
+    `SELECT next_retry_at
+       FROM pipeline_stage_attempts
+      WHERE pipeline_task_id = ?
+      ORDER BY attempt_no DESC
+      LIMIT 1`,
+    [taskId],
+  );
+  const nextRetryAt = Number(row?.next_retry_at ?? 0);
+  const remainingMs = nextRetryAt - Date.now();
+  if (remainingMs > 0) {
+    // The production retry schedule is intentionally jittered.  Wait for the
+    // persisted deadline instead of racing a second reconcile against it.
+    await new Promise<void>(resolve => {
+      setTimeout(resolve, remainingMs + 25);
+    });
+  }
+}
+
 describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
   jest.setTimeout(60_000);
 
@@ -254,6 +274,7 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
     await reconcilePipelineTask(taskId, chapter, {
       batchBudgetGate: { batchId: 'b1' },
     });
+    await waitForPersistedRetry(taskId);
     await reconcilePipelineTask(taskId, chapter, {
       batchBudgetGate: { batchId: 'b1' },
     });
@@ -300,6 +321,7 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
     expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
 
     // 第二次 reconcile（重试）：used(1) + 1 > maxLlmCalls(1) → 请求前阻断。
+    await waitForPersistedRetry(taskId);
     let caught: any = null;
     try {
       await reconcilePipelineTask(taskId, chapter, {
