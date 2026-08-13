@@ -127,6 +127,23 @@ clound
 # Local-only PowerShell helper scripts (not source)
 scripts/probe-smtp.ps1
 scripts/zswebdav-put.ps1
+/scripts/zspace-webdav.mjs
+
+# Local agent state, attachments, and QA artifacts (never commit)
+/.agent/
+/.agents/
+/.codex-remote-attachments/
+/.w
+/progress.md
+/test-logs/
+/test_char*.json
+/ui.xml
+/*.b64
+/*.db
+/*.log
+/*.png
+/*.xml
+/*.zip
 
 # 根目录散落调试产物（运行时数据库 / 模拟器截图 / logcat / UI dump / 解析脚本，不入库）
 /shine_writer*.db
