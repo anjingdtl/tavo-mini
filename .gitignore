@@ -130,6 +130,8 @@ scripts/zswebdav-put.ps1
 /scripts/zspace-webdav.mjs
 
 # Local agent state, attachments, and QA artifacts (never commit)
+/AGENTS.md
+/CLAUDE.md
 /.agent/
 /.agents/
 /.codex-remote-attachments/
