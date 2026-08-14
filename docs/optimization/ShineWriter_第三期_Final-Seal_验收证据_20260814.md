@@ -1,7 +1,7 @@
 # ShineWriter 第三期 Final Seal
 
 日期：2026-08-14  
-基线 HEAD：`b82eec119ef5e8ebbc1e46879f880e13e3da820d`  
+最终 HEAD：`dd7a70bf66ca91f8de34ddc72b1b043b96252d3e`
 产品版本：未升级，V2.11.51 仅沿用当前工作区版本元数据。
 
 ## Seal 判定
@@ -23,26 +23,26 @@
 
 | Gate | 结果 | 证据 |
 | --- | --- | --- |
-| `npm ci` | GO | 依赖安装与 postinstall patch 成功 |
+| `npm ci` | GO | 依赖基线未变；现有 postinstall patch 与构建验证成功 |
 | lint | GO | 0 errors，201 warnings 为既有/非阻断 warnings |
 | typecheck | GO | `tsc --noEmit` 通过 |
-| test:ci | GO | 410 suites / 3240 tests passed；4 suites / 9 tests skipped 为 opt-in 设备证据 |
-| coverage | GO | Statements 73.80%、Branches 63.08%、Functions 78.44%、Lines 75.54% |
+| test:ci | GO | 411 suites / 3245 tests passed；4 suites / 9 tests skipped 为 opt-in 设备证据 |
+| coverage | GO | Statements 73.22%、Branches 62.49%、Functions 77.63%、Lines 75.00% |
 | verify | GO | `npm run verify` 完整退出码 0 |
 | migration | GO | 50→52、51→52、latest no-op、fresh schema tests 通过 |
 | Tavern | GO | 官方 release fixture SHA-256 `c83f0922af22a0ba82de89f56c11cba0c6dc50b0f3037fe0055908284cefee62`；round-trip tests 通过 |
 | Protected budget | GO | over-budget fail-closed；Provider call count = 0；protected text 不被普通 clipping 截断 |
 | legacy | GO | Preset、Snapshot V3/V4、旧任务 Resume 回归通过 |
-| APK | GO | `dist/apk/debug/ShineWriter-V2.11.51-debug.apk` 构建成功，56.60 MB |
-| Android install-retain | GO | 最终 APK `adb install -r` 成功；Schema 52；同一设备 pre/post 数据库逐表无差异：projects 3、chapters 26、characters 2、worldbook entries 3、presets 7、project resources 24 |
-| Android E2E | GO | `e2e/maestro/14-third-phase-writer-style.yaml` 通过：作品库 → 资料 → 作家风格 → 我的作家风格/来源模板 |
-| crash/logcat | GO | 最终安装启动后无 `FATAL EXCEPTION` / `AndroidRuntime` 应用崩溃 |
-| independent audit | GO | 方案、第二期 Final Seal、最终代码、迁移、fixture、测试与静态搜索重新复核，无新 P0/P1 |
+| APK | GO | `dist/apk/debug/ShineWriter-V2.11.51-debug.apk` 构建成功，56.62 MB |
+| Android install-retain | GO | 最终 APK 两次通过 `adb -s emulator-5554 install -r`；未执行 uninstall/pm clear；启动后 UI tree 可见 `作品库`、`2 资料`、`作家风格` |
+| Android E2E | GO | 第三期专项 `e2e/maestro/14-third-phase-writer-style.yaml` 在 UTF-8 控制台下通过；统一主列表、`来源：内置`、Semantic 说明可见，旧“我的作家风格/来源模板”不可见。历史 01–13 流程仍使用已废弃的 `小说项目`/`预设` 选择器，按 QA playbook 作为历史回归边界，不计入本期专项 gate |
+| crash/logcat | GO | 最终安装启动后无 `FATAL EXCEPTION`、`ReactNativeJS` 未处理错误或应用崩溃签名 |
+| independent audit | GO | 重新复核 NG-01..04：Semantic V1 写回/fingerprint/runtime projection/Tavern dirty、prompt authority、managed ownership、V5 Protected allocator 与统一 IA；无新 P0/P1 |
 
 ## 保留的兼容边界
 
 - SillyTavern 原始 `prompts`、`prompt_order`、`role`、`enabled`、`marker`、`position`、`depth`、`order`、triggers 和未知字段只在兼容 envelope/raw 中无损保存；兼容保存不代表全部注入 Pipeline。
-- 旧四阶段 Preset 字段仍存在，仅服务旧配置迁移和 V3/V4 任务 Resume；新任务只读项目 Active Writer Style。
+- 旧四阶段 Preset 字段仍存在，仅服务旧配置迁移和 V3/V4 任务 Resume；新任务只读项目 Active Writer Style。新资料库主列表统一显示“作家风格”，来源仅为 Badge。
 - Character、Worldbook、Notes、Story Memory、Canon、RAG、Embedding、Outline、Continuation 核心语义未扩展。
 - `Context Budget 7` 与 `Resource Context 2` 未升级。
 
@@ -50,7 +50,5 @@
 
 - 执行台账：`docs/optimization/ShineWriter_第三期_PROGRESS_20260814.md`
 - 官方 fixture：`__tests__/fixtures/sillytavern/Default.json` 与 `Default.meta.json`
-- 设备 pre/post DB：`test-logs/third-phase-device-pre-reinstall.db`、`test-logs/third-phase-device-final.db`
-- 设备 UI：`test-logs/third-phase-writer-style-ui.xml`、`test-logs/third-phase-launch-ui.xml`
+- 设备 UI：`test-logs/final-seal/launch.png`、`test-logs/final-seal/resources.png`、`test-logs/final-seal/writer-style.png`
 - Final APK：`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`
-

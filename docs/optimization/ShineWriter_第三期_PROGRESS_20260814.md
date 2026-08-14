@@ -2,7 +2,7 @@
 
 ## Round 0 基线
 
-- HEAD：`b82eec119ef5e8ebbc1e46879f880e13e3da820d`
+- 最终 HEAD：`dd7a70bf66ca91f8de34ddc72b1b043b96252d3e`
 - 基线：Schema 51、Snapshot V4、Context Budget 7、Resource Context 2。
 - 基线证据：第二期 Final Seal `ShineWriter_第二期_Final-Seal_验收证据_20260814.md`。
 - 方案文件保持未修改：`ShineWriter_第三期_作家风格预设全链路重构_PDCA方案_20260814.md`。
@@ -32,17 +32,18 @@
 - Round 8：Preview/Send 共用 V5 compiler；Trace、Backup、项目导入导出接入 Semantic/Compatibility。
 - Round 9：旧 Preset、Snapshot V3/V4、旧任务 Resume、迁移矩阵、故障注入、`adb install -r` 数据保留和当前第三期 Maestro Flow 已通过。
 - Round 10：独立重读方案/Final Seal/最终代码；静态搜索确认 V5 Writer Style 不走 optional、普通 resource clipping 或 `includeResources` 分支；完整 CI、覆盖率和 Debug APK 已通过。
+- Round 11：修复远端验收 NG-01..04；补齐 Semantic editor、prompt-authority/malicious-custom-prompt、managed ownership conflict round-trip、V5 protected allocator 与统一 IA；最终专项 Android Flow 14 通过。
 
 ## Final Gate 结果
 
 - `npm ci`：GO。
 - `npm run lint`：GO，0 errors（既有 warnings 201）。
 - `npm run typecheck`：GO。
-- `npm run test:ci`：GO，410 suites passed，3240 tests passed，4 suites/9 tests skipped（设备证据未设置 opt-in 时跳过）。
-- `npm run test:coverage`：GO，全局 Statements 73.80%、Branches 63.08%、Functions 78.44%、Lines 75.54%。
+- `npm run test:ci`：GO，411 suites passed，3245 tests passed，4 suites/9 tests skipped（设备证据未设置 opt-in 时跳过）。
+- `npm run test:coverage`：GO，全局 Statements 73.22%、Branches 62.49%、Functions 77.63%、Lines 75.00%。
 - `npm run verify`：GO。
-- `npm run apk:debug`：GO，`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`。
-- Android：GO，最终 APK 使用 `adb install -r` 安装；同一设备 pre/post 数据库逐表无差异，Schema 52、项目 3、章节 26、Preset 7；专项 Maestro Flow 通过。
+- `npm run apk:debug`：GO，`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`（56.62 MB）。
+- Android：GO，最终 APK 两次使用 `adb install -r` 安装；专项 `14-third-phase-writer-style.yaml` 通过；历史 01–13 流程的旧 `小说项目`/`预设` 选择器漂移按 QA playbook 记录，不影响第三期专项 gate。
 - 独立 Final Audit：GO；无新 P0/P1，第三期剩余 NO-GO = 0。
 
 本台账已满足全部 Gate = GO、独立复审无新 P0/P1、剩余 NO-GO = 0；Final Seal 见 `ShineWriter_第三期_Final-Seal_验收证据_20260814.md`。
