@@ -337,9 +337,11 @@ export function allocateContextBudget(
 }
 
 /**
- * Map an auto-config window onto the current model's declared capability.
- * 1M context → 200K max output, matching the 80/20 elastic envelope used by
- * stage reservations. This is not a V3 bulk flatten of every model/preset.
+ * Preview-only 80/20 envelope for a *budget simulation* window.
+ *
+ * This is NOT a model capability and MUST NEVER be written to
+ * `llm_config.context_window` / `max_output_tokens`. Real capability is
+ * whatever the user saved on the LLM Settings page.
  */
 export function deriveLLMCapabilityFromAutoWindow(maxContextTokens: number): {
   contextWindow: number;
@@ -357,6 +359,41 @@ export function deriveLLMCapabilityFromAutoWindow(maxContextTokens: number): {
   };
 }
 
+export const DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW = 1_000_000;
+
+/**
+ * Default the simulation input from a saved `context_auto_input`, otherwise
+ * the *preferred saved* LLM's real `context_window`. Never fall back to
+ * active / configs[0] — that would treat another model as the new draft.
+ */
+export function resolveContextAutoSimulationDefault(params: {
+  savedInput: number | null;
+  preferredConfigId?: number | null;
+  configs: Array<{ id: number; context_window?: number }>;
+  referenceContextWindow?: number | null;
+  fallback?: number;
+}): number {
+  const saved = Number(params.savedInput);
+  if (Number.isFinite(saved) && saved > 0) {
+    return Math.round(saved);
+  }
+  const preferredId = Number(params.preferredConfigId);
+  if (Number.isSafeInteger(preferredId) && preferredId > 0) {
+    const preferred = params.configs.find(
+      item => Number(item.id) === preferredId,
+    );
+    const preferredWindow = Number(preferred?.context_window);
+    if (Number.isFinite(preferredWindow) && preferredWindow > 0) {
+      return Math.round(preferredWindow);
+    }
+  }
+  const reference = Number(params.referenceContextWindow);
+  if (Number.isFinite(reference) && reference > 0) {
+    return Math.round(reference);
+  }
+  return params.fallback ?? DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW;
+}
+
 // ============================================================================
 // 应用函数：以下为有副作用部分，与纯函数分开维护
 // ============================================================================
@@ -364,15 +401,13 @@ export function deriveLLMCapabilityFromAutoWindow(maxContextTokens: number): {
 import { openDatabase } from '../data/connection/openDatabase';
 import { executeTransaction, type SqlStatement } from './database/transaction';
 import { all } from '../data/connection/query';
-import {
-  getLLMConfigs,
-  resolveLLMConfigIdForContextSync,
-  updateLLMCapabilityWindow,
-} from '../data/repositories/llmConfigRepository';
+import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
+import { setContextConfig } from '../data/repositories/settingsRepository';
 import {
   buildAppliedRecord,
   getContextAutomationPolicy,
   getContextAutomationPolicyV3,
+  setContextAutoInput,
   setContextAutoLastApplied,
   setContextAutoMode,
   setContextAutomationPolicy,
@@ -655,20 +690,17 @@ export interface ContextAutoAppliedRecordV3 {
  *   - characters / notes / worldbook_entries / worldbook_collections
  *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens).
  */
-export async function syncLLMCapabilityAfterAutoApply(
-  maxContextTokens: number,
-  preferredConfigId?: number | null,
-): Promise<number | null> {
-  const capability = deriveLLMCapabilityFromAutoWindow(maxContextTokens);
-  const configs = await getLLMConfigs();
-  const id = resolveLLMConfigIdForContextSync(configs, preferredConfigId);
-  if (id == null) return null;
-  await updateLLMCapabilityWindow(
-    id,
-    capability.contextWindow,
-    capability.maxOutputTokens,
-  );
-  return id;
+export async function restoreContextAutoDefaults(): Promise<void> {
+  const defaultPolicy = cloneDefaultContextAutomationPolicy();
+  const defaultPolicyV3 = cloneDefaultContextAutomationPolicyV3();
+  await setContextAutomationPolicy(defaultPolicy);
+  await setContextAutomationPolicyV3(defaultPolicyV3);
+  await setContextAutoMode('v3');
+  await setContextAutoInput(DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW);
+  await setContextConfig({
+    ...DEFAULT_CONTEXT_CONFIG,
+  });
+  // Explicitly do NOT write llm_config.context_window / max_output_tokens.
 }
 
 export async function applyContextAutoAllocationV3(

@@ -1,0 +1,99 @@
+appId: com.shinewriter
+---
+# LLM Settings + Context Auto. Overlay-install safe.
+# Does not overwrite Keystore keys or set a dummy model as current.
+# Context Auto apply must remain a simulation write (policy / mode / input).
+# Maestro text matchers are full-string regex; use exact copy or testIDs.
+- launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
+- extendedWaitUntil:
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-settings
+- tapOn:
+    id: settings-llm
+- extendedWaitUntil:
+    visible:
+      id: llm-settings
+    timeout: 10000
+- assertVisible:
+    id: llm-context-window
+- assertVisible:
+    id: llm-max-output-tokens
+- scrollUntilVisible:
+    element:
+      id: llm-open-context-auto
+    direction: DOWN
+    timeout: 15000
+    visibilityPercentage: 40
+- tapOn:
+    id: llm-open-context-auto
+- extendedWaitUntil:
+    visible:
+      id: context-auto-screen
+    timeout: 10000
+- assertVisible: '上下文自动化配置'
+- assertVisible: 'V3 策略与预算模拟（不修改模型真实能力）'
+- assertVisible: '当前模型真实能力'
+- scrollUntilVisible:
+    element:
+      id: context-auto-preset-128000
+    direction: DOWN
+    timeout: 15000
+    visibilityPercentage: 40
+- assertVisible: '预算模拟窗口'
+- tapOn:
+    id: context-auto-preset-128000
+- swipe:
+    direction: UP
+- swipe:
+    direction: UP
+- tapOn:
+    id: context-auto-apply
+- tapOn: '应用'
+- waitForAnimationToEnd:
+    timeout: 4000
+- pressKey: back
+- extendedWaitUntil:
+    visible:
+      id: llm-settings
+    timeout: 10000
+- assertVisible:
+    id: llm-context-window
+- assertVisible:
+    id: llm-max-output-tokens
+- tapOn:
+    id: llm-add-config
+- tapOn:
+    id: llm-open-context-auto
+- extendedWaitUntil:
+    visible:
+      id: context-auto-unsaved-notice
+    timeout: 10000
+- assertVisible: '新配置尚未保存'
+- swipe:
+    direction: UP
+- swipe:
+    direction: UP
+- tapOn:
+    id: context-auto-apply
+- tapOn: '应用'
+- waitForAnimationToEnd:
+    timeout: 4000
+- pressKey: back
+- extendedWaitUntil:
+    visible:
+      id: llm-settings
+    timeout: 10000
+- assertVisible:
+    id: llm-context-window
+- tapOn:
+    id: tab-projects
+- assertVisible:
+    id: project-library

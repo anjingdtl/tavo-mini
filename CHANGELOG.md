@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.11.52] - 2026-08-14
+
+### Fixed — Context Auto 不得改写模型真实能力
+
+- Context Auto V3 的预算模拟窗口不再写入 `llm_config.context_window` / `max_output_tokens`。
+- 未保存的新 LLM 配置（draft id=0）进入 Context Auto 只做只读模拟，不会静默改其他已保存模型。
+- “恢复默认配置”不改变任何 LLM 真实能力。真实窗口只在 LLM 设置页保存时改变。
+
+### Validation
+
+- 故障注入 A–F、`npm run verify`、设备 `adb install -r` 后 apply 128K 模拟窗口、库内能力仍为 1M/200K。
+
 ## [2.11.51] - 2026-08-14
 
 ### Fixed — V7 Frozen Notes Semantic Closure

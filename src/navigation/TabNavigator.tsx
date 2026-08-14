@@ -88,7 +88,9 @@ export type SettingsStackParamList = {
   BackupCenter: undefined;
   Recall: undefined;
   UsageStats: undefined;
-  ContextAutoConfig: { llmConfigId?: number } | undefined;
+  ContextAutoConfig:
+    | { llmConfigId?: number; referenceContextWindow?: number }
+    | undefined;
   ContinuationGenerationConfig: undefined;
 };
 

@@ -23,6 +23,8 @@
 | NG-09 | 历史设备 DB 证据与本次安装前状态不一致 | NO-GO | 已关闭：同一设备即时 pre/post DB 逐表无差异，Schema 52 验证通过 |
 | 远端 NG-05 | 新导出 Tavern Writer Style 缺 managed ownership | NO-GO | GO：export 写入显式 ownership；parse/edit/export 循环只保留一个 managed prompt |
 | 远端 NG-06 | Snapshot V5 Brief MINIMAL 未进入真实 Brief 请求 | NO-GO | GO：Brief 消费冻结 Projection，mandatory/protected 真实发送；over-budget Provider=0 |
+| NG-LLM-01 | Context Auto 模拟窗口写回 llm_config 真实能力 | NO-GO | GO：V3 apply 只写 policy/mode/input；设备 apply 128K 后仍为 1M/200K |
+| NG-LLM-02 | draft.id=0 静默改其他已保存 LLM | NO-GO | GO：resolver fail-closed；未保存草稿只读/模拟 |
 
 ## 轮次记录
 
@@ -37,6 +39,7 @@
 - Round 11：修复远端验收 NG-01..04；补齐 Semantic editor、prompt-authority/malicious-custom-prompt、managed ownership conflict round-trip、V5 protected allocator 与统一 IA；最终专项 Android Flow 14 通过。
 - Round 12：定点关闭远端 NG-05/NG-06。Final Code HEAD `b7321c3`；GitHub Actions Run `31778705952` success。Seal 文档只记录这两个锚点，不再回写自己的 SHA。
 - Round 13：Final UX Closure。UX-01/02/03 GO；Maestro 01–14 全量通过；上下文自动配置同步当前模型 `context_window` / `max_output_tokens`（80/20）。不改已封板协议。Code HEAD `8cd6752`；Actions Run `31788851482` success。证据见 `ShineWriter_第三期_Final-UX-Closure_验收证据_20260814.md`。
+- Round 14：定点关闭 NG-LLM-01 / NG-LLM-02。撤销 Context Auto 对模型真实能力的写回；未保存 draft 不再 fallback 改其他模型。Writer Style 未改。证据见 `ShineWriter_第三期_Final-UX-Seal_验收证据_20260814.md`。
 
 ## Final Gate 结果
 

@@ -19,26 +19,20 @@ import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import {
   applyContextAutoAllocationV3,
   deriveLLMCapabilityFromAutoWindow,
-  syncLLMCapabilityAfterAutoApply,
+  DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW,
+  resolveContextAutoSimulationDefault,
+  restoreContextAutoDefaults,
 } from '../services/contextAutoAllocator';
 import {
   getContextAutoInput,
   getContextAutoLastApplied,
   ensureContextAutomationPolicyV3,
-  setContextAutoMode,
-  setContextAutoInput,
-  setContextAutomationPolicy,
-  setContextAutomationPolicyV3,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
 import {
-  cloneDefaultContextAutomationPolicy,
   cloneDefaultContextAutomationPolicyV3,
   hashContextAutomationPolicyV3,
 } from '../services/contextAutomationPolicy';
-import {
-  DEFAULT_CONTEXT_CONFIG,
-} from '../constants/defaults';
 import * as db from '../services/database';
 
 const QUICK_PRESETS: { label: string; value: number }[] = [
@@ -48,7 +42,7 @@ const QUICK_PRESETS: { label: string; value: number }[] = [
   { label: '1M', value: 1000000 },
 ];
 
-const DEFAULT_INPUT_VALUE = 1000000;
+const DEFAULT_INPUT_VALUE = DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW;
 const WARNING_THRESHOLD = 8000;
 
 // 数字格式化：1000 → "1,000"
@@ -61,6 +55,9 @@ export const ContextAutoConfigScreen: React.FC = () => {
   const route =
     useRoute<RouteProp<SettingsStackParamList, 'ContextAutoConfig'>>();
   const preferredLlmConfigId = route.params?.llmConfigId;
+  const referenceContextWindow = route.params?.referenceContextWindow;
+  const isUnsavedDraft =
+    preferredLlmConfigId == null || Number(preferredLlmConfigId) <= 0;
   const loadSettings = useSettingsStore(state => state.loadSettings);
   const [inputText, setInputText] = useState<string>(String(DEFAULT_INPUT_VALUE));
   const [lastApplied, setLastApplied] = useState<ContextAutoAppliedRecord | null>(
@@ -85,7 +82,16 @@ export const ContextAutoConfigScreen: React.FC = () => {
           ensureContextAutomationPolicyV3(),
           db.getLLMConfigs(),
         ]);
-        if (savedInput != null) setInputText(String(savedInput));
+        setInputText(
+          String(
+            resolveContextAutoSimulationDefault({
+              savedInput,
+              preferredConfigId: preferredLlmConfigId,
+              configs,
+              referenceContextWindow,
+            }),
+          ),
+        );
         setLastApplied(applied);
         setPolicyV3(loadedPolicyV3);
         setLlmConfigs(configs);
@@ -93,7 +99,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         Toast.show({ type: 'error', text1: '加载失败', text2: e?.message });
       }
     })();
-  }, []);
+  }, [preferredLlmConfigId, referenceContextWindow]);
 
   const numericInput = useMemo(() => {
     const v = Number(inputText);
@@ -111,13 +117,16 @@ export const ContextAutoConfigScreen: React.FC = () => {
       Toast.show({ type: 'error', text1: '请输入有效的上下文大小' });
       return;
     }
+    const previewEnvelope = deriveLLMCapabilityFromAutoWindow(numericInput);
     Alert.alert(
       '确认保存 V3 预算模拟窗口',
       `将保存 ${formatNumber(
         numericInput,
-      )} tokens 作为预览模拟值，并按弹性预算 80/20 同步当前 LLM 的上下文长度与最大输出 Token（${formatNumber(
-        deriveLLMCapabilityFromAutoWindow(numericInput).maxOutputTokens,
-      )}）。不会批量改写其他模型、作家风格或资料额度。`,
+      )} tokens 作为预算模拟窗口（仅 Preview / 预览）。\n\n` +
+        `按该模拟窗口预览 80/20 包络时，输出上限约为 ${formatNumber(
+          previewEnvelope.maxOutputTokens,
+        )} tokens。此预览不会写入任何 LLM 的 context_window / max_output_tokens。\n\n` +
+        '模型真实能力只能在 LLM 设置页点「保存配置」后改变。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -127,10 +136,6 @@ export const ContextAutoConfigScreen: React.FC = () => {
             setApplying(true);
             try {
               const v3Record = await applyContextAutoAllocationV3(numericInput);
-              await syncLLMCapabilityAfterAutoApply(
-                numericInput,
-                preferredLlmConfigId,
-              );
               await loadSettings();
               setLastApplied({
                 maxContextTokens: v3Record.maxContextTokens,
@@ -173,7 +178,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
     Alert.alert(
       '恢复默认配置',
       '将恢复 V3 策略与预算模拟窗口默认值。\n\n' +
-        '注意：LLM 配置、作家风格、旧版流水线字段和资源级 max_tokens 不会被重置。',
+        '不会改变任何 LLM 的 context_window / max_output_tokens，也不会重置作家风格、旧版流水线字段或资源级 max_tokens。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -182,19 +187,13 @@ export const ContextAutoConfigScreen: React.FC = () => {
           onPress: async () => {
             setRestoring(true);
             try {
-              const defaultPolicy = cloneDefaultContextAutomationPolicy();
-              const defaultPolicyV3 = cloneDefaultContextAutomationPolicyV3();
-              await setContextAutomationPolicy(defaultPolicy);
-              await setContextAutomationPolicyV3(defaultPolicyV3);
-              setPolicyV3(defaultPolicyV3);
-              await setContextAutoMode('v3');
-              await setContextAutoInput(DEFAULT_INPUT_VALUE);
-              await db.setContextConfig({
-                ...DEFAULT_CONTEXT_CONFIG,
-              });
+              await restoreContextAutoDefaults();
+              const restoredPolicy = cloneDefaultContextAutomationPolicyV3();
+              setPolicyV3(restoredPolicy);
               Toast.show({ type: 'success', text1: '已恢复默认配置' });
               setInputText(String(DEFAULT_INPUT_VALUE));
               setLastApplied(null);
+              setLlmConfigs(await db.getLLMConfigs());
             } catch (e: any) {
               Toast.show({
                 type: 'error',
@@ -213,10 +212,23 @@ export const ContextAutoConfigScreen: React.FC = () => {
   return (
     <Screen>
       <Header
+        testID="context-auto-screen"
         title="上下文自动化配置"
         subtitle="V3 策略与预算模拟（不修改模型真实能力）"
       />
       <ScrollView contentContainerStyle={styles.content}>
+        {isUnsavedDraft ? (
+          <Card testID="context-auto-unsaved-notice">
+            <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
+              新配置尚未保存
+            </Text>
+            <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
+              当前从尚未保存的 LLM 配置进入。本页只做预算模拟，不会写入任何已保存模型的
+              context_window / max_output_tokens。
+            </Text>
+          </Card>
+        ) : null}
+
         {/* 上次应用记录 */}
         {lastApplied ? (
           <Card>
@@ -224,14 +236,14 @@ export const ContextAutoConfigScreen: React.FC = () => {
               上次应用记录
             </Text>
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
-              上下文大小：{formatNumber(lastApplied.maxContextTokens)} tokens
+              模拟窗口：{formatNumber(lastApplied.maxContextTokens)} tokens
             </Text>
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
               时间：{new Date(lastApplied.appliedAt).toLocaleString('zh-CN')}
             </Text>
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
               {lastApplied.policySchemaVersion === 3
-                ? 'V3 模式：仅写入策略与模式标记，保留每个模型的真实上下文窗口与资料上限不变'
+                ? 'V3 模式：只写入策略、模式与模拟窗口，保留每个模型的真实能力与资料上限不变'
                 : '历史兼容记录：不参与新 V3 任务，也不会覆盖当前模型真实能力'}
             </Text>
             {lastApplied.policyVersion ? (
@@ -245,38 +257,44 @@ export const ContextAutoConfigScreen: React.FC = () => {
           </Card>
         ) : null}
 
-        <Card>
+        <Card testID="context-auto-capability-card">
           <Text style={[styles.cardTitle, { color: theme.colors.textPrimary }]}>
             当前模型真实能力
           </Text>
           {llmConfigs.length > 0 ? (
-            llmConfigs.map(config => (
-              <View
-                key={String(config.id)}
-                style={[styles.stagePreviewRow, { borderBottomColor: theme.colors.border }]}
-              >
-                <View style={styles.stagePreviewLabel}>
-                  <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>
-                    {config.name || config.model_name || `LLM #${config.id}`}
-                    {Number(config.is_active) === 1 ? ' · 当前' : ''}
-                  </Text>
-                  <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
-                    {config.model_name || '未命名模型'}
+            llmConfigs.map(config => {
+              const isPreferred =
+                preferredLlmConfigId != null &&
+                Number(config.id) === Number(preferredLlmConfigId);
+              return (
+                <View
+                  key={String(config.id)}
+                  style={[styles.stagePreviewRow, { borderBottomColor: theme.colors.border }]}
+                >
+                  <View style={styles.stagePreviewLabel}>
+                    <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>
+                      {config.name || config.model_name || `LLM #${config.id}`}
+                      {Number(config.is_active) === 1 ? ' · 当前' : ''}
+                      {isPreferred ? ' · 参考' : ''}
+                    </Text>
+                    <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
+                      {config.model_name || '未命名模型'}
+                    </Text>
+                  </View>
+                  <Text style={[styles.stagePreviewValue, { color: theme.colors.accent }]}>
+                    {formatNumber(Number(config.context_window) || 0)} /{' '}
+                    {formatNumber(Number(config.max_output_tokens) || 0)}
                   </Text>
                 </View>
-                <Text style={[styles.stagePreviewValue, { color: theme.colors.accent }]}>
-                  {formatNumber(Number(config.context_window) || 0)} /{' '}
-                  {formatNumber(Number(config.max_output_tokens) || 0)}
-                </Text>
-              </View>
-            ))
+              );
+            })
           ) : (
             <Text style={[styles.metaText, { color: theme.colors.textMuted }]}>
-              暂无 LLM 配置；运行时会在发送前读取实际模型能力。
+              暂无已保存的 LLM 配置。模拟窗口可先填写，但不会反向创建或改写模型能力。
             </Text>
           )}
           <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-            右侧依次为 context_window / max_output_tokens。V3 不会用全局数字覆盖这些值。
+            右侧依次为模型真实 context_window / max_output_tokens。这两个值只在 LLM 设置页保存时改变，本页的模拟窗口不能覆盖它们。
           </Text>
         </Card>
 
@@ -291,7 +309,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
             借调。历史 V2 任务仍按原冻结版本恢复。
           </Text>
           <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-            当前页面的数字用于预算模拟和 Preview，并按 80/20 弹性包络同步当前 LLM 的上下文长度与最大输出 Token。不会批量覆盖其他模型或资源 max_tokens。
+            当前页面的数字只用于预算模拟和 Preview，不会改写模型真实能力或资源 max_tokens。
             当前 V3 Policy：{policyV3.allocatorVersion} · hash{' '}
             {hashContextAutomationPolicyV3(policyV3).slice(0, 12)}
           </Text>
@@ -303,8 +321,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
             预算模拟窗口
           </Text>
           <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
-            用于 Preview 查看不同窗口下的 Board 分配；真实模型能力来自当前 LLM 配置，
-            不会被这个数字覆盖。
+            这是 Preview / 预算模拟值，不是模型真实能力。可读取上方参考模型的
+            context_window 作为默认模拟值，但模拟值不会反向覆盖任何 LLM 配置。
           </Text>
           <View style={styles.quickRow}>
             {QUICK_PRESETS.map((p) => {
@@ -312,6 +330,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
               return (
                 <TouchableOpacity
                   key={p.value}
+                  testID={`context-auto-preset-${p.value}`}
                   onPress={() => handleQuickPreset(p.value)}
                   style={[
                     styles.quickChip,
@@ -349,6 +368,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
             ]}
           >
             <TextInput
+              testID="context-auto-simulation-input"
               value={inputText}
               onChangeText={setInputText}
               keyboardType="number-pad"
@@ -364,13 +384,14 @@ export const ContextAutoConfigScreen: React.FC = () => {
           </View>
           {isWarning ? (
             <Text style={[styles.warning, { color: theme.colors.warning }]}>
-              ⚠️ 上下文过小，可能影响生成质量
+              ⚠️ 模拟窗口过小，可能让 Preview 看起来偏紧，但不会改写模型真实能力
             </Text>
           ) : null}
         </Card>
 
         <View style={styles.buttonRow}>
           <Button
+            testID="context-auto-restore"
             label="恢复默认"
             icon={RotateCcw}
             variant="ghost"
@@ -379,6 +400,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
             onPress={handleRestoreDefaults}
           />
           <Button
+            testID="context-auto-apply"
             label={applying ? '应用中...' : '一键应用'}
             icon={Sparkles}
             flex
@@ -388,7 +410,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
         </View>
 
         <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-          新大纲任务的五个阶段各自冻结弹性 reservation，不读取旧版四阶段 Max Tokens。
+          新大纲任务按冻结的模型真实能力分配五个阶段的弹性 reservation，不读取本页模拟窗口，也不读取旧版四阶段 Max Tokens。
         </Text>
       </ScrollView>
     </Screen>

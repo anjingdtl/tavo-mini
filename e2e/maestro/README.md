@@ -1,6 +1,6 @@
 # Maestro E2E flows
 
-These 14 flows cover the current ShineWriter Android package `com.shinewriter`.
+These 15 flows cover the current ShineWriter Android package `com.shinewriter`.
 They target stable `testID` / `accessibilityLabel` selectors. Chinese text is
 used only to assert user-visible results.
 
@@ -21,6 +21,7 @@ maestro test e2e/maestro/11-continuation-state-rebuild.yaml
 maestro test e2e/maestro/12-continuation-style-overview.yaml
 maestro test e2e/maestro/13-phase2-resource-context.yaml
 maestro test e2e/maestro/14-third-phase-writer-style.yaml
+maestro test e2e/maestro/15-llm-context-auto.yaml
 ```
 
 None of these flows use `clearState`. Always upgrade-install with
@@ -43,3 +44,4 @@ None of these flows use `clearState`. Always upgrade-install with
 | 12 | Continuation style / 文风 config |
 | 13 | Writer Style tab + Context Preview V2 |
 | 14 | Structured Writer Style editor |
+| 15 | LLM Settings + Context Auto simulation (no capability write) |

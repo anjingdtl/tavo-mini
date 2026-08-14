@@ -26,6 +26,7 @@ import { testLLMConnection } from '../services/llm';
 import type { LLMQueueState } from '../services/llm';
 import type { LLMConfig } from '../types/novel';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
+import { mergeDraftCapabilityFromPersisted } from '../data/repositories/llmConfigRepository';
 import RNFS from 'react-native-fs';
 
 const emptyDraft: LLMConfig = {
@@ -73,25 +74,17 @@ export const LLMSettingsScreen: React.FC = () => {
       loadSettings()
         .then(() => {
           if (cancelled) return;
+          // Unsaved draft (id=0): never steal another saved model's identity
+          // or capability when returning from Context Auto.
+          if (selectedId === 0) return;
           const latest = useSettingsStore.getState().llmConfigs;
           const selected =
-            (selectedId != null && selectedId !== 0
+            selectedId != null
               ? latest.find(config => config.id === selectedId)
-              : undefined) ||
-            latest.find(config => config.is_active === 1) ||
-            latest[0];
+              : latest.find(config => config.is_active === 1) || latest[0];
           if (!selected) return;
           setDraft(current =>
-            current.id === selected.id &&
-            current.context_window === selected.context_window &&
-            current.max_output_tokens === selected.max_output_tokens
-              ? current
-              : {
-                  ...current,
-                  id: selected.id || current.id,
-                  context_window: selected.context_window,
-                  max_output_tokens: selected.max_output_tokens,
-                },
+            mergeDraftCapabilityFromPersisted(current, selected),
           );
         })
         .catch(() => {});
@@ -523,10 +516,12 @@ export const LLMSettingsScreen: React.FC = () => {
                   { color: theme.colors.textSecondary },
                 ]}
               >
-                按模型上下文长度自动分配输入/资料预算，并预览新大纲任务的五阶段弹性 reservation。
+                打开预算模拟窗口。模拟值只用于 Preview，不会改写本页保存的模型真实
+                context_window / max_output_tokens。
               </Text>
             </View>
             <Button
+              testID="llm-open-context-auto"
               label="配置"
               icon={Gauge}
               variant="secondary"
@@ -534,6 +529,10 @@ export const LLMSettingsScreen: React.FC = () => {
               onPress={() =>
                 navigation.navigate('ContextAutoConfig', {
                   llmConfigId: draft.id > 0 ? draft.id : undefined,
+                  referenceContextWindow:
+                    draft.context_window > 0
+                      ? draft.context_window
+                      : undefined,
                 })
               }
             />

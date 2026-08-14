@@ -167,20 +167,34 @@ export async function saveLLMConfig(
   return id;
 }
 
+/**
+ * Resolve a *saved* LLM config id for any explicit capability write.
+ *
+ * Fail-closed: only a preferred id that already exists in the saved list is
+ * accepted. Missing / 0 / draft ids must not fall back to active or configs[0],
+ * otherwise an unsaved "new config" would silently mutate another model.
+ */
 export function resolveLLMConfigIdForContextSync(
   configs: Array<{ id: number; is_active?: number }>,
   preferredConfigId?: number | null,
 ): number | null {
-  const preferred =
-    preferredConfigId != null && preferredConfigId > 0
-      ? configs.find(item => Number(item.id) === Number(preferredConfigId))
-      : undefined;
-  const active = configs.find(item => Number(item.is_active) === 1);
-  const target = preferred || active || configs[0];
-  const id = Number(target?.id || 0);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
+  const preferredId = Number(preferredConfigId);
+  if (!Number.isSafeInteger(preferredId) || preferredId <= 0) {
+    return null;
+  }
+  const preferred = configs.find(
+    item => Number(item.id) === preferredId,
+  );
+  return preferred ? preferredId : null;
 }
 
+/**
+ * Explicit capability write for a saved LLM config.
+ *
+ * Context Auto must never call this — simulation windows stay in
+ * `context_auto_input`. LLM Settings save is the only user-facing writer.
+ * Unknown / unsaved ids fail closed and do not touch any other row.
+ */
 export async function updateLLMCapabilityWindow(
   id: number,
   contextWindow: number,
@@ -195,13 +209,50 @@ export async function updateLLMCapabilityWindow(
     throw new Error('最大输出 Token 必须为正数。');
   }
   if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error('LLM 配置尚未保存，无法同步上下文能力。');
+    throw new Error('LLM 配置尚未保存，无法写入模型真实能力。');
+  }
+  const existing = await one<{ id: number }>(
+    'SELECT id FROM llm_config WHERE id = ?',
+    [id],
+  );
+  if (!existing) {
+    throw new Error('指定的 LLM 配置不存在，已拒绝写入模型真实能力。');
   }
   await execute(
     await openDatabase(),
     'UPDATE llm_config SET context_window = ?, max_output_tokens = ? WHERE id = ?',
     [window, maxOutput, id],
   );
+}
+
+/** Refresh a saved draft's displayed capability from the persisted row. */
+export function mergeDraftCapabilityFromPersisted<
+  T extends { id: number; context_window: number; max_output_tokens: number },
+>(
+  current: T,
+  selected: {
+    id: number;
+    context_window: number;
+    max_output_tokens: number;
+  },
+): T {
+  if (!Number.isSafeInteger(current.id) || current.id <= 0) {
+    return current;
+  }
+  if (Number(current.id) !== Number(selected.id)) {
+    return current;
+  }
+  if (
+    current.context_window === selected.context_window &&
+    current.max_output_tokens === selected.max_output_tokens
+  ) {
+    return current;
+  }
+  return {
+    ...current,
+    context_window: selected.context_window,
+    max_output_tokens: selected.max_output_tokens,
+  };
 }
 
 export async function setActiveLLMConfig(id: number): Promise<void> {
