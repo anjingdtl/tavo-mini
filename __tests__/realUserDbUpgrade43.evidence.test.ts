@@ -116,9 +116,17 @@ describeUpgrade('real user DB Schema42 → 43 upgrade (manual evidence)', () => 
       // columns with value 1, so those two tables are asserted separately
       // below (version = 1 = Legacy for every pre-upgrade row).
       if (t === 'pipeline_tasks' || t === 'multi_chapter_batches') continue;
+      // Schema 52 adds active_writer_style_id (nullable, default NULL) to
+      // projects — pre-upgrade rows gain the column with NULL, asserted
+      // separately below.
+      if (t === 'projects') continue;
       if (before[t] === '__missing__' && after[t] === '__missing__') continue;
       expect(after[t]).toBe(before[t]);
     }
+    const [projectStyles] = await wrapped.executeSql(
+      'SELECT COUNT(*) AS c FROM projects WHERE active_writer_style_id IS NOT NULL',
+    );
+    expect(Number(projectStyles.rows.item(0).c)).toBe(0);
     const [taskVersions] = await wrapped.executeSql(
       `SELECT DISTINCT outline_workflow_version, context_budget_version FROM pipeline_tasks`,
     );
