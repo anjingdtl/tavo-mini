@@ -1,54 +1,84 @@
 # ShineWriter 第三期 Final Seal
 
 日期：2026-08-14  
-最终 HEAD：`5fd6208b1d7c9f21e8936ed84806a1786772b157`
-产品版本：未升级，V2.11.51 仅沿用当前工作区版本元数据。
+产品版本：V2.11.51（未升级版本号）
+
+## 身份锚点（禁止自引用改写 HEAD）
+
+| 锚点 | 值 |
+| --- | --- |
+| Final Code HEAD | `b7321c3dd6ad8bc19b80b80bbb07581c1370afb2` |
+| GitHub Actions Run ID | `31778705952` |
+| Seal Commit | 本文件所在提交；不回写自己的 SHA，也不再为对齐文档 HEAD 追加自引用提交 |
+
+Code HEAD 提交：`fix: close tavern ownership and brief writer style gaps`  
+Actions：<https://github.com/anjingdtl/tavo-mini/actions/runs/31778705952>
 
 ## Seal 判定
 
 第三期全部 Gate = GO；独立复审无新 P0/P1；第三期剩余 NO-GO = 0。  
 结论：GO / SEALED。
 
-## 实施范围
+## 本轮关闭的远端验收 NO-GO
 
-- Schema 52 加法迁移：`semantic_json`、`compatibility_json`、来源与 fingerprint、asset contract、项目级 `active_writer_style_id`。
-- `WriterStyleSemanticV1`、`PresetCompatibilityEnvelopeV1`、`FrozenWriterStyleV1`、V5 五阶段 Projection 与 sampler resolution。
-- SillyTavern `openai_preset` 检测、raw 保留、unknown fields、prompt mapping、untouched export、managed patch 和新 Writer Style export。
-- 作家风格统一构建目标、资料库 IA、单 Active Writer Style、悬空绑定 fail-closed。
-- task-start freeze；Snapshot V5 只消费冻结 Projection；V3/V4 任务不升级、不重新绑定、不重新推导。
-- Writer Style Protected 输入、硬预算阻断 `WRITER_STYLE_OVER_BUDGET`、阻断时 Provider 调用为 0；Authority 顺序固定为 Task Protocol > 当前用户要求 > Active Writer Style > Style Note > Ordinary Notes。
-- Preview/Send 共用 stage compiler；Trace、Backup、项目导入导出覆盖 Semantic 与 Compatibility。
+| 编号 | 主题 | 结果 |
+| --- | --- | --- |
+| NG-01..04 | 上一轮远端独立验收项 | 仍关闭；本轮未回退 |
+| NG-05 P1 | 新导出 SillyTavern Writer Style 缺 managed ownership | CLOSED |
+| NG-06 P1 | Snapshot V5 Brief MINIMAL Projection 未进入真实 Brief 请求 | CLOSED |
+
+## NG-05 关闭证据
+
+- `exportNewWriterStyleAsTavern()` 现在写入 `shinewriter_managed=true` 与 `managed_by=shinewriter`。
+- `parseSillyTavernOpenAIPreset()` 据此恢复 `managedPromptIdentifier`。
+- 回归覆盖：export → parse → Semantic edit / patch → export → parse；循环后始终只有一个 ShineWriter managed Writer Style prompt。
+- `prompt_order` 中对应 managed identifier 只有一个；用户 unknown prompt / order / fields 保持不变。
+- 用户已有同名但无 ownership marker 的 `shinewriterWriterStyle` 仍走 suffix，不得被误认为 managed。
+
+## NG-06 关闭证据
+
+- Brief 直接消费 Snapshot V5 冻结的 `stageProjections.brief`，不重新查 DB、不重新推导。
+- MINIMAL Writer Style 作为真正 Protected/Mandatory module：`requirement=mandatory`、`reclaimable=false`。
+- Allocator 先计入 protected demand，再分配 `brief_advisory` 等 elastic 内容。
+- Provider messages 包含完整 MINIMAL Projection；elastic pressure 下不裁剪。
+- Preview / Trace / allocation trace 显示 `mode=MINIMAL`、`protected=true`、`allocated=full`、`clipped=false`。
+- Legacy V3/V4 Brief 无 Writer Style 约束时保持原行为。
+- over-budget 时 `WRITER_STYLE_OVER_BUDGET` / `ready=false`，Provider call = 0。
+
+## 独立 Final Audit
+
+重读本轮 diff 与运行时接驳：
+
+1. Tavern 新导出不再只靠 identifier 暗示 ownership；parser 只把显式 marker 认成 managed。
+2. 用户同名 prompt 仍按 ownership conflict 生成 `shinewriterWriterStyle2`，不会覆盖用户内容。
+3. Brief 编译器把冻结 MINIMAL 文本作为 mandatory module 并写入最终 messages，不是只做 `assertProtectedWriterStyleFits`。
+4. V3/V4 snapshot 没有 `writerStyleSnapshot` 时 Brief 不注入 Writer Style，不强行升级。
+5. 未发现新的 P0/P1。非阻断观察：资料库 Writer Style 页仍残留“导入预设 / 添加到我的预设 / 新预设名称”文案；历史 Maestro 01–13 仍使用旧“小说项目 / 预设”选择器。二者按既有 QA 边界保留，不扩期。
 
 ## 验收证据
 
 | Gate | 结果 | 证据 |
 | --- | --- | --- |
-| `npm ci` | GO | 依赖基线未变；现有 postinstall patch 与构建验证成功 |
-| lint | GO | 0 errors，201 warnings 为既有/非阻断 warnings |
+| lint | GO | 0 errors；既有 warnings 非阻断 |
 | typecheck | GO | `tsc --noEmit` 通过 |
-| test:ci | GO | 411 suites / 3245 tests passed；4 suites / 9 tests skipped 为 opt-in 设备证据 |
-| coverage | GO | Statements 73.22%、Branches 62.49%、Functions 77.63%、Lines 75.00% |
-| verify | GO | `npm run verify` 完整退出码 0 |
-| migration | GO | 50→52、51→52、latest no-op、fresh schema tests 通过 |
-| Tavern | GO | 官方 release fixture SHA-256 `c83f0922af22a0ba82de89f56c11cba0c6dc50b0f3037fe0055908284cefee62`；round-trip tests 通过 |
-| Protected budget | GO | over-budget fail-closed；Provider call count = 0；protected text 不被普通 clipping 截断 |
-| legacy | GO | Preset、Snapshot V3/V4、旧任务 Resume 回归通过 |
-| APK | GO | `dist/apk/debug/ShineWriter-V2.11.51-debug.apk` 构建成功，56.62 MB |
-| Android install-retain | GO | 最终 APK 两次通过 `adb -s emulator-5554 install -r`；未执行 uninstall/pm clear；启动后 UI tree 可见 `作品库`、`2 资料`、`作家风格` |
-| Android E2E | GO | 第三期专项 `e2e/maestro/14-third-phase-writer-style.yaml` 在 UTF-8 控制台下通过；统一主列表、`来源：内置`、Semantic 说明可见，旧“我的作家风格/来源模板”不可见。历史 01–13 流程仍使用已废弃的 `小说项目`/`预设` 选择器，按 QA playbook 作为历史回归边界，不计入本期专项 gate |
-| crash/logcat | GO | 最终安装启动后无 `FATAL EXCEPTION`、`ReactNativeJS` 未处理错误或应用崩溃签名 |
-| independent audit | GO | 重新复核 NG-01..04：Semantic V1 写回/fingerprint/runtime projection/Tavern dirty、prompt authority、managed ownership、V5 Protected allocator 与统一 IA；无新 P0/P1 |
+| test:ci | GO | 411 suites / 3252 tests passed；4 suites / 9 tests skipped 为 opt-in 设备证据 |
+| coverage | GO | Statements 73.85%、Branches 63.2%、Functions 78.53%、Lines 75.6% |
+| verify | GO | `npm run verify` 退出码 0 |
+| migration | GO | 本地 migration 套件通过；Actions `migration-matrix` 通过 |
+| Tavern | GO | 官方 fixture + 新 export ownership + malicious prompt-authority + managed conflict 全过 |
+| Writer Style editor | GO | Semantic 写回 + 新 export 循环不产生重复 managed prompt |
+| 五阶段 Projection | GO | Draft FULL / Review EVALUATION / FactCheck HARD / Brief MINIMAL / Proof FULL |
+| Protected budget | GO | Draft/Review/FactCheck/Brief/Proof；Brief 真实 messages 含完整 MINIMAL；over-budget Provider=0 |
+| APK | GO | `dist/apk/debug/ShineWriter-V2.11.51-debug.apk`（56.61 MB） |
+| Android install-retain | GO | `adb -s emulator-5554 install -r` Success；未 uninstall / pm clear |
+| Android E2E | GO | `e2e/maestro/14-third-phase-writer-style.yaml` 13 commands 通过；UI 可见统一作家风格、`来源：内置` |
+| crash/logcat | GO | 最终安装后无 `FATAL EXCEPTION` / 未处理 JS 崩溃 |
+| GitHub Actions | GO | Run `31778705952` success：JavaScript validation、Android Debug build、Migration matrix |
+| independent audit | GO | 复核 NG-05/NG-06 与既有 NG-01..04；无新 P0/P1 |
 
 ## 保留的兼容边界
 
-- SillyTavern 原始 `prompts`、`prompt_order`、`role`、`enabled`、`marker`、`position`、`depth`、`order`、triggers 和未知字段只在兼容 envelope/raw 中无损保存；兼容保存不代表全部注入 Pipeline。
-- 旧四阶段 Preset 字段仍存在，仅服务旧配置迁移和 V3/V4 任务 Resume；新任务只读项目 Active Writer Style。新资料库主列表统一显示“作家风格”，来源仅为 Badge。
+- SillyTavern 原始 `prompts`、`prompt_order`、未知字段只在兼容 envelope/raw 中无损保存。
+- 旧四阶段 Preset 字段仍服务 V3/V4 Resume；新任务只读项目 Active Writer Style。
 - Character、Worldbook、Notes、Story Memory、Canon、RAG、Embedding、Outline、Continuation 核心语义未扩展。
 - `Context Budget 7` 与 `Resource Context 2` 未升级。
-
-## 工作区证据
-
-- 执行台账：`docs/optimization/ShineWriter_第三期_PROGRESS_20260814.md`
-- 官方 fixture：`__tests__/fixtures/sillytavern/Default.json` 与 `Default.meta.json`
-- 设备 UI：`test-logs/final-seal/launch.png`、`test-logs/final-seal/resources.png`、`test-logs/final-seal/writer-style.png`
-- Final APK：`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`

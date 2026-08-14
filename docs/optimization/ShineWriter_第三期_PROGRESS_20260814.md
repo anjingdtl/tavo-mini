@@ -2,7 +2,7 @@
 
 ## Round 0 基线
 
-- 最终 HEAD：`5fd6208b1d7c9f21e8936ed84806a1786772b157`
+- 最终 HEAD：见本轮 Final Code HEAD `b7321c3dd6ad8bc19b80b80bbb07581c1370afb2`（Seal 不再改写该提交）。
 - 基线：Schema 51、Snapshot V4、Context Budget 7、Resource Context 2。
 - 基线证据：第二期 Final Seal `ShineWriter_第二期_Final-Seal_验收证据_20260814.md`。
 - 方案文件保持未修改：`ShineWriter_第三期_作家风格预设全链路重构_PDCA方案_20260814.md`。
@@ -21,6 +21,8 @@
 | NG-07 | Legacy / Migration / Android E2E | NO-GO | GO：50→52/51→52/no-op、旧任务 Resume、adb install -r 数据保留、专项 Maestro Flow 已通过 |
 | NG-08 | 旧 Android Flow 使用过时“小说项目”选择器 | NO-GO | 已关闭：保留旧 Flow 作为历史回归；新增当前第三期只读 Flow `14-third-phase-writer-style.yaml` 并通过 |
 | NG-09 | 历史设备 DB 证据与本次安装前状态不一致 | NO-GO | 已关闭：同一设备即时 pre/post DB 逐表无差异，Schema 52 验证通过 |
+| 远端 NG-05 | 新导出 Tavern Writer Style 缺 managed ownership | NO-GO | GO：export 写入显式 ownership；parse/edit/export 循环只保留一个 managed prompt |
+| 远端 NG-06 | Snapshot V5 Brief MINIMAL 未进入真实 Brief 请求 | NO-GO | GO：Brief 消费冻结 Projection，mandatory/protected 真实发送；over-budget Provider=0 |
 
 ## 轮次记录
 
@@ -33,17 +35,19 @@
 - Round 9：旧 Preset、Snapshot V3/V4、旧任务 Resume、迁移矩阵、故障注入、`adb install -r` 数据保留和当前第三期 Maestro Flow 已通过。
 - Round 10：独立重读方案/Final Seal/最终代码；静态搜索确认 V5 Writer Style 不走 optional、普通 resource clipping 或 `includeResources` 分支；完整 CI、覆盖率和 Debug APK 已通过。
 - Round 11：修复远端验收 NG-01..04；补齐 Semantic editor、prompt-authority/malicious-custom-prompt、managed ownership conflict round-trip、V5 protected allocator 与统一 IA；最终专项 Android Flow 14 通过。
+- Round 12：定点关闭远端 NG-05/NG-06。Final Code HEAD `b7321c3`；GitHub Actions Run `31778705952` success。Seal 文档只记录这两个锚点，不再回写自己的 SHA。
 
 ## Final Gate 结果
 
-- `npm ci`：GO。
-- `npm run lint`：GO，0 errors（既有 warnings 201）。
+- `npm run lint`：GO，0 errors。
 - `npm run typecheck`：GO。
-- `npm run test:ci`：GO，411 suites passed，3245 tests passed，4 suites/9 tests skipped（设备证据未设置 opt-in 时跳过）。
-- `npm run test:coverage`：GO，全局 Statements 73.22%、Branches 62.49%、Functions 77.63%、Lines 75.00%。
+- `npm run test:ci`：GO，411 suites passed，3252 tests passed，4 suites/9 tests skipped。
+- `npm run test:coverage`：GO，Statements 73.85%、Branches 63.2%、Functions 78.53%、Lines 75.6%。
 - `npm run verify`：GO。
-- `npm run apk:debug`：GO，`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`（56.62 MB）。
-- Android：GO，最终 APK 两次使用 `adb install -r` 安装；专项 `14-third-phase-writer-style.yaml` 通过；历史 01–13 流程的旧 `小说项目`/`预设` 选择器漂移按 QA playbook 记录，不影响第三期专项 gate。
+- migration：GO。
+- `npm run apk:debug`：GO，`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`（56.61 MB）。
+- Android：GO，`adb -s emulator-5554 install -r` Success；专项 `14-third-phase-writer-style.yaml` 通过。
+- GitHub Actions：GO，Run `31778705952`（javascript / android-debug / migration-matrix）。
 - 独立 Final Audit：GO；无新 P0/P1，第三期剩余 NO-GO = 0。
 
 本台账已满足全部 Gate = GO、独立复审无新 P0/P1、剩余 NO-GO = 0；Final Seal 见 `ShineWriter_第三期_Final-Seal_验收证据_20260814.md`。
