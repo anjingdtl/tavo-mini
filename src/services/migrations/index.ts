@@ -63,8 +63,9 @@ import {
   migrateV49ToV50,
 } from './v49-to-v50';
 import { migrateV50ToV51 } from './v50-to-v51';
+import { migrateV51ToV52 } from './v51-to-v52';
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 52;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -373,6 +374,13 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV50ToV51,
   },
+  {
+    from: 51,
+    to: 52,
+    breaking: false,
+    buildStatements: noSchemaStatements,
+    migrate: migrateV51ToV52,
+  },
 ];
 
 export async function runMigrations(
@@ -420,6 +428,8 @@ export async function runMigrations(
       await migrateV47ToV48(db);
     } else if (migration.from === 49 && migration.to === 50) {
       await migrateV49ToV50(db);
+    } else if (migration.from === 51 && migration.to === 52) {
+      await migrateV51ToV52(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

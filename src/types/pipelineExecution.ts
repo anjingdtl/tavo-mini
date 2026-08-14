@@ -7,6 +7,7 @@
 import type { PipelineMode, PipelineReasoningEffort, PipelineStageName } from './pipeline';
 import type { PipelineReasoningTier } from '../services/pipeline/reasoningPolicy';
 import type { ContextAutomationPolicyV3 } from '../services/contextAutomationPolicy';
+import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
 
 export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
@@ -66,6 +67,8 @@ export interface FrozenStageBudgetV3 {
  * Resume MUST use this instead of getPipelineConfig() / getActiveLLMConfig().
  */
 export interface PipelineExecutionSnapshot {
+  /** V5-only frozen single Active Writer Style. */
+  writerStyle?: FrozenWriterStyleV1;
   pipelineMode: PipelineMode;
 
   /**

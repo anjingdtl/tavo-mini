@@ -117,6 +117,12 @@ export interface Preset {
   max_tokens: number;
   extra_instructions: string;
   enabled_for_project?: number;
+  semantic_json?: string | null;
+  compatibility_json?: string | null;
+  source_format?: string | null;
+  source_fingerprint?: string | null;
+  compatibility_fingerprint?: string | null;
+  asset_contract_version?: number | null;
 }
 
 export type LLMProviderType = 'openai_compatible';

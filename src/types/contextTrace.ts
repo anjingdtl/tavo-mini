@@ -8,7 +8,11 @@ export type ContextSourceKind =
   | 'note'
   | 'worldbook'
   | 'instruction'
-  | 'outline';
+  | 'outline'
+  | 'writer_style'
+  | 'writer_style_projection'
+  | 'writer_style_compat'
+  | 'writer_style_sampler';
 
 /**
  * Allocation reason codes for the Context Budget V3 hierarchical allocator

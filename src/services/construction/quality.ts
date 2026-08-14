@@ -400,10 +400,13 @@ function inspectPreset(
   };
   const failures: ConstructionQualityFailure[] = [];
   const warnings: ConstructionQualityFailure[] = [];
-  if (preset.spec !== 'shinewriter-preset-v1') {
+  if (
+    preset.spec !== 'shinewriter-preset-v1' &&
+    preset.spec !== 'shinewriter-writer-style-v1'
+  ) {
     failures.push({
       code: 'preset_spec_invalid',
-      message: '预设不是 shinewriter-preset-v1 格式。',
+      message: '作家风格不是受支持的 ShineWriter 文件格式。',
     });
   }
   for (const field of [
@@ -425,7 +428,7 @@ function inspectPreset(
     preset.extra_instructions,
   ].join('\n');
   if (
-    /shinewriter-preset-v1|(?:temperature|top_p|max_tokens|is_default)\s*[:=]|```(?:json)?/i.test(
+    /shinewriter-preset-v1|shinewriter-writer-style-v1|(?:temperature|top_p|max_tokens|is_default)\s*[:=]|```(?:json)?/i.test(
       combined,
     )
   ) {

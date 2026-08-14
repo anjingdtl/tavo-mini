@@ -12,17 +12,11 @@ import {
   type PipelineReasoningTier,
 } from '../services/pipeline/reasoningPolicy';
 
-const STAGE_LABELS = [
-  { key: 'draft', name: '初稿作者', presetKey: 'draftPresetId' as const },
-  { key: 'review', name: '审阅/评估', presetKey: 'reviewPresetId' as const },
-  { key: 'factCheck', name: '事实核查员', presetKey: 'factCheckPresetId' as const },
-  { key: 'proof', name: '终审校对员', presetKey: 'proofPresetId' as const },
-];
-
 const DEFAULT_CONFIG: PipelineConfig = {
   pipelineMode: 'full',
   reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
   reasoningProfileVersion: 5,
+  activeWriterStyleId: null,
   draftPresetId: null,
   reviewPresetId: null,
   factCheckPresetId: null,
@@ -54,7 +48,7 @@ export const PipelineConfigScreen: React.FC = () => {
       if (!currentProject) return;
       try {
         const [savedConfig, projectPresets] = await Promise.all([
-          db.getPipelineConfig(),
+          db.getPipelineConfig({ projectId: currentProject.id }),
           db.getPresetsByProject(currentProject.id),
         ]);
         if (!isMountedRef.current) return;
@@ -69,45 +63,16 @@ export const PipelineConfigScreen: React.FC = () => {
   }, [currentProject]);
 
   const save = async () => {
-    if (saving) return;
+    if (saving || !currentProject) return;
     setSaving(true);
     try {
-      await db.setPipelineConfig(config);
+      await db.setPipelineConfig(config, currentProject.id);
       Alert.alert('保存成功', '流水线配置已更新。');
     } catch (e: any) {
       Alert.alert('保存失败', e?.message || '未知错误');
     } finally {
       setSaving(false);
     }
-  };
-
-  const renderPresetPicker = (
-    presetKey: 'draftPresetId' | 'reviewPresetId' | 'factCheckPresetId' | 'proofPresetId',
-    label: string,
-  ) => {
-    const selectedId = config[presetKey];
-    return (
-      <View style={styles.row}>
-        <Text style={[styles.label, { color: theme.colors.textPrimary }]}>{label}</Text>
-        <View style={styles.presetList}>
-          {presets.map((preset) => (
-            <Button
-              key={preset.id}
-              label={preset.name}
-              variant={selectedId === preset.id ? 'primary' : 'secondary'}
-              onPress={() => setConfig({ ...config, [presetKey]: preset.id })}
-              compact
-            />
-          ))}
-          <Button
-            label="不绑定"
-            variant={selectedId === null ? 'primary' : 'ghost'}
-            onPress={() => setConfig({ ...config, [presetKey]: null })}
-            compact
-          />
-        </View>
-      </View>
-    );
   };
 
   if (!currentProject) {
@@ -154,14 +119,29 @@ export const PipelineConfigScreen: React.FC = () => {
         </View>
 
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-          为每个阶段绑定一个写作预设。未绑定时将使用项目默认预设；新大纲任务的五次调用会按冻结模型能力独立计算弹性 reservation。
+          新任务只绑定一个项目级当前作家风格；任务启动时冻结五阶段 Projection，历史任务继续使用自己的旧快照。
         </Text>
-        {STAGE_LABELS.map((stage) => (
-          <View key={stage.key} style={[styles.card, { backgroundColor: theme.colors.card }]}>
-            <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>{stage.name}</Text>
-            {renderPresetPicker(stage.presetKey, '绑定预设')}
+        <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>当前作家风格</Text>
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>统一用于 Draft、Review、FactCheck、Brief、Proof；Sampler 中的 max_tokens 不会覆盖阶段输出预算。</Text>
+          <View style={styles.presetList}>
+            <Button
+              label="Writer Baseline（默认）"
+              variant={config.activeWriterStyleId === null ? 'primary' : 'secondary'}
+              onPress={() => setConfig({ ...config, activeWriterStyleId: null })}
+              compact
+            />
+            {presets.map(preset => (
+              <Button
+                key={preset.id}
+                label={preset.name}
+                variant={config.activeWriterStyleId === preset.id ? 'primary' : 'secondary'}
+                onPress={() => setConfig({ ...config, activeWriterStyleId: preset.id })}
+                compact
+              />
+            ))}
           </View>
-        ))}
+        </View>
         <Button label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />
       </ScrollView>
     </Screen>

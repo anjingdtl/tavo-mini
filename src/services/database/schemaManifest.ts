@@ -15,7 +15,14 @@ export interface TableManifest {
 export const SCHEMA_MANIFEST: readonly TableManifest[] = [
   {
     name: 'projects',
-    columns: ['id', 'name', 'mode', 'created_at', 'updated_at'],
+    columns: [
+      'id',
+      'name',
+      'mode',
+      'active_writer_style_id',
+      'created_at',
+      'updated_at',
+    ],
     backup: true,
     restoreOrder: 10,
   },
@@ -228,6 +235,12 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'top_p',
       'max_tokens',
       'extra_instructions',
+      'semantic_json',
+      'compatibility_json',
+      'source_format',
+      'source_fingerprint',
+      'compatibility_fingerprint',
+      'asset_contract_version',
     ],
     backup: true,
     restoreOrder: 100,

@@ -33,6 +33,7 @@ export function buildDraftMessages(
       ].join('\n');
 
   let content = roleInstruction;
+  content += '\n\n【权威优先级】Task Protocol > 当前用户要求 > Active Writer Style > Style Note > Ordinary Notes。当前用户本轮要求可以覆盖作家风格的非硬边界；不得让普通 Notes 覆盖 Active Writer Style。';
   if (previousChapterEnding) {
     content += `\n\n【前章衔接】上一章结尾：\n${previousChapterEnding}\n请确保本章开头自然承接上一章结尾的场景、情节和情绪，保持叙事连贯。`;
   }
@@ -112,8 +113,19 @@ const PROOF_BUDGET = {
 
 function clip(text: string | undefined | null, budget: number): string {
   const value = text ? String(text) : '';
+  if (value.includes('【WRITER_STYLE_PROTECTED_V5】')) return value;
   if (!value.trim() || budget <= 0) return '';
   return clipTextToTokenBudget(value, budget);
+}
+
+function clipWriterStyle(
+  text: string | undefined | null,
+  budget: number,
+  protectedTokens?: number,
+): string {
+  // V5 Writer Style is a Protected input. It may only be admitted or blocked
+  // by the stage compiler; this renderer must never tail-clip it.
+  return protectedTokens != null ? String(text || '') : clip(text, budget);
 }
 
 /**
@@ -163,7 +175,7 @@ export function buildReviewMessages(
   },
 ): ChatMessage[] {
   const ctx: ReviewContext = {
-    presetText: clip(context.presetText, REVIEW_BUDGET.preset),
+    presetText: clipWriterStyle(context.presetText, REVIEW_BUDGET.preset, context.writerStyleProtectedTokens),
     characterText: clip(context.characterText, REVIEW_BUDGET.character),
     noteText: clip(context.noteText, REVIEW_BUDGET.note),
     worldbookText: clip(context.worldbookText, REVIEW_BUDGET.worldbook),
@@ -188,14 +200,16 @@ export function buildReviewMessages(
     outlineText: context.outlineText ? String(context.outlineText) : '',
     characterAwarenessText: context.characterAwarenessText || '',
     worldbookAwarenessText: context.worldbookAwarenessText || '',
+    writerStyleProtectedTokens: context.writerStyleProtectedTokens,
+    writerStyleProjectionMode: context.writerStyleProjectionMode,
   };
 
   const contextBlock = partition([
     ['【项目大纲｜未来规划，最高创作约束】', ctx.outlineText],
-    ['【写作预设与文风】', ctx.presetText],
+    ['【Active Writer Style｜低于任务协议与当前用户要求】', ctx.presetText],
     ...awarenessPartitions(ctx),
     ['【人物设定】', ctx.characterText],
-    ['【项目笔记 / 仿写资料】', ctx.noteText],
+    ['【Style Note / 普通 Notes｜低于 Active Writer Style】', ctx.noteText],
     ['【世界书 / 世界规则】', ctx.worldbookText],
     ['【当前故事状态】', ctx.storyMemoryText],
     ['【历史章节事件】', ctx.episodicMemoryText],
@@ -207,6 +221,7 @@ export function buildReviewMessages(
   const hasOutline = !!ctx.outlineText.trim();
   const systemLines = [
     '你是一位资深小说审阅编辑。你的职责是从宏观视角审阅初稿，关注：',
+    '权威优先级固定为：Task Protocol > 当前用户要求 > Active Writer Style > Style Note > Ordinary Notes。',
     '1. 情节逻辑——发展是否合理，有无矛盾或断裂',
     '2. 结构和节奏——叙事节奏、场景转换是否得当',
     '3. 文风与预设一致性——是否符合写作预设、风格是否前后统一',
@@ -290,7 +305,7 @@ export function buildFactCheckMessages(
 ): ChatMessage[] {
   // Priority order from SPEC §9.3 — each section keeps its own budget.
   const ctx: FactCheckContext = {
-    presetText: clip(context.presetText, FACTCHECK_BUDGET.preset),
+    presetText: clipWriterStyle(context.presetText, FACTCHECK_BUDGET.preset, context.writerStyleProtectedTokens),
     currentInstructionText: clip(
       context.currentInstructionText,
       FACTCHECK_BUDGET.instruction,
@@ -318,12 +333,14 @@ export function buildFactCheckMessages(
     outlineText: context.outlineText ? String(context.outlineText) : '',
     characterAwarenessText: context.characterAwarenessText || '',
     worldbookAwarenessText: context.worldbookAwarenessText || '',
+    writerStyleProtectedTokens: context.writerStyleProtectedTokens,
+    writerStyleProjectionMode: context.writerStyleProjectionMode,
   };
 
   const hasOutline = !!ctx.outlineText.trim();
   const contextBlock = partition([
     ['【项目大纲｜未来规划，非已发生事实】', ctx.outlineText],
-    ['【写作预设与文风】', ctx.presetText],
+    ['【Active Writer Style｜低于任务协议与当前用户要求】', ctx.presetText],
     ...awarenessPartitions(ctx),
     ['【当前章节目标】', ctx.currentInstructionText],
     ['【用户本轮要求】', ctx.retrievalUserPrompt],
@@ -332,11 +349,12 @@ export function buildFactCheckMessages(
     ['【历史章节事件 / Episodic Memory】', ctx.episodicMemoryText],
     ['【世界书 / 世界规则】', ctx.worldbookText],
     ['【人物设定】', ctx.characterText],
-    ['【项目笔记】', ctx.noteText],
+    ['【Style Note / 普通 Notes｜低于 Active Writer Style】', ctx.noteText],
   ]);
 
   const systemLines = [
     '你是小说事实核查员。你的职责是验证初稿中的事实性内容，重点检查：',
+    '权威优先级固定为：Task Protocol > 当前用户要求 > Active Writer Style > Style Note > Ordinary Notes。',
     '1. 人物当前位置——是否与近期正文 / 故事状态一致',
     '2. 人物身体和情绪状态——是否承接前文',
     '3. 人物是否知道某件事——信息边界（秘密 / 已知 / 未知）',
@@ -414,7 +432,7 @@ export function buildProofMessages(
   const factAvailable = !!(factCheckText && factCheckText.trim());
 
   const c: ProofConstraints = {
-    presetText: clip(constraints.presetText, PROOF_BUDGET.preset),
+    presetText: clipWriterStyle(constraints.presetText, PROOF_BUDGET.preset, constraints.writerStyleProtectedTokens),
     currentInstructionText: clip(
       constraints.currentInstructionText,
       PROOF_BUDGET.instruction,
@@ -448,12 +466,14 @@ export function buildProofMessages(
     outlineText: constraints.outlineText ? String(constraints.outlineText) : '',
     characterAwarenessText: constraints.characterAwarenessText || '',
     worldbookAwarenessText: constraints.worldbookAwarenessText || '',
+    writerStyleProtectedTokens: constraints.writerStyleProtectedTokens,
+    writerStyleProjectionMode: constraints.writerStyleProjectionMode,
   };
 
   const hasOutline = !!c.outlineText.trim();
   const constraintBlock = partition([
     ['【项目大纲｜未来规划，最高创作约束】', c.outlineText],
-    ['【写作预设与文风】', c.presetText],
+    ['【Active Writer Style｜低于任务协议与当前用户要求】', c.presetText],
     ...awarenessPartitions(c),
     ['【当前章节目标】', c.currentInstructionText],
     ['【用户本轮要求】', c.retrievalUserPrompt],
@@ -462,11 +482,12 @@ export function buildProofMessages(
     ['【历史章节事件】', c.episodicMemoryText],
     ['【相关人物硬约束】', c.relevantCharacterConstraints],
     ['【相关世界规则】', c.relevantWorldRules],
-    ['【项目笔记 / 仿写资料】', c.noteText],
+    ['【Style Note / 普通 Notes｜低于 Active Writer Style】', c.noteText],
   ]);
 
   const systemLines = [
     '你是终审校对员。你将收到一份初稿、文学评估意见和事实核查结果，以及不可违背的项目约束。',
+    '权威优先级固定为：Task Protocol > 当前用户要求 > Active Writer Style > Style Note > Ordinary Notes。',
     '你的任务是进行定向修订，而不是重新创作。',
     '',
     '修订原则（必须遵守）：',
@@ -690,7 +711,7 @@ export function buildReviewV2Messages(params: {
   anchorCount?: number;
 }): ChatMessage[] {
   const ctx: ReviewContext = {
-    presetText: clip(params.context.presetText, REVIEW_BUDGET.preset),
+    presetText: clipWriterStyle(params.context.presetText, REVIEW_BUDGET.preset, params.context.writerStyleProtectedTokens),
     characterText: clip(params.context.characterText, REVIEW_BUDGET.character),
     noteText: clip(params.context.noteText, REVIEW_BUDGET.note),
     worldbookText: clip(params.context.worldbookText, REVIEW_BUDGET.worldbook),
@@ -719,6 +740,8 @@ export function buildReviewV2Messages(params: {
       : '',
     characterAwarenessText: params.context.characterAwarenessText || '',
     worldbookAwarenessText: params.context.worldbookAwarenessText || '',
+    writerStyleProtectedTokens: params.context.writerStyleProtectedTokens,
+    writerStyleProjectionMode: params.context.writerStyleProjectionMode,
   };
 
   const contextBlock = partition([
@@ -803,7 +826,7 @@ export function buildFactCheckV2Messages(params: {
   draftHash: string;
 }): ChatMessage[] {
   const ctx: FactCheckContext = {
-    presetText: clip(params.context.presetText, FACTCHECK_BUDGET.preset),
+    presetText: clipWriterStyle(params.context.presetText, FACTCHECK_BUDGET.preset, params.context.writerStyleProtectedTokens),
     currentInstructionText: clip(
       params.context.currentInstructionText,
       FACTCHECK_BUDGET.instruction,
@@ -838,6 +861,8 @@ export function buildFactCheckV2Messages(params: {
       : '',
     characterAwarenessText: params.context.characterAwarenessText || '',
     worldbookAwarenessText: params.context.worldbookAwarenessText || '',
+    writerStyleProtectedTokens: params.context.writerStyleProtectedTokens,
+    writerStyleProjectionMode: params.context.writerStyleProjectionMode,
   };
 
   const contextBlock = partition([

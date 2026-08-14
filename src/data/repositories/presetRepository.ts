@@ -1,13 +1,14 @@
 import type SQLite from 'react-native-sqlite-storage';
 import type { Preset } from '../../types/novel';
 import { execute } from '../connection/execute';
-import { all } from '../connection/query';
+import { all, one } from '../connection/query';
 import {
   executeTransaction,
   type SqlStatement,
 } from '../connection/transaction';
 import { openDatabase } from '../connection/openDatabase';
 import { linkResourceToProject, usageJoin } from './projectRepository';
+import type { WriterStyleAssetFields } from '../../services/writerStyle/types';
 
 export async function getAllPresets(projectId?: number): Promise<Preset[]> {
   return all<Preset>(
@@ -40,6 +41,12 @@ const PRESET_COLUMNS = new Set([
   'top_p',
   'max_tokens',
   'extra_instructions',
+  'semantic_json',
+  'compatibility_json',
+  'source_format',
+  'source_fingerprint',
+  'compatibility_fingerprint',
+  'asset_contract_version',
 ]);
 
 export async function updatePreset(
@@ -84,8 +91,8 @@ export async function createPreset(
   const database = await openDatabase();
   const result = await execute(
     database,
-    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions)
-     VALUES (?, ?, ?, ?, ?, 0.8, 0.9, 4000, ?)`,
+    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions, source_format, source_fingerprint, asset_contract_version)
+     VALUES (?, ?, ?, ?, ?, 0.8, 0.9, 4000, ?, 'legacy_shinewriter', '', 1)`,
     [
       0,
       name,
@@ -178,8 +185,8 @@ export async function ensureDefaultPreset(
 
   const result = await execute(
     target,
-    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions)
-     VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 4000, ?)`,
+    `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions, source_format, source_fingerprint, asset_contract_version)
+     VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 4000, ?, 'legacy_shinewriter', '', 1)`,
     [
       0,
       '默认写作预设',
@@ -189,4 +196,53 @@ export async function ensureDefaultPreset(
     ],
   );
   return result.insertId!;
+}
+
+export async function getWriterStyleAssetById(
+  projectId: number,
+  styleId: number,
+): Promise<import('../../services/writerStyle/types').WriterStyleAsset | null> {
+  return one<import('../../services/writerStyle/types').WriterStyleAsset>(
+    `SELECT p.* FROM presets p
+     JOIN project_resources pr ON pr.resource_type = 'preset'
+       AND pr.resource_id = p.id AND pr.project_id = ? AND pr.enabled = 1
+     WHERE p.id = ? LIMIT 1`,
+    [projectId, styleId],
+  );
+}
+
+export async function setProjectActiveWriterStyle(
+  projectId: number,
+  styleId: number | null,
+): Promise<void> {
+  if (styleId != null) {
+    const style = await getWriterStyleAssetById(projectId, styleId);
+    if (!style) {
+      throw new Error('ACTIVE_WRITER_STYLE_MISSING：作家风格不属于当前项目或已被删除。');
+    }
+  }
+  await execute(
+    await openDatabase(),
+    'UPDATE projects SET active_writer_style_id = ?, updated_at = ? WHERE id = ?',
+    [styleId, new Date().toISOString(), projectId],
+  );
+}
+
+export async function getProjectActiveWriterStyleId(
+  projectId: number,
+): Promise<number | null> {
+  const row = await one<{ active_writer_style_id: number | null }>(
+    'SELECT active_writer_style_id FROM projects WHERE id = ? LIMIT 1',
+    [projectId],
+  );
+  return row?.active_writer_style_id == null
+    ? null
+    : Number(row.active_writer_style_id);
+}
+
+export async function updateWriterStyleAsset(
+  id: number,
+  fields: Partial<WriterStyleAssetFields> & Partial<import('../../types/novel').Preset>,
+): Promise<void> {
+  await updatePreset(id, fields);
 }

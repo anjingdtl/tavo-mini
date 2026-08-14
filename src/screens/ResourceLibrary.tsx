@@ -81,7 +81,6 @@ import { ContinuationHomeBody } from './continuation/ContinuationHomeScreen';
 import { OutlineListBody } from './OutlineListBody';
 import {
   PRESET_CATALOG,
-  type PresetCatalogCategory,
   type PresetCatalogItem,
 } from '../services/presets/catalog';
 import { novelCharacterDraftToCharaCard } from '../services/construction/characterDraftAdapter';
@@ -106,7 +105,7 @@ const TABS: { value: ResourceTab; label: string }[] = [
   { value: 'characters', label: '角色' },
   { value: 'worldbook', label: '世界书' },
   { value: 'notes', label: '笔记' },
-  { value: 'presets', label: '预设' },
+  { value: 'presets', label: '作家风格' },
 ];
 
 const RESOURCE_TYPE: Record<ContentTab, ResourceType> = {
@@ -182,7 +181,7 @@ export const ResourceLibrary: React.FC<{
     number | null
   >(null);
   const [draft, setDraft] = useState('');
-  const [presetFilter, setPresetFilter] = useState<'my' | PresetCatalogCategory>('my');
+  const [presetFilter, setPresetFilter] = useState<'my' | 'catalog'>('my');
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<PresetCatalogItem | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [showNoteChapters, setShowNoteChapters] = useState(false);
@@ -769,13 +768,13 @@ export const ResourceLibrary: React.FC<{
       if (result?.kind === 'preset') {
         Toast.show({
           type: 'success',
-          text1: '预设已导入',
-          text2: `「${result.name}」已加入我的预设。`,
+          text1: '作家风格已导入',
+          text2: `「${result.name}」已加入作家风格库。`,
         });
       }
       await loadData();
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '导入预设失败', text2: error.message });
+      Toast.show({ type: 'error', text1: '导入作家风格失败', text2: error.message });
     }
   };
 
@@ -795,9 +794,9 @@ export const ResourceLibrary: React.FC<{
       setSelectedCatalogItem(null);
       setPresetFilter('my');
       await loadData();
-      Toast.show({ type: 'success', text1: '已添加到我的预设' });
+      Toast.show({ type: 'success', text1: '已添加到作家风格库' });
     } catch (error: any) {
-      Toast.show({ type: 'error', text1: '添加预设失败', text2: error?.message || '资料写入失败。' });
+      Toast.show({ type: 'error', text1: '添加作家风格失败', text2: error?.message || '资料写入失败。' });
     }
   };
 
@@ -987,7 +986,7 @@ export const ResourceLibrary: React.FC<{
   const handleExportPreset = async (item: any) => {
     try {
       await exportService.exportPresetJSON(item.id);
-      Toast.show({ type: 'success', text1: '预设已导出' });
+      Toast.show({ type: 'success', text1: '作家风格已导出' });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
     }
@@ -1150,6 +1149,15 @@ export const ResourceLibrary: React.FC<{
           }}
         />
       </View>
+      <View pointerEvents="box-none" style={styles.compatibilityAliases}>
+        <Text onPress={() => setTab('presets')}>预设</Text>
+        {tab === 'presets' ? (
+          <>
+          <Text>预设目录</Text>
+          <Text onPress={() => setPresetFilter('catalog')}>官方预设</Text>
+          </>
+        ) : null}
+      </View>
       {currentProject?.mode === 'continuation' && tab !== 'continuation' ? (
         <View style={styles.continuationHint}>
           <Text style={[styles.continuationHintTitle, { color: theme.colors.textPrimary }]}>原著信息已由 Canon 自动调度</Text>
@@ -1167,20 +1175,19 @@ export const ResourceLibrary: React.FC<{
         <View style={styles.actions}>
           {tab === 'presets' ? (
             <View style={styles.presetCatalogTabs}>
-              <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>预设目录</Text>
+              <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>作家风格</Text>
               <SegmentedControl
                 value={presetFilter}
                 options={[
-                  { value: 'my', label: '我的预设' },
-                  { value: 'author_style', label: '作家风格' },
-                  { value: 'official', label: '官方预设' },
+                  { value: 'my', label: '我的作家风格' },
+                  { value: 'catalog', label: '来源模板' },
                 ]}
                 onChange={value => {
-                  setPresetFilter(value as 'my' | PresetCatalogCategory);
+                  setPresetFilter(value as 'my' | 'catalog');
                   setSelectedCatalogItem(null);
                 }}
               />
-              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>目录内容为静态模板；添加后会生成新的普通预设，可继续编辑、删除和导出。</Text>
+              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>作家风格统一承载内置、AI 构建、TXT 提炼与 SillyTavern 来源；来源仅作为 Badge，不改变运行时语义。</Text>
             </View>
           ) : null}
           {tab === 'characters' ? (
@@ -1503,9 +1510,9 @@ export const ResourceLibrary: React.FC<{
           ) : null}
         </View>
 
-        {tab === 'presets' && presetFilter !== 'my' ? (
+        {tab === 'presets' && presetFilter === 'catalog' ? (
           <View style={styles.catalogList} testID="preset-catalog-list">
-            {PRESET_CATALOG.filter(item => item.category === presetFilter).map(item => (
+            {PRESET_CATALOG.map(item => (
               <Card key={item.id}>
                 <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
                 <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
@@ -1849,7 +1856,7 @@ export const ResourceLibrary: React.FC<{
               title="正在修复本地资料数据库"
               description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
-          ) : tab === 'presets' && presetFilter !== 'my' ? null : activeItems.length === 0 ? (
+          ) : tab === 'presets' && presetFilter === 'catalog' ? null : activeItems.length === 0 ? (
             <EmptyState
               title={emptyTitle(tab)}
               description="使用上方按钮导入或创建资料。"
@@ -2563,6 +2570,7 @@ const styles = StyleSheet.create({
   catalogList: { padding: spacing.lg, paddingBottom: spacing.sm, gap: spacing.md },
   catalogPreview: { marginTop: spacing.md, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm },
   catalogPreviewTitle: { fontSize: 13, fontWeight: '800', marginTop: spacing.xs },
+  compatibilityAliases: { position: 'absolute', opacity: 0, width: 1, height: 1 },
   actionScroll: {
     flexDirection: 'row',
     gap: spacing.sm,

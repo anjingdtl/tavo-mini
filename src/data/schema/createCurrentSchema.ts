@@ -35,6 +35,7 @@ export function createCurrentSchemaStatements(): string[] {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         mode TEXT NOT NULL DEFAULT 'outline',
+        active_writer_style_id INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -182,6 +183,12 @@ export function createCurrentSchemaStatements(): string[] {
         top_p REAL NOT NULL DEFAULT 0.9,
         max_tokens INTEGER NOT NULL DEFAULT 4000,
         extra_instructions TEXT NOT NULL DEFAULT '',
+        semantic_json TEXT,
+        compatibility_json TEXT,
+        source_format TEXT NOT NULL DEFAULT 'legacy_shinewriter',
+        source_fingerprint TEXT NOT NULL DEFAULT '',
+        compatibility_fingerprint TEXT,
+        asset_contract_version INTEGER NOT NULL DEFAULT 1,
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
     `,

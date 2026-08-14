@@ -234,7 +234,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         const id = `batch_${Date.now().toString(36)}_${Math.random()
           .toString(36)
           .slice(2, 8)}`;
-        const pipelineConfig = await db.getPipelineConfig();
+        const pipelineConfig = await db.getPipelineConfig({ projectId: input.projectId });
         const contextBudgetVersion = await resolveBatchContextBudgetVersion();
         const contextAutomationPolicyV3 =
           contextBudgetVersion === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
@@ -567,7 +567,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
             };
           }),
         };
-        const pipelineConfig = await db.getPipelineConfig();
+        const pipelineConfig = await db.getPipelineConfig({ projectId: legacyBatch.projectId });
         const reasoningEffort = isPipelineReasoningTier(pipelineConfig.reasoningEffort)
           ? pipelineConfig.reasoningEffort
           : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort);

@@ -2,6 +2,10 @@ import type {
   ConstructionDetailLevel,
   ConstructionQualityReport,
 } from './quality';
+import type {
+  PresetCompatibilityEnvelopeV1,
+  WriterStyleSemanticV1,
+} from '../writerStyle/types';
 
 /**
  * 「构建」模块的共享类型。被 budget.ts、constructionAiGenerator.ts 与
@@ -288,7 +292,7 @@ export interface WorldbookArtifact {
 
 /** 现有资料库 / 导出协议的 Preset v1。由本地 Adapter 补齐协议与采样元数据。 */
 export interface ShineWriterPresetV1 {
-  spec: 'shinewriter-preset-v1';
+  spec: 'shinewriter-preset-v1' | 'shinewriter-writer-style-v1';
   name: string;
   system_prompt: string;
   writing_style: string;
@@ -296,6 +300,9 @@ export interface ShineWriterPresetV1 {
   temperature: number;
   top_p: number;
   max_tokens: number;
+  semantic?: WriterStyleSemanticV1;
+  source_format?: string;
+  compatibility?: PresetCompatibilityEnvelopeV1;
 }
 
 /** 构建层临时 DTO；不是新的持久化 schema。 */
@@ -304,6 +311,7 @@ export interface NovelPresetDraft {
   system_prompt: string;
   writing_style: string;
   extra_instructions: string;
+  semantic?: WriterStyleSemanticV1;
 }
 
 export interface PresetArtifact {
@@ -311,6 +319,7 @@ export interface PresetArtifact {
   name: string;
   preset: ShineWriterPresetV1;
   qualityReport?: ConstructionQualityReport;
+  compatibility?: PresetCompatibilityEnvelopeV1;
 }
 
 export type ConstructionArtifact =

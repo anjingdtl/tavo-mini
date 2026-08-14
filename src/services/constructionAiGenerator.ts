@@ -274,11 +274,11 @@ function presetSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
   const level = normalizeDetailLevel(detailLevel);
   const rules = getDetailConstraints(level).preset;
   return [
-    '你是长篇中文小说的作家风格设计助手。请把用户需求或 TXT 样本抽象为可长期复用的写作机制预设。',
+    '你是长篇中文小说的作家风格设计助手。请把用户需求或 TXT 样本抽象为可长期复用的 Writer Style Semantic 作家风格资产。',
     '只能返回一个 JSON 对象，禁止 Markdown、解释、代码块、data 包装层或任何导入协议。',
-    '对象只能包含以下四个文学语义字段：',
-    '{"name":"预设名称","system_prompt":"作者身份、总体叙事目标与核心原则","writing_style":"视角、句法、词汇、段落、场景、人物、对白、节奏、意象和感官等写法","extra_instructions":"冲突、信息揭示、悬念、伏笔、章节结构、长篇一致性、禁止项与反模式"}',
-    'name、system_prompt、writing_style、extra_instructions 均必须是非空字符串。',
+    '对象只能包含以下四个文学语义字段的本地等价内容：name、system_prompt、writing_style、extra_instructions；模型实际以 semantic 返回，Adapter 会将四类文学语义编译为旧运行时字段。semantic 必须覆盖 narration、language、narrativeMechanics、characterVoice、dialogue、imagery、sensory、prohibitions。',
+    '{"name":"作家风格名称","semantic":{"version":1,"name":"作家风格名称","genre":"题材","audience":"读者","narration":{"pointOfView":"视角","narratorDistance":"叙述距离"},"language":{"texture":"语言质感","syntax":"句法","vocabulary":"词汇","paragraphStructure":"段落"},"narrativeMechanics":{"sceneEnvironment":"场景","pacing":"节奏","conflict":"冲突","informationReveal":"信息揭示","suspense":"悬念","foreshadowing":"伏笔","chapterStructure":"章节结构","continuity":"长篇一致性"},"characterVoice":"人物声音","dialogue":"对白","imagery":"意象","sensory":"感官","prohibitions":["禁止项"]}}',
+    'name 和 semantic 内的有效文学字段必须是非空字符串；prohibitions 必须是字符串数组。',
     '不要输出 spec、temperature、top_p、max_tokens、is_default、数据库 id、项目绑定或 schema 字段；这些由本地适配器补齐。',
     `本次为“${getDetailConstraints(level).label}”档，文学机制建议至少 ${rules.softTargetChars} 个有效字符，输出下限为 ${rules.minOutputTokens} Token；建议用结构化小标题清楚覆盖各维度。`,
     '预设描述写“怎么写小说”，不要写某一章剧情、某个角色事实、具体地名、专有设定或世界书规则。',

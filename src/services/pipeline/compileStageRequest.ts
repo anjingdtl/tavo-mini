@@ -249,6 +249,7 @@ export async function compileDraftStageRequest(params: {
    * ContextPreviewScreen shows the same allocation view as a live send.
    */
   contextBudgetVersion?: number;
+  writerStyleSnapshot?: import('../writerStyle/types').FrozenWriterStyleV1;
 }): Promise<StageCompileResult> {
   const compiled = await compileDraftPipelineRequest({
     ...params,
@@ -451,7 +452,9 @@ const PROOF_OPTIONAL_WEIGHTS: Record<string, number> = {
 };
 
 function clipByAllocation(text: string, allocation: number): string {
-  if (!text || allocation <= 0) return '';
+  if (!text) return '';
+  if (text.includes('【WRITER_STYLE_PROTECTED_V5】')) return text;
+  if (allocation <= 0) return '';
   return clipTextToTokenBudget(text, allocation);
 }
 

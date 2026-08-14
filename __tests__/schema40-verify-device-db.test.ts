@@ -27,8 +27,11 @@ const beforeDbPath =
     'pre-upgrade-device.db',
   );
 
-const runDeviceDbTest =
-  requireDeviceDb || fs.existsSync(deviceDbPath) ? it : it.skip;
+// Device evidence is opt-in for CI. Historical local artifacts can represent
+// a previous product schema and must not turn a fresh schema migration into a
+// false regression; the Android audit enables SHINE_WRITER_REQUIRE_DEVICE_DB
+// with an artifact captured after the current install.
+const runDeviceDbTest = requireDeviceDb ? it : it.skip;
 
 function rows(db: any, sql: string): unknown[][] {
   const result = db.exec(sql);
@@ -54,7 +57,7 @@ function assertPreRowsRemain(
 
 describe('real device database (overwrite-install verification)', () => {
   runDeviceDbTest(
-    'keeps Schema 51 and preserves pre-upgrade user rows',
+    'keeps Schema 52 and preserves pre-upgrade user rows',
     async () => {
       if (!fs.existsSync(deviceDbPath)) {
         throw new Error(
@@ -79,7 +82,7 @@ describe('real device database (overwrite-install verification)', () => {
           after,
           "SELECT value FROM settings WHERE key = 'schema_version'",
         );
-        expect(SCHEMA_VERSION).toBe(51);
+        expect(SCHEMA_VERSION).toBe(52);
         expect(schemaVersion).toBe(SCHEMA_VERSION);
 
         const columnNames = rows(

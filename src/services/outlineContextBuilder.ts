@@ -126,7 +126,9 @@ export type OutlineContextErrorCode =
   | 'OUTLINE_SNAPSHOT_INVALID'
   | 'OUTLINE_MODEL_UNAVAILABLE'
   | 'OUTLINE_SNAPSHOT_PERSIST_FAILED'
-  | 'OUTLINE_EXECUTION_CONFIG_INVALID';
+  | 'OUTLINE_EXECUTION_CONFIG_INVALID'
+  | 'ACTIVE_WRITER_STYLE_MISSING'
+  | 'WRITER_STYLE_OVER_BUDGET';
 
 export class OutlineContextError extends Error {
   readonly code: OutlineContextErrorCode;
@@ -134,6 +136,7 @@ export class OutlineContextError extends Error {
     | 'open_outlines'
     | 'open_llm_settings'
     | 'restart_task'
+    | 'open_writer_style'
     | 'open_task_center';
 
   constructor(

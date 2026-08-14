@@ -29,10 +29,16 @@ import {
   resolveProofConstraints,
   resolveReviewContext,
 } from './stageResourceContextV4';
+import { assertWriterStyleProjectionFits } from './stageResourceContextV5';
 import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
 } from '../../types/pipelineExecution';
+import type { FrozenWriterStyleV1 } from '../writerStyle/types';
+import {
+  freezeDefaultWriterStyleBaseline,
+  freezeWriterStyle,
+} from '../writerStyle/compiler';
 import { resolveFinalReviserReasoning } from './finalReviserReasoningPolicy';
 import {
   applyPipelineReasoningBudget,
@@ -66,6 +72,7 @@ import {
   resolveElasticStageOutputReservation,
   resolveOutlineElasticStageReservations,
 } from '../contextAutoAllocator';
+import { deriveDefaultSafetyMargin } from './budgetAllocator';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { Chapter, Preset } from '../../types/novel';
 import type {
@@ -739,6 +746,7 @@ function buildExecutionSnapshot(params: {
   reviewPreset: Preset | null;
   factCheckPreset: Preset | null;
   proofPreset: Preset | null;
+  writerStyle?: FrozenWriterStyleV1;
   requestConfig: LLMRequestConfig;
   outlineWorkflowVersion?: 1 | 2 | 3 | 4;
   contextBudgetVersion?: 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -921,6 +929,7 @@ function buildExecutionSnapshot(params: {
     stageBudgets?.find(item => item.stage === stage)?.requestMaxTokens ||
     fallback;
   return {
+    ...(params.writerStyle ? { writerStyle: params.writerStyle } : {}),
     pipelineMode: isV4 ? 'full' : params.config.pipelineMode,
     ...(params.outlineWorkflowVersion
       ? { outlineWorkflowVersion: params.outlineWorkflowVersion }
@@ -1000,6 +1009,7 @@ function configFromExecution(
 ): PipelineConfig {
   return {
     pipelineMode: execution.pipelineMode,
+    activeWriterStyleId: execution.writerStyle?.assetId || null,
     reasoningEffort: execution.reasoningEffort,
     reasoningProfileVersion: execution.reasoningProfileVersion,
     draftPresetId: execution.draftPresetId,
@@ -1975,6 +1985,7 @@ async function loadRuntime(
   reviewPreset: Preset | null;
   factCheckPreset: Preset | null;
   proofPreset: Preset | null;
+  writerStyle: FrozenWriterStyleV1 | null;
 }> {
   const store = usePipelineTaskStore.getState();
   const task = store.tasks.find(t => t.id === taskId);
@@ -2003,25 +2014,76 @@ async function loadRuntime(
       reviewPreset: presetFromFrozen(parsed.execution.reviewPreset),
       factCheckPreset: presetFromFrozen(parsed.execution.factCheckPreset),
       proofPreset: presetFromFrozen(parsed.execution.proofPreset),
+      writerStyle: parsed.execution.writerStyle || null,
     };
   }
 
   const config = await db.getPipelineConfig({
+    projectId: chapter.project_id,
     includeHistoricalMode: Number(task?.outlineWorkflowVersion) === 2,
   });
   const presets = (await db.getPresetsByProject(
     chapter.project_id,
   )) as Preset[];
   const requestConfig = await resolveLLMRequestConfig();
+  let writerStyle = freezeDefaultWriterStyleBaseline();
+  if (config.activeWriterStyleId != null) {
+    const asset = await db.getWriterStyleAssetById(
+      chapter.project_id,
+      config.activeWriterStyleId,
+    );
+    if (!asset) {
+      throw new OutlineContextError(
+        'ACTIVE_WRITER_STYLE_MISSING',
+        '当前项目绑定的作家风格不存在或已失去项目归属，已阻断新任务。',
+        'open_writer_style',
+      );
+    }
+    writerStyle = freezeWriterStyle(asset);
+  }
+  const activePreset = presetFromFrozen({
+    id: writerStyle.assetId,
+    name: writerStyle.assetName,
+    system_prompt: writerStyle.stageProjections.draft.text,
+    writing_style: '',
+    extra_instructions: '',
+    temperature: writerStyle.samplerResolution.temperature ?? 0.7,
+    top_p: writerStyle.samplerResolution.topP ?? 1,
+    max_tokens: 0,
+  });
   return {
     parsed,
     config,
     requestConfig,
-    draftPreset: resolvePreset(config.draftPresetId, presets),
+    draftPreset: activePreset,
     reviewPreset: resolvePreset(config.reviewPresetId, presets),
     factCheckPreset: resolvePreset(config.factCheckPresetId, presets),
     proofPreset: resolvePreset(config.proofPresetId, presets),
+    writerStyle,
   };
+}
+
+function assertProtectedWriterStyleFits(
+  runtime: Awaited<ReturnType<typeof loadRuntime>>,
+  stage: 'draft' | 'review' | 'factCheck' | 'brief' | 'proof',
+  contextWindow: number,
+  reservedOutputTokens: number,
+): void {
+  const snapshot = runtime.parsed?.draftContext;
+  if (snapshot?.snapshotVersion === 5 || snapshot?.writerStyleSnapshot) {
+    assertWriterStyleProjectionFits(
+      snapshot,
+      stage,
+      Math.max(0, contextWindow - reservedOutputTokens - deriveDefaultSafetyMargin(contextWindow)),
+    );
+    return;
+  }
+  const projection = runtime.writerStyle?.stageProjections[stage];
+  if (projection && projection.estimatedTokens > Math.max(0, contextWindow - reservedOutputTokens - deriveDefaultSafetyMargin(contextWindow))) {
+    const error = new Error(`WRITER_STYLE_OVER_BUDGET：${stage} 作家风格超出 Protected 输入预算。`);
+    (error as Error & { code?: string }).code = 'WRITER_STYLE_OVER_BUDGET';
+    throw error;
+  }
 }
 
 async function actionPersistInitialSnapshot(
@@ -2148,6 +2210,7 @@ async function actionPersistInitialSnapshot(
       reviewPreset: runtime.reviewPreset,
       factCheckPreset: runtime.factCheckPreset,
       proofPreset: runtime.proofPreset,
+      writerStyle: runtime.writerStyle || undefined,
       requestConfig: runtime.requestConfig,
       outlineWorkflowVersion,
       contextBudgetVersion,
@@ -2183,10 +2246,18 @@ async function actionPersistInitialSnapshot(
     execution.pipelineMode = options.pipelineModeOverride;
   }
 
+  assertProtectedWriterStyleFits(
+    runtime,
+    'draft',
+    runtime.requestConfig.context_window || 0,
+    execution.draftMaxTokens,
+  );
+
   const compiled = await compileDraftStageRequest({
     chapter,
     requestConfig: runtime.requestConfig,
     draftPreset: runtime.draftPreset,
+    writerStyleSnapshot: runtime.writerStyle || undefined,
     draftMaxTokens: execution.draftMaxTokens,
     // Story Memory is an enhancement, not a writing license. Freeze the
     // latest usable checkpoint and pending bridge here, but never make the
@@ -2712,6 +2783,12 @@ async function runReviewV2Stage(params: {
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
   const context = resolveReviewContext(ctxSnap);
+  assertProtectedWriterStyleFits(
+    runtime,
+    'review',
+    runtime.requestConfig.context_window || 0,
+    runtime.config.reviewMaxTokens,
+  );
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -2877,6 +2954,12 @@ async function runFactCheckV2Stage(params: {
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
   const context = resolveFactCheckContext(ctxSnap);
+  assertProtectedWriterStyleFits(
+    runtime,
+    'factCheck',
+    runtime.requestConfig.context_window || 0,
+    runtime.config.factCheckMaxTokens,
+  );
   const start = Date.now();
   let tokens = { input: 0, output: 0, total: 0 };
 
@@ -3972,6 +4055,12 @@ async function actionRunReview(
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
       const context = resolveReviewContext(ctxSnap);
+      assertProtectedWriterStyleFits(
+        runtime,
+        'review',
+        runtime.requestConfig.context_window || 0,
+        runtime.config.reviewMaxTokens,
+      );
       const start = Date.now();
       let tokens = { input: 0, output: 0, total: 0 };
 
@@ -4236,6 +4325,12 @@ async function actionRunFactCheck(
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
       const context = resolveFactCheckContext(ctxSnap);
+      assertProtectedWriterStyleFits(
+        runtime,
+        'factCheck',
+        runtime.requestConfig.context_window || 0,
+        runtime.config.factCheckMaxTokens,
+      );
       const start = Date.now();
       let tokens = { input: 0, output: 0, total: 0 };
 
@@ -4717,6 +4812,13 @@ async function actionRunBrief(
         return;
       }
 
+      assertProtectedWriterStyleFits(
+        runtime,
+        'brief',
+        runtime.requestConfig.context_window || 0,
+        runtime.parsed.execution.briefMaxTokens || runtime.config.draftMaxTokens,
+      );
+
       const compiled = compileBriefStageRequest({
         input,
         contextWindow: runtime.requestConfig.context_window || 0,
@@ -5145,6 +5247,12 @@ async function runFinalReviserV2Stage(params: {
       ? auditSnapshot(runtime.parsed)
       : runtime.parsed.draftContext;
   const constraints = resolveProofConstraints(ctxSnap);
+  assertProtectedWriterStyleFits(
+    runtime,
+    'proof',
+    runtime.requestConfig.context_window || 0,
+    runtime.config.proofMaxTokens,
+  );
   const start = Date.now();
   const tokens = { input: 0, output: 0, total: 0 };
 
@@ -5859,6 +5967,12 @@ async function actionRunProof(
           ? auditSnapshot(runtime.parsed)
           : runtime.parsed.draftContext;
       const constraints = resolveProofConstraints(ctxSnap);
+      assertProtectedWriterStyleFits(
+        runtime,
+        'proof',
+        runtime.requestConfig.context_window || 0,
+        runtime.config.proofMaxTokens,
+      );
       const start = Date.now();
       const compiled = compileProofStageRequest({
         draftText,

@@ -269,6 +269,7 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
     }
 
     // j. Create presets
+    const writerStyleIdMap = new Map<number, number>();
     for (const preset of pkg.resources.presets) {
       const name = String(preset.name || '未命名预设');
       const isDefault = preset.is_default === 1 || preset.is_default === true;
@@ -282,13 +283,32 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
       if (preset.top_p != null) updateFields.top_p = Number(preset.top_p);
       if (preset.max_tokens != null) updateFields.max_tokens = Number(preset.max_tokens);
       if (preset.extra_instructions) updateFields.extra_instructions = preset.extra_instructions;
+      for (const field of [
+        'semantic_json',
+        'compatibility_json',
+        'source_format',
+        'source_fingerprint',
+        'compatibility_fingerprint',
+        'asset_contract_version',
+      ]) {
+        if (preset[field] !== undefined) updateFields[field] = preset[field];
+      }
       if (Object.keys(updateFields).length > 0) {
         await db.updatePreset(presetId, updateFields);
       }
+      if (Number(preset.id) > 0) writerStyleIdMap.set(Number(preset.id), presetId);
 
       if (preset.enabled_for_project === 0) {
         await db.setProjectResourceEnabled(projectId, 'preset', presetId, false);
       }
+    }
+
+    const oldActiveWriterStyleId = Number(
+      pkg.project.active_writer_style_id ?? pkg.project.activeWriterStyleId ?? 0,
+    );
+    const newActiveWriterStyleId = writerStyleIdMap.get(oldActiveWriterStyleId);
+    if (newActiveWriterStyleId) {
+      await db.setProjectActiveWriterStyle(projectId, newActiveWriterStyleId);
     }
 
     // j2. v4+ outline packages: restore outlines (title/content/source/enable/

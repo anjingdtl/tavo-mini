@@ -1,6 +1,8 @@
 import RNFS from 'react-native-fs';
 import { saveDocuments } from '@react-native-documents/picker';
 import * as db from './database';
+import { exportSillyTavernOpenAIPreset } from './writerStyle/tavernAdapter';
+import { freezeWriterStyle } from './writerStyle/compiler';
 import {
   getContinuationChapterNumbering,
   makeContinuationChapterNumbering,
@@ -246,7 +248,7 @@ export async function exportPresetJSON(presetId: number): Promise<string> {
   if (!preset) throw new Error('未找到预设。');
   const fileName = safeFileName(preset.name || 'preset') + '.json';
   const exportData = {
-    spec: 'shinewriter-preset-v1',
+    spec: preset.semantic_json ? 'shinewriter-writer-style-v1' : 'shinewriter-preset-v1',
     name: preset.name,
     system_prompt: preset.system_prompt,
     writing_style: preset.writing_style,
@@ -254,8 +256,39 @@ export async function exportPresetJSON(presetId: number): Promise<string> {
     temperature: preset.temperature,
     top_p: preset.top_p,
     max_tokens: preset.max_tokens,
+    ...(preset.semantic_json
+      ? { semantic: JSON.parse(preset.semantic_json) }
+      : {}),
+    ...(preset.source_format ? { source_format: preset.source_format } : {}),
+    ...(preset.compatibility_json
+      ? { compatibility: JSON.parse(preset.compatibility_json) }
+      : {}),
   };
   return saveTextDocument(fileName, JSON.stringify(exportData, null, 2), 'application/json');
+}
+
+export async function exportWriterStyleAsTavern(
+  styleId: number,
+): Promise<string> {
+  const styles = await db.getAllPresets();
+  const style = styles.find(item => Number(item.id) === Number(styleId));
+  if (!style) throw new Error('未找到作家风格。');
+  const semantic = style.semantic_json
+    ? JSON.parse(style.semantic_json)
+    : null;
+  const compatibility = style.compatibility_json
+    ? JSON.parse(style.compatibility_json)
+    : null;
+  const raw = compatibility
+    ? exportSillyTavernOpenAIPreset(compatibility, semantic || undefined)
+    : freezeWriterStyle(style as any).semantic
+      ? (await import('./writerStyle/tavernAdapter')).exportNewWriterStyleAsTavern(
+          freezeWriterStyle(style as any).semantic!,
+        )
+      : null;
+  if (!raw) throw new Error('该旧版作家风格没有可导出的 Semantic。');
+  const fileName = safeFileName(style.name || 'writer-style') + '-SillyTavern.json';
+  return saveTextDocument(fileName, JSON.stringify(raw, null, 2), 'application/json');
 }
 
 async function saveTextDocument(fileName: string, content: string, mimeType: string): Promise<string> {

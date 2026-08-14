@@ -27,6 +27,7 @@ import {
 import { ResourceContextError } from './context/resources/resourceContextErrors';
 import { isPhase2ContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import type { ContextTraceItem } from '../types/contextTrace';
+import type { FrozenWriterStyleV1 } from './writerStyle/types';
 
 export interface CompileDraftPipelineRequestResult {
   messages: ChatMessage[];
@@ -128,9 +129,11 @@ export async function compileDraftPipelineRequest(params: {
    * falls back to the default preset.
    */
   contextAutomationPolicyV3?: import('./contextAutomationPolicy').ContextAutomationPolicyV3;
+  /** New tasks freeze Writer Style before compiling the first request. */
+  writerStyleSnapshot?: FrozenWriterStyleV1;
 }): Promise<CompileDraftPipelineRequestResult> {
   const chapter = params.chapter;
-  const pipelineConfig = await db.getPipelineConfig();
+  const pipelineConfig = await db.getPipelineConfig({ projectId: chapter.project_id });
   const contextConfig = await db.getContextConfig();
   const presets = (await db.getPresetsByProject(
     chapter.project_id,
@@ -195,6 +198,58 @@ export async function compileDraftPipelineRequest(params: {
     },
   );
 
+  if (params.writerStyleSnapshot) {
+    const style = params.writerStyleSnapshot;
+    const draftProjection = style.stageProjections.draft;
+    trace.push(
+      {
+        kind: 'writer_style',
+        sourceId: style.assetId,
+        title: style.assetName,
+        reason: `Active Writer Style｜${style.sourceFormat}｜fingerprint ${style.sourceFingerprint.slice(0, 12)}`,
+        estimatedTokens: draftProjection.estimatedTokens,
+        included: true,
+        clipped: false,
+        preview: draftProjection.text.slice(0, 500),
+        sourceFingerprint: style.sourceFingerprint,
+        awarenessMode: 'preset',
+      },
+      {
+        kind: 'writer_style_projection',
+        sourceId: style.assetId,
+        title: `Draft Projection · ${draftProjection.mode}`,
+        reason: 'Protected Writer Style Projection；不参与普通 Resource allocator，不得 tail clip。',
+        estimatedTokens: draftProjection.estimatedTokens,
+        included: true,
+        clipped: false,
+        preview: draftProjection.text.slice(0, 500),
+        sourceFingerprint: style.sourceFingerprint,
+      },
+      {
+        kind: 'writer_style_compat',
+        sourceId: style.assetId,
+        title: 'Writer Style Compatibility',
+        reason: `${style.compatibilitySummary?.promptCount || 0} prompts · ${style.compatibilitySummary?.preservedCount || 0} preserved · ${style.compatibilitySummary?.injectedCount || 0} injected`,
+        estimatedTokens: 0,
+        included: true,
+        clipped: false,
+        preview: style.compatibilityFingerprint || '',
+        sourceFingerprint: style.compatibilityFingerprint,
+      },
+      {
+        kind: 'writer_style_sampler',
+        sourceId: style.assetId,
+        title: 'Writer Style Sampler',
+        reason: 'Pipeline output reservation remains stage-owned；Tavern max_tokens/openai_max_tokens仅展示与保留。',
+        estimatedTokens: 0,
+        included: true,
+        clipped: false,
+        preview: JSON.stringify(style.samplerResolution),
+        sourceFingerprint: style.sourceFingerprint,
+      },
+    );
+  }
+
   const pipelineContext: PipelineContextSnapshot = {
     ...ctx,
     projectId: chapter.project_id,
@@ -202,9 +257,14 @@ export async function compileDraftPipelineRequest(params: {
     chapterUpdatedAt:
       (chapter as any).updated_at ?? (chapter as any).updatedAt ?? '',
     createdAt: Date.now(),
-    snapshotVersion: phase2
-      ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
-      : PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    snapshotVersion: params.writerStyleSnapshot
+      ? 5
+      : phase2
+        ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
+        : PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+    ...(params.writerStyleSnapshot
+      ? { writerStyleSnapshot: params.writerStyleSnapshot }
+      : {}),
   };
 
   const prevChapter = allChapters

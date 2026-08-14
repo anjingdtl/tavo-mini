@@ -31,6 +31,8 @@ export interface PipelineConfig {
   reasoningEffort?: PipelineReasoningEffort;
   /** Product reasoning profile version; new outline tasks freeze version 5. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
+  /** New tasks use one project-scoped active Writer Style. */
+  activeWriterStyleId: number | null;
   draftPresetId: number | null;
   reviewPresetId: number | null;
   factCheckPresetId: number | null;

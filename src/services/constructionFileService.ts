@@ -14,6 +14,11 @@ import {
 import {
   parseShineWriterPresetV1,
 } from './construction/presetDraftAdapter';
+import {
+  isSillyTavernOpenAIPreset,
+  parseSillyTavernOpenAIPreset,
+} from './writerStyle/tavernAdapter';
+import { normalizeWriterStyleSemantic } from './writerStyle/semantic';
 import type {
   CharacterArtifact,
   ConstructionArtifact,
@@ -155,7 +160,33 @@ export function parsePresetArtifactJSON(
   } catch {
     throw new Error(`预设文件「${sourceName}」不是有效 JSON。`);
   }
+  if (isSillyTavernOpenAIPreset(value)) {
+    const imported = parseSillyTavernOpenAIPreset(value, sourceName);
+    const preset: ShineWriterPresetV1 = {
+      spec: 'shinewriter-writer-style-v1',
+      name: imported.semantic.name,
+      system_prompt: imported.legacy.systemPrompt,
+      writing_style: imported.legacy.writingStyle,
+      extra_instructions: imported.legacy.extraInstructions,
+      temperature: Number((value as any).temperature) || 0.8,
+      top_p: Number((value as any).top_p) || 0.9,
+      max_tokens: Number((value as any).openai_max_tokens) || 4000,
+      semantic: imported.semantic,
+      source_format: 'sillytavern_openai',
+      compatibility: imported.envelope,
+    };
+    return {
+      kind: 'preset',
+      name: preset.name,
+      preset,
+      compatibility: imported.envelope,
+    };
+  }
   const preset = parseShineWriterPresetV1(value);
+  if (preset.semantic) {
+    preset.semantic = normalizeWriterStyleSemantic(preset.semantic, preset.name);
+    preset.source_format = preset.source_format || 'shinewriter';
+  }
   return { kind: 'preset', name: preset.name, preset };
 }
 
@@ -207,6 +238,19 @@ export async function importConstructionArtifactToLibrary(
       temperature: artifact.preset.temperature,
       top_p: artifact.preset.top_p,
       max_tokens: artifact.preset.max_tokens,
+      semantic_json: artifact.preset.semantic
+        ? JSON.stringify(artifact.preset.semantic)
+        : null,
+      compatibility_json: artifact.compatibility
+        ? JSON.stringify(artifact.compatibility)
+        : artifact.preset.compatibility
+          ? JSON.stringify(artifact.preset.compatibility)
+          : null,
+      source_format: artifact.preset.source_format ||
+        (artifact.preset.semantic ? 'shinewriter' : 'legacy_shinewriter'),
+      source_fingerprint: artifact.compatibility?.sourceFingerprint || '',
+      compatibility_fingerprint: artifact.compatibility?.sourceFingerprint || null,
+      asset_contract_version: artifact.preset.semantic ? 2 : 1,
     });
     return { kind: 'preset', id, name };
   }

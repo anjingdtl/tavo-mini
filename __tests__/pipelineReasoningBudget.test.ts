@@ -7,6 +7,7 @@ import type { PipelineConfig } from '../src/types/pipeline';
 
 const BASE: PipelineConfig = {
   pipelineMode: 'full',
+  activeWriterStyleId: null,
   reasoningEffort: 'medium',
   draftPresetId: null,
   reviewPresetId: null,

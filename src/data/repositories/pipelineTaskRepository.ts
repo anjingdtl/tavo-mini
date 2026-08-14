@@ -23,6 +23,7 @@ import {
 } from './pipelineStageCheckpointRepository';
 
 export async function getPipelineConfig(options?: {
+  projectId?: number;
   /**
    * Read the frozen-era mode only for direct historical V2 state-machine
    * verification. Product/UI callers must keep seeing the unified full
@@ -76,6 +77,28 @@ export async function getPipelineConfig(options?: {
     const v = get(k);
     return v !== null ? Number(v) : null;
   };
+  let activeWriterStyleId: number | null = null;
+  if (options?.projectId != null) {
+    const project = await one<{ active_writer_style_id: number | null }>(
+      'SELECT active_writer_style_id FROM projects WHERE id = ? LIMIT 1',
+      [options.projectId],
+    );
+    activeWriterStyleId = project?.active_writer_style_id == null
+      ? null
+      : Number(project.active_writer_style_id);
+    if (activeWriterStyleId != null) {
+      const style = await one<{ id: number }>(
+        `SELECT p.id FROM presets p
+         JOIN project_resources pr ON pr.resource_type = 'preset'
+          AND pr.resource_id = p.id AND pr.project_id = ? AND pr.enabled = 1
+         WHERE p.id = ? LIMIT 1`,
+        [options.projectId, activeWriterStyleId],
+      );
+      if (!style) {
+        throw new Error('ACTIVE_WRITER_STYLE_MISSING：当前项目绑定的作家风格不存在或未启用。');
+      }
+    }
+  }
 
   const isV3Profile = ['2', '3', '4', '5'].includes(
     String(savedProfileVersion),
@@ -105,6 +128,7 @@ export async function getPipelineConfig(options?: {
       ? normalizedTier
       : DEFAULT_PIPELINE_REASONING_EFFORT,
     reasoningProfileVersion: 5,
+    activeWriterStyleId,
     draftPresetId: presetId('pipeline_draft_preset_id'),
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
@@ -122,8 +146,30 @@ export async function getPipelineConfig(options?: {
   };
 }
 
-export async function setPipelineConfig(config: PipelineConfig): Promise<void> {
+export async function setPipelineConfig(
+  config: PipelineConfig,
+  projectId?: number,
+): Promise<void> {
   await setSetting('pipeline_mode', 'full');
+  if (projectId != null) {
+    if (config.activeWriterStyleId != null) {
+      const style = await one<{ id: number }>(
+        `SELECT p.id FROM presets p
+         JOIN project_resources pr ON pr.resource_type = 'preset'
+          AND pr.resource_id = p.id AND pr.project_id = ? AND pr.enabled = 1
+         WHERE p.id = ? LIMIT 1`,
+        [projectId, config.activeWriterStyleId],
+      );
+      if (!style) {
+        throw new Error('ACTIVE_WRITER_STYLE_MISSING：不能把其他项目的作家风格设为当前项目风格。');
+      }
+    }
+    await execute(
+      await openDatabase(),
+      'UPDATE projects SET active_writer_style_id = ?, updated_at = ? WHERE id = ?',
+      [config.activeWriterStyleId, new Date().toISOString(), projectId],
+    );
+  }
   const tier = isPipelineReasoningTier(config.reasoningEffort)
     ? config.reasoningEffort
     : normalizePipelineReasoningTier(config.reasoningEffort);

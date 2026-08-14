@@ -46,6 +46,10 @@ import {
   type FrozenContinuationStageModel,
 } from '../services/continuation/generation/continuationV4Budget';
 import { ensureContextAutomationPolicy } from '../services/contextAutoAllocator';
+import {
+  freezeDefaultWriterStyleBaseline,
+  freezeWriterStyle,
+} from '../services/writerStyle/compiler';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContextTraceItem,
@@ -75,6 +79,10 @@ const KIND_ICON: Record<
   worldbook: Globe,
   instruction: MessageSquare,
   outline: ListTree,
+  writer_style: Bot,
+  writer_style_projection: Bot,
+  writer_style_compat: Bot,
+  writer_style_sampler: Bot,
 };
 
 /** 续写 context category 内部名 → 中文展示（Spec §10.3） */
@@ -410,11 +418,41 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       // Non-continuation: same Draft compiler as reconcile (preview mode).
       // Without a frozen task snapshot this is an estimated request, not a
       // committed send payload.
+      const pipelineConfig = await db.getPipelineConfig({
+        projectId: chapter.project_id,
+      });
+      let previewWriterStyle = freezeDefaultWriterStyleBaseline();
+      if (pipelineConfig.activeWriterStyleId != null) {
+        const asset = await db.getWriterStyleAssetById(
+          chapter.project_id,
+          pipelineConfig.activeWriterStyleId,
+        );
+        if (!asset) {
+          const error = new Error('ACTIVE_WRITER_STYLE_MISSING：当前项目绑定的作家风格不存在。');
+          (error as Error & { code?: string }).code = 'ACTIVE_WRITER_STYLE_MISSING';
+          throw error;
+        }
+        previewWriterStyle = freezeWriterStyle(asset);
+      }
+      const previewPreset = {
+        id: previewWriterStyle.assetId ?? 0,
+        project_id: chapter.project_id,
+        name: previewWriterStyle.assetName,
+        is_default: 0,
+        system_prompt: previewWriterStyle.stageProjections.draft.text,
+        writing_style: '',
+        extra_instructions: '',
+        temperature: previewWriterStyle.samplerResolution.temperature ?? 0.7,
+        top_p: previewWriterStyle.samplerResolution.topP ?? 1,
+        max_tokens: 0,
+      };
       const { compileDraftStageRequest } = await import(
         '../services/pipeline/compileStageRequest'
       );
       const compiled = await compileDraftStageRequest({
         chapter,
+        draftPreset: previewPreset,
+        writerStyleSnapshot: previewWriterStyle,
         preview: true,
         contextBudgetVersion,
         contextAutomationPolicyV3,
@@ -456,6 +494,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         code === 'RESOURCE_AWARENESS_COMPILE_FAILED' ||
         code === 'PRESET_SOURCE_READ_FAILED' ||
         code === 'RESOURCE_SOURCE_CHANGED_DURING_BUILD' ||
+        code === 'ACTIVE_WRITER_STYLE_MISSING' ||
+        code === 'WRITER_STYLE_OVER_BUDGET' ||
         e?.name === 'OutlineContextError' ||
         e?.name === 'ResourceContextError';
       if (isOutlineBlock) {
@@ -783,8 +823,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
                 { color: theme.colors.textSecondary, marginTop: spacing.xs },
               ]}
             >
-              Context Protocol V7 · Resource Context V2 · Snapshot V4 ·
-              全局感知为保护区，详情才进入弹性分配
+              Context Protocol V7 · Resource Context V2 · Snapshot V5 · Snapshot V4 legacy resume ·
+              Active Writer Style 为 Protected 输入，普通详情才进入弹性分配
             </Text>
             <Text
               style={[

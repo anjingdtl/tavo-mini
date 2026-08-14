@@ -16,6 +16,12 @@ import {
 import { renderPresetForStage } from '../context/resources/presetContextCompiler';
 import type { FrozenPresetContext } from '../context/resources/resourceAwarenessTypes';
 import { clipTextToTokenBudget } from '../../utils/tokenEstimator';
+import {
+  buildBriefResourceViewFromSnapshotV5,
+  buildFactCheckContextFromSnapshotV5,
+  buildProofConstraintsFromSnapshotV5,
+  buildReviewContextFromSnapshotV5,
+} from './stageResourceContextV5';
 
 function frozenPresetFromSnapshot(
   snapshot: PipelineContextSnapshot,
@@ -122,6 +128,9 @@ export function buildProofConstraintsFromSnapshotV4(
 export function resolveReviewContext(
   snapshot: PipelineContextSnapshot,
 ): ReviewContext {
+  if (snapshot.snapshotVersion === 5 || snapshot.writerStyleSnapshot) {
+    return buildReviewContextFromSnapshotV5(snapshot);
+  }
   return isPhase2Snapshot(snapshot)
     ? buildReviewContextFromSnapshotV4(snapshot)
     : buildReviewContextFromSnapshot(snapshot);
@@ -130,6 +139,9 @@ export function resolveReviewContext(
 export function resolveFactCheckContext(
   snapshot: PipelineContextSnapshot,
 ): FactCheckContext {
+  if (snapshot.snapshotVersion === 5 || snapshot.writerStyleSnapshot) {
+    return buildFactCheckContextFromSnapshotV5(snapshot);
+  }
   return isPhase2Snapshot(snapshot)
     ? buildFactCheckContextFromSnapshotV4(snapshot)
     : buildFactCheckContextFromSnapshot(snapshot);
@@ -138,6 +150,9 @@ export function resolveFactCheckContext(
 export function resolveProofConstraints(
   snapshot: PipelineContextSnapshot,
 ): ProofConstraints {
+  if (snapshot.snapshotVersion === 5 || snapshot.writerStyleSnapshot) {
+    return buildProofConstraintsFromSnapshotV5(snapshot);
+  }
   return isPhase2Snapshot(snapshot)
     ? buildProofConstraintsFromSnapshotV4(snapshot)
     : buildProofConstraintsFromSnapshot(snapshot);
@@ -152,6 +167,9 @@ export function buildBriefResourceViewFromSnapshotV4(
   characterDetailText: string;
   worldbookDetailText: string;
 } {
+  if (snapshot.snapshotVersion === 5 || snapshot.writerStyleSnapshot) {
+    return buildBriefResourceViewFromSnapshotV5(snapshot);
+  }
   const preset = renderPresetForStage(frozenPresetFromSnapshot(snapshot), 'brief');
   const details = snapshot.resourceDetailItems || [];
   return {

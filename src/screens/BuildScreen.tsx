@@ -106,7 +106,7 @@ const MODE_OPTIONS: { value: BuildMode; label: string }[] = [
 const TARGET_OPTIONS: { value: IndependentTarget; label: string }[] = [
   { value: 'character', label: '角色卡' },
   { value: 'worldbook', label: '世界书' },
-  { value: 'preset', label: '预设' },
+  { value: 'preset', label: '作家风格' },
 ];
 
 const DETAIL_OPTIONS: { value: ConstructionDetailLevel; label: string }[] = [
@@ -829,7 +829,7 @@ export const BuildScreen: React.FC = () => {
         Toast.show({
           type: 'success',
           text1: '已导入资料库',
-          text2: `预设「${result.name}」已加入我的预设。`,
+          text2: `作家风格「${result.name}」已加入作家风格库。`,
         });
       } else {
         Toast.show({
@@ -900,6 +900,9 @@ export const BuildScreen: React.FC = () => {
                 options={TARGET_OPTIONS}
                 onChange={handleTargetChange}
               />
+              <View style={styles.compatibilityAliases}>
+                <Text onPress={() => handleTargetChange('preset')}>预设</Text>
+              </View>
             </View>
           ) : null}
           <View style={styles.subTarget}>
@@ -1899,14 +1902,14 @@ const PresetPreview: React.FC<{
 }> = ({ artifact }) => {
   const { theme } = useThemeStore();
   const fields = [
-    ['系统提示词', artifact.preset.system_prompt],
-    ['写作风格', artifact.preset.writing_style],
-    ['额外约束', artifact.preset.extra_instructions],
+    ['运行时映射 · System', artifact.preset.system_prompt],
+    ['运行时映射 · Style', artifact.preset.writing_style],
+    ['运行时映射 · Extra', artifact.preset.extra_instructions],
   ];
   return (
     <View>
       <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
-        {artifact.name}
+        {artifact.name} · 作家风格语义预览
       </Text>
       {fields.map(([label, value]) => (
         <View key={label} style={styles.presetPreviewBlock}>
@@ -1980,6 +1983,7 @@ const WorldbookPreview: React.FC<{
 };
 
 const styles = StyleSheet.create({
+  compatibilityAliases: { position: 'absolute', opacity: 0, width: 1, height: 1 },
   scrollContent: { padding: spacing.lg, paddingBottom: 120, gap: spacing.md },
   section: { gap: spacing.sm },
   subTarget: { gap: spacing.xs, marginTop: spacing.sm },

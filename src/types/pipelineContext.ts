@@ -12,10 +12,14 @@
  * are valid (e.g. a project with no characters) and MUST be filtered by the
  * message builders, not silently dropped here.
  */
+import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
+
 /** Historical V3 snapshot written by Context Budget V6 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
 /** Phase-2 frozen resource contract written by Context Budget V7 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4 = 4 as const;
+/** Third-phase frozen Writer Style + stage projection contract. */
+export const PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5 = 5 as const;
 
 /**
  * Context Budget V3 hierarchical allocator summary embedded in the snapshot
@@ -150,7 +154,7 @@ export interface PipelineContextSnapshot {
   chapterId?: number;
   chapterUpdatedAt?: string | number;
   createdAt?: number;
-  snapshotVersion?: 1 | 3 | 4;
+  snapshotVersion?: 1 | 3 | 4 | 5;
   resourceContextVersion?: 1 | 2;
   characterAwarenessText?: string;
   worldbookAwarenessText?: string;
@@ -175,6 +179,8 @@ export interface PipelineContextSnapshot {
   presetSource?: 'user_selected' | 'default_runtime_baseline';
   includeResources?: boolean;
   resourcesDisabledWarning?: string;
+  /** V5-only: task-start frozen Writer Style and all stage projections. */
+  writerStyleSnapshot?: FrozenWriterStyleV1;
   contextBudgetV7Summary?: ContextBudgetV7Summary;
   /**
    * Context Budget V3 hierarchical allocator summary (Plan §13). Present only
@@ -205,6 +211,9 @@ export interface ReviewContext {
   outlineText: string;
   immediatePreviousChapterText?: string;
   immediatePreviousChapterEnding?: string;
+  /** V5 Protected Writer Style metadata; never enters elastic clipping. */
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
 }
 
 /**
@@ -231,6 +240,8 @@ export interface FactCheckContext {
   outlineText: string;
   immediatePreviousChapterText?: string;
   immediatePreviousChapterEnding?: string;
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
 }
 
 /**
@@ -253,6 +264,8 @@ export interface ProofConstraints {
   outlineText: string;
   immediatePreviousChapterText?: string;
   immediatePreviousChapterEnding?: string;
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
 }
 
 export function buildReviewContextFromSnapshot(
