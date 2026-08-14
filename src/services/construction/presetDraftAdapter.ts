@@ -27,7 +27,7 @@ function asText(value: unknown): string {
 
 function requireText(source: Record<string, unknown>, field: string): string {
   const value = asText(source[field]);
-  if (!value) throw new Error(`生成的预设缺少必填字段「${field}」。`);
+  if (!value) throw new Error(`生成的作家风格缺少必填字段「${field}」。`);
   return value;
 }
 
@@ -67,7 +67,7 @@ export function novelPresetDraftToPreset(
 function finiteNumber(value: unknown, field: string): number {
   const number = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(number)) {
-    throw new Error(`预设字段「${field}」不是有效数字。`);
+    throw new Error(`作家风格字段「${field}」不是有效数字。`);
   }
   return number;
 }
@@ -106,13 +106,13 @@ export function parseShineWriterPresetV1(
       : {}),
   };
   if (preset.temperature < 0 || preset.temperature > 2) {
-    throw new Error('预设温度必须在 0 到 2 之间。');
+    throw new Error('作家风格温度必须在 0 到 2 之间。');
   }
   if (preset.top_p <= 0 || preset.top_p > 1) {
-    throw new Error('预设 Top P 必须大于 0 且不超过 1。');
+    throw new Error('作家风格 Top P 必须大于 0 且不超过 1。');
   }
   if (preset.max_tokens <= 0) {
-    throw new Error('预设最大输出 Token 必须大于 0。');
+    throw new Error('作家风格最大输出 Token 必须大于 0。');
   }
   return preset;
 }

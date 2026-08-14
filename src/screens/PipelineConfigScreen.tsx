@@ -78,10 +78,10 @@ export const PipelineConfigScreen: React.FC = () => {
   if (!currentProject) {
     return (
       <Screen>
-        <Header title="流水线配置" />
+        <Header testID="pipeline-config" title="流水线配置" />
         <EmptyState
           title="没有当前项目"
-          description="请先选择一个项目，再配置流水线预设。"
+          description="请先选择一个项目，再配置流水线与当前作家风格。"
         />
       </Screen>
     );
@@ -89,7 +89,7 @@ export const PipelineConfigScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="流水线配置" />
+      <Header testID="pipeline-config" title="流水线配置" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
           <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>思考强度</Text>
@@ -126,6 +126,7 @@ export const PipelineConfigScreen: React.FC = () => {
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>统一用于 Draft、Review、FactCheck、Brief、Proof；Sampler 中的 max_tokens 不会覆盖阶段输出预算。</Text>
           <View style={styles.presetList}>
             <Button
+              testID="pipeline-writer-style-baseline"
               label="Writer Baseline（默认）"
               variant={config.activeWriterStyleId === null ? 'primary' : 'secondary'}
               onPress={() => setConfig({ ...config, activeWriterStyleId: null })}
@@ -134,6 +135,7 @@ export const PipelineConfigScreen: React.FC = () => {
             {presets.map(preset => (
               <Button
                 key={preset.id}
+                testID={`pipeline-writer-style-${preset.id}`}
                 label={preset.name}
                 variant={config.activeWriterStyleId === preset.id ? 'primary' : 'secondary'}
                 onPress={() => setConfig({ ...config, activeWriterStyleId: preset.id })}
@@ -142,7 +144,7 @@ export const PipelineConfigScreen: React.FC = () => {
             ))}
           </View>
         </View>
-        <Button label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />
+        <Button testID="pipeline-config-save" label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />
       </ScrollView>
     </Screen>
   );

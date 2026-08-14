@@ -1,25 +1,48 @@
-# E2E: continuation Canon analysis (Phase 2 Spec §17.6)
-# Preconditions: continuation project with imported source preferred;
-# automated CI may use deterministic fixture path via service tests.
 appId: com.shinewriter
 ---
+# Current Canon analysis entry: continuation resources show import-or-analysis.
 - launchApp
-- assertVisible: "项目"
-- tapOn: "资料"
-- assertVisible: "续写"
-- tapOn: "续写"
-# If source imported, open analysis; otherwise surface import CTA.
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
     visible:
-      text: ".*"
-    timeout: 5000
-# Manual checkpoint when no source is present on device:
-# 1) Import fixture TXT (30 chapters)
-# 2) Set boundary at chapter 20
-# 3) Open 原著分析 → Standard → await awaiting_review
-# 4) Activate snapshot
-# 5) Confirm world rule / lock character / ignore candidate
-# 6) Open evidence preview
-# 7) Kill app, relaunch, assert Canon still active
-# 8) Backup/restore round-trip
-- takeScreenshot: continuation-canon-analysis
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-continuation
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CANON'
+- tapOn: '原著续写'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: resource-tab-continuation
+- extendedWaitUntil:
+    visible: '导入 TXT 原著'
+    timeout: 10000
+- runFlow:
+    when:
+      visible:
+        id: continuation-open-analysis
+    commands:
+      - tapOn:
+          id: continuation-open-analysis
+      - assertVisible: '原著分析'
+- runFlow:
+    when:
+      visible:
+        id: continuation-import-txt
+    commands:
+      - tapOn:
+          id: continuation-import-txt
+      - assertVisible: '导入 TXT 原著'

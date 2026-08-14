@@ -301,7 +301,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       <Screen>
         <Header
           title="章节编辑"
-          action={<Button label="返回" variant="ghost" onPress={onClose} />}
+          action={<Button testID="chapter-back" label="返回" variant="ghost" onPress={onClose} />}
         />
       </Screen>
     );
@@ -374,6 +374,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   return (
     <Screen>
       <Header
+        testID="chapter-editor"
         title={focusMode ? '专注模式' : '章节编辑'}
         subtitle={saveLabel}
         action={
@@ -386,6 +387,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
               compact
             />
             <Button
+              testID="chapter-back"
               label="返回"
               variant="ghost"
               onPress={() => flushAndClose().catch(() => {})}

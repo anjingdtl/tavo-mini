@@ -167,6 +167,43 @@ export async function saveLLMConfig(
   return id;
 }
 
+export function resolveLLMConfigIdForContextSync(
+  configs: Array<{ id: number; is_active?: number }>,
+  preferredConfigId?: number | null,
+): number | null {
+  const preferred =
+    preferredConfigId != null && preferredConfigId > 0
+      ? configs.find(item => Number(item.id) === Number(preferredConfigId))
+      : undefined;
+  const active = configs.find(item => Number(item.is_active) === 1);
+  const target = preferred || active || configs[0];
+  const id = Number(target?.id || 0);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+export async function updateLLMCapabilityWindow(
+  id: number,
+  contextWindow: number,
+  maxOutputTokens: number,
+): Promise<void> {
+  const window = Math.round(Number(contextWindow));
+  const maxOutput = Math.round(Number(maxOutputTokens));
+  if (!Number.isFinite(window) || window <= 0) {
+    throw new Error('上下文长度必须为正数。');
+  }
+  if (!Number.isFinite(maxOutput) || maxOutput <= 0) {
+    throw new Error('最大输出 Token 必须为正数。');
+  }
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error('LLM 配置尚未保存，无法同步上下文能力。');
+  }
+  await execute(
+    await openDatabase(),
+    'UPDATE llm_config SET context_window = ?, max_output_tokens = ? WHERE id = ?',
+    [window, maxOutput, id],
+  );
+}
+
 export async function setActiveLLMConfig(id: number): Promise<void> {
   const database = await openDatabase();
   // V2.2.1 修复：react-native-sqlite-storage 6.0.1 的 transaction 在 async 回调下

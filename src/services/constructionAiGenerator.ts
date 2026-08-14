@@ -336,7 +336,7 @@ export function buildConstructionMessages(input: ConstructionInput): {
     if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
   } else if (input.mode === 'preset_from_text') {
     userParts.push(
-      '请从下方 TXT 素材提炼一份原创作家风格预设。只总结可迁移的写作机制，不要把来源故事中的人物、地名、事件、专有设定或剧情事实写成规则，也不要复制原文。',
+      '请从下方 TXT 素材提炼一份原创作家风格。只总结可迁移的写作机制，不要把来源故事中的人物、地名、事件、专有设定或剧情事实写成规则，也不要复制原文。',
     );
     userParts.push(input.sourceSnapshot);
     if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
@@ -407,7 +407,7 @@ function buildIndependentPresetBrief(
   input: Extract<ConstructionInput, { mode: 'preset_independent' }>,
 ): string {
   const fields: Array<[string, string | undefined]> = [
-    ['预设名称', input.name],
+    ['作家风格名称', input.name],
     ['适用题材 / 类型', input.genre],
     ['目标读者 / 整体气质', input.audience],
     ['叙述视角', input.pointOfView],
@@ -428,7 +428,7 @@ function buildIndependentPresetBrief(
     ['补充要求', input.extra],
   ];
   return [
-    '请根据以下创作意图生成一份可复用的作家风格预设。',
+    '请根据以下创作意图生成一份可复用的作家风格。',
     ...fields
       .filter(([, value]) => value?.trim())
       .map(([label, value]) => `${label}：${value!.trim()}`),
@@ -585,7 +585,7 @@ function parsePresetResponse(
   const preset = novelPresetDraftToPreset(draft);
   const readBack = parseShineWriterPresetV1(preset);
   if (readBack.name !== draft.name) {
-    throw new Error('预设兼容适配回读失败：名称不一致。');
+    throw new Error('作家风格兼容适配回读失败：名称不一致。');
   }
   const artifact: PresetArtifact = {
     kind: 'preset',
@@ -599,7 +599,7 @@ function parsePresetResponse(
   );
   if (!qualityReport.hardPassed) {
     throw new Error(
-      `预设未通过结构硬门禁：${qualityReport.failures
+      `作家风格未通过结构硬门禁：${qualityReport.failures
         .map(item => item.message)
         .join('；')}`,
     );

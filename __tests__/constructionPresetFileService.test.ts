@@ -43,7 +43,7 @@ describe('preset construction file service', () => {
     const json = serializeArtifact(artifact);
     expect(JSON.parse(json)).toMatchObject({ spec: 'shinewriter-preset-v1' });
     expect(parsePresetArtifactJSON(json).preset).toEqual(artifact.preset);
-    expect(buildConstructionFileName(artifact)).toBe('限知悬疑-预设.json');
+    expect(buildConstructionFileName(artifact)).toBe('限知悬疑-作家风格.json');
   });
 
   it('avoids same-name overwrite', () => {

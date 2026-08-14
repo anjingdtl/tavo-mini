@@ -666,7 +666,7 @@ export async function buildContext(
           ) {
             throw new ResourceContextError(
               'RESOURCE_SOURCE_CHANGED_DURING_BUILD',
-              '构建上下文时预设发生变化，已阻止把两个版本拼进同一次冻结。请稍后重试。',
+              '构建上下文时作家风格发生变化，已阻止把两个版本拼进同一次冻结。请稍后重试。',
               'restart_task',
               {
                 before: v7FrozenPreset.sourceFingerprint,
@@ -1104,9 +1104,9 @@ export async function buildContext(
       typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
     title:
       typeof preset !== 'string' && preset
-        ? preset.name || '预设'
+        ? preset.name || '作家风格'
         : '系统提示词',
-    reason: '系统提示词和预设配置',
+    reason: '系统提示词和作家风格配置',
     estimatedTokens: estimateTokens(resolvedSystemPrompt),
     included: true,
     clipped: false,
@@ -1221,7 +1221,7 @@ export async function buildContext(
         kind: 'character',
         sourceId: null,
         title: '资料上下文已关闭',
-        reason: '用户关闭了角色 / 世界书 / 笔记；全局感知未生成。预设仍生效。',
+        reason: '用户关闭了角色 / 世界书 / 笔记；全局感知未生成。作家风格仍生效。',
         estimatedTokens: 0,
         included: false,
         clipped: false,
@@ -1531,7 +1531,7 @@ export async function buildContext(
           includeResources: config.includeResources !== false,
           resourcesDisabledWarning:
             config.includeResources === false
-              ? '资料上下文已关闭：角色 / 世界书 / 笔记不会进入本次任务。预设仍生效。'
+              ? '资料上下文已关闭：角色 / 世界书 / 笔记不会进入本次任务。作家风格仍生效。'
               : undefined,
           contextBudgetV7Summary: hierarchicalBudgetTrace
             ? buildV7Summary(

@@ -86,7 +86,7 @@ function resolvePresetForPhase2(
   if (!found) {
     throw new ResourceContextError(
       'PRESET_SOURCE_READ_FAILED',
-      `已选择的写作预设 #${requested} 读取失败，已阻止生成，以免静默换成默认文风。`,
+      `已选择的作家风格 #${requested} 读取失败，已阻止生成，以免静默换成默认文风。`,
       'open_resources',
       { requestedPresetId: requested },
     );

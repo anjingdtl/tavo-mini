@@ -103,10 +103,14 @@ const MODE_OPTIONS: { value: BuildMode; label: string }[] = [
   { value: 'fromText', label: '由 TXT' },
 ];
 
-const TARGET_OPTIONS: { value: IndependentTarget; label: string }[] = [
-  { value: 'character', label: '角色卡' },
-  { value: 'worldbook', label: '世界书' },
-  { value: 'preset', label: '作家风格' },
+const TARGET_OPTIONS: {
+  value: IndependentTarget;
+  label: string;
+  testID: string;
+}[] = [
+  { value: 'character', label: '角色卡', testID: 'build-target-character' },
+  { value: 'worldbook', label: '世界书', testID: 'build-target-worldbook' },
+  { value: 'preset', label: '作家风格', testID: 'build-target-writer-style' },
 ];
 
 const DETAIL_OPTIONS: { value: ConstructionDetailLevel; label: string }[] = [
@@ -159,7 +163,7 @@ export const BuildScreen: React.FC = () => {
   const [wbImpactScope, setWbImpactScope] = useState('');
   const [wbForbiddenRules, setWbForbiddenRules] = useState('');
   const [wbStableRelations, setWbStableRelations] = useState('');
-  // 独立作家风格预设字段
+  // 独立作家风格字段
   const [presetName, setPresetName] = useState('');
   const [presetGenre, setPresetGenre] = useState('');
   const [presetAudience, setPresetAudience] = useState('');
@@ -900,9 +904,6 @@ export const BuildScreen: React.FC = () => {
                 options={TARGET_OPTIONS}
                 onChange={handleTargetChange}
               />
-              <View style={styles.compatibilityAliases}>
-                <Text onPress={() => handleTargetChange('preset')}>预设</Text>
-              </View>
             </View>
           ) : null}
           <View style={styles.subTarget}>
@@ -950,7 +951,7 @@ export const BuildScreen: React.FC = () => {
             {mode === 'independent' && target === 'preset' ? (
               <IndependentPresetForm
                 fields={[
-                  { key: 'name', label: '预设名称', value: presetName, setValue: setPresetName, placeholder: '例如：克制悬疑叙事' },
+                  { key: 'name', label: '作家风格名称', value: presetName, setValue: setPresetName, placeholder: '例如：克制悬疑叙事' },
                   { key: 'genre', label: '适用题材 / 类型', value: presetGenre, setValue: setPresetGenre, placeholder: '例如：都市悬疑、历史群像' },
                   { key: 'audience', label: '目标读者 / 整体气质', value: presetAudience, setValue: setPresetAudience },
                   { key: 'pointOfView', label: '叙述视角', value: presetPointOfView, setValue: setPresetPointOfView, multiline: true },
@@ -1135,7 +1136,7 @@ export const BuildScreen: React.FC = () => {
                   <Text
                     style={[styles.hint, { color: theme.colors.textSecondary }]}
                   >
-                    请至少填写一个有效的预设构建要求。
+                    请至少填写一个有效的作家风格构建要求。
                   </Text>
                 ) : null}
                 {mode !== 'independent' && !source ? (

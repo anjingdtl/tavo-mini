@@ -1,60 +1,108 @@
 appId: com.shinewriter
 ---
+# Create a backup, mutate chapter text, restore, and assert the original body.
 - launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '小说项目'
-    timeout: 15000
-- tapOn: '设置'
-- extendedWaitUntil:
-    visible: '设置'
-    timeout: 10000
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-outline
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_BACKUP'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-editor
+- tapOn:
+    id: writing-add-chapter
+- tapOn:
+    id: chapter-title-input
+- eraseText: 30
+- inputText: 'E2E_BACKUP_CHAPTER'
+- tapOn:
+    id: chapter-content-input
+- inputText: 'E2E_BODY_CONTENT'
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow:
+    when:
+      visible:
+        id: chapter-back
+    commands:
+      - tapOn:
+          id: chapter-back
+- runFlow:
+    when:
+      visible: '返回'
+    commands:
+      - tapOn: '返回'
+- tapOn:
+    id: tab-settings
 - scrollUntilVisible:
     element:
-      text: '备份中心'
+      id: settings-backup
     direction: DOWN
     timeout: 10000
-- tapOn: '备份中心'
+- tapOn:
+    id: settings-backup
 - extendedWaitUntil:
     visible: '备份中心'
     timeout: 10000
-- tapOn: '创建备份'
+- tapOn:
+    id: backup-create
 - extendedWaitUntil:
     visible: '手动'
-    timeout: 15000
+    timeout: 20000
 - assertVisible: '恢复'
-- back
-- tapOn: '写作'
-- extendedWaitUntil:
-    visible: 'E2E_CHAPTER'
-    timeout: 10000
-- tapOn: 'E2E_CHAPTER'
+- tapOn:
+    id: tab-editor
+- tapOn: 'E2E_BACKUP_CHAPTER'
 - tapOn:
     id: chapter-content-input
 - inputText: '_MODIFIED'
-- waitForAnimationToEnd
-- tapOn: '返回'
-- tapOn: '设置'
-- scrollUntilVisible:
-    element:
-      text: '备份中心'
-    direction: DOWN
-    timeout: 10000
-- tapOn: '备份中心'
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow:
+    when:
+      visible:
+        id: chapter-back
+    commands:
+      - tapOn:
+          id: chapter-back
+- runFlow:
+    when:
+      visible: '返回'
+    commands:
+      - tapOn: '返回'
+- tapOn:
+    id: tab-settings
 - extendedWaitUntil:
-    visible: '恢复'
+    visible: '备份中心'
     timeout: 10000
-- tapOn: '恢复'
+- tapOn:
+    id: backup-restore
 - extendedWaitUntil:
     visible: '恢复确认'
     timeout: 10000
 - tapOn: '恢复'
 - extendedWaitUntil:
     visible: '恢复成功'
-    timeout: 15000
+    timeout: 20000
 - tapOn: 'OK'
-- back
-- tapOn: '写作'
-- tapOn: 'E2E_CHAPTER'
+- tapOn:
+    id: tab-editor
+- tapOn: 'E2E_BACKUP_CHAPTER'
 - extendedWaitUntil:
     visible: 'E2E_BODY_CONTENT'
     timeout: 10000

@@ -336,6 +336,27 @@ export function allocateContextBudget(
   };
 }
 
+/**
+ * Map an auto-config window onto the current model's declared capability.
+ * 1M context → 200K max output, matching the 80/20 elastic envelope used by
+ * stage reservations. This is not a V3 bulk flatten of every model/preset.
+ */
+export function deriveLLMCapabilityFromAutoWindow(maxContextTokens: number): {
+  contextWindow: number;
+  maxOutputTokens: number;
+} {
+  const allocation = allocateContextBudget(maxContextTokens, {
+    characters: 0,
+    notes: 0,
+    worldbookEntries: 0,
+    worldbookCollections: 0,
+  });
+  return {
+    contextWindow: allocation.llmContextWindow,
+    maxOutputTokens: allocation.llmMaxOutputTokens,
+  };
+}
+
 // ============================================================================
 // 应用函数：以下为有副作用部分，与纯函数分开维护
 // ============================================================================
@@ -343,6 +364,11 @@ export function allocateContextBudget(
 import { openDatabase } from '../data/connection/openDatabase';
 import { executeTransaction, type SqlStatement } from './database/transaction';
 import { all } from '../data/connection/query';
+import {
+  getLLMConfigs,
+  resolveLLMConfigIdForContextSync,
+  updateLLMCapabilityWindow,
+} from '../data/repositories/llmConfigRepository';
 import {
   buildAppliedRecord,
   getContextAutomationPolicy,
@@ -629,6 +655,22 @@ export interface ContextAutoAppliedRecordV3 {
  *   - characters / notes / worldbook_entries / worldbook_collections
  *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens).
  */
+export async function syncLLMCapabilityAfterAutoApply(
+  maxContextTokens: number,
+  preferredConfigId?: number | null,
+): Promise<number | null> {
+  const capability = deriveLLMCapabilityFromAutoWindow(maxContextTokens);
+  const configs = await getLLMConfigs();
+  const id = resolveLLMConfigIdForContextSync(configs, preferredConfigId);
+  if (id == null) return null;
+  await updateLLMCapabilityWindow(
+    id,
+    capability.contextWindow,
+    capability.maxOutputTokens,
+  );
+  return id;
+}
+
 export async function applyContextAutoAllocationV3(
   maxContextTokens: number,
   options: { policy?: ContextAutomationPolicyV3 } = {},

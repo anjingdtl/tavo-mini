@@ -73,9 +73,9 @@ import { BuildScreen } from '../src/screens/BuildScreen';
 
 describe('BuildScreen preset target', () => {
   it('shows preset as a peer target with independent mechanism fields', () => {
-    const { getByText, getByTestId } = render(<BuildScreen />);
+    const { getByTestId } = render(<BuildScreen />);
 
-    fireEvent.press(getByText('预设'));
+    fireEvent.press(getByTestId('build-target-writer-style'));
 
     expect(getByTestId('build-preset-name')).toBeTruthy();
     expect(getByTestId('build-preset-pointOfView')).toBeTruthy();
@@ -88,7 +88,7 @@ describe('BuildScreen preset target', () => {
     const { getByText, getByTestId } = render(<BuildScreen />);
 
     fireEvent.press(getByText('由 TXT'));
-    fireEvent.press(getByText('预设'));
+    fireEvent.press(getByTestId('build-target-writer-style'));
 
     expect(getByText('TXT 素材来源')).toBeTruthy();
     expect(getByTestId('build-generate')).toBeTruthy();

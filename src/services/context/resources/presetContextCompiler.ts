@@ -32,7 +32,7 @@ function parseFrozenPresetSource(source: FrozenSourceRecord): Preset {
   } catch (error) {
     throw new ResourceContextError(
       'PRESET_SOURCE_READ_FAILED',
-      '冻结预设 payload 不是有效 JSON，已阻止生成。请重新选择预设。',
+      '冻结作家风格 payload 不是有效 JSON，已阻止生成。请重新选择作家风格。',
       'open_resources',
       { cause: error instanceof Error ? error.message : String(error) },
     );
@@ -40,7 +40,7 @@ function parseFrozenPresetSource(source: FrozenSourceRecord): Preset {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new ResourceContextError(
       'PRESET_SOURCE_READ_FAILED',
-      '冻结预设 payload 结构无效，已阻止生成。请重新选择预设。',
+      '冻结作家风格 payload 结构无效，已阻止生成。请重新选择作家风格。',
       'open_resources',
     );
   }
@@ -49,7 +49,7 @@ function parseFrozenPresetSource(source: FrozenSourceRecord): Preset {
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new ResourceContextError(
       'PRESET_SOURCE_READ_FAILED',
-      '冻结预设缺少有效 id，已阻止生成。请重新选择预设。',
+      '冻结作家风格缺少有效 id，已阻止生成。请重新选择作家风格。',
       'open_resources',
     );
   }
@@ -86,8 +86,8 @@ export function buildFrozenPresetContext(
       throw new ResourceContextError(
         'PRESET_SOURCE_READ_FAILED',
         known
-          ? `已选择的写作预设 #${requested} 读取失败，已阻止生成，以免静默换成默认文风。`
-          : `已选择的写作预设 #${requested} 不存在或已损坏，已阻止生成，以免静默换成默认文风。`,
+          ? `已选择的作家风格 #${requested} 读取失败，已阻止生成，以免静默换成默认文风。`
+          : `已选择的作家风格 #${requested} 不存在或已损坏，已阻止生成，以免静默换成默认文风。`,
         'open_resources',
         { requestedPresetId: requested },
       );
@@ -120,7 +120,7 @@ export function buildFrozenPresetContextFromSource(
   if (source.kind !== 'preset') {
     throw new ResourceContextError(
       'PRESET_SOURCE_READ_FAILED',
-      '冻结资源不是有效预设，已阻止生成。请重新选择预设。',
+      '冻结资源不是有效作家风格，已阻止生成。请重新选择作家风格。',
       'open_resources',
       { sourceKind: source.kind },
     );
@@ -136,7 +136,7 @@ export function buildFrozenPresetContextFromSource(
   if (frozen.sourceFingerprint !== source.fingerprint) {
     throw new ResourceContextError(
       'RESOURCE_SOURCE_CHANGED_DURING_BUILD',
-      '构建上下文时预设冻结指纹与正文不一致，已阻止把两个版本拼进同一次冻结。请稍后重试。',
+      '构建上下文时作家风格冻结指纹与正文不一致，已阻止把两个版本拼进同一次冻结。请稍后重试。',
       'restart_task',
       {
         sourceFingerprint: source.fingerprint,
@@ -163,7 +163,7 @@ function compileUserPreset(
     .join('\n\n');
   return {
     presetId: Number(preset.id),
-    presetName: preset.name || '未命名预设',
+    presetName: preset.name || '未命名作家风格',
     sourceFingerprint: computeResourceSourceFingerprint({
       kind: 'preset',
       id: Number(preset.id),

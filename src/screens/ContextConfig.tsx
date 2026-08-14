@@ -231,7 +231,7 @@ export const ContextConfigScreen: React.FC = () => {
             <Text
               style={[styles.switchHint, { color: theme.colors.textSecondary }]}
             >
-              关闭后角色 / 世界书 / 笔记不进入新任务。写作预设仍生效。
+              关闭后角色 / 世界书 / 笔记不进入新任务。当前作家风格仍生效。
             </Text>
           </View>
           <Switch

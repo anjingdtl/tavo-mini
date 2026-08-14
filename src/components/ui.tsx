@@ -79,14 +79,20 @@ export function Header({
   title,
   subtitle,
   action,
+  testID,
 }: {
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
+  testID?: string;
 }) {
   const { theme } = useThemeStore();
   return (
-    <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
+    <View
+      testID={testID}
+      accessibilityLabel={title}
+      style={[styles.header, { borderBottomColor: theme.colors.border }]}
+    >
       <View style={styles.headerText}>
         <Text style={[styles.title, { color: theme.colors.textPrimary }]} numberOfLines={1}>
           {title}
@@ -112,9 +118,24 @@ export function Section({ title, children }: { title?: string; children: React.R
   );
 }
 
-export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
+export function Card({
+  children,
+  style,
+  testID,
+}: {
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+  testID?: string;
+}) {
   const { theme } = useThemeStore();
-  return <View style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, style]}>{children}</View>;
+  return (
+    <View
+      testID={testID}
+      style={[styles.card, { backgroundColor: theme.colors.card, borderColor: theme.colors.border }, style]}
+    >
+      {children}
+    </View>
+  );
 }
 
 export function Button({
@@ -151,6 +172,7 @@ export function Button({
   return (
     <TouchableOpacity
       accessibilityRole="button"
+      accessibilityLabel={label || testID}
       testID={testID}
       onPress={onPress}
       disabled={disabled}
@@ -201,6 +223,7 @@ export function Field({
       {label ? <Text style={[styles.label, { color: theme.colors.textSecondary }]}>{label}</Text> : null}
       <TextInput
         {...props}
+        accessibilityLabel={props.accessibilityLabel || label}
         placeholderTextColor={theme.colors.textMuted}
         style={[
           styles.input,
@@ -221,21 +244,29 @@ export function SegmentedControl<T extends string | number>({
   options,
   onChange,
   size = 'default',
+  testIDPrefix,
 }: {
   value: T;
-  options: { value: T; label: string }[];
+  options: { value: T; label: string; testID?: string; accessibilityLabel?: string }[];
   onChange: (value: T) => void;
   /** Use only where choosing a mode is the primary action on the screen. */
   size?: 'default' | 'prominent';
+  testIDPrefix?: string;
 }) {
   const { theme } = useThemeStore();
   return (
     <View style={[styles.segmented, { backgroundColor: theme.colors.accentSoft }, size === 'prominent' && styles.segmentedProminent]}>
       {options.map((option) => {
         const active = option.value === value;
+        const optionTestID =
+          option.testID ||
+          (testIDPrefix ? `${testIDPrefix}-${String(option.value)}` : undefined);
         return (
           <TouchableOpacity
             key={option.value}
+            testID={optionTestID}
+            accessibilityRole="button"
+            accessibilityLabel={option.accessibilityLabel || option.label}
             onPress={() => onChange(option.value)}
             style={[styles.segment, size === 'prominent' && styles.segmentProminent, active && { backgroundColor: theme.colors.card }]}
           >

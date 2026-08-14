@@ -1,7 +1,6 @@
 appId: com.shinewriter
 ---
-# Third-phase read-only smoke flow. It intentionally preserves the existing
-# device database and validates the unified Writer Style information architecture.
+# Writer Style library + structured Semantic editor. Overlay-install safe.
 - launchApp
 - runFlow:
     when:
@@ -9,18 +8,84 @@ appId: com.shinewriter
     commands:
       - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '作品库'
-    timeout: 15000
-- tapOn: '2 资料'
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-outline
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_WRITER_STYLE'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: resource-tab-writer-style
 - extendedWaitUntil:
-    visible: '作家风格'
+    visible:
+      id: writer-style-catalog-list
     timeout: 10000
-- tapOn: '作家风格'
-- extendedWaitUntil:
-    visible: '来源：内置'
-    timeout: 10000
+- assertVisible: '作家风格'
+- assertVisible: '来源：内置'
 - assertVisible: '长篇连贯叙事'
-- assertVisible: '所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。'
 - assertNotVisible: '我的作家风格'
-- assertNotVisible: '来源模板'
-- takeScreenshot: third-phase-writer-style
+- assertNotVisible: '导入预设'
+- tapOn:
+    id: '^writer-style-catalog-add-official-literary-continuity-v1$'
+- waitForAnimationToEnd:
+    timeout: 3000
+- scrollUntilVisible:
+    element: '编辑'
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 50
+    speed: 70
+- tapOn: '编辑'
+- extendedWaitUntil:
+    visible:
+      id: writer-style-editor
+    timeout: 10000
+- assertVisible: '基本定位'
+- scrollUntilVisible:
+    element:
+      id: writer-style-group-narration
+    direction: DOWN
+    visibilityPercentage: 40
+- scrollUntilVisible:
+    element:
+      id: writer-style-field-texture
+    direction: DOWN
+    visibilityPercentage: 40
+- tapOn:
+    id: writer-style-field-texture
+- inputText: 'E2E_TEXTURE'
+- scrollUntilVisible:
+    element:
+      id: writer-style-group-prohibitions
+    direction: DOWN
+    visibilityPercentage: 40
+- scrollUntilVisible:
+    element:
+      id: writer-style-advanced-toggle
+    direction: DOWN
+    visibilityPercentage: 40
+- tapOn:
+    id: writer-style-advanced-toggle
+- assertVisible: '运行时编译结果由 WriterStyleSemanticV1 确定性生成，不能反向当作主编辑模型。'
+- tapOn:
+    id: writer-style-save
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow:
+    when:
+      visible: '设为当前作家风格'
+    commands:
+      - tapOn: '设为当前作家风格'
+- extendedWaitUntil:
+    visible: '当前项目正在使用'
+    timeout: 10000

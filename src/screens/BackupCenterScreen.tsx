@@ -185,6 +185,7 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
         )}
         <View style={styles.actionRow}>
           <Button
+            testID="backup-restore"
             label="恢复"
             variant="secondary"
             compact
@@ -206,12 +207,14 @@ export const BackupCenterScreen: React.FC<Props> = ({ onClose }) => {
   return (
     <Screen>
       <Header
+        testID="backup-center"
         title="备份中心"
         subtitle="管理与恢复数据备份"
         action={<Button label="关闭" variant="ghost" compact onPress={handleClose} />}
       />
       <View style={[styles.createRow, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
         <Button
+          testID="backup-create"
           label={operating ? '创建中...' : '创建备份'}
           onPress={handleCreate}
           disabled={operating}

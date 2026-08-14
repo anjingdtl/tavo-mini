@@ -1,15 +1,31 @@
 appId: com.shinewriter
 ---
-- launchApp:
-    clearState: true
+# First-start smoke. Never clearState: that wipes Android Keystore LLM keys.
+# Device data is preserved; use adb install -r for APK updates.
+- launchApp
 - tapOn:
     text: "Don't Show Again"
     optional: true
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '小说项目'
-    timeout: 15000
-- assertVisible: '项目'
-- assertVisible: '写作'
-- assertVisible: '资料'
-- assertVisible: '设置'
+    visible:
+      id: project-library
+    timeout: 20000
+- assertVisible: '作品库'
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: tab-editor
+- tapOn:
+    id: tab-build
+- tapOn:
+    id: tab-settings
+- tapOn:
+    id: tab-projects
+- assertVisible:
+    id: new-project-button
 - assertVisible: '新建'

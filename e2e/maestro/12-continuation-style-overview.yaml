@@ -1,20 +1,45 @@
-# E2E (lightweight): continuation style overview navigation (WP5 Spec §10.1)
-# Preconditions: continuation project preferred; CI may only assert navigation
-# labels without a full style analysis fixture.
 appId: com.shinewriter
 ---
+# Current style overview: continuation resources plus generation config 文风.
 - launchApp
-- assertVisible: "项目"
-- tapOn: "资料"
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
     visible:
-      text: ".*"
-    timeout: 5000
-# Manual / device-with-fixture checkpoint:
-# 1) Open 续写 → 原著分析（分析概览）
-# 2) Assert card title 「原著写作风格」 and one of:
-#    未分析 / 分析中 / 失败 / 就绪 / 过期 / 已忽略
-# 3) If 就绪: tap 查看详情 → StyleProfileDetail shows 概览 / 用户修正
-# 4) Return → 单独重试 / 忽略 / 恢复 / 跳过风格并激活 as available
-# 5) Settings → 续写生成配置 → assert 「文风约束」 关闭/平衡/严格
-- takeScreenshot: continuation-style-overview
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-continuation
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CONT_STYLE'
+- tapOn: '原著续写'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: resource-tab-continuation
+- assertVisible: '导入 TXT 原著'
+- tapOn:
+    id: tab-settings
+- tapOn:
+    id: settings-pipeline-config
+- extendedWaitUntil:
+    visible:
+      id: continuation-generation-config
+    timeout: 10000
+- assertVisible: '校验严格度方案'
+- scrollUntilVisible:
+    element: '原著文风'
+    direction: DOWN
+    timeout: 15000
+    visibilityPercentage: 40
+- assertVisible: '始终严格遵循原著画风画像；未完成或未启用画像时，续写将被阻断。'

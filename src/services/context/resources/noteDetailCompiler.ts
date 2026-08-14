@@ -166,7 +166,7 @@ function compileOriginalNotes(
     const style = isStyleNote(note.title, note.record, mode);
     if (style) styleNotePresent = true;
     const content = style
-      ? `【风格画像笔记｜补充参考，不得覆盖已选写作预设】\n${note.body}`
+      ? `【风格画像笔记｜补充参考，不得覆盖已选作家风格】\n${note.body}`
       : `笔记「${note.title}」：${note.body}`;
     candidates.push(
       makeCandidate(note, index, content, {

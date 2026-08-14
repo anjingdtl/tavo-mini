@@ -63,7 +63,7 @@ export function buildConstructionFileName(artifact: ConstructionArtifact): strin
   const base = safeFileName(artifact.name);
   if (artifact.kind === 'character') return `${base}-角色卡.json`;
   if (artifact.kind === 'worldbook') return `${base}-世界书.json`;
-  return `${base}-预设.json`;
+  return `${base}-作家风格.json`;
 }
 
 export interface SaveArtifactSuccess {
@@ -130,12 +130,12 @@ export type ImportToLibraryResult =
   | { kind: 'preset'; id: number; name: string }
   | { kind: 'worldbook'; name: string; entriesImported: number };
 
-/** 为用户预设生成不覆盖旧资料的名称。 */
+/** 为用户作家风格生成不覆盖旧资料的名称。 */
 export function avoidPresetNameCollision(
   baseName: string,
   existingNames: Iterable<string>,
 ): string {
-  const normalizedBase = baseName.trim() || '未命名预设';
+  const normalizedBase = baseName.trim() || '未命名作家风格';
   const used = new Set(
     Array.from(existingNames, name => String(name || '').trim()).filter(Boolean),
   );
@@ -158,7 +158,7 @@ export function parsePresetArtifactJSON(
   try {
     value = JSON.parse(jsonText);
   } catch {
-    throw new Error(`预设文件「${sourceName}」不是有效 JSON。`);
+    throw new Error(`作家风格文件「${sourceName}」不是有效 JSON。`);
   }
   if (isSillyTavernOpenAIPreset(value)) {
     const imported = parseSillyTavernOpenAIPreset(value, sourceName);
@@ -264,7 +264,7 @@ export async function importConstructionArtifactToLibrary(
   };
 }
 
-/** 从已保存的 Preset v1 文件直接导入“我的预设”。 */
+/** 从已保存的 Writer Style / SillyTavern openai_preset 文件导入作家风格库。 */
 export async function importPresetFromJSON(
   projectId: number,
   jsonText: string,

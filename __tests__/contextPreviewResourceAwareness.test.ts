@@ -29,5 +29,5 @@ test('Context config exposes detail intensity without an awareness slider', () =
   expect(source).toContain('均衡');
   expect(source).toContain('丰富');
   expect(source).not.toContain('全局感知比例');
-  expect(source).toContain('写作预设仍生效');
+  expect(source).toContain('当前作家风格仍生效');
 });

@@ -1,50 +1,41 @@
 appId: com.shinewriter
 ---
-# Phase-2: Character / Worldbook / Preset enter writing runtime via
-# Global Awareness + Context Preview. Overlay-install safe (no clearState).
+# Phase-2 resources plus Writer Style tab enter Context Preview.
 - launchApp
 - runFlow:
     when:
-      visible: '关闭'
+      visible: '我知道了'
     commands:
-      - tapOn: '关闭'
+      - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '作品库'
+    visible:
+      id: project-library
     timeout: 20000
-- tapOn: '新建'
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-outline
+- tapOn:
+    id: new-project-button
 - tapOn:
     id: new-project-name
 - inputText: 'P2_AWARENESS'
-- tapOn: '创建'
-- extendedWaitUntil:
-    visible: 'P2_AWARENESS'
-    timeout: 10000
-- tapOn: '2 资料'
-- extendedWaitUntil:
-    visible: '角色'
-    timeout: 10000
-- tapOn: '角色'
-- extendedWaitUntil:
-    visible: '新建角色合集'
-    timeout: 10000
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: resource-tab-characters
 - tapOn: '新建角色合集'
 - tapOn:
     id: resource-editor-name
 - inputText: 'P2_CHARS'
 - tapOn: '保存'
-- extendedWaitUntil:
-    visible: 'P2_CHARS'
-    timeout: 10000
 - tapOn: '打开'
 - tapOn: '新建角色卡'
-- extendedWaitUntil:
-    visible: '编辑角色卡'
-    timeout: 10000
 - tapOn: '保存'
-- tapOn: '世界书'
-- extendedWaitUntil:
-    visible: '新建世界书'
-    timeout: 10000
+- tapOn:
+    id: resource-tab-worldbook
 - tapOn: '新建世界书'
 - tapOn:
     id: resource-editor-name
@@ -59,18 +50,32 @@ appId: com.shinewriter
     id: resource-editor-content
 - inputText: '青秀路存在雨夜杀人狂。居民避免雨夜独行。'
 - tapOn: '保存'
-- tapOn: '预设'
+- tapOn:
+    id: resource-tab-writer-style
 - extendedWaitUntil:
-    visible: '预设'
+    visible: '作家风格'
     timeout: 10000
-- tapOn: '3 写作'
+- assertVisible: '导入作家风格'
+- tapOn:
+    id: writer-style-add-name
+- inputText: 'P2_STYLE'
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn: '添加'
+- scrollUntilVisible:
+    element: '设为当前作家风格'
+    direction: DOWN
+    timeout: 20000
+    visibilityPercentage: 40
+    speed: 70
+- tapOn: '设为当前作家风格'
 - extendedWaitUntil:
-    visible: '章节'
+    visible: '当前项目正在使用'
     timeout: 10000
-- tapOn: '章节'
-- extendedWaitUntil:
-    visible: '章节编辑'
-    timeout: 10000
+- tapOn:
+    id: tab-editor
+- tapOn:
+    id: writing-add-chapter
 - tapOn:
     id: chapter-title-input
 - eraseText: 30
@@ -92,6 +97,15 @@ appId: com.shinewriter
 - extendedWaitUntil:
     visible: '上下文预览'
     timeout: 20000
-- assertVisible: '上下文预算 V3 分层弹性'
-- assertVisible: '.*Resource Context V2.*'
-- tapOn: '关闭'
+- scrollUntilVisible:
+    element: '上下文预算 V3 分层弹性'
+    direction: DOWN
+    timeout: 25000
+    visibilityPercentage: 40
+- scrollUntilVisible:
+    element: '.*Resource Context V2.*'
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 40
+- tapOn:
+    id: context-preview-close

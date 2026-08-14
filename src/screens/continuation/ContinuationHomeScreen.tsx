@@ -235,6 +235,7 @@ export const ContinuationHomeBody: React.FC<{
             · 请确认你拥有该原著的合法使用权
           </Text>
           <Button
+            testID="continuation-import-txt"
             label="导入 TXT 原著"
             onPress={home.handleImport}
             icon={Upload}
@@ -279,6 +280,7 @@ export const ContinuationHomeBody: React.FC<{
 
           <View style={styles.actions}>
             <Button
+              testID="continuation-open-analysis"
               label="原著分析"
               onPress={home.handleAnalysis}
               flex
@@ -337,7 +339,7 @@ export const ContinuationHomeScreen: React.FC<{
 }> = ({ navigation }) => {
   return (
     <Screen>
-      <Header title="续写" />
+      <Header testID="continuation-home" title="续写" />
       <ContinuationHomeBody navigation={navigation} />
     </Screen>
   );

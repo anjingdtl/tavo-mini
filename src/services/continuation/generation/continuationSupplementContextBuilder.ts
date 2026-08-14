@@ -120,7 +120,7 @@ export async function buildContinuationSupplementContext(input: {
     ? take(
         'preset',
         preset.id,
-        preset.name || '续写补充预设',
+        preset.name || '续写补充作家风格',
         [
           preset.system_prompt,
           preset.writing_style && `写作风格：${preset.writing_style}`,

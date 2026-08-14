@@ -73,7 +73,7 @@ describe('preset default integrity', () => {
       .mockResolvedValueOnce({ rows: rows([{ id: 5 }]) })
       .mockResolvedValueOnce({ rows: rows([]) });
 
-    await expect(deletePreset(5)).rejects.toThrow('至少需要保留一个写作预设');
+    await expect(deletePreset(5)).rejects.toThrow('至少需要保留一个作家风格');
     expect(mockExecuteTransaction).not.toHaveBeenCalled();
   });
 

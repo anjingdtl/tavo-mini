@@ -1,16 +1,35 @@
 appId: com.shinewriter
 ---
+# Current ResourceLibrary: segmented tabs, no ResourceHome hop.
 - launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '小说项目'
-    timeout: 15000
-- tapOn: '资料'
-# Phase 1 (Schema 19): 资料 now opens ResourceHome with five entries
-# (续写/角色/世界书/笔记/预设). Tap 角色 to enter the existing ResourceLibrary.
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-outline
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_RESOURCES'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-resources
 - extendedWaitUntil:
-    visible: '角色'
+    visible:
+      id: resource-library
     timeout: 10000
-- tapOn: '角色'
+- tapOn:
+    id: resource-tab-characters
 - extendedWaitUntil:
     visible: '新建角色合集'
     timeout: 10000
@@ -34,7 +53,8 @@ appId: com.shinewriter
     visible: '编辑角色卡'
     timeout: 10000
 - tapOn: '保存'
-- tapOn: '世界书'
+- tapOn:
+    id: resource-tab-worldbook
 - extendedWaitUntil:
     visible: '新建世界书'
     timeout: 10000
@@ -60,10 +80,28 @@ appId: com.shinewriter
 - tapOn:
     id: resource-editor-name
 - inputText: 'E2E_KEYWORD'
-- tapOn:
-    id: resource-editor-content
+- swipe:
+    direction: UP
+- swipe:
+    direction: UP
+- runFlow:
+    when:
+      visible:
+        id: resource-editor-content
+    commands:
+      - tapOn:
+          id: resource-editor-content
+- runFlow:
+    when:
+      visible: '内容'
+    commands:
+      - tapOn: '内容'
 - inputText: 'E2E_WORLD_CONTENT'
 - tapOn: '保存'
 - extendedWaitUntil:
     visible: 'E2E_KEYWORD'
     timeout: 10000
+- tapOn:
+    id: resource-tab-writer-style
+- assertVisible: '作家风格'
+- assertVisible: '导入作家风格'

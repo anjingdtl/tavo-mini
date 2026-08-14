@@ -271,7 +271,7 @@ export async function importProjectPackage(pkg: ParsedProjectPackage): Promise<n
     // j. Create presets
     const writerStyleIdMap = new Map<number, number>();
     for (const preset of pkg.resources.presets) {
-      const name = String(preset.name || '未命名预设');
+      const name = String(preset.name || '未命名作家风格');
       const isDefault = preset.is_default === 1 || preset.is_default === true;
       const presetId = await db.createPreset(projectId, name, isDefault);
 

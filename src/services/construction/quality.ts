@@ -418,7 +418,7 @@ function inspectPreset(
     if (fieldLengths[field] === 0) {
       failures.push({
         code: `preset_${field}_empty`,
-        message: `预设字段「${field}」不能为空。`,
+        message: `作家风格字段「${field}」不能为空。`,
       });
     }
   }
@@ -434,7 +434,7 @@ function inspectPreset(
   ) {
     failures.push({
       code: 'preset_contract_leakage',
-      message: '预设内容包含导出协议、采样参数或 Prompt 合同元数据。',
+      message: '作家风格内容包含导出协议、采样参数或 Prompt 合同元数据。',
     });
   }
   const mechanismCoverage = PRESET_MECHANISMS.filter(([, pattern]) =>
@@ -443,7 +443,7 @@ function inspectPreset(
   if (mechanismCoverage.length < 6) {
     warnings.push({
       code: 'preset_mechanism_coverage_sparse',
-      message: `预设当前只显式覆盖 ${mechanismCoverage.length} 类写作机制，建议补充视角、节奏、信息揭示、章节结构和反模式等维度。`,
+      message: `作家风格当前只显式覆盖 ${mechanismCoverage.length} 类写作机制，建议补充视角、节奏、信息揭示、章节结构和反模式等维度。`,
     });
   }
   const actualChars = visibleCharacterCount(combined);
@@ -451,7 +451,7 @@ function inspectPreset(
   if (actualChars < softTarget) {
     warnings.push({
       code: 'preset_content_short',
-      message: `预设文学机制约 ${actualChars} 字，低于“${getDetailConstraints(detailLevel).label}”建议规模 ${softTarget} 字；结果仍可保存。`,
+      message: `作家风格文学机制约 ${actualChars} 字，低于“${getDetailConstraints(detailLevel).label}”建议规模 ${softTarget} 字；结果仍可保存。`,
     });
   }
   return {

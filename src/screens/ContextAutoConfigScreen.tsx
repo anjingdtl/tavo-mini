@@ -11,10 +11,15 @@ import {
 import { RotateCcw, Sparkles } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Screen, spacing } from '../components/ui';
+import { useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import { useThemeStore } from '../store/themeStore';
 import { useSettingsStore } from '../store/settingsStore';
+import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import {
   applyContextAutoAllocationV3,
+  deriveLLMCapabilityFromAutoWindow,
+  syncLLMCapabilityAfterAutoApply,
 } from '../services/contextAutoAllocator';
 import {
   getContextAutoInput,
@@ -53,6 +58,9 @@ function formatNumber(n: number): string {
 
 export const ContextAutoConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
+  const route =
+    useRoute<RouteProp<SettingsStackParamList, 'ContextAutoConfig'>>();
+  const preferredLlmConfigId = route.params?.llmConfigId;
   const loadSettings = useSettingsStore(state => state.loadSettings);
   const [inputText, setInputText] = useState<string>(String(DEFAULT_INPUT_VALUE));
   const [lastApplied, setLastApplied] = useState<ContextAutoAppliedRecord | null>(
@@ -107,7 +115,9 @@ export const ContextAutoConfigScreen: React.FC = () => {
       '确认保存 V3 预算模拟窗口',
       `将保存 ${formatNumber(
         numericInput,
-      )} tokens 作为预览模拟值，并启用 V3 分层弹性策略。不会修改任何模型的真实 context_window、max_output_tokens、预设或资源额度；运行时始终读取当前模型真实能力。`,
+      )} tokens 作为预览模拟值，并按弹性预算 80/20 同步当前 LLM 的上下文长度与最大输出 Token（${formatNumber(
+        deriveLLMCapabilityFromAutoWindow(numericInput).maxOutputTokens,
+      )}）。不会批量改写其他模型、作家风格或资料额度。`,
       [
         { text: '取消', style: 'cancel' },
         {
@@ -117,6 +127,10 @@ export const ContextAutoConfigScreen: React.FC = () => {
             setApplying(true);
             try {
               const v3Record = await applyContextAutoAllocationV3(numericInput);
+              await syncLLMCapabilityAfterAutoApply(
+                numericInput,
+                preferredLlmConfigId,
+              );
               await loadSettings();
               setLastApplied({
                 maxContextTokens: v3Record.maxContextTokens,
@@ -159,7 +173,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
     Alert.alert(
       '恢复默认配置',
       '将恢复 V3 策略与预算模拟窗口默认值。\n\n' +
-        '注意：LLM 配置、预设、旧版流水线字段和资源级 max_tokens 不会被重置。',
+        '注意：LLM 配置、作家风格、旧版流水线字段和资源级 max_tokens 不会被重置。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -277,7 +291,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
             借调。历史 V2 任务仍按原冻结版本恢复。
           </Text>
           <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-            当前页面的数字仅用于预算模拟和 Preview，不会覆盖任何模型能力或资源 max_tokens。
+            当前页面的数字用于预算模拟和 Preview，并按 80/20 弹性包络同步当前 LLM 的上下文长度与最大输出 Token。不会批量覆盖其他模型或资源 max_tokens。
             当前 V3 Policy：{policyV3.allocatorVersion} · hash{' '}
             {hashContextAutomationPolicyV3(policyV3).slice(0, 12)}
           </Text>

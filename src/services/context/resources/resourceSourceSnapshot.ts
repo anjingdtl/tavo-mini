@@ -364,7 +364,7 @@ function freezePreset(preset: Preset): FrozenSourceRecord {
   return {
     kind: 'preset',
     id: Number(preset.id),
-    title: preset.name || '预设',
+    title: preset.name || '作家风格',
     payload: JSON.stringify(preset),
     fingerprint: computeResourceSourceFingerprint({
       kind: 'preset',

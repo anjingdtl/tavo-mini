@@ -1,15 +1,42 @@
 appId: com.shinewriter
 ---
-# Phase 3: start continuation generation and adopt as draft.
+# Current continuation writing workspace. Generation still requires source + LLM.
 - launchApp
-- assertVisible: "项目"
-- tapOn: "写作"
-- extendedWaitUntil:
-    visible: "AI 续写"
-    timeout: 15000
-- tapOn: "AI 续写"
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
     visible:
-      text: "开始续写|AI 续写结果|采纳为草稿|续写"
-    timeout: 60000
-- takeScreenshot: continuation-generate
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-continuation
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CONT_WRITE'
+- tapOn: '原著续写'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-editor
+- extendedWaitUntil:
+    visible: '原著续写工作台'
+    timeout: 10000
+- assertVisible: 'Canon 驱动续写'
+- tapOn:
+    id: continuation-add-chapter
+- extendedWaitUntil:
+    visible:
+      id: chapter-editor
+    timeout: 10000
+- assertVisible:
+    id: chapter-ai-generate
+- tapOn:
+    id: chapter-back
+- assertVisible: '续写章节'

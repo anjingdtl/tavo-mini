@@ -162,7 +162,7 @@ export interface IndependentWorldbookInput extends ConstructionSharedInput {
   entryCount: number;
 }
 
-/** 用户填写的需求字段（独立作家风格预设）。 */
+/** 用户填写的需求字段（独立作家风格）。 */
 export interface IndependentPresetInput extends ConstructionSharedInput {
   mode: 'preset_independent';
   name?: string;

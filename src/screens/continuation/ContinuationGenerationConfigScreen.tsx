@@ -40,7 +40,7 @@ const CHECK_LEVEL_OPTIONS = [
 ] as const;
 
 /**
- * 校验严格度预设展开为各子项；原著文风始终严格遵循已启用的画风画像，
+ * 校验严格度方案展开为各子项；原著文风始终严格遵循已启用的画风画像，
  * 因而不属于用户可调节项。
  */
 type StrictnessPresetKey = 'loose' | 'balanced' | 'strict';
@@ -193,6 +193,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
   return (
     <Screen>
       <Header
+        testID="continuation-generation-config"
         title="续写生成配置"
         subtitle={`${currentProject.name} · 独立于大纲创作流水线`}
       />
@@ -208,7 +209,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             不自动重试，不提供额外 Repair；每个阶段按照上下文自动化策略、所选模型能力和本次正文实测需求动态计算预算。
           </Text>
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-            校验严格度（预设）
+            校验严格度方案
           </Text>
           <SegmentedControl
             value={settings.strictnessProfile}
@@ -224,7 +225,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             }}
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            切换预设会展开下列事实校验项；原著文风始终严格遵循已启用的画风画像。
+            切换方案会展开下列事实校验项；原著文风始终严格遵循已启用的画风画像。
           </Text>
           {SUB_LEVEL_FIELDS.map(field => (
             <View key={field.key} style={styles.subLevelBlock}>

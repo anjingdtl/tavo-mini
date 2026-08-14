@@ -574,7 +574,7 @@ function parseFrozenPreset(raw: unknown): FrozenPresetSnapshot | null {
   if (!isPlainObject(raw)) {
     throw new OutlineContextError(
       'OUTLINE_EXECUTION_CONFIG_INVALID',
-      '冻结预设结构无效，已阻止恢复。请重新开始生成。',
+      '冻结作家风格结构无效，已阻止恢复。请重新开始生成。',
       'restart_task',
     );
   }

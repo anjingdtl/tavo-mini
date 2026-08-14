@@ -91,7 +91,7 @@ export function ChapterFields({
           style={[styles.footerText, { color: theme.colors.textSecondary }]}
         >
           {chapter.content.length} 字 · 预估 {estimatedTokenCount} tokens ·{' '}
-          {saveLabel}
+          <Text testID="chapter-save-status">{saveLabel}</Text>
         </Text>
       </View>
       <Button

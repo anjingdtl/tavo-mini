@@ -60,7 +60,7 @@ export const SettingsScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="设置" subtitle="模型、主题和诊断" />
+      <Header testID="settings-home" title="设置" subtitle="模型、主题和诊断" />
       <ScrollView contentContainerStyle={styles.content}>
         <Section title="AI">
           <Card>
@@ -76,6 +76,7 @@ export const SettingsScreen: React.FC = () => {
               地址、Key、模型、上下文长度与自动化预算，可用于续写、摘要和情节线生成。
             </Text>
             <Button
+              testID="settings-llm"
               label="LLM 设置"
               icon={KeyRound}
               onPress={() => navigation.navigate('LLMSettings')}
@@ -97,6 +98,7 @@ export const SettingsScreen: React.FC = () => {
                 : '统一完整协作写作流水线：初稿 → 审阅/事实核查 → Brief → 终稿；失败节点可精确重试。'}
             </Text>
             <Button
+              testID="settings-pipeline-config"
               label="流水线配置"
               icon={Factory}
               onPress={() =>
@@ -109,6 +111,7 @@ export const SettingsScreen: React.FC = () => {
             />
             {workspaceMode === 'continuation' ? null : (
               <Button
+                testID="settings-pipeline-tasks"
                 label={`流水线任务${
                   unresolvedCount > 0 ? ` (${unresolvedCount})` : ''
                 }`}
@@ -163,6 +166,7 @@ export const SettingsScreen: React.FC = () => {
               消耗。恢复前会自动创建安全快照。
             </Text>
             <Button
+              testID="settings-backup"
               label="备份中心"
               icon={Database}
               onPress={() => navigation.navigate('BackupCenter')}

@@ -11,6 +11,9 @@ jest.mock('../src/services/database', () => ({
   getAllPresets: jest.fn(async () => []),
   createPreset: jest.fn(async () => 77),
   updatePreset: jest.fn(async () => undefined),
+  getProjectActiveWriterStyleId: jest.fn(async () => null),
+  setProjectActiveWriterStyle: jest.fn(async () => undefined),
+  setProjectResourceEnabled: jest.fn(async () => undefined),
   getCharacterCollections: jest.fn(async () => [
     { id: 9, name: '角色合集 A', enabled: 1, character_count: 1, estimated_tokens: 3, max_tokens: 50000 },
   ]),
@@ -95,13 +98,53 @@ describe('ResourceLibrary UI', () => {
     expect(await findByText('所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。')).toBeTruthy();
     expect(await findByText('长篇连贯叙事')).toBeTruthy();
     fireEvent.press(getAllByText('预览')[0]);
-    expect(await findByText('系统提示词')).toBeTruthy();
-    fireEvent.press(getAllByText('添加到我的预设')[0]);
+    expect(await findByText('高级设置 · 运行时编译结果')).toBeTruthy();
+    fireEvent.press(getAllByText('添加到作家风格库')[0]);
     await waitFor(() => expect(db.createPreset).toHaveBeenCalledWith(1, '长篇连贯叙事'));
     expect(db.updatePreset).toHaveBeenCalledWith(77, expect.objectContaining({
       name: '长篇连贯叙事',
       system_prompt: expect.any(String),
     }));
+  });
+
+  it('opens the structured Writer Style editor instead of a JSON prompt card', async () => {
+    (db.getAllPresets as jest.Mock).mockResolvedValue([
+      {
+        id: 21,
+        name: '限知悬疑',
+        source_format: 'shinewriter',
+        enabled_for_project: 1,
+        temperature: 0.74,
+        top_p: 0.88,
+        max_tokens: 4000,
+        system_prompt: '系统',
+        writing_style: '文风',
+        extra_instructions: '约束',
+        semantic_json: JSON.stringify({
+          version: 1,
+          name: '限知悬疑',
+          applicability: { tone: '克制' },
+          narration: {},
+          language: { texture: '冷色' },
+          sceneAndCharacter: {},
+          narrativeMechanics: {},
+          literaryTexture: {},
+          prohibitions: ['作者旁白'],
+        }),
+      },
+    ]);
+    (db.getProjectActiveWriterStyleId as jest.Mock).mockResolvedValue(21);
+    const { findByText, getByTestId, getAllByText } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getAllByText('作家风格')[0]);
+    expect(await findByText('限知悬疑')).toBeTruthy();
+    expect(await findByText('当前项目正在使用')).toBeTruthy();
+    fireEvent.press(getByTestId('writer-style-edit-21'));
+    expect(await findByText('基本定位')).toBeTruthy();
+    expect(getByTestId('writer-style-group-prohibitions')).toBeTruthy();
+    expect(getByTestId('writer-style-editor')).toBeTruthy();
+    (db.getAllPresets as jest.Mock).mockResolvedValue([]);
+    (db.getProjectActiveWriterStyleId as jest.Mock).mockResolvedValue(null);
   });
 
   it('renders characters action buttons after data loads', async () => {

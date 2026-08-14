@@ -64,7 +64,7 @@ export const RECALL_TABLE_DISPLAY: Record<
   worldbook_collections: { label: '世界书合集', isLink: false },
   worldbook_entries: { label: '世界书条目', isLink: false },
   notes: { label: '笔记', isLink: false },
-  presets: { label: '预设', isLink: false },
+  presets: { label: '作家风格', isLink: false },
   project_resources: { label: '项目-资源关联', isLink: true },
   project_collection_settings: { label: '项目-合集设置', isLink: true },
 };

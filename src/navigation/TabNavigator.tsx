@@ -88,7 +88,7 @@ export type SettingsStackParamList = {
   BackupCenter: undefined;
   Recall: undefined;
   UsageStats: undefined;
-  ContextAutoConfig: undefined;
+  ContextAutoConfig: { llmConfigId?: number } | undefined;
   ContinuationGenerationConfig: undefined;
 };
 
@@ -447,27 +447,47 @@ export const TabNavigator: React.FC = () => {
       <Tab.Screen
         name="Projects"
         component={ProjectStackScreen}
-        options={{ tabBarLabel: '1 项目' }}
+        options={{
+          tabBarLabel: '1 项目',
+          tabBarButtonTestID: 'tab-projects',
+          tabBarAccessibilityLabel: '项目',
+        }}
       />
       <Tab.Screen
         name="Resources"
         component={ResourceStackScreen}
-        options={{ tabBarLabel: isContinuation ? '2 续写资料' : '2 资料' }}
+        options={{
+          tabBarLabel: isContinuation ? '2 续写资料' : '2 资料',
+          tabBarButtonTestID: 'tab-resources',
+          tabBarAccessibilityLabel: isContinuation ? '续写资料' : '资料',
+        }}
       />
       <Tab.Screen
         name="Editor"
         component={EditorStackScreen}
-        options={{ tabBarLabel: isContinuation ? '3 续写' : '3 写作' }}
+        options={{
+          tabBarLabel: isContinuation ? '3 续写' : '3 写作',
+          tabBarButtonTestID: 'tab-editor',
+          tabBarAccessibilityLabel: isContinuation ? '续写' : '写作',
+        }}
       />
       <Tab.Screen
         name="Build"
         component={BuildScreen}
-        options={{ tabBarLabel: '构建' }}
+        options={{
+          tabBarLabel: '构建',
+          tabBarButtonTestID: 'tab-build',
+          tabBarAccessibilityLabel: '构建',
+        }}
       />
       <Tab.Screen
         name="Settings"
         component={SettingsStackScreen}
-        options={{ tabBarLabel: '设置' }}
+        options={{
+          tabBarLabel: '设置',
+          tabBarButtonTestID: 'tab-settings',
+          tabBarAccessibilityLabel: '设置',
+        }}
       />
     </Tab.Navigator>
   );

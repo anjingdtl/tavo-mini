@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
@@ -66,6 +66,40 @@ export const LLMSettingsScreen: React.FC = () => {
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      loadSettings()
+        .then(() => {
+          if (cancelled) return;
+          const latest = useSettingsStore.getState().llmConfigs;
+          const selected =
+            (selectedId != null && selectedId !== 0
+              ? latest.find(config => config.id === selectedId)
+              : undefined) ||
+            latest.find(config => config.is_active === 1) ||
+            latest[0];
+          if (!selected) return;
+          setDraft(current =>
+            current.id === selected.id &&
+            current.context_window === selected.context_window &&
+            current.max_output_tokens === selected.max_output_tokens
+              ? current
+              : {
+                  ...current,
+                  id: selected.id || current.id,
+                  context_window: selected.context_window,
+                  max_output_tokens: selected.max_output_tokens,
+                },
+          );
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }, [loadSettings, selectedId]),
+  );
 
   useEffect(() => {
     if (selectedId === 0) return;
@@ -321,7 +355,7 @@ export const LLMSettingsScreen: React.FC = () => {
 
   return (
     <Screen>
-      <Header title="LLM 设置" subtitle={`OpenAI 兼容 API · 当前：${activeName}`} />
+      <Header testID="llm-settings" title="LLM 设置" subtitle={`OpenAI 兼容 API · 当前：${activeName}`} />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.configList}>
           {llmConfigs.map(config => {
@@ -362,6 +396,7 @@ export const LLMSettingsScreen: React.FC = () => {
             );
           })}
           <Button
+            testID="llm-add-config"
             label="新增"
             icon={Plus}
             variant="secondary"
@@ -496,7 +531,11 @@ export const LLMSettingsScreen: React.FC = () => {
               icon={Gauge}
               variant="secondary"
               compact
-              onPress={() => navigation.navigate('ContextAutoConfig')}
+              onPress={() =>
+                navigation.navigate('ContextAutoConfig', {
+                  llmConfigId: draft.id > 0 ? draft.id : undefined,
+                })
+              }
             />
           </View>
         <Field
@@ -515,6 +554,7 @@ export const LLMSettingsScreen: React.FC = () => {
 
         <View style={styles.actionRow}>
           <Button
+            testID="llm-save"
             label={saving ? '保存中...' : '保存配置'}
             icon={Save}
             onPress={save}
@@ -522,6 +562,7 @@ export const LLMSettingsScreen: React.FC = () => {
             flex
           />
           <Button
+            testID="llm-set-active"
             label="设为当前"
             icon={CheckCircle2}
             variant="secondary"
@@ -539,6 +580,7 @@ export const LLMSettingsScreen: React.FC = () => {
                   : '测试中...'
                 : '保存并测试'
             }
+            testID="llm-save-and-test"
             variant="secondary"
             onPress={saveAndTest}
             disabled={saving || testing}

@@ -1,6 +1,8 @@
 # Maestro E2E flows
 
-These flows exercise the 16 Phase 4.3 acceptance checkpoints against the Android package `com.shinewriter`.
+These 14 flows cover the current ShineWriter Android package `com.shinewriter`.
+They target stable `testID` / `accessibilityLabel` selectors. Chinese text is
+used only to assert user-visible results.
 
 Run them on a disposable emulator with Maestro installed:
 
@@ -11,19 +13,33 @@ maestro test e2e/maestro/03-resource-library.yaml
 maestro test e2e/maestro/04-backup-restore.yaml
 maestro test e2e/maestro/05-llm-configuration.yaml
 maestro test e2e/maestro/06-pipeline-cancel.yaml
+maestro test e2e/maestro/07-continuation-import.yaml
+maestro test e2e/maestro/08-continuation-canon-analysis.yaml
+maestro test e2e/maestro/09-continuation-generate-and-adopt.yaml
+maestro test e2e/maestro/10-continuation-check-and-repair.yaml
+maestro test e2e/maestro/11-continuation-state-rebuild.yaml
+maestro test e2e/maestro/12-continuation-style-overview.yaml
+maestro test e2e/maestro/13-phase2-resource-context.yaml
+maestro test e2e/maestro/14-third-phase-writer-style.yaml
 ```
 
-`01-first-start.yaml` uses `clearState: true` and must only run on a disposable test device. The remaining flows preserve state and are intended to run in the order above. They use stable React Native `testID` selectors for editable fields and semantic Chinese labels for buttons and tabs.
+None of these flows use `clearState`. Always upgrade-install with
+`adb install -r` so Android Keystore LLM keys and the local database survive.
+`01-first-start.yaml` only asserts the current 作品库 and tab IDs.
 
-Checkpoint mapping:
-
-| Checkpoint                                 | Flow |
-| ------------------------------------------ | ---- |
-| 首次启动                                   | 01   |
-| 新建项目、章节、正文、退出、重进并确认正文 | 02   |
-| 角色集合、角色、世界书                     | 03   |
-| 创建备份、修改后恢复、确认正文恢复         | 04   |
-| 配置在线 LLM、测试连接                     | 05   |
-| 流水线开始、取消、失败提示                 | 06   |
-
-The current Windows QA environment has an Android emulator and adb but no Maestro binary. Until Maestro is installed, the first six writing checkpoints are verified through the adb/UI-tree smoke path; the YAML remains the portable CI/device runner.
+| Flow | Current journey |
+| --- | --- |
+| 01 | First start → 作品库 and tab IDs |
+| 02 | Create outline project, add chapter, persist body |
+| 03 | ResourceLibrary characters / worldbook / Writer Style tab |
+| 04 | Backup then restore chapter body |
+| 05 | LLM configuration and LAN HTTP confirm |
+| 06 | Chapter AI generate / stop and pipeline task center |
+| 07 | Continuation project + TXT import CTA |
+| 08 | Continuation Canon analysis or import gate |
+| 09 | Continuation workspace + AI generate control |
+| 10 | Continuation check/repair entry surfaces |
+| 11 | Continuation 定稿 control |
+| 12 | Continuation style / 文风 config |
+| 13 | Writer Style tab + Context Preview V2 |
+| 14 | Structured Writer Style editor |

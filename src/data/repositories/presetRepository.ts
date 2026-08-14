@@ -130,7 +130,7 @@ export async function deletePreset(id: number): Promise<void> {
     [id],
   );
   if (replacement.rows.length === 0) {
-    throw new Error('至少需要保留一个写作预设。');
+    throw new Error('至少需要保留一个作家风格。');
   }
   const replacementId = replacement.rows.item(0).id;
 
@@ -189,7 +189,7 @@ export async function ensureDefaultPreset(
      VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 4000, ?, 'legacy_shinewriter', '', 1)`,
     [
       0,
-      '默认写作预设',
+      '默认作家风格',
       '你是一位经验丰富的中文小说作者。请保持人物一致、场景清晰、节奏自然，并承接上文继续创作。',
       '文学化叙事，注重氛围和人物心理。',
       '每次输出控制在 800-1500 字，结尾自然停在段落或情节转折处。',

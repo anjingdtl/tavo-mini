@@ -84,11 +84,8 @@ import {
   type PresetCatalogItem,
 } from '../services/presets/catalog';
 import { novelCharacterDraftToCharaCard } from '../services/construction/characterDraftAdapter';
-import {
-  buildWriterStyleSemanticUpdate,
-  semanticForWriterStyleEditor,
-} from '../services/writerStyle/editor';
-import { semanticToRuntimeText } from '../services/writerStyle/semantic';
+import { WriterStyleEditor } from './writer-style/WriterStyleEditor';
+import type { WriterStyleAsset } from '../services/writerStyle/types';
 
 // 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
 // the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
@@ -104,13 +101,13 @@ type EditorKind =
   | 'characterCollection'
   | 'noteCollection';
 
-const TABS: { value: ResourceTab; label: string }[] = [
-  { value: 'continuation', label: '续写' },
-  { value: 'outlines', label: '大纲' },
-  { value: 'characters', label: '角色' },
-  { value: 'worldbook', label: '世界书' },
-  { value: 'notes', label: '笔记' },
-  { value: 'presets', label: '作家风格' },
+const TABS: { value: ResourceTab; label: string; testID: string }[] = [
+  { value: 'continuation', label: '续写', testID: 'resource-tab-continuation' },
+  { value: 'outlines', label: '大纲', testID: 'resource-tab-outlines' },
+  { value: 'characters', label: '角色', testID: 'resource-tab-characters' },
+  { value: 'worldbook', label: '世界书', testID: 'resource-tab-worldbook' },
+  { value: 'notes', label: '笔记', testID: 'resource-tab-notes' },
+  { value: 'presets', label: '作家风格', testID: 'resource-tab-writer-style' },
 ];
 
 const RESOURCE_TYPE: Record<ContentTab, ResourceType> = {
@@ -189,6 +186,8 @@ export const ResourceLibrary: React.FC<{
   const [draft, setDraft] = useState('');
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<PresetCatalogItem | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [writerStyleAsset, setWriterStyleAsset] = useState<WriterStyleAsset | null>(null);
+  const [activeWriterStyleId, setActiveWriterStyleId] = useState<number | null>(null);
   const [showNoteChapters, setShowNoteChapters] = useState(false);
   const [noteSelection, setNoteSelection] = useState({ start: 0, end: 0 });
   const noteContentInputRef = useRef<TextInput>(null);
@@ -242,6 +241,7 @@ export const ResourceLibrary: React.FC<{
       noteCollectionRows,
       noteConfig,
       bindings,
+      activeStyleId,
     ] = await Promise.all([
       db.getAllCharacters(projectId),
       db.getAllWorldbookEntries(projectId),
@@ -256,6 +256,9 @@ export const ResourceLibrary: React.FC<{
       typeof (db as any).listContinuationResourceBindings === 'function'
         ? (db as any).listContinuationResourceBindings(projectId)
         : Promise.resolve([]),
+      typeof (db as any).getProjectActiveWriterStyleId === 'function' && projectId
+        ? db.getProjectActiveWriterStyleId(projectId)
+        : Promise.resolve(null),
     ]);
     // Project changes can start a second load before the first Promise.all
     // settles. Never let the old project overwrite the newer screen state.
@@ -269,6 +272,9 @@ export const ResourceLibrary: React.FC<{
     setCollections(worldbookCollections);
     setNoteCollections(noteCollectionRows);
     setContinuationBindings(bindings);
+    setActiveWriterStyleId(
+      activeStyleId == null ? null : Number(activeStyleId),
+    );
     if (noteConfig) {
       // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
       setNoteMode(noteConfig.mode || 'none');
@@ -817,7 +823,7 @@ export const ResourceLibrary: React.FC<{
       noteCollection: '未命名笔记合集',
       worldbook: '未命名条目',
       notes: '无标题笔记',
-      presets: '未命名预设',
+      presets: '未命名作家风格',
     };
     // 世界书条目的名称实际存储在 keyword_primary，而不是通用的 name 字段。
     // 若这里读取 item.name，编辑器会显示为空；用户随后仅修改正文再保存时，
@@ -826,6 +832,10 @@ export const ResourceLibrary: React.FC<{
       kind === 'worldbook' ? item.keyword_primary || '' : item.name || '';
     const editorKind = kind as EditorKind;
     const isPlaceholder = storedName === placeholderByKind[editorKind];
+    if (kind === 'presets') {
+      setWriterStyleAsset(item as WriterStyleAsset);
+      return;
+    }
     setShowNoteChapters(false);
     setNoteSelection({ start: 0, end: 0 });
     setEditor({
@@ -845,10 +855,7 @@ export const ResourceLibrary: React.FC<{
       systemPrompt: item.system_prompt || '',
       writingStyle: item.writing_style || '',
       extraInstructions: item.extra_instructions || '',
-      semanticJson:
-        kind === 'presets'
-          ? JSON.stringify(semanticForWriterStyleEditor(item), null, 2)
-          : '',
+      semanticJson: '',
       temperature: String(item.temperature ?? 0.8),
       topP: String(item.top_p ?? 0.9),
       maxTokens: String(item.max_tokens ?? defaultMaxTokens(kind)),
@@ -929,27 +936,7 @@ export const ResourceLibrary: React.FC<{
         await db.updateNoteTokenBudget(item.id, maxTokens);
       }
       if (editor.kind === 'presets') {
-        let semantic: unknown;
-        try {
-          semantic = JSON.parse(editor.semanticJson);
-        } catch {
-          throw new Error('Writer Style Semantic JSON 格式不正确。');
-        }
-        const semanticUpdate = buildWriterStyleSemanticUpdate({
-          asset: item,
-          semantic: {
-            ...(semantic as Record<string, unknown>),
-            name: editor.name.trim() || (semantic as any).name,
-          },
-        });
-        await db.updatePreset(item.id, {
-          ...semanticUpdate,
-          name: semanticUpdate.name || '未命名作家风格',
-          is_default: editor.isDefault ? 1 : 0,
-          temperature: Number(editor.temperature) || 0.8,
-          top_p: Number(editor.topP) || 0.9,
-          max_tokens: maxTokens,
-        });
+        throw new Error('作家风格请使用结构化编辑器保存。');
       }
       setEditor(null);
       await loadData();
@@ -1008,6 +995,34 @@ export const ResourceLibrary: React.FC<{
       Toast.show({ type: 'success', text1: '作家风格已导出' });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '导出失败', text2: error.message });
+    }
+  };
+
+  const setActiveWriterStyle = async (item: any) => {
+    if (!currentProject) {
+      Alert.alert('未选择项目', '请先在项目页选择当前项目。');
+      return;
+    }
+    try {
+      await db.setProjectResourceEnabled(
+        currentProject.id,
+        'preset',
+        item.id,
+        true,
+      );
+      await db.setProjectActiveWriterStyle(currentProject.id, item.id);
+      await loadData();
+      Toast.show({
+        type: 'success',
+        text1: '已设为当前作家风格',
+        text2: `「${item.name || '未命名作家风格'}」将用于新任务。`,
+      });
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: '设置当前作家风格失败',
+        text2: error?.message || '请稍后重试。',
+      });
     }
   };
 
@@ -1155,11 +1170,12 @@ export const ResourceLibrary: React.FC<{
 
   return (
     <Screen>
-      <Header title="资料库" subtitle={subtitle} />
+      <Header testID="resource-library" title="资料库" subtitle={subtitle} />
       <View style={styles.tabs}>
         <SegmentedControl
           value={tab}
           options={visibleTabs}
+          testIDPrefix="resource-tab"
           onChange={value => {
             setTab(value);
             setSelectedCollectionId(null);
@@ -1172,7 +1188,7 @@ export const ResourceLibrary: React.FC<{
         <View style={styles.continuationHint}>
           <Text style={[styles.continuationHintTitle, { color: theme.colors.textPrimary }]}>原著信息已由 Canon 自动调度</Text>
           <Text style={[styles.continuationHintText, { color: theme.colors.textSecondary }]}>
-            {tab === 'characters' ? '原著角色无需重复录入；仅补充新增、跨作品或额外定义的角色。' : tab === 'worldbook' ? '原著世界观无需重复导入；仅补充原著之外的地点、组织和规则。' : tab === 'notes' ? '原著仿写与资料已自动调度；可在此加入创作要求、外部资料或额外仿写样本。' : '续写已有专用提示词；预设仅用于补充要求，不能覆盖 Canon 事实。'}
+            {tab === 'characters' ? '原著角色无需重复录入；仅补充新增、跨作品或额外定义的角色。' : tab === 'worldbook' ? '原著世界观无需重复导入；仅补充原著之外的地点、组织和规则。' : tab === 'notes' ? '原著仿写与资料已自动调度；可在此加入创作要求、外部资料或额外仿写样本。' : '续写已有专用提示词；作家风格仅用于补充写法要求，不能覆盖 Canon 事实。'}
           </Text>
         </View>
       ) : null}
@@ -1335,7 +1351,8 @@ export const ResourceLibrary: React.FC<{
               contentContainerStyle={styles.actionScroll}
             >
               <Button
-                label="导入预设"
+                testID="writer-style-import"
+                label="导入作家风格"
                 icon={Import}
                 compact
                 onPress={importPreset}
@@ -1494,12 +1511,14 @@ export const ResourceLibrary: React.FC<{
           {canAddManual && !selectedNoteCollectionId ? (
             <>
               <Field
+                testID={tab === 'presets' ? 'writer-style-add-name' : undefined}
                 value={draft}
                 onChangeText={setDraft}
                 placeholder={placeholderFor(tab, Boolean(selectedCollectionId))}
                 inputStyle={styles.inlineInput}
               />
               <Button
+                testID={tab === 'presets' ? 'writer-style-add' : undefined}
                 label="添加"
                 icon={FilePlus2}
                 onPress={addManual}
@@ -1510,7 +1529,7 @@ export const ResourceLibrary: React.FC<{
         </View>
 
         {tab === 'presets' ? (
-          <View style={styles.catalogList} testID="preset-catalog-list">
+          <View style={styles.catalogList} testID="writer-style-catalog-list">
             {PRESET_CATALOG.map(item => (
               <Card key={item.id}>
                 <View style={styles.titleRow}>
@@ -1521,21 +1540,24 @@ export const ResourceLibrary: React.FC<{
                 <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
                 <View style={styles.cardActions}>
                   <Button
+                    testID={`writer-style-catalog-preview-${item.id}`}
                     label={selectedCatalogItem?.id === item.id ? '收起预览' : '预览'}
                     variant="secondary"
                     onPress={() => setSelectedCatalogItem(selectedCatalogItem?.id === item.id ? null : item)}
                   />
-                  <Button label="添加到我的预设" onPress={() => copyCatalogPreset(item)} />
+                  <Button
+                    testID={`writer-style-catalog-add-${item.id}`}
+                    label="添加到作家风格库"
+                    onPress={() => copyCatalogPreset(item)}
+                  />
                 </View>
                 {selectedCatalogItem?.id === item.id ? (
                   <View style={styles.catalogPreview}>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>Writer Style Semantic V1</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{JSON.stringify((item.preset as any).semantic || item.preset, null, 2)}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>系统提示词</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>内置作家风格预览</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>高级设置 · 运行时编译结果</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.system_prompt}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>兼容预览 · 写作风格</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.writing_style}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>兼容预览 · 额外约束</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.extra_instructions}</Text>
                   </View>
                 ) : null}
@@ -1860,11 +1882,13 @@ export const ResourceLibrary: React.FC<{
               title="正在修复本地资料数据库"
               description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
-          ) : tab === 'presets' ? null : activeItems.length === 0 ? (
+          ) : activeItems.length === 0 ? (
+            tab === 'presets' ? null : (
             <EmptyState
               title={emptyTitle(tab)}
               description="使用上方按钮导入或创建资料。"
             />
+            )
           ) : (
             <FlatList
               data={activeItems}
@@ -1872,7 +1896,11 @@ export const ResourceLibrary: React.FC<{
               keyExtractor={item => String(item.id)}
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
-                <Card>
+                <Card
+                  testID={
+                    tab === 'presets' ? `writer-style-item-${item.id}` : undefined
+                  }
+                >
                   <View style={styles.row}>
                     {iconFor(tab, theme.colors.accent)}
                     <View style={styles.rowText}>
@@ -1899,7 +1927,22 @@ export const ResourceLibrary: React.FC<{
                           </Text>
                         ) : null}
                         {(tab as ResourceTab) === 'presets' ? (
-                          <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：{writerStyleSourceLabel(item)}</Text>
+                          <>
+                            <Text
+                              testID={`writer-style-source-${item.id}`}
+                              style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+                            >
+                              来源：{writerStyleSourceLabel(item)}
+                            </Text>
+                            {activeWriterStyleId === item.id ? (
+                              <Text
+                                testID={`writer-style-active-${item.id}`}
+                                style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+                              >
+                                当前项目正在使用
+                              </Text>
+                            ) : null}
+                          </>
                         ) : null}
                         {currentProject?.mode === 'continuation' ? (
                           <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
@@ -1957,6 +2000,7 @@ export const ResourceLibrary: React.FC<{
                   </View>
                   <View style={styles.cardActions}>
                     <Button
+                      testID={tab === 'presets' ? `writer-style-edit-${item.id}` : undefined}
                       label="编辑"
                       icon={Pencil}
                       variant="secondary"
@@ -1982,12 +2026,23 @@ export const ResourceLibrary: React.FC<{
                       />
                     )}
                     {(tab as ResourceTab) === 'presets' && (
-                      <Button
-                        label="导出"
-                        icon={Download}
-                        variant="secondary"
-                        onPress={() => handleExportPreset(item)}
-                      />
+                      <>
+                        {activeWriterStyleId === item.id ? null : (
+                          <Button
+                            testID={`writer-style-set-active-${item.id}`}
+                            label="设为当前作家风格"
+                            variant="secondary"
+                            onPress={() => setActiveWriterStyle(item)}
+                          />
+                        )}
+                        <Button
+                          testID={`writer-style-export-${item.id}`}
+                          label="导出"
+                          icon={Download}
+                          variant="secondary"
+                          onPress={() => handleExportPreset(item)}
+                        />
+                      </>
                     )}
                     <Button
                       label="删除"
@@ -2215,81 +2270,7 @@ export const ResourceLibrary: React.FC<{
                     />
                   </>
                 ) : null}
-                {editor.kind === 'presets' ? (
-                  <>
-                    <Field
-                      label="Writer Style Semantic V1（结构化主模型）"
-                      value={editor.semanticJson}
-                      onChangeText={semanticJson =>
-                        setEditor({ ...editor, semanticJson })
-                      }
-                      multiline
-                      inputStyle={styles.largeInput}
-                    />
-                    <Text
-                      style={[styles.noteModeHint, { color: theme.colors.textMuted }]}
-                    >
-                      三段 Prompt 仅由 Semantic 确定性编译为兼容预览；保存时会同步 semantic_json、运行时投影与指纹。SillyTavern 来源会同时标记 semanticDirty 并更新受 ShineWriter 管理的兼容 Prompt。
-                    </Text>
-                    <Text
-                      style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}
-                    >
-                      确定性兼容预览
-                    </Text>
-                    {(() => {
-                      try {
-                        const preview = semanticToRuntimeText(
-                          JSON.parse(editor.semanticJson),
-                        );
-                        return (
-                          <Text style={[styles.profileText, { color: theme.colors.textSecondary }]}>
-                            {`系统：${preview.systemPrompt}\n\n文风：${preview.writingStyle}\n\n约束：${preview.extraInstructions}`}
-                          </Text>
-                        );
-                      } catch {
-                        return (
-                          <Text style={[styles.noteModeHint, { color: theme.colors.danger }]}>
-                            Semantic JSON 暂不可预览，请修正格式后保存。
-                          </Text>
-                        );
-                      }
-                    })()}
-                    <View style={styles.numberRow}>
-                      <Field
-                        label="温度"
-                        value={editor.temperature}
-                        onChangeText={temperature =>
-                          setEditor({ ...editor, temperature })
-                        }
-                        keyboardType="decimal-pad"
-                        inputStyle={styles.numberInput}
-                      />
-                      <Field
-                        label="Top P"
-                        value={editor.topP}
-                        onChangeText={topP => setEditor({ ...editor, topP })}
-                        keyboardType="decimal-pad"
-                        inputStyle={styles.numberInput}
-                      />
-                    </View>
-                    <View style={styles.usageRow}>
-                      <Text
-                        style={[
-                          styles.usageText,
-                          { color: theme.colors.textPrimary },
-                        ]}
-                      >
-                        设为全局默认预设
-                      </Text>
-                      <Switch
-                        value={editor.isDefault}
-                        onValueChange={isDefault =>
-                          setEditor({ ...editor, isDefault })
-                        }
-                      />
-                    </View>
-                  </>
-                ) : null}
+
               </ScrollView>
             ) : null}
             <View style={styles.modalActions}>
@@ -2501,6 +2482,16 @@ export const ResourceLibrary: React.FC<{
           onClose={() => setBatchResult(null)}
         />
       ) : null}
+      <WriterStyleEditor
+        visible={Boolean(writerStyleAsset)}
+        asset={writerStyleAsset}
+        projectId={projectId}
+        activeWriterStyleId={activeWriterStyleId}
+        onClose={() => setWriterStyleAsset(null)}
+        onSaved={async () => {
+          await loadData();
+        }}
+      />
     </Screen>
   );
 };
@@ -2531,21 +2522,21 @@ function tabLabel(kind: EditorKind | ResourceTab): string {
   if (kind === 'noteCollection') return '笔记合集';
   if (kind === 'worldbook') return '世界书条目';
   if (kind === 'notes') return '笔记';
-  return '预设';
+  return '作家风格';
 }
 
 function placeholderFor(tab: ResourceTab, addingEntry: boolean): string {
   if (tab === 'worldbook')
     return addingEntry ? '新世界书条目主关键词' : '新世界书合集名称';
   if (tab === 'notes') return '新笔记标题';
-  return '新预设名称';
+  return '新作家风格名称';
 }
 
 function emptyTitle(tab: ResourceTab): string {
   if (tab === 'characters') return '还没有角色卡';
   if (tab === 'worldbook') return '还没有世界书条目';
   if (tab === 'notes') return '还没有笔记';
-  return '还没有预设';
+  return '还没有作家风格';
 }
 
 function titleFor(kind: EditorKind | ResourceTab, item: any): string {

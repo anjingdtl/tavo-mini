@@ -83,7 +83,7 @@ export const OutlineEditor: React.FC = () => {
   }, [currentProject, loadChapters]);
 
   const renderChapter = useCallback(({ item, index }: { item: Chapter; index: number }) => (
-    <TouchableOpacity activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
+    <TouchableOpacity testID={`writing-chapter-${item.id}`} accessibilityLabel={item.title || `第 ${item.position + 1} 章`} activeOpacity={0.78} onPress={() => navigation.navigate('ChapterEditor', { chapterId: item.id })}>
       <Card style={[styles.chapterCard, { borderLeftColor: theme.colors.accent }]}>
         <View style={styles.chapterHeader}>
           <View style={styles.chapterBody}>
@@ -119,7 +119,7 @@ export const OutlineEditor: React.FC = () => {
 
   return (
     <Screen>
-      <Header title={currentProject.name} subtitle="章节 · 大纲 · 摘要 · 上下文" action={<Button label="章节" icon={Plus} variant="ghost" onPress={addChapter} compact />} />
+      <Header testID="writing-home" title={currentProject.name} subtitle="章节 · 大纲 · 摘要 · 上下文" action={<Button testID="writing-add-chapter" label="章节" icon={Plus} variant="ghost" onPress={addChapter} compact />} />
       <View style={styles.quickActions}>
         <Button label="故事概览" icon={BarChart3} variant="secondary" onPress={() => navigation.navigate('StoryOverview')} compact flex />
         <Button
@@ -136,9 +136,9 @@ export const OutlineEditor: React.FC = () => {
         <Text style={[styles.chapterMetaCount, { color: theme.colors.textMuted }]}>{chapters.length} 章</Text>
       </View>
       {chapters.length === 0 ? (
-        <EmptyState title="还没有章节" description="先创建一个章节，然后补充概要和正文。" action={<Button label="创建章节" icon={FileText} onPress={addChapter} />} />
+        <EmptyState title="还没有章节" description="先创建一个章节，然后补充概要和正文。" action={<Button testID="writing-create-chapter" label="创建章节" icon={FileText} onPress={addChapter} />} />
       ) : (
-        <FlatList data={chapters} keyExtractor={(item) => String(item.id)} renderItem={renderChapter} contentContainerStyle={styles.list} />
+        <FlatList testID="writing-chapter-list" data={chapters} keyExtractor={(item) => String(item.id)} renderItem={renderChapter} contentContainerStyle={styles.list} />
       )}
     </Screen>
   );

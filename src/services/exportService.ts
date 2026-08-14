@@ -245,7 +245,7 @@ export async function exportNoteMarkdown(noteId: number): Promise<string> {
 export async function exportPresetJSON(presetId: number): Promise<string> {
   const presets = await db.getAllPresets();
   const preset = presets.find((p: any) => p.id === presetId);
-  if (!preset) throw new Error('未找到预设。');
+  if (!preset) throw new Error('未找到作家风格。');
   const fileName = safeFileName(preset.name || 'preset') + '.json';
   const exportData = {
     spec: preset.semantic_json ? 'shinewriter-writer-style-v1' : 'shinewriter-preset-v1',

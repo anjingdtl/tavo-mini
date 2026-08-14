@@ -71,6 +71,7 @@ export function ChapterToolbar({
         contentContainerStyle={styles.toolbarRow}
       >
         <Button
+          testID="chapter-ai-generate"
           label={aiLabel}
           icon={Bot}
           onPress={onRunPipeline}
@@ -80,6 +81,7 @@ export function ChapterToolbar({
         />
         {generating ? (
           <Button
+            testID="chapter-stop"
             label="停止"
             icon={Square}
             variant="secondary"
@@ -101,6 +103,7 @@ export function ChapterToolbar({
           />
         ) : null}
         <Button
+          testID="chapter-finalize"
           label={finalizing ? '定稿中…' : '定稿'}
           icon={FileText}
           variant="secondary"

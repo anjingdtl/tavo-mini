@@ -1,15 +1,40 @@
 appId: com.shinewriter
 ---
-# Phase 3: view checker issues and repair path on result page.
+# Current check/repair entry lives on the continuation workspace and result path.
 - launchApp
-- assertVisible: "项目"
-- tapOn: "写作"
-- extendedWaitUntil:
-    visible: "AI 续写"
-    timeout: 15000
-- tapOn: "AI 续写"
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
     visible:
-      text: "一致性|blocking|采纳为草稿|AI 续写结果"
-    timeout: 90000
-- takeScreenshot: continuation-check
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-continuation
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CONT_CHECK'
+- tapOn: '原著续写'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-editor
+- assertVisible: 'Canon 驱动续写'
+- assertVisible: '外部补充资料'
+- tapOn:
+    id: continuation-add-chapter
+- assertVisible:
+    id: chapter-ai-generate
+- tapOn:
+    id: chapter-back
+- tapOn:
+    id: tab-resources
+- tapOn:
+    id: resource-tab-continuation
+- assertVisible: '导入 TXT 原著'

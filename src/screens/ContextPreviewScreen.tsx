@@ -693,6 +693,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   return (
     <Screen>
       <Header
+        testID="context-preview"
         title="上下文预览"
         subtitle={`${
           continuationPreview
@@ -701,6 +702,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
         action={
           <Button
+            testID="context-preview-close"
             label="关闭"
             variant="ghost"
             icon={X}

@@ -21,8 +21,8 @@ export function buildPhase2ContextTrace(input: {
       title: input.preset.presetName,
       reason:
         input.preset.presetSource === 'default_runtime_baseline'
-          ? '默认小说写作基线（未显式选择预设）'
-          : `用户选择的写作预设｜fingerprint ${input.preset.sourceFingerprint.slice(0, 12)}`,
+          ? '默认小说写作基线（未显式选择作家风格）'
+          : `用户选择的作家风格｜fingerprint ${input.preset.sourceFingerprint.slice(0, 12)}`,
       estimatedTokens: input.preset.combinedText.length
         ? input.selection.find(item => item.mode === 'preset')?.allocatedTokens ||
           0
@@ -36,7 +36,7 @@ export function buildPhase2ContextTrace(input: {
   ];
 
   if (input.styleNotePresent) {
-    items[0].reason += '｜风格画像笔记仅作补充，不得覆盖本预设';
+    items[0].reason += '｜风格画像笔记仅作补充，不得覆盖本作家风格';
   }
 
   if (!input.includeResources) {
@@ -44,7 +44,7 @@ export function buildPhase2ContextTrace(input: {
       kind: 'character',
       sourceId: null,
       title: '资料上下文已关闭',
-      reason: '用户关闭了角色 / 世界书 / 笔记；全局感知未生成。预设仍生效。',
+      reason: '用户关闭了角色 / 世界书 / 笔记；全局感知未生成。作家风格仍生效。',
       estimatedTokens: 0,
       included: false,
       clipped: false,

@@ -378,6 +378,7 @@ export const PipelineTaskScreen: React.FC = () => {
   return (
     <Screen>
       <Header
+        testID="pipeline-task-list"
         title="流水线任务"
         subtitle={
           activeTasks.length

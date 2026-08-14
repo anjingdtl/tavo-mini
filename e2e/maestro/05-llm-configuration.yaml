@@ -1,55 +1,36 @@
 appId: com.shinewriter
 ---
+# Open the current LLM settings surface. Do not overwrite the user's live
+# Keystore config or set a dummy model as current.
 - launchApp
-- tapOn:
-    text: '我知道了'
-    optional: true
-- tapOn:
-    text: '关闭'
-    optional: true
-- tapOn:
-    point: '12%,95%'
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
 - extendedWaitUntil:
-    visible: '小说项目'
-    timeout: 15000
-- tapOn: '设置'
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-settings
+- tapOn:
+    id: settings-llm
 - extendedWaitUntil:
-    visible: 'LLM 设置'
+    visible:
+      id: llm-settings
     timeout: 10000
-- tapOn: 'LLM 设置'
-- extendedWaitUntil:
-    visible: '在线 API'
-    timeout: 10000
-- tapOn: '新增'
-- tapOn:
+- assertVisible:
     id: llm-config-name
-- eraseText: 50
-- inputText: 'E2E_LOCAL_API'
+- assertVisible:
+    id: llm-context-window
+- assertVisible:
+    id: llm-max-output-tokens
+- swipe:
+    direction: UP
+- assertVisible:
+    id: llm-save
 - tapOn:
-    id: llm-base-url
-- inputText: 'http://10.0.2.2:8000/v1'
-- tapOn:
-    id: llm-api-key
-- inputText: 'E2E_TEST_KEY'
-- tapOn:
-    id: llm-model-name
-- inputText: 'E2E_TEST_MODEL'
-- hideKeyboard
-- scrollUntilVisible:
-    element:
-      text: '保存并测试'
-    direction: DOWN
-    timeout: 10000
-- tapOn: '保存并测试'
-- extendedWaitUntil:
-    visible: '连接失败'
-    timeout: 15000
-- tapOn: 'OK'
-- tapOn:
-    id: llm-allow-insecure-lan-http
-- extendedWaitUntil:
-    visible: '允许局域网 HTTP？'
-    timeout: 10000
-- tapOn: '继续允许'
-- tapOn: '设为当前'
-- back
+    id: tab-projects
+- assertVisible:
+    id: project-library

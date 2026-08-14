@@ -93,7 +93,7 @@ export function buildResourceSelectionTrace(input: {
         clipped: false,
         demandTokens: 0,
         allocatedTokens: 0,
-        warning: '资料上下文已关闭：角色 / 世界书 / 笔记不会进入本次任务。预设仍生效。',
+        warning: '资料上下文已关闭：角色 / 世界书 / 笔记不会进入本次任务。作家风格仍生效。',
       },
     ];
   }

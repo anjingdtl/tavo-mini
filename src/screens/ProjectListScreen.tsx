@@ -381,6 +381,7 @@ export const ProjectListScreen: React.FC = () => {
   return (
     <Screen>
       <Header
+        testID="project-library"
         title="作品库"
         subtitle={
           modeFilter === 'continuation'
@@ -412,18 +413,23 @@ export const ProjectListScreen: React.FC = () => {
           value={modeFilter}
           onChange={value => selectMode(value as 'outline' | 'continuation')}
           size="prominent"
+          testIDPrefix="project-mode"
           options={[
             {
               value: 'outline',
               label: `大纲创作（${
                 projects.filter(p => p.mode === 'outline').length
               }）`,
+              testID: 'project-mode-outline',
+              accessibilityLabel: '大纲创作',
             },
             {
               value: 'continuation',
               label: `原著续写（${
                 projects.filter(p => p.mode === 'continuation').length
               }）`,
+              testID: 'project-mode-continuation',
+              accessibilityLabel: '原著续写',
             },
           ]}
         />
@@ -530,6 +536,7 @@ export const ProjectListScreen: React.FC = () => {
                 onPress={() => setShowNewModal(false)}
               />
               <Button
+                testID="create-project-button"
                 label={creating ? '创建中...' : '创建'}
                 onPress={handleCreate}
                 disabled={!newName.trim() || creating}

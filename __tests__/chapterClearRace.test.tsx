@@ -126,7 +126,7 @@ describe('chapter clear-content autosave serialization', () => {
   });
 
   it('saves the latest body before snapshotting and writing empty content', async () => {
-    const { findByText, getByTestId } = render(
+    const { findByText, findByTestId, getByTestId } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
     );
     // loadChapter() 在 useFocusEffect 内异步执行；waitFor 在高负载机器上可能
@@ -151,7 +151,9 @@ describe('chapter clear-content autosave serialization', () => {
     await waitFor(() =>
       expect(getByTestId('chapter-content-input').props.value).toBe(''),
     );
-    expect(await findByText('已保存')).toBeTruthy();
+    expect((await findByTestId('chapter-save-status')).props.children).toBe(
+      '已保存',
+    );
     // 全量并发跑时该用例接近默认 5000ms 上限（高负载机器上 loadChapter 异步链 +
     // alert/autosave/revision 多轮 flush 叠加），显式放宽以避免 flaky 超时。
   }, 15000);
