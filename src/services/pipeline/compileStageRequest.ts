@@ -56,6 +56,10 @@ export interface ContextAllocationTrace {
   requested: number;
   allocated: number;
   truncated: boolean;
+  /** V5 Writer Style display fields; absent on ordinary modules. */
+  mode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
+  protected?: boolean;
+  clipped?: boolean;
 }
 
 export interface ContextBudgetDiagnostics {

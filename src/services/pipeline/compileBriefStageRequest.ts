@@ -19,6 +19,7 @@ import {
 } from './elasticStageCompiler';
 import type { ContextAllocationTrace } from './compileStageRequest';
 import type { ElasticBudgetTrace } from './elasticBudgetAllocator';
+import type { FrozenWriterStyleProjection } from '../writerStyle/types';
 
 export interface BriefBudget {
   visibleOutputFloor: number;
@@ -29,6 +30,16 @@ export interface BriefBudget {
   fits: boolean;
   blockingReason: string | null;
   softInputLimit?: number;
+}
+
+export interface BriefWriterStyleTrace {
+  id: 'writerStyle';
+  mode: FrozenWriterStyleProjection['mode'];
+  protected: true;
+  allocated: 'full';
+  clipped: false;
+  requested: number;
+  allocatedTokens: number;
 }
 
 export interface CompiledBriefStageRequest {
@@ -47,6 +58,7 @@ export interface CompiledBriefStageRequest {
   error?: { code: string; message: string };
   allocations?: ContextAllocationTrace[];
   elasticBudgetTrace?: ElasticBudgetTrace;
+  writerStyleTrace?: BriefWriterStyleTrace;
 }
 
 type BriefCompilerInput =
@@ -105,6 +117,7 @@ export function calculateBriefBudget(params: {
   requestMaxTokens?: number;
   visibleOutputFloor?: number;
   reasoningHeadroom?: number;
+  writerStyle?: FrozenWriterStyleProjection;
 }): BriefBudget {
   const maxOutput = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
   const v32 = isV32Input(params.input);
@@ -143,7 +156,7 @@ export function calculateBriefBudget(params: {
           modelMaxOutputTokens: params.modelMaxOutputTokens,
         });
   const minimumRequiredOutputTokens = visibleOutputFloor + reasoningHeadroom;
-  const messages = buildBriefCompilerMessages(params.input);
+  const messages = buildBriefCompilerMessages(params.input, params.writerStyle);
   const estimatedInputTokens = estimateTokens(
     messages.map(message => message.content).join('\n'),
   );
@@ -173,42 +186,55 @@ export function calculateBriefBudget(params: {
   };
 }
 
+function withFrozenBriefWriterStyle(
+  messages: ChatMessage[],
+  writerStyle?: FrozenWriterStyleProjection,
+): ChatMessage[] {
+  const text = String(writerStyle?.text || '');
+  if (!writerStyle || !text) return messages;
+  return [{ role: 'system', content: text }, ...messages];
+}
+
 export function buildBriefCompilerMessages(
   input: BriefCompilerInput,
+  writerStyle?: FrozenWriterStyleProjection,
 ): ChatMessage[] {
   const allowedSourceIds = requiredIds(input);
   if (isV33Input(input)) {
     const envelope = input.immutableEnvelope;
-    return [
-      {
-        role: 'system',
-        content: [
-          '你是 ShineWriter 当前统一流水线的 Brief Compiler。Brief 思考强度跟随用户档位；只把已归一化的 Review/FactCheck 语义压缩为 Final 可执行要求。',
-          '不得重新审阅 Draft，不得新增事实、人物或剧情，不得输出正文、Markdown 或推理过程。',
-          '只输出 strategy、actions、preserve、ending 四类语义字段；不要输出 schema、hash、sourceId 白名单或本地不可变信封。',
-          'actions 每项必须包含 covers（只能逐字使用短 ID）、instruction；可选 preserve。required/hard 短 ID 必须至少被一条 action 覆盖；同一 ID 不得被相互矛盾的 action 覆盖。',
-          `允许的短 ID：${JSON.stringify(envelope.allowedSourceIds)}`,
-          `required/hard 短 ID：${JSON.stringify(envelope.requiredSourceIds)}`,
-          'ending 只能复述已给出的结尾边界；preserve 只能保留输入中已有的事实或约束。',
-          JSON.stringify({
-            strategy: '保持前章状态自然衔接，只执行已确认的必要修订。',
-            actions: [],
-            preserve: [],
-            ending: envelope.endingBoundary,
+    return withFrozenBriefWriterStyle(
+      [
+        {
+          role: 'system',
+          content: [
+            '你是 ShineWriter 当前统一流水线的 Brief Compiler。Brief 思考强度跟随用户档位；只把已归一化的 Review/FactCheck 语义压缩为 Final 可执行要求。',
+            '不得重新审阅 Draft，不得新增事实、人物或剧情，不得输出正文、Markdown 或推理过程。',
+            '只输出 strategy、actions、preserve、ending 四类语义字段；不要输出 schema、hash、sourceId 白名单或本地不可变信封。',
+            'actions 每项必须包含 covers（只能逐字使用短 ID）、instruction；可选 preserve。required/hard 短 ID 必须至少被一条 action 覆盖；同一 ID 不得被相互矛盾的 action 覆盖。',
+            `允许的短 ID：${JSON.stringify(envelope.allowedSourceIds)}`,
+            `required/hard 短 ID：${JSON.stringify(envelope.requiredSourceIds)}`,
+            'ending 只能复述已给出的结尾边界；preserve 只能保留输入中已有的事实或约束。',
+            JSON.stringify({
+              strategy: '保持前章状态自然衔接，只执行已确认的必要修订。',
+              actions: [],
+              preserve: [],
+              ending: envelope.endingBoundary,
+            }),
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            review: input.review,
+            factCheck: input.factCheck,
           }),
-        ].join('\n'),
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          review: input.review,
-          factCheck: input.factCheck,
-        }),
-      },
-    ];
+        },
+      ],
+      writerStyle,
+    );
   }
   if (isV32Input(input)) {
-    return [
+    return withFrozenBriefWriterStyle([
       {
         role: 'system',
         content: [
@@ -240,10 +266,10 @@ export function buildBriefCompilerMessages(
           factCheck: input.factCheck,
         }),
       },
-    ];
+    ], writerStyle);
   }
   if (isV31Input(input)) {
-    return [
+    return withFrozenBriefWriterStyle([
       {
         role: 'system',
         content: [
@@ -278,9 +304,9 @@ export function buildBriefCompilerMessages(
           immutableEnvelope: input.immutableEnvelope,
         })}`,
       },
-    ];
+    ], writerStyle);
   }
-  return [
+  return withFrozenBriefWriterStyle([
     {
       role: 'system',
       content: [
@@ -317,7 +343,7 @@ export function buildBriefCompilerMessages(
       role: 'user',
       content: `【已归一化审核输入】\n${JSON.stringify(input)}`,
     },
-  ];
+  ], writerStyle);
 }
 
 function parseRecord(value: string | undefined): Record<string, any> {
@@ -338,7 +364,10 @@ function arrayValue(value: unknown): any[] {
 
 /** Keep all executable constraints mandatory while allowing advisory material
  * to participate in the same elastic allocator as every other stage. */
-function buildBriefBudgetModules(input: BriefCompilerInput): {
+function buildBriefBudgetModules(
+  input: BriefCompilerInput,
+  writerStyle?: FrozenWriterStyleProjection,
+): {
   mandatory: ElasticStageModule[];
   optional: ElasticStageModule[];
 } {
@@ -363,6 +392,19 @@ function buildBriefBudgetModules(input: BriefCompilerInput): {
   };
   return {
     mandatory: [
+      ...(writerStyle
+        ? [
+            {
+              id: 'writerStyle',
+              text: writerStyle.text,
+              requirement: 'mandatory' as const,
+              priority: 10,
+              relevance: 1,
+              reclaimable: false,
+              shrinkPriority: 10,
+            },
+          ]
+        : []),
       {
         id: 'brief_core',
         text: JSON.stringify(core),
@@ -423,6 +465,68 @@ function buildBriefInputFromBudgetModules(
   };
 }
 
+function enrichBriefWriterStyleTrace(
+  writerStyle: FrozenWriterStyleProjection | undefined,
+  compiled: {
+    allocations?: ContextAllocationTrace[];
+    elasticBudgetTrace?: ElasticBudgetTrace;
+  },
+): {
+  allocations?: ContextAllocationTrace[];
+  elasticBudgetTrace?: ElasticBudgetTrace;
+  writerStyleTrace?: BriefWriterStyleTrace;
+} {
+  if (!writerStyle) {
+    return {
+      allocations: compiled.allocations,
+      elasticBudgetTrace: compiled.elasticBudgetTrace,
+    };
+  }
+  const module = compiled.elasticBudgetTrace?.modules.find(
+    item => item.id === 'writerStyle',
+  );
+  const requested = module?.availableTokens ?? writerStyle.estimatedTokens;
+  const allocatedTokens = module?.finalAllocatedTokens ?? requested;
+  const writerStyleTrace: BriefWriterStyleTrace = {
+    id: 'writerStyle',
+    mode: writerStyle.mode,
+    protected: true,
+    allocated: 'full',
+    clipped: false,
+    requested,
+    allocatedTokens,
+  };
+  return {
+    writerStyleTrace,
+    allocations: (compiled.allocations || []).map(item =>
+      item.id === 'writerStyle'
+        ? {
+            ...item,
+            mode: writerStyle.mode,
+            protected: true,
+            clipped: false,
+          }
+        : item,
+    ),
+    elasticBudgetTrace: compiled.elasticBudgetTrace
+      ? {
+          ...compiled.elasticBudgetTrace,
+          modules: compiled.elasticBudgetTrace.modules.map(item =>
+            item.id === 'writerStyle'
+              ? {
+                  ...item,
+                  mode: writerStyle.mode,
+                  protected: true,
+                  allocated: 'full' as const,
+                  clipped: false,
+                }
+              : item,
+          ),
+        }
+      : compiled.elasticBudgetTrace,
+  };
+}
+
 export function compileBriefStageRequest(params: {
   input: BriefCompilerInput;
   contextWindow: number;
@@ -430,9 +534,10 @@ export function compileBriefStageRequest(params: {
   requestMaxTokens?: number;
   visibleOutputFloor?: number;
   reasoningHeadroom?: number;
+  writerStyle?: FrozenWriterStyleProjection;
 }): CompiledBriefStageRequest {
   const budget = calculateBriefBudget(params);
-  const modules = buildBriefBudgetModules(params.input);
+  const modules = buildBriefBudgetModules(params.input, params.writerStyle);
   const modelCap = Math.max(0, Number(params.modelMaxOutputTokens) || 0);
   const compiled = compileStageRequestWithElasticBudget({
     stage: 'brief',
@@ -444,6 +549,12 @@ export function compileBriefStageRequest(params: {
     buildMessages: clipped =>
       buildBriefCompilerMessages(
         buildBriefInputFromBudgetModules(params.input, clipped),
+        params.writerStyle
+          ? {
+              ...params.writerStyle,
+              text: clipped.get('writerStyle') || params.writerStyle.text,
+            }
+          : undefined,
       ),
   });
   const minimumRequiredOutputTokens =
@@ -470,6 +581,10 @@ export function compileBriefStageRequest(params: {
     blockingReason,
     softInputLimit: compiled.elasticBudgetTrace?.softInputLimit,
   };
+  const writerStyleFields = enrichBriefWriterStyleTrace(
+    params.writerStyle,
+    compiled,
+  );
   return {
     stage: 'brief',
     messages: compiled.messages || [],
@@ -479,8 +594,11 @@ export function compileBriefStageRequest(params: {
     reservedOutputTokens: budget.requestMaxTokens,
     contextWindow: params.contextWindow,
     ready,
-    allocations: compiled.allocations,
-    elasticBudgetTrace: compiled.elasticBudgetTrace,
+    allocations: writerStyleFields.allocations,
+    elasticBudgetTrace: writerStyleFields.elasticBudgetTrace,
+    ...(writerStyleFields.writerStyleTrace
+      ? { writerStyleTrace: writerStyleFields.writerStyleTrace }
+      : {}),
     ...(!ready
       ? {
           error: {

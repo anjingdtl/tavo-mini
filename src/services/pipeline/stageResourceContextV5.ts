@@ -132,3 +132,18 @@ export function buildBriefResourceViewFromSnapshotV5(
     worldbookDetailText: details(snapshot, 'worldbook'),
   };
 }
+
+/**
+ * Snapshot V5 Brief must consume the frozen MINIMAL projection. Legacy
+ * V3/V4 snapshots without a Writer Style freeze keep the previous Brief
+ * compiler contract and return undefined.
+ */
+export function resolveFrozenBriefWriterStyleProjection(
+  snapshot: PipelineContextSnapshot | null | undefined,
+): FrozenWriterStyleProjection | undefined {
+  if (!snapshot) return undefined;
+  if (snapshot.snapshotVersion !== 5 && !snapshot.writerStyleSnapshot) {
+    return undefined;
+  }
+  return projection(snapshot, 'brief');
+}

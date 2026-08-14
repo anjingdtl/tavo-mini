@@ -237,6 +237,7 @@ export function patchManagedWriterStylePrompt(
       enabled: true,
       content: '',
       shinewriter_managed: true,
+      managed_by: 'shinewriter',
     };
     prompts.push(target);
     raw.prompts = prompts;
@@ -291,6 +292,8 @@ export function exportNewWriterStyleAsTavern(
       role: 'system',
       position: 'relative',
       enabled: true,
+      shinewriter_managed: true,
+      managed_by: 'shinewriter',
       content: [runtime.systemPrompt, runtime.writingStyle, runtime.extraInstructions]
         .filter(Boolean)
         .join('\n\n'),

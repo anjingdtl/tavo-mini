@@ -29,7 +29,10 @@ import {
   resolveProofConstraints,
   resolveReviewContext,
 } from './stageResourceContextV4';
-import { assertWriterStyleProjectionFits } from './stageResourceContextV5';
+import {
+  assertWriterStyleProjectionFits,
+  resolveFrozenBriefWriterStyleProjection,
+} from './stageResourceContextV5';
 import type {
   FrozenPresetSnapshot,
   PipelineExecutionSnapshot,
@@ -4819,6 +4822,9 @@ async function actionRunBrief(
         runtime.parsed.execution.briefMaxTokens || runtime.config.draftMaxTokens,
       );
 
+      const briefWriterStyle = resolveFrozenBriefWriterStyleProjection(
+        runtime.parsed.draftContext,
+      );
       const compiled = compileBriefStageRequest({
         input,
         contextWindow: runtime.requestConfig.context_window || 0,
@@ -4826,6 +4832,7 @@ async function actionRunBrief(
         visibleOutputFloor: runtime.parsed.execution.briefVisibleOutputFloor,
         reasoningHeadroom: runtime.parsed.execution.briefReasoningHeadroom,
         requestMaxTokens: runtime.parsed.execution.briefMaxTokens,
+        writerStyle: briefWriterStyle,
       });
       if (!compiled.ready) {
         if (v31 || v32 || v33) {
@@ -4881,6 +4888,7 @@ async function actionRunBrief(
           ? (input as BriefCompilerInputV31).immutableEnvelope
           : undefined,
         elasticBudgetTrace: compiled.elasticBudgetTrace || null,
+        writerStyleTrace: compiled.writerStyleTrace || null,
         messagesHash: sha256Hex(JSON.stringify(compiled.messages)).slice(0, 32),
       });
       const runBriefContractFormatter = async (
@@ -5002,8 +5010,11 @@ async function actionRunBrief(
                 ...compiled.elasticBudgetTrace,
                 visibleOutputFloor: compiled.budget.visibleOutputFloor,
                 reasoningHeadroom: compiled.budget.reasoningHeadroom,
+                writerStyleTrace: compiled.writerStyleTrace || null,
               })
-            : null,
+            : compiled.writerStyleTrace
+              ? JSON.stringify({ writerStyleTrace: compiled.writerStyleTrace })
+              : null,
           frozenRequestJson,
           llmConfigId: llmConfigIdOf(runtime.requestConfig),
           llmConfigSnapshotJson: llmConfigSnapshotJson(runtime.requestConfig),

@@ -55,9 +55,72 @@ describe('SillyTavern openai_preset compatibility', () => {
   it('exports a new semantic style that can be imported again', () => {
     const parsed = parseSillyTavernOpenAIPreset(fixture, 'Default.json');
     const exported = exportNewWriterStyleAsTavern(parsed.semantic);
+    const prompts = exported.prompts as any[];
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toEqual(expect.objectContaining({
+      identifier: 'shinewriterWriterStyle',
+      shinewriter_managed: true,
+      managed_by: 'shinewriter',
+    }));
     const roundTrip = parseSillyTavernOpenAIPreset(exported, 'generated.json');
     expect(roundTrip.semantic.version).toBe(1);
+    expect(roundTrip.envelope.managedPromptIdentifier).toBe('shinewriterWriterStyle');
     expect(roundTrip.envelope.rawPreset.prompt_order).toHaveLength(1);
+  });
+
+  it('keeps a single managed Writer Style through export/parse/semantic-edit/export/parse', () => {
+    const parsed = parseSillyTavernOpenAIPreset(fixture, 'Default.json');
+    const firstExport = exportNewWriterStyleAsTavern(parsed.semantic);
+    firstExport.unknown_top_level = { keep: true };
+    (firstExport.prompts as any[]).push({
+      identifier: 'userCustomPrompt',
+      role: 'system',
+      enabled: true,
+      custom_unknown: 'keep-me',
+      content: '用户自己的未知 prompt',
+    });
+    (firstExport.prompt_order as any[])[0].custom_group_field = 'keep-group';
+    (firstExport.prompt_order as any[])[0].order.push({
+      identifier: 'userCustomPrompt',
+      enabled: true,
+    });
+
+    const firstParse = parseSillyTavernOpenAIPreset(firstExport, 'generated.json');
+    expect(firstParse.envelope.managedPromptIdentifier).toBe('shinewriterWriterStyle');
+
+    const edited = {
+      ...firstParse.semantic,
+      language: { ...firstParse.semantic.language, texture: '编辑后的质感' },
+    };
+    const patched = patchManagedWriterStylePrompt(firstParse.envelope, edited);
+    const secondExport = exportSillyTavernOpenAIPreset(patched, edited);
+    const secondParse = parseSillyTavernOpenAIPreset(secondExport, 'generated.json');
+
+    const prompts = secondExport.prompts as any[];
+    const managed = prompts.filter(
+      item => item.shinewriter_managed === true || item.managed_by === 'shinewriter',
+    );
+    expect(managed).toHaveLength(1);
+    expect(managed[0].identifier).toBe('shinewriterWriterStyle');
+    expect(managed[0].content).toContain('编辑后的质感');
+    expect(secondParse.envelope.managedPromptIdentifier).toBe('shinewriterWriterStyle');
+
+    const orderIds = (secondExport.prompt_order as any[]).flatMap(group =>
+      (group.order || []).map((item: any) => item.identifier),
+    );
+    expect(orderIds.filter((id: string) => String(id).startsWith('shinewriterWriterStyle'))).toEqual([
+      'shinewriterWriterStyle',
+    ]);
+    expect(orderIds).toContain('userCustomPrompt');
+    expect((secondExport as any).unknown_top_level).toEqual({ keep: true });
+    expect(prompts.find(item => item.identifier === 'userCustomPrompt')).toEqual(
+      expect.objectContaining({
+        identifier: 'userCustomPrompt',
+        custom_unknown: 'keep-me',
+        content: '用户自己的未知 prompt',
+      }),
+    );
+    expect((secondExport.prompt_order as any[])[0].custom_group_field).toBe('keep-group');
   });
 
   it('rejects unsupported preset types without writing an asset', () => {

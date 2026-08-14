@@ -68,6 +68,11 @@ export interface ElasticBudgetModuleTrace {
   relevance: number;
   requirement: string;
   reason: string;
+  /** V5 Writer Style display fields; absent on ordinary modules. */
+  mode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
+  protected?: boolean;
+  allocated?: 'full' | 'partial';
+  clipped?: boolean;
 }
 
 export interface ElasticBudgetTrace {
