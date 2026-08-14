@@ -81,7 +81,7 @@ describe('ResourceLibrary 续写 tab (Spec §8.3 flattened)', () => {
     expect(getByText('角色')).toBeTruthy();
     expect(getByText('世界书')).toBeTruthy();
     expect(getByText('笔记')).toBeTruthy();
-    expect(getByText('预设')).toBeTruthy();
+    expect(getByText('作家风格')).toBeTruthy();
   });
 
   it('shows the continuation import entry on the 续写 tab', async () => {

@@ -89,11 +89,10 @@ import * as db from '../src/services/database';
 
 describe('ResourceLibrary UI', () => {
   it('shows preset catalog categories and copies a catalog item into a DB preset', async () => {
-    const { findByText, getByText, getAllByText } = render(<ResourceLibrary />);
+    const { findByText, getAllByText } = render(<ResourceLibrary />);
     await findByText('导入角色卡');
-    fireEvent.press(getByText('预设'));
-    expect(await findByText('预设目录')).toBeTruthy();
-    fireEvent.press(getByText('官方预设'));
+    fireEvent.press(getAllByText('作家风格')[0]);
+    expect(await findByText('所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。')).toBeTruthy();
     expect(await findByText('长篇连贯叙事')).toBeTruthy();
     fireEvent.press(getAllByText('预览')[0]);
     expect(await findByText('系统提示词')).toBeTruthy();

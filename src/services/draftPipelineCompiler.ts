@@ -195,6 +195,8 @@ export async function compileDraftPipelineRequest(params: {
       contextBudgetVersion: params.contextBudgetVersion,
       contextAutomationPolicyV3: params.contextAutomationPolicyV3,
       requestedPresetId: phase2 ? requestedPresetId : undefined,
+      protectedWriterStyleTokens:
+        params.writerStyleSnapshot?.stageProjections.draft.estimatedTokens,
     },
   );
 

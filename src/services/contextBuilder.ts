@@ -145,6 +145,8 @@ export interface BuildContextOptions {
   contextBudgetVersion?: number;
   /** Explicit pipeline preset id. Null means no explicit selection (V7). */
   requestedPresetId?: number | null;
+  /** V5-only frozen Writer Style demand; must be budgeted as mandatory. */
+  protectedWriterStyleTokens?: number;
   /**
    * Optional V3 policy override. When omitted the default balanced preset is
    * used; auto-config persists the chosen policy under `context_auto_policy_v3`
@@ -575,10 +577,13 @@ export async function buildContext(
               });
       }
       let mandatoryTokens =
-        estimateTokens(
+        Math.max(
+          estimateTokens(
           useV7
             ? v7FrozenPreset?.combinedText || DEFAULT_SYSTEM_PROMPT
             : presetTextForEstimate || DEFAULT_SYSTEM_PROMPT,
+          ),
+          Number(options.protectedWriterStyleTokens) || 0,
         ) +
         outlineTokens +
         fixedProtocol;
@@ -825,6 +830,29 @@ export async function buildContext(
             shrinkPriority: 10,
             burstPriority: 0,
           },
+          ...(Number(options.protectedWriterStyleTokens) > 0
+            ? [{
+                id: 'writerStyle',
+                availableTokens: Math.floor(
+                  Number(options.protectedWriterStyleTokens),
+                ),
+                minTokens: Math.floor(
+                  Number(options.protectedWriterStyleTokens),
+                ),
+                targetTokens: Math.floor(
+                  Number(options.protectedWriterStyleTokens),
+                ),
+                maxTokens: Math.floor(
+                  Number(options.protectedWriterStyleTokens),
+                ),
+                priority: 10,
+                relevance: 1,
+                requirement: 'mandatory' as const,
+                reclaimable: false,
+                shrinkPriority: 10,
+                burstPriority: 0,
+              }]
+            : []),
           {
             id: 'storyState',
             availableTokens: storyStateAvailable,

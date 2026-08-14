@@ -1,5 +1,6 @@
 import { assertWriterStyleProjectionFits } from '../src/services/pipeline/stageResourceContextV5';
 import { buildReviewMessages } from '../src/services/pipelineMessages';
+import { compileReviewStageRequest } from '../src/services/pipeline/compileStageRequest';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 
 function snapshot(tokens: number): PipelineContextSnapshot {
@@ -87,5 +88,38 @@ describe('Writer Style Protected budget', () => {
       writerStyleProjectionMode: 'EVALUATION',
     });
     expect(messages.some(message => message.content.includes(protectedText))).toBe(true);
+  });
+
+  test('V5 allocator treats Writer Style as mandatory and never emits preset optional allocation', () => {
+    const protectedText = `【WRITER_STYLE_PROTECTED_V5】\n${'受保护风格'.repeat(800)}`;
+    const compiled = compileReviewStageRequest({
+      draftText: '初稿',
+      context: {
+        presetText: protectedText,
+        characterText: '角色'.repeat(800),
+        noteText: '笔记'.repeat(800),
+        worldbookText: '世界'.repeat(800),
+        storyMemoryText: '',
+        episodicMemoryText: '',
+        recentBridgeText: '',
+        currentInstructionText: '',
+        retrievalUserPrompt: '',
+        outlineText: '',
+        writerStyleProtectedTokens: 1600,
+        writerStyleProjectionMode: 'EVALUATION',
+      },
+      maxTokens: 256,
+      contextWindow: 12000,
+    });
+    expect(compiled.ready).toBe(true);
+    if (!compiled.ready) return;
+    const writerStyle = compiled.elasticBudgetTrace?.modules.find(
+      module => module.id === 'writerStyle',
+    );
+    expect(writerStyle?.requirement).toBe('mandatory');
+    expect(compiled.elasticBudgetTrace?.modules.some(module => module.id === 'preset')).toBe(false);
+    expect(compiled.messages.map(message => message.content).join('\n')).toContain(
+      protectedText,
+    );
   });
 });

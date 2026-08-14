@@ -84,6 +84,11 @@ import {
   type PresetCatalogItem,
 } from '../services/presets/catalog';
 import { novelCharacterDraftToCharaCard } from '../services/construction/characterDraftAdapter';
+import {
+  buildWriterStyleSemanticUpdate,
+  semanticForWriterStyleEditor,
+} from '../services/writerStyle/editor';
+import { semanticToRuntimeText } from '../services/writerStyle/semantic';
 
 // 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
 // the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
@@ -139,6 +144,7 @@ interface EditorState {
   systemPrompt: string;
   writingStyle: string;
   extraInstructions: string;
+  semanticJson: string;
   temperature: string;
   topP: string;
   maxTokens: string;
@@ -181,7 +187,6 @@ export const ResourceLibrary: React.FC<{
     number | null
   >(null);
   const [draft, setDraft] = useState('');
-  const [presetFilter, setPresetFilter] = useState<'my' | 'catalog'>('my');
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<PresetCatalogItem | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [showNoteChapters, setShowNoteChapters] = useState(false);
@@ -792,7 +797,6 @@ export const ResourceLibrary: React.FC<{
         ...catalogItem.preset,
       });
       setSelectedCatalogItem(null);
-      setPresetFilter('my');
       await loadData();
       Toast.show({ type: 'success', text1: '已添加到作家风格库' });
     } catch (error: any) {
@@ -841,6 +845,10 @@ export const ResourceLibrary: React.FC<{
       systemPrompt: item.system_prompt || '',
       writingStyle: item.writing_style || '',
       extraInstructions: item.extra_instructions || '',
+      semanticJson:
+        kind === 'presets'
+          ? JSON.stringify(semanticForWriterStyleEditor(item), null, 2)
+          : '',
       temperature: String(item.temperature ?? 0.8),
       topP: String(item.top_p ?? 0.9),
       maxTokens: String(item.max_tokens ?? defaultMaxTokens(kind)),
@@ -921,12 +929,23 @@ export const ResourceLibrary: React.FC<{
         await db.updateNoteTokenBudget(item.id, maxTokens);
       }
       if (editor.kind === 'presets') {
+        let semantic: unknown;
+        try {
+          semantic = JSON.parse(editor.semanticJson);
+        } catch {
+          throw new Error('Writer Style Semantic JSON 格式不正确。');
+        }
+        const semanticUpdate = buildWriterStyleSemanticUpdate({
+          asset: item,
+          semantic: {
+            ...(semantic as Record<string, unknown>),
+            name: editor.name.trim() || (semantic as any).name,
+          },
+        });
         await db.updatePreset(item.id, {
-          name: editor.name.trim() || '未命名预设',
+          ...semanticUpdate,
+          name: semanticUpdate.name || '未命名作家风格',
           is_default: editor.isDefault ? 1 : 0,
-          system_prompt: editor.systemPrompt,
-          writing_style: editor.writingStyle,
-          extra_instructions: editor.extraInstructions,
           temperature: Number(editor.temperature) || 0.8,
           top_p: Number(editor.topP) || 0.9,
           max_tokens: maxTokens,
@@ -1149,15 +1168,6 @@ export const ResourceLibrary: React.FC<{
           }}
         />
       </View>
-      <View pointerEvents="box-none" style={styles.compatibilityAliases}>
-        <Text onPress={() => setTab('presets')}>预设</Text>
-        {tab === 'presets' ? (
-          <>
-          <Text>预设目录</Text>
-          <Text onPress={() => setPresetFilter('catalog')}>官方预设</Text>
-          </>
-        ) : null}
-      </View>
       {currentProject?.mode === 'continuation' && tab !== 'continuation' ? (
         <View style={styles.continuationHint}>
           <Text style={[styles.continuationHintTitle, { color: theme.colors.textPrimary }]}>原著信息已由 Canon 自动调度</Text>
@@ -1176,18 +1186,7 @@ export const ResourceLibrary: React.FC<{
           {tab === 'presets' ? (
             <View style={styles.presetCatalogTabs}>
               <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>作家风格</Text>
-              <SegmentedControl
-                value={presetFilter}
-                options={[
-                  { value: 'my', label: '我的作家风格' },
-                  { value: 'catalog', label: '来源模板' },
-                ]}
-                onChange={value => {
-                  setPresetFilter(value as 'my' | 'catalog');
-                  setSelectedCatalogItem(null);
-                }}
-              />
-              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>作家风格统一承载内置、AI 构建、TXT 提炼与 SillyTavern 来源；来源仅作为 Badge，不改变运行时语义。</Text>
+              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。</Text>
             </View>
           ) : null}
           {tab === 'characters' ? (
@@ -1510,11 +1509,14 @@ export const ResourceLibrary: React.FC<{
           ) : null}
         </View>
 
-        {tab === 'presets' && presetFilter === 'catalog' ? (
+        {tab === 'presets' ? (
           <View style={styles.catalogList} testID="preset-catalog-list">
             {PRESET_CATALOG.map(item => (
               <Card key={item.id}>
-                <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
+                <View style={styles.titleRow}>
+                  <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
+                  <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：内置</Text>
+                </View>
                 <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
                 <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
                 <View style={styles.cardActions}>
@@ -1527,11 +1529,13 @@ export const ResourceLibrary: React.FC<{
                 </View>
                 {selectedCatalogItem?.id === item.id ? (
                   <View style={styles.catalogPreview}>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>Writer Style Semantic V1</Text>
+                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{JSON.stringify((item.preset as any).semantic || item.preset, null, 2)}</Text>
                     <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>系统提示词</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.system_prompt}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>写作风格</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>兼容预览 · 写作风格</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.writing_style}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>额外约束</Text>
+                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>兼容预览 · 额外约束</Text>
                     <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.extra_instructions}</Text>
                   </View>
                 ) : null}
@@ -1856,7 +1860,7 @@ export const ResourceLibrary: React.FC<{
               title="正在修复本地资料数据库"
               description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
-          ) : tab === 'presets' && presetFilter === 'catalog' ? null : activeItems.length === 0 ? (
+          ) : tab === 'presets' ? null : activeItems.length === 0 ? (
             <EmptyState
               title={emptyTitle(tab)}
               description="使用上方按钮导入或创建资料。"
@@ -1893,6 +1897,9 @@ export const ResourceLibrary: React.FC<{
                           >
                             {noteMode === 'style' ? '仿写' : '资料库'}
                           </Text>
+                        ) : null}
+                        {(tab as ResourceTab) === 'presets' ? (
+                          <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：{writerStyleSourceLabel(item)}</Text>
                         ) : null}
                         {currentProject?.mode === 'continuation' ? (
                           <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
@@ -1974,7 +1981,7 @@ export const ResourceLibrary: React.FC<{
                         onPress={() => handleExportNote(item)}
                       />
                     )}
-                    {tab === 'presets' && (
+                    {(tab as ResourceTab) === 'presets' && (
                       <Button
                         label="导出"
                         icon={Download}
@@ -2211,30 +2218,42 @@ export const ResourceLibrary: React.FC<{
                 {editor.kind === 'presets' ? (
                   <>
                     <Field
-                      label="系统提示词"
-                      value={editor.systemPrompt}
-                      onChangeText={systemPrompt =>
-                        setEditor({ ...editor, systemPrompt })
+                      label="Writer Style Semantic V1（结构化主模型）"
+                      value={editor.semanticJson}
+                      onChangeText={semanticJson =>
+                        setEditor({ ...editor, semanticJson })
                       }
                       multiline
                       inputStyle={styles.largeInput}
                     />
-                    <Field
-                      label="写作风格"
-                      value={editor.writingStyle}
-                      onChangeText={writingStyle =>
-                        setEditor({ ...editor, writingStyle })
+                    <Text
+                      style={[styles.noteModeHint, { color: theme.colors.textMuted }]}
+                    >
+                      三段 Prompt 仅由 Semantic 确定性编译为兼容预览；保存时会同步 semantic_json、运行时投影与指纹。SillyTavern 来源会同时标记 semanticDirty 并更新受 ShineWriter 管理的兼容 Prompt。
+                    </Text>
+                    <Text
+                      style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}
+                    >
+                      确定性兼容预览
+                    </Text>
+                    {(() => {
+                      try {
+                        const preview = semanticToRuntimeText(
+                          JSON.parse(editor.semanticJson),
+                        );
+                        return (
+                          <Text style={[styles.profileText, { color: theme.colors.textSecondary }]}>
+                            {`系统：${preview.systemPrompt}\n\n文风：${preview.writingStyle}\n\n约束：${preview.extraInstructions}`}
+                          </Text>
+                        );
+                      } catch {
+                        return (
+                          <Text style={[styles.noteModeHint, { color: theme.colors.danger }]}>
+                            Semantic JSON 暂不可预览，请修正格式后保存。
+                          </Text>
+                        );
                       }
-                      multiline
-                    />
-                    <Field
-                      label="额外约束"
-                      value={editor.extraInstructions}
-                      onChangeText={extraInstructions =>
-                        setEditor({ ...editor, extraInstructions })
-                      }
-                      multiline
-                    />
+                    })()}
                     <View style={styles.numberRow}>
                       <Field
                         label="温度"
@@ -2550,16 +2569,25 @@ function metaFor(tab: ResourceTab, item: any): string {
   } / Max=${item.max_tokens}`;
 }
 
+function writerStyleSourceLabel(item: any): string {
+  switch (item.source_format) {
+    case 'sillytavern_openai':
+      return 'SillyTavern';
+    case 'shinewriter':
+      return 'AI/结构化';
+    case 'legacy_shinewriter':
+      return '旧版';
+    default:
+      return item.source_format || '用户';
+  }
+}
+
 function estimateEditorTokens(editor: EditorState): number {
   if (editor.kind === 'characters') return estimateTokens(editor.dataJson);
   if (editor.kind === 'worldbook') return estimateTokens(editor.content);
   if (editor.kind === 'notes') return estimateTokens(editor.content);
   if (editor.kind === 'presets')
-    return estimateTokens(
-      [editor.systemPrompt, editor.writingStyle, editor.extraInstructions].join(
-        '\n',
-      ),
-    );
+    return estimateTokens(editor.semanticJson);
   return Number(editor.item.estimated_tokens || 0);
 }
 
@@ -2570,7 +2598,6 @@ const styles = StyleSheet.create({
   catalogList: { padding: spacing.lg, paddingBottom: spacing.sm, gap: spacing.md },
   catalogPreview: { marginTop: spacing.md, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm },
   catalogPreviewTitle: { fontSize: 13, fontWeight: '800', marginTop: spacing.xs },
-  compatibilityAliases: { position: 'absolute', opacity: 0, width: 1, height: 1 },
   actionScroll: {
     flexDirection: 'row',
     gap: spacing.sm,

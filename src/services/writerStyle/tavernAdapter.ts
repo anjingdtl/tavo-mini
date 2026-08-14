@@ -27,6 +27,18 @@ const CHAT_ONLY_IDENTIFIERS = new Set([
   'regenerate',
 ]);
 
+const WRITER_STYLE_IDENTIFIERS = new Set([
+  'writerstyle',
+  'writingstyle',
+  'shinewriterstyle',
+]);
+
+const SHINEWRITER_MANAGED_MARKERS = [
+  'shinewriter_managed',
+  'shinewriterManaged',
+  'managed_by_shinewriter',
+] as const;
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -43,6 +55,29 @@ function promptArray(raw: Record<string, unknown>): Record<string, unknown>[] {
     : [];
 }
 
+function isManagedWriterStylePrompt(prompt: Record<string, unknown>): boolean {
+  return SHINEWRITER_MANAGED_MARKERS.some(key => prompt[key] === true) ||
+    prompt.managed_by === 'shinewriter' ||
+    prompt.source === 'shinewriter';
+}
+
+function isRecognizedWriterStylePrompt(
+  identifier: string | undefined,
+  name: string | undefined,
+): boolean {
+  const identifierKey = normalizeIdentifier(identifier);
+  const nameKey = normalizeIdentifier(name);
+  return (
+    identifierKey === 'shinewriterwriterstyle' ||
+    identifierKey.startsWith('shinewriterwriterstyle') ||
+    WRITER_STYLE_IDENTIFIERS.has(identifierKey) ||
+    nameKey === 'shinewriterwriterstyle' ||
+    nameKey === 'writerstyle' ||
+    nameKey === 'writingstyle' ||
+    name?.trim() === '作家风格'
+  );
+}
+
 function classifyPrompt(prompt: Record<string, unknown>): TavernPromptMapping {
   const identifier = String(prompt.identifier || '').trim() || undefined;
   const name = String(prompt.name || '').trim() || undefined;
@@ -52,21 +87,21 @@ function classifyPrompt(prompt: Record<string, unknown>): TavernPromptMapping {
   const unresolvedMacros = Array.from(content.matchAll(/\{\{[^}]+\}\}/g)).map(
     match => match[0],
   );
-  if (key === 'shinewriterwriterstyle' || key.startsWith('shinewriterwriterstyle')) {
-    return {
-      identifier,
-      name,
-      mapping: 'injected_as_writer_style',
-      reason: 'ShineWriter managed Writer Style prompt',
-      unresolvedMacros,
-    };
-  }
   if (MODULE_IDENTIFIERS.has(key)) {
     return {
       identifier,
       name,
       mapping: 'handled_by_shinewriter_module',
       reason: 'Character / World Info / Chat History belongs to a ShineWriter module',
+      unresolvedMacros,
+    };
+  }
+  if (isRecognizedWriterStylePrompt(identifier, name)) {
+    return {
+      identifier,
+      name,
+      mapping: 'injected_as_writer_style',
+      reason: 'Explicitly recognized Writer Style prompt',
       unresolvedMacros,
     };
   }
@@ -92,16 +127,16 @@ function classifyPrompt(prompt: Record<string, unknown>): TavernPromptMapping {
     return {
       identifier,
       name,
-      mapping: 'injected_as_writer_style',
-      reason: 'Custom relative prompt treated as a Writer Style candidate',
+      mapping: 'preserved_not_injected',
+      reason: 'Unknown custom prompt is preserved but never promoted into Writer Style',
       unresolvedMacros,
     };
   }
   return {
     identifier,
     name,
-    mapping: 'unsupported',
-    reason: 'Prompt has no safely mappable novel writing content',
+    mapping: 'preserved_not_injected',
+    reason: 'Unsupported prompt is preserved but not injected into the novel pipeline',
     unresolvedMacros,
   };
 }
@@ -157,6 +192,11 @@ export function parseSillyTavernOpenAIPreset(
       compatibilityNotes: promptMappings
         .filter(item => item.mapping !== 'injected_as_writer_style')
         .map(item => `${item.name || item.identifier || 'unknown'}: ${item.reason}`),
+      managedPromptIdentifier: promptMappings.find(
+        (mapping, index) =>
+          mapping.mapping === 'injected_as_writer_style' &&
+          isManagedWriterStylePrompt(promptArray(raw)[index]),
+      )?.identifier,
       semanticDirty: false,
     },
     semantic,
@@ -175,14 +215,20 @@ export function patchManagedWriterStylePrompt(
   const next = clone(envelope);
   const raw = next.rawPreset;
   const prompts = promptArray(raw);
-  let identifier = next.managedPromptIdentifier || 'shinewriterWriterStyle';
-  let target = prompts.find(prompt => prompt.identifier === identifier);
-  if (!target) {
-    let suffix = 1;
-    while (prompts.some(prompt => prompt.identifier === identifier)) {
+  const claimedIdentifier = next.managedPromptIdentifier;
+  let identifier = claimedIdentifier || 'shinewriterWriterStyle';
+  let target = prompts.find(
+    prompt =>
+      prompt.identifier === identifier && isManagedWriterStylePrompt(prompt),
+  );
+  if (!target && prompts.some(prompt => prompt.identifier === identifier)) {
+    let suffix = 2;
+    while (prompts.some(prompt => prompt.identifier === `${identifier}${suffix}`)) {
       suffix += 1;
-      identifier = `shinewriterWriterStyle${suffix}`;
     }
+    identifier = `${identifier}${suffix}`;
+  }
+  if (!target) {
     target = {
       identifier,
       name: 'ShineWriter Writer Style',
@@ -190,6 +236,7 @@ export function patchManagedWriterStylePrompt(
       position: 'relative',
       enabled: true,
       content: '',
+      shinewriter_managed: true,
     };
     prompts.push(target);
     raw.prompts = prompts;

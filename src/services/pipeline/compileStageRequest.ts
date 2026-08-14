@@ -458,13 +458,39 @@ function clipByAllocation(text: string, allocation: number): string {
   return clipTextToTokenBudget(text, allocation);
 }
 
+function hasProtectedWriterStyle(context: {
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: string;
+}): boolean {
+  return (
+    context.writerStyleProtectedTokens != null ||
+    context.writerStyleProjectionMode != null
+  );
+}
+
+function protectedWriterStyleFields(context: {
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
+}): Pick<ReviewContext, 'writerStyleProtectedTokens' | 'writerStyleProjectionMode'> {
+  return hasProtectedWriterStyle(context)
+    ? {
+        writerStyleProtectedTokens: context.writerStyleProtectedTokens,
+        writerStyleProjectionMode: context.writerStyleProjectionMode,
+      }
+    : {};
+}
+
 /**
  * Mandatory allocation ids — these are NEVER reduced by the final-window
  * shrink loop. Only optional sections (preset/character/worldbook/note/
  * storyMemory/episodic/recentBridge/currentInstruction/userPrompt/
  * worldRules/storyState/reviewReport/factCheckReport) may be shortened.
  */
-const MANDATORY_ALLOCATION_IDS = new Set(['outline', 'mandatory_body']);
+const MANDATORY_ALLOCATION_IDS = new Set([
+  'outline',
+  'mandatory_body',
+  'writerStyle',
+]);
 
 /**
  * Reduce ONLY optional allocations to recover at least `reductionTokens`.
@@ -524,7 +550,7 @@ export function compileReviewStageRequest(params: {
   repairReason?: string;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.context)) {
     return compileReviewWithElasticBudget(params);
   }
   const stage = params.repairReason ? 'review_repair' : 'review';
@@ -611,6 +637,7 @@ export function compileReviewStageRequest(params: {
   const am = allocMap(budget.optionalAllocations);
   const clipped: ReviewContext = {
     ...phase2Fields(params.context),
+    ...protectedWriterStyleFields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -654,6 +681,7 @@ export function compileReviewStageRequest(params: {
     const m = allocMap(allocations);
     const ctx: ReviewContext = {
       ...phase2Fields(params.context),
+      ...protectedWriterStyleFields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -759,6 +787,16 @@ function compileReviewWithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(params.context)
+      ? [{
+          id: 'writerStyle',
+          text: params.context.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -803,13 +841,15 @@ function compileReviewWithElasticBudget(params: {
       priority: 3,
       relevance: 0.5,
     },
-    {
-      id: 'preset',
-      text: params.context.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-    },
+    ...(hasProtectedWriterStyle(params.context)
+      ? []
+      : [{
+          id: 'preset',
+          text: params.context.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+        }]),
     {
       id: 'currentInstruction',
       text: params.context.currentInstructionText,
@@ -833,8 +873,10 @@ function compileReviewWithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const ctx: ReviewContext = {
-      ...phase2Fields(params.context),
-        presetText: clipped.get('preset') || '',
+        ...phase2Fields(params.context),
+        ...protectedWriterStyleFields(params.context),
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         characterText: clipped.get('character') || '',
         noteText: clipped.get('note') || '',
         worldbookText: clipped.get('worldbook') || '',
@@ -860,7 +902,7 @@ export function compileFactCheckStageRequest(params: {
   repairReason?: string;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.context)) {
     return compileFactCheckWithElasticBudget(params);
   }
   const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
@@ -945,6 +987,7 @@ export function compileFactCheckStageRequest(params: {
   const am = allocMap(budget.optionalAllocations);
   const clipped: FactCheckContext = {
     ...phase2Fields(params.context),
+    ...protectedWriterStyleFields(params.context),
     presetText: clipByAllocation(
       params.context.presetText,
       am.get('preset') || 0,
@@ -987,6 +1030,7 @@ export function compileFactCheckStageRequest(params: {
     const m = allocMap(allocations);
     const ctx: FactCheckContext = {
       ...phase2Fields(params.context),
+      ...protectedWriterStyleFields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
         m.get('preset') || 0,
@@ -1091,6 +1135,16 @@ function compileFactCheckWithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(params.context)
+      ? [{
+          id: 'writerStyle',
+          text: params.context.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -1135,13 +1189,15 @@ function compileFactCheckWithElasticBudget(params: {
       priority: 3,
       relevance: 0.5,
     },
-    {
-      id: 'preset',
-      text: params.context.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-    },
+    ...(hasProtectedWriterStyle(params.context)
+      ? []
+      : [{
+          id: 'preset',
+          text: params.context.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+        }]),
     {
       id: 'currentInstruction',
       text: params.context.currentInstructionText,
@@ -1166,8 +1222,9 @@ function compileFactCheckWithElasticBudget(params: {
     buildMessages: clipped => {
       const ctx: FactCheckContext = {
         ...phase2Fields(params.context),
-      ...phase2Fields(params.context),
-        presetText: clipped.get('preset') || '',
+        ...protectedWriterStyleFields(params.context),
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         currentInstructionText: clipped.get('currentInstruction') || '',
         retrievalUserPrompt: clipped.get('userPrompt') || '',
         recentBridgeText: clipped.get('recentBridge') || '',
@@ -1206,7 +1263,7 @@ export function compileReviewV2StageRequest(params: {
   repairReason?: string;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.context)) {
     return compileReviewV2WithElasticBudget(params);
   }
   const stage = params.repairReason ? 'review_repair' : 'review';
@@ -1334,7 +1391,8 @@ export function compileReviewV2StageRequest(params: {
 
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
-    const ctx: ReviewContext = {
+      const ctx: ReviewContext = {
+        ...protectedWriterStyleFields(params.context),
       ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
@@ -1437,7 +1495,7 @@ export function compileFactCheckV2StageRequest(params: {
   repairReason?: string;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.context)) {
     return compileFactCheckV2WithElasticBudget(params);
   }
   const stage = params.repairReason ? 'factCheck_repair' : 'factCheck';
@@ -1565,7 +1623,8 @@ export function compileFactCheckV2StageRequest(params: {
 
   const rebuild = (allocations: ContextAllocationTrace[]): ChatMessage[] => {
     const m = allocMap(allocations);
-    const ctx: FactCheckContext = {
+      const ctx: FactCheckContext = {
+        ...protectedWriterStyleFields(params.context),
       ...phase2Fields(params.context),
       presetText: clipByAllocation(
         params.context.presetText,
@@ -1683,6 +1742,16 @@ function compileReviewV2WithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(params.context)
+      ? [{
+          id: 'writerStyle',
+          text: params.context.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -1727,13 +1796,15 @@ function compileReviewV2WithElasticBudget(params: {
       priority: 3,
       relevance: 0.5,
     },
-    {
-      id: 'preset',
-      text: params.context.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-    },
+    ...(hasProtectedWriterStyle(params.context)
+      ? []
+      : [{
+          id: 'preset',
+          text: params.context.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+        }]),
     {
       id: 'currentInstruction',
       text: params.context.currentInstructionText,
@@ -1757,7 +1828,9 @@ function compileReviewV2WithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const context: ReviewContext = {
-        presetText: clipped.get('preset') || '',
+        ...protectedWriterStyleFields(params.context),
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         characterText: clipped.get('character') || '',
         noteText: clipped.get('note') || '',
         worldbookText: clipped.get('worldbook') || '',
@@ -1810,6 +1883,16 @@ function compileFactCheckV2WithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(params.context)
+      ? [{
+          id: 'writerStyle',
+          text: params.context.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -1854,13 +1937,15 @@ function compileFactCheckV2WithElasticBudget(params: {
       priority: 3,
       relevance: 0.5,
     },
-    {
-      id: 'preset',
-      text: params.context.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-    },
+    ...(hasProtectedWriterStyle(params.context)
+      ? []
+      : [{
+          id: 'preset',
+          text: params.context.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+        }]),
     {
       id: 'currentInstruction',
       text: params.context.currentInstructionText,
@@ -1884,7 +1969,9 @@ function compileFactCheckV2WithElasticBudget(params: {
     elasticModules,
     buildMessages: clipped => {
       const context: FactCheckContext = {
-        presetText: clipped.get('preset') || '',
+        ...protectedWriterStyleFields(params.context),
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         currentInstructionText: clipped.get('currentInstruction') || '',
         retrievalUserPrompt: clipped.get('userPrompt') || '',
         recentBridgeText: clipped.get('recentBridge') || '',
@@ -1982,6 +2069,10 @@ export function compileFinalReviserStageRequest(params: {
   contextWindow: number;
 }): StageCompileResult {
   const stage = 'proof';
+  const protectedWriterStyle = hasProtectedWriterStyle(params.constraints);
+  const protectedWriterStyleTokens = protectedWriterStyle
+    ? estimateTokens(params.constraints.presetText)
+    : 0;
   const bodyTokens = estimateTokens(params.canonicalDraft);
   const contractTokens = estimateTokens(params.contractJson);
 
@@ -1995,7 +2086,9 @@ export function compileFinalReviserStageRequest(params: {
     Math.max(
       0,
       estimateStageInputTokens(scaffold) - bodyTokens - contractTokens,
-    ) + PARTITION_OVERHEAD;
+    ) +
+    PARTITION_OVERHEAD +
+    protectedWriterStyleTokens;
 
   const hardList = buildHardConstraintLines(
     params.constraints,
@@ -2009,11 +2102,13 @@ export function compileFinalReviserStageRequest(params: {
       tokens: estimateTokens(params.constraints.recentBridgeText),
       weight: 3,
     },
-    {
-      id: 'preset',
-      tokens: estimateTokens(params.constraints.presetText),
-      weight: 2,
-    },
+    ...(protectedWriterStyle
+      ? []
+      : [{
+          id: 'preset',
+          tokens: estimateTokens(params.constraints.presetText),
+          weight: 2,
+        }]),
     {
       id: 'currentInstruction',
       tokens: estimateTokens(params.constraints.currentInstructionText),
@@ -2057,10 +2152,9 @@ export function compileFinalReviserStageRequest(params: {
       params.constraints.recentBridgeText,
       am.get('recentBridge') || 0,
     ),
-    presetText: clipByAllocation(
-      params.constraints.presetText,
-      am.get('preset') || 0,
-    ),
+    presetText: protectedWriterStyle
+      ? params.constraints.presetText
+      : clipByAllocation(params.constraints.presetText, am.get('preset') || 0),
     hardConstraints: hardListClipped,
   });
 
@@ -2083,10 +2177,9 @@ export function compileFinalReviserStageRequest(params: {
         params.constraints.recentBridgeText,
         m.get('recentBridge') || 0,
       ),
-      presetText: clipByAllocation(
-        params.constraints.presetText,
-        m.get('preset') || 0,
-      ),
+      presetText: protectedWriterStyle
+        ? params.constraints.presetText
+        : clipByAllocation(params.constraints.presetText, m.get('preset') || 0),
       hardConstraints: hard.length > 0 ? hard.split('\n') : [],
     });
   };
@@ -2113,6 +2206,14 @@ export function compileFinalReviserStageRequest(params: {
         allocated: contractTokens,
         truncated: false,
       },
+      ...(protectedWriterStyle
+        ? [{
+            id: 'writerStyle',
+            requested: protectedWriterStyleTokens,
+            allocated: protectedWriterStyleTokens,
+            truncated: false,
+          }]
+        : []),
       ...budget.optionalAllocations,
     ],
     rebuild,
@@ -2128,7 +2229,7 @@ export function compileProofStageRequest(params: {
   contextWindow: number;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.constraints)) {
     return compileProofWithElasticBudget(params);
   }
   const stage = 'proof';
@@ -2214,6 +2315,7 @@ export function compileProofStageRequest(params: {
   const am = allocMap(budget.optionalAllocations);
   const clipped: ProofConstraints = {
     ...phase2Fields(params.constraints),
+    ...protectedWriterStyleFields(params.constraints),
     presetText: clipByAllocation(
       params.constraints.presetText,
       am.get('preset') || 0,
@@ -2260,6 +2362,7 @@ export function compileProofStageRequest(params: {
     const m = allocMap(allocations);
     const ctx: ProofConstraints = {
       ...phase2Fields(params.constraints),
+      ...protectedWriterStyleFields(params.constraints),
       presetText: clipByAllocation(
         params.constraints.presetText,
         m.get('preset') || 0,
@@ -2354,7 +2457,7 @@ export function compileFinalReviserV3StageRequest(params: {
   modelMaxOutputTokens?: number;
   elasticBudget?: boolean;
 }): StageCompileResult {
-  if (params.elasticBudget) {
+  if (params.elasticBudget || hasProtectedWriterStyle(params.capsule)) {
     return compileFinalReviserV3WithElasticBudget(params);
   }
   const draftTokens = estimateTokens(params.canonicalDraft);
@@ -2554,6 +2657,16 @@ function compileFinalReviserV3WithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(c)
+      ? [{
+          id: 'writerStyle',
+          text: c.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -2621,15 +2734,17 @@ function compileFinalReviserV3WithElasticBudget(params: {
       burstPriority: 2,
       shrinkPriority: 3,
     },
-    {
-      id: 'preset',
-      text: c.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-      burstPriority: 1,
-      shrinkPriority: 2,
-    },
+    ...(hasProtectedWriterStyle(c)
+      ? []
+      : [{
+          id: 'preset',
+          text: c.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+          burstPriority: 1,
+          shrinkPriority: 2,
+        }]),
     {
       id: 'user_prompt',
       text: c.retrievalUserPrompt,
@@ -2656,7 +2771,8 @@ function compileFinalReviserV3WithElasticBudget(params: {
         noteText: clipped.get('note') || '',
         recentBridgeText: clipped.get('recent_bridge') || '',
         episodicMemoryText: clipped.get('episodic') || '',
-        presetText: clipped.get('preset') || '',
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         retrievalUserPrompt: clipped.get('user_prompt') || '',
       },
     });
@@ -2705,6 +2821,16 @@ function compileProofWithElasticBudget(params: {
       priority: 10,
       relevance: 1,
     },
+    ...(hasProtectedWriterStyle(params.constraints)
+      ? [{
+          id: 'writerStyle',
+          text: params.constraints.presetText,
+          requirement: 'mandatory' as const,
+          priority: 10,
+          relevance: 1,
+          reclaimable: false,
+        }]
+      : []),
   ];
   const elasticModules: ElasticStageModule[] = [
     {
@@ -2749,13 +2875,15 @@ function compileProofWithElasticBudget(params: {
       priority: 3,
       relevance: 0.5,
     },
-    {
-      id: 'preset',
-      text: params.constraints.presetText,
-      requirement: 'optional',
-      priority: 3,
-      relevance: 0.5,
-    },
+    ...(hasProtectedWriterStyle(params.constraints)
+      ? []
+      : [{
+          id: 'preset',
+          text: params.constraints.presetText,
+          requirement: 'optional' as const,
+          priority: 3,
+          relevance: 0.5,
+        }]),
     {
       id: 'currentInstruction',
       text: params.constraints.currentInstructionText,
@@ -2780,8 +2908,9 @@ function compileProofWithElasticBudget(params: {
     buildMessages: clipped => {
       const ctx: ProofConstraints = {
         ...phase2Fields(params.constraints),
-      ...phase2Fields(params.constraints),
-        presetText: clipped.get('preset') || '',
+        ...protectedWriterStyleFields(params.constraints),
+        presetText:
+          clipped.get('writerStyle') || clipped.get('preset') || '',
         currentInstructionText: clipped.get('currentInstruction') || '',
         retrievalUserPrompt: clipped.get('userPrompt') || '',
         relevantCharacterConstraints: clipped.get('character') || '',

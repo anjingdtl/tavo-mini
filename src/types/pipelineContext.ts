@@ -346,6 +346,9 @@ export interface FinalContinuityCapsule {
   currentInstructionText: string;
   retrievalUserPrompt: string;
   presetText: string;
+  /** V5-only: Writer Style is a mandatory protected input, never elastic. */
+  writerStyleProtectedTokens?: number;
+  writerStyleProjectionMode?: 'FULL' | 'EVALUATION' | 'HARD' | 'MINIMAL';
 }
 
 export function buildFinalContinuityCapsule(
@@ -364,5 +367,13 @@ export function buildFinalContinuityCapsule(
     currentInstructionText: snapshot.currentInstructionText,
     retrievalUserPrompt: snapshot.retrievalUserPrompt,
     presetText: snapshot.presetText,
+    ...(snapshot.writerStyleSnapshot
+      ? {
+          writerStyleProtectedTokens:
+            snapshot.writerStyleSnapshot.stageProjections.proof.estimatedTokens,
+          writerStyleProjectionMode:
+            snapshot.writerStyleSnapshot.stageProjections.proof.mode,
+        }
+      : {}),
   };
 }
