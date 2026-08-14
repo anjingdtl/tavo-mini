@@ -2,7 +2,7 @@
 
 ## Round 0 基线
 
-- 最终 HEAD：`87eaf8ef81c191849854a74cf2f6e362e1ec04c4`
+- 最终 HEAD：`5fd6208b1d7c9f21e8936ed84806a1786772b157`
 - 基线：Schema 51、Snapshot V4、Context Budget 7、Resource Context 2。
 - 基线证据：第二期 Final Seal `ShineWriter_第二期_Final-Seal_验收证据_20260814.md`。
 - 方案文件保持未修改：`ShineWriter_第三期_作家风格预设全链路重构_PDCA方案_20260814.md`。
