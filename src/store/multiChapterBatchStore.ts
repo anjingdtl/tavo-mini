@@ -52,6 +52,21 @@ function isBatchContextBudgetVersionResumable(version: unknown): boolean {
   );
 }
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
+import {
+  collectContinuationBatchPlannerMaterials,
+  createContinuationBatchChapterPlan,
+  captureContinuationBatchAnchor,
+} from '../services/multiChapterBatch/continuationBatchPlanner';
+import {
+  encodeContinuationBatchAnchor,
+  encodeContinuationBatchExecutionPolicy,
+  defaultContinuationBatchExecutionPolicy,
+} from '../services/multiChapterBatch/batchMode';
+import {
+  rearmContinuationItemForUserResume,
+  cancelContinuationBatch,
+} from '../services/multiChapterBatch/continuationBatchAdapter';
+import type { MultiChapterWritingMode } from '../types/multiChapterBatch';
 import { resolveLLMRequestConfig } from '../services/llm';
 import * as db from '../services/database';
 import {
@@ -82,6 +97,10 @@ export interface BatchCreateDraftInput {
   targetWordsPerChapter: number;
   /** Historical input only; new batches always use the complete pipeline. */
   pipelineMode?: string;
+  /** Schema 53 writing mode; default (and historical behavior) is outline. */
+  writingMode?: MultiChapterWritingMode;
+  /** Project mode for the mode-mismatch guard (continuation batches only). */
+  projectMode?: string;
 }
 
 interface MultiChapterBatchState {
@@ -231,6 +250,29 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
     createDraftBatch: async input => {
       set({ loading: true, error: null });
       try {
+        const writingMode: MultiChapterWritingMode =
+          input.writingMode === 'continuation' ? 'continuation' : 'outline';
+        // Mode guards (doc §21 / §29): a continuation batch requires a
+        // continuation project, and a project may hold only ONE active batch
+        // regardless of mode — a route/DB mode conflict must never create a
+        // second active batch.
+        if (writingMode === 'continuation' && input.projectMode !== 'continuation') {
+          throw Object.assign(
+            new Error('仅原著续写项目可以创建一键续写批次'),
+            { code: 'BATCH_PROJECT_MODE_MISMATCH' },
+          );
+        }
+        const activeBatch = await batchRepo.getActiveBatchByProject(input.projectId);
+        if (activeBatch && activeBatch.writingMode !== writingMode) {
+          throw Object.assign(
+            new Error(
+              activeBatch.writingMode === 'continuation'
+                ? '当前项目已有进行中的续写批次，请先处理该批次'
+                : '当前项目已有进行中的一键写章批次，请先处理该批次',
+            ),
+            { code: 'BATCH_PROJECT_MODE_MISMATCH' },
+          );
+        }
         const id = `batch_${Date.now().toString(36)}_${Math.random()
           .toString(36)
           .slice(2, 8)}`;
@@ -243,6 +285,16 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
                 cloneDefaultContextAutomationPolicyV3(),
               )
             : null;
+        let continuationAnchorJson: string | null = null;
+        let continuationPolicyJson: string | null = null;
+        if (writingMode === 'continuation') {
+          // Fail closed: no ready Source/Canon → no batch (doc §7 authority).
+          const anchor = await captureContinuationBatchAnchor(input.projectId);
+          continuationAnchorJson = encodeContinuationBatchAnchor(anchor);
+          continuationPolicyJson = encodeContinuationBatchExecutionPolicy(
+            defaultContinuationBatchExecutionPolicy(),
+          );
+        }
         await batchRepo.createBatch({
           id,
           projectId: input.projectId,
@@ -262,6 +314,9 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion,
           contextAutomationPolicyV3,
+          writingMode,
+          continuationAnchorJson,
+          continuationExecutionPolicyJson: continuationPolicyJson,
         });
         for (let i = 1; i <= input.chapterCount; i += 1) {
           await batchRepo.createBatchItem({
@@ -290,15 +345,27 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
       if (!batch) throw new Error('批次不存在');
       set({ loading: true, error: null });
       try {
-        const materials = await collectPlannerMaterials(batch.projectId);
-        const result = await createBatchChapterPlan({
-          projectId: batch.projectId,
-          sourcePrompt: batch.sourcePrompt,
-          chapterCount: batch.chapterCount,
-          targetWordsPerChapter: batch.targetWordsPerChapter,
-          pipelineMode: 'full',
-          materials,
-        });
+        // Mode split (doc §7.1): the two planners keep separate prompts and
+        // separate authorities; only the persistence/budget shell is shared.
+        const result =
+          batch.writingMode === 'continuation'
+            ? await createContinuationBatchChapterPlan({
+                projectId: batch.projectId,
+                sourcePrompt: batch.sourcePrompt,
+                chapterCount: batch.chapterCount,
+                targetWordsPerChapter: batch.targetWordsPerChapter,
+                materials: await collectContinuationBatchPlannerMaterials(
+                  batch.projectId,
+                ),
+              })
+            : await createBatchChapterPlan({
+                projectId: batch.projectId,
+                sourcePrompt: batch.sourcePrompt,
+                chapterCount: batch.chapterCount,
+                targetWordsPerChapter: batch.targetWordsPerChapter,
+                pipelineMode: 'full',
+                materials: await collectPlannerMaterials(batch.projectId),
+              });
         await batchRepo.updateBatchStatus(batchId, 'planning', {
           plannerOutputJson: JSON.stringify(result.plan),
           plannerHash: result.hash,
@@ -368,11 +435,22 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
               )
             : null;
         // Freeze the plan hash + mark ready; reconcile may now start.
+        // Continuation mode re-freezes the batch anchor at confirmation time
+        // (doc §9.1): the plan is being confirmed against the CURRENT
+        // Source/Canon/tail, whatever they were at draft creation.
+        let continuationAnchorJson: string | null | undefined;
+        if (batchRow.writingMode === 'continuation') {
+          const anchor = await captureContinuationBatchAnchor(batchRow.projectId);
+          continuationAnchorJson = encodeContinuationBatchAnchor(anchor);
+        }
         await batchRepo.updateBatchStatus(batchId, 'ready', {
           plannerHash: hash,
           plannerOutputJson: JSON.stringify(normalized.plan),
           startPosition: tailPosition,
           expectedTailChapterId: tailChapter?.id ?? null,
+          ...(continuationAnchorJson !== undefined
+            ? { continuationAnchorJson }
+            : {}),
         });
         await refreshBatch(set, get);
         set({ plan: normalized.plan, loading: false });
@@ -435,6 +513,22 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
         );
         set({ error: error.message });
         throw error;
+      }
+      if (batch.writingMode === 'continuation') {
+        // Continuation resume (doc §22/§25): re-arm the current item, then
+        // re-drive. A NEW run may only start from this explicit user action
+        // and only when the previous run terminated without adoption.
+        await rearmContinuationItemForUserResume(batchId, batch.currentOrdinal);
+        if (batch.status.startsWith('paused_') || batch.status === 'waiting_retry') {
+          await batchRepo.updateBatchStatus(batchId, 'running', {
+            pauseReason: null,
+            errorCode: null,
+            errorMessage: null,
+          });
+        }
+        await refreshBatch(set, get);
+        await get().start(batchId);
+        return;
       }
       const currentItem = get().items.find(
         i => i.ordinal === batch.currentOrdinal,
@@ -653,14 +747,22 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
 
     cancel: async batchId => {
       try {
+        const batch = get().batch;
         await batchRepo.updateBatchStatus(batchId, 'cancelled', {
           cancelledAt: Date.now(),
           errorCode: 'BATCH_CANCELLED',
         });
-        // Cancel the active pipeline task if any (does NOT delete chapters).
-        const item = get().items.find(i => i.ordinal === get().batch?.currentOrdinal);
-        if (item?.activePipelineTaskId) {
-          cancelPipeline(item.activePipelineTaskId);
+        if (batch?.writingMode === 'continuation') {
+          // Continuation cancel (doc §24): cancel the active run, mark
+          // unstarted items cancelled, keep completed chapters and adopted
+          // content. Idempotent.
+          await cancelContinuationBatch(batchId, get().items, batch.currentOrdinal);
+        } else {
+          // Cancel the active pipeline task if any (does NOT delete chapters).
+          const item = get().items.find(i => i.ordinal === get().batch?.currentOrdinal);
+          if (item?.activePipelineTaskId) {
+            cancelPipeline(item.activePipelineTaskId);
+          }
         }
         await refreshBatch(set, get);
         PipelineForeground.stop(`batch_${batchId}`).catch(() => {});

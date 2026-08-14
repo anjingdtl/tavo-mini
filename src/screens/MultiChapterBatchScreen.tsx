@@ -20,8 +20,9 @@ import {
   View,
 } from 'react-native';
 import { Play, Pause, X, RefreshCw, ListChecks } from 'lucide-react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RouteProp } from '@react-navigation/native';
 import type { EditorStackParamList } from '../navigation/TabNavigator';
 import { Button, Card, Header, Screen, Section, spacing } from '../components/ui';
 import { useThemeStore } from '../store/themeStore';
@@ -33,7 +34,10 @@ import {
   BATCH_MAX_CHAPTERS,
   BATCH_MIN_CHAPTERS,
 } from '../types/multiChapterBatch';
-import type { BatchChapterPlanItem } from '../types/multiChapterBatch';
+import type {
+  BatchChapterPlanItem,
+  MultiChapterWritingMode,
+} from '../types/multiChapterBatch';
 import type { PipelineReasoningEffort } from '../types/pipeline';
 import { PIPELINE_REASONING_EFFORT_OPTIONS } from '../services/pipeline/reasoningPolicy';
 import {
@@ -41,12 +45,61 @@ import {
   STAGE_LABELS,
 } from '../utils/stages';
 import { CURRENT_OUTLINE_WORKFLOW_VERSION } from '../services/pipeline/outlineWorkflowVersion';
+import {
+  getContinuationChapterNumbering,
+  makeContinuationChapterNumbering,
+} from '../services/continuation/chapterNumbering/continuationChapterNumbering';
+import * as db from '../services/database';
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
+
+/** Continuation V5 sub-stage labels (doc §32). */
+const CONTINUATION_STAGE_LABELS: Record<string, string> = {
+  round1: '第一轮生成',
+  round2: '第二轮修订',
+  round3: '第三轮终稿',
+  draft_writer: '初稿写作',
+  narrative_architect: '情节架构',
+  revision_writer: '修订写作',
+  adversarial_auditor: '对抗审计',
+  final_reviser: '终稿修订',
+  final_validate: '终稿校验',
+  adoption: '采纳',
+  finalize: '定稿',
+  state_sync: '状态同步',
+};
+
+const CONTINUATION_STAGE_ORDER = [
+  'draft_writer',
+  'narrative_architect',
+  'revision_writer',
+  'adversarial_auditor',
+  'final_reviser',
+  'final_validate',
+  'adoption',
+  'finalize',
+  'state_sync',
+];
+
+const CONTINUATION_PAUSE_REASONS: Record<string, string> = {
+  BATCH_CONTINUATION_SOURCE_CHANGED: '原著源已变化',
+  BATCH_CONTINUATION_BOUNDARY_CHANGED: '续写起点（边界）已变化',
+  BATCH_CONTINUATION_CANON_CHANGED: 'Canon 已变化',
+  BATCH_CONTINUATION_FINAL_REJECTED: '最终稿未通过校验',
+  BATCH_CONTINUATION_FINAL_NEEDS_REVIEW: '最终稿需人工确认',
+  BATCH_CONTINUATION_RUN_FAILED: '续写运行失败',
+  BATCH_CONTINUATION_RUN_OUTDATED: '续写结果已过期',
+  BATCH_CONTINUATION_ADOPTION_FAILED: '采用失败',
+  BATCH_CONTINUATION_FINALIZE_FAILED: '定稿失败',
+  BATCH_CONTINUATION_STATE_SYNC_FAILED: '状态同步失败',
+  BATCH_CONTINUATION_STATE_SYNC_TIMEOUT: '状态同步超时',
+  BATCH_CONTINUATION_CHAPTER_CONFLICT: '章节被手动修改',
+};
 
 export function MultiChapterBatchScreen(): React.ReactElement {
   const navigation =
     useNavigation<NativeStackNavigationProp<EditorStackParamList>>();
+  const route = useRoute<RouteProp<EditorStackParamList, 'MultiChapterBatch'>>();
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
   const store = useMultiChapterBatchStore();
@@ -57,12 +110,58 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     targetWords: String(BATCH_DEFAULT_TARGET_WORDS),
   });
   const [edited, setEdited] = useState<BatchChapterPlanItem[]>([]);
+  /** Continuation anchor summary for the create/preview views. */
+  const [continuationAnchorInfo, setContinuationAnchorInfo] = useState<{
+    boundaryChapterNumber: number | null;
+    /** 0-based internal position the first batch chapter will occupy. */
+    nextPosition: number;
+    getDisplayNumber: (position: number) => number;
+  } | null>(null);
+
+  // Route mode decides the CREATION mode only (doc §29); once an active batch
+  // exists its persisted writingMode is authoritative.
+  const routeMode: MultiChapterWritingMode =
+    route.params?.writingMode === 'continuation' ? 'continuation' : 'outline';
+  const mode: MultiChapterWritingMode =
+    store.batch?.writingMode ?? routeMode;
+  const isContinuation = mode === 'continuation';
 
   const refresh = useCallback(() => {
     if (store.batch) {
       store.refresh().catch(() => {});
     }
   }, [store]);
+
+  const loadAnchorInfo = useCallback(async () => {
+    if (!currentProject) return;
+    try {
+      const numbering = await getContinuationChapterNumbering(currentProject.id);
+      const chapters = await db.getChaptersByProject(currentProject.id);
+      const nextPosition =
+        chapters.length > 0
+          ? Math.max(...chapters.map((c: any) => Number(c.position))) + 1
+          : 0;
+      setContinuationAnchorInfo({
+        boundaryChapterNumber: numbering.boundaryChapterNumber,
+        nextPosition,
+        getDisplayNumber: (position: number) =>
+          numbering.getDisplayNumber(position as any),
+      });
+    } catch {
+      const fallback = makeContinuationChapterNumbering(null);
+      setContinuationAnchorInfo({
+        boundaryChapterNumber: null,
+        nextPosition: 0,
+        getDisplayNumber: position => fallback.getDisplayNumber(position as any),
+      });
+    }
+  }, [currentProject]);
+
+  useEffect(() => {
+    if (isContinuation && (view === 'create' || view === 'preview')) {
+      loadAnchorInfo().catch(() => {});
+    }
+  }, [isContinuation, view, loadAnchorInfo]);
 
   // 进入页面时自动加载当前项目的活跃批次：规划后的计划持久化在 SQLite，
   // 退出/杀进程后重新进入必须回到规划预览（而不是创建页）。
@@ -145,7 +244,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
       return;
     }
     if (!form.sourcePrompt.trim()) {
-      Alert.alert('剧情摘要不能为空');
+      Alert.alert(isContinuation ? '本批续写目标不能为空' : '剧情摘要不能为空');
       return;
     }
     if (!currentProject) return;
@@ -156,6 +255,8 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         chapterCount: count,
         targetWordsPerChapter: Number(form.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
         pipelineMode: 'full',
+        writingMode: routeMode,
+        projectMode: currentProject.mode,
       });
       const plan = await store.runPlanner(id);
       setEdited(plan.chapters.map(c => ({ ...c })));
@@ -249,14 +350,20 @@ export function MultiChapterBatchScreen(): React.ReactElement {
 
   const headerTitle =
     view === 'create'
-      ? '一键写 N 章'
+      ? isContinuation
+        ? '一键续写 N 章'
+        : '一键写 N 章'
       : view === 'preview'
-        ? '规划预览'
+        ? isContinuation
+          ? '续写计划预览'
+          : '规划预览'
         : view === 'report'
           ? '批次报告'
           : store.batch
             ? `第 ${store.batch.currentOrdinal}/${store.batch.chapterCount} 章`
-            : '一键写 N 章';
+            : isContinuation
+              ? '一键续写 N 章'
+              : '一键写 N 章';
 
   return (
     <Screen>
@@ -279,10 +386,29 @@ export function MultiChapterBatchScreen(): React.ReactElement {
       <ScrollView contentContainerStyle={styles.content}>
         {view === 'create' && (
           <>
-            <Section title="剧情摘要">
+            {isContinuation ? (
+              <Card style={styles.cardMb}>
+                <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>
+                  当前承接
+                </Text>
+                <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
+                  {continuationAnchorInfo?.boundaryChapterNumber != null
+                    ? `原著第 ${continuationAnchorInfo.boundaryChapterNumber} 章`
+                    : '原著边界未就绪'}
+                </Text>
+                <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
+                  本批将从第 {continuationAnchorInfo?.getDisplayNumber(continuationAnchorInfo.nextPosition) ?? '—'} 章开始续写
+                </Text>
+              </Card>
+            ) : null}
+            <Section title={isContinuation ? '本批续写目标' : '剧情摘要'}>
               <TextInput
                 style={[styles.inputMultiline, { backgroundColor: theme.colors.card, color: theme.colors.textPrimary }]}
-                placeholder="输入较长的局部剧情摘要、阶段目标或故事弧提示词…"
+                placeholder={
+                  isContinuation
+                    ? '输入本批续写的总体目标、剧情走向或阶段任务…'
+                    : '输入较长的局部剧情摘要、阶段目标或故事弧提示词…'
+                }
                 placeholderTextColor={theme.colors.textMuted}
                 multiline
                 value={form.sourcePrompt}
@@ -309,7 +435,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             </Section>
             <View style={styles.row}>
               <Button
-                label={store.loading ? '正在规划…' : '开始规划'}
+                label={store.loading ? '正在规划…' : isContinuation ? '生成续写计划' : '开始规划'}
                 icon={ListChecks}
                 onPress={handleCreate}
                 disabled={store.loading}
@@ -327,7 +453,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
                 <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>后续章节任务会继承该档位；修改流水线配置不会影响本批次。</Text>
               </Card>
             ) : null}
-            <Section title="计划预览（可编辑）">
+            <Section title={isContinuation ? '续写计划预览（可编辑）' : '计划预览（可编辑）'}>
               {edited.length === 0 && store.plan ? (
                 <Text style={{ color: theme.colors.textSecondary }}>
                   计划已生成，共 {store.plan.chapters.length} 章。请逐章确认。
@@ -336,7 +462,11 @@ export function MultiChapterBatchScreen(): React.ReactElement {
               {edited.map((chapter, index) => (
                 <Card key={chapter.ordinal} style={styles.cardMb}>
                   <Text style={[styles.bold, { color: theme.colors.accent }]}>
-                    第 {chapter.ordinal} 章
+                    {isContinuation && continuationAnchorInfo
+                      ? `第 ${continuationAnchorInfo.getDisplayNumber(
+                          continuationAnchorInfo.nextPosition + chapter.ordinal - 1,
+                        )} 章 · 批次 ${chapter.ordinal}/${store.batch?.chapterCount ?? edited.length}`
+                      : `第 ${chapter.ordinal} 章`}
                   </Text>
                   <TextInput
                     style={[styles.input, { backgroundColor: theme.colors.background, color: theme.colors.textPrimary }]}
@@ -376,7 +506,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             </Section>
             <View style={styles.row}>
               <Button
-                label={store.loading ? '保存中…' : '开始批量写作'}
+                label={store.loading ? '保存中…' : isContinuation ? '开始批量续写' : '开始批量写作'}
                 icon={Play}
                 onPress={handleStart}
                 disabled={store.loading || store.reconciling}
@@ -390,6 +520,15 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           <RunningView
             theme={theme}
             store={store}
+            isContinuation={isContinuation}
+            displayNumberOf={
+              isContinuation && continuationAnchorInfo
+                ? ordinal =>
+                    continuationAnchorInfo.getDisplayNumber(
+                      continuationAnchorInfo.nextPosition + ordinal - 1,
+                    )
+                : undefined
+            }
             onPause={handlePause}
             onCancel={handleCancel}
             onRefresh={refresh}
@@ -400,6 +539,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           <PausedView
             theme={theme}
             store={store}
+            isContinuation={isContinuation}
             onResume={handleResume}
             onRestartLegacy={handleRestartLegacyBatch}
             onCancel={handleCancel}
@@ -439,11 +579,13 @@ function reasoningEffortLabel(value: PipelineReasoningEffort): string {
 function RunningView(props: {
   theme: any;
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
+  isContinuation?: boolean;
+  displayNumberOf?: (ordinal: number) => number;
   onPause: () => void;
   onCancel: () => void;
   onRefresh: () => void;
 }) {
-  const { theme, store } = props;
+  const { theme, store, isContinuation, displayNumberOf } = props;
   // BN-12: the "last update" label must come from the durable SQLite state
   // (batch.updatedAt / current attempt.last_progress_at), NOT a local clock
   // that ticks every 2s. The store already mirrors SQLite; we read its
@@ -461,12 +603,23 @@ function RunningView(props: {
   const current = store.items.find(i => i.ordinal === batch.currentOrdinal);
   const completed = store.items.filter(i => i.status.startsWith('succeeded'));
   // 总体进度 = 已完成章 + 当前章内阶段进度（保证运行中进度条持续移动）。
-  const stageOrder = getPipelineStageOrder(batch.pipelineMode, {
-    outlineWorkflowVersion: batch.outlineWorkflowVersion,
-    contextBudgetVersion: batch.contextBudgetVersion,
-  });
-  const stageIdx = store.lastStage
-    ? stageOrder.indexOf(store.lastStage as any)
+  const stageOrder: string[] = isContinuation
+    ? CONTINUATION_STAGE_ORDER
+    : getPipelineStageOrder(batch.pipelineMode, {
+        outlineWorkflowVersion: batch.outlineWorkflowVersion,
+        contextBudgetVersion: batch.contextBudgetVersion,
+      });
+  const stageLabel = (stage: string | null) =>
+    isContinuation
+      ? CONTINUATION_STAGE_LABELS[stage as string] || stage || ''
+      : STAGE_LABELS[stage as keyof typeof STAGE_LABELS] || stage || '';
+  const currentStage =
+    store.lastStage ||
+    (current?.errorCode === 'BATCH_CONTINUATION_STATE_SYNC_WAIT'
+      ? 'state_sync'
+      : null);
+  const stageIdx = currentStage
+    ? stageOrder.indexOf(currentStage as any)
     : -1;
   const stagePct = stageIdx >= 0 ? (stageIdx / stageOrder.length) * 100 : 0;
   const overallPct = Math.min(
@@ -516,11 +669,24 @@ function RunningView(props: {
         <Card style={styles.cardMb}>
           <Text style={[styles.bold, { color: theme.colors.textPrimary }]}>
             当前章：第 {batch.currentOrdinal}/{batch.chapterCount} 章
+            {isContinuation && displayNumberOf
+              ? ` · 第 ${displayNumberOf(batch.currentOrdinal)} 章`
+              : ''}
             {current ? ` · ${current.title}` : ''}
           </Text>
-          {store.lastStage ? (
+          {currentStage ? (
             <Text style={[styles.mt4, { color: theme.colors.accent }]}>
-              当前阶段：{STAGE_LABELS[store.lastStage as keyof typeof STAGE_LABELS] || store.lastStage}
+              当前阶段：{stageLabel(currentStage)}
+            </Text>
+          ) : null}
+          {isContinuation ? (
+            <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
+              随后：采纳 → 定稿 → 状态同步，全部完成后才进入下一章
+            </Text>
+          ) : null}
+          {current?.errorCode === 'BATCH_CONTINUATION_STATE_SYNC_WAIT' ? (
+            <Text style={[styles.mt4, { color: theme.colors.accent }]}>
+              正在同步人物状态与故事记忆…
             </Text>
           ) : null}
           {current ? (
@@ -578,12 +744,13 @@ function RunningView(props: {
 function PausedView(props: {
   theme: any;
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
+  isContinuation?: boolean;
   onResume: () => void;
   onRestartLegacy: () => void;
   onCancel: () => void;
   onViewTask?: () => void;
 }) {
-  const { theme, store } = props;
+  const { theme, store, isContinuation } = props;
   const batch = store.batch!;
   const reasonLabels: Record<string, string> = {
     paused_timeout_unknown: '结果未知',
@@ -593,24 +760,43 @@ function PausedView(props: {
     paused_project_changed: '项目章节已变化',
     paused_user: '已暂停',
   };
-  const reason = reasonLabels[batch.status] || batch.status;
+  const continuationDrift =
+    isContinuation &&
+    (batch.errorCode === 'BATCH_CONTINUATION_SOURCE_CHANGED' ||
+      batch.errorCode === 'BATCH_CONTINUATION_BOUNDARY_CHANGED' ||
+      batch.errorCode === 'BATCH_CONTINUATION_CANON_CHANGED' ||
+      batch.status === 'paused_project_changed');
+  const reason = isContinuation
+    ? CONTINUATION_PAUSE_REASONS[batch.errorCode || ''] ||
+      reasonLabels[batch.status] ||
+      batch.status
+    : reasonLabels[batch.status] || batch.status;
   const legacyWorkflow =
+    !isContinuation &&
     Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION;
   const actions: Array<[string, () => void]> = [];
   if (legacyWorkflow) {
     actions.push(['按新版继续剩余章节', props.onRestartLegacy]);
+  } else if (isContinuation) {
+    if (!continuationDrift) {
+      actions.push(['确认后继续', props.onResume]);
+    }
   } else if (batch.status !== 'paused_project_changed') {
     actions.push(['确认后继续', props.onResume]);
   }
-  if (!legacyWorkflow && batch.status === 'paused_account_quota') {
+  if (!legacyWorkflow && !isContinuation && batch.status === 'paused_account_quota') {
     actions.push(['更换模型后继续', props.onResume]);
   }
-  if (!legacyWorkflow && batch.status === 'paused_context_budget') {
+  if (!legacyWorkflow && !isContinuation && batch.status === 'paused_context_budget') {
     actions.push(['重新编译后继续', props.onResume]);
   }
   // F2-07: 结果未知（network_error 等）时提供直达当前章流水线结果页的
   // 入口，用户可先查看失败详情/已成功阶段，再决定继续方式。
-  if (batch.status === 'paused_timeout_unknown' && props.onViewTask) {
+  if (
+    !isContinuation &&
+    batch.status === 'paused_timeout_unknown' &&
+    props.onViewTask
+  ) {
     actions.push(['查看任务详情', props.onViewTask]);
   }
   actions.push(['结束批次', props.onCancel]);
@@ -625,17 +811,32 @@ function PausedView(props: {
           {legacyWorkflow ? (
             <Text style={[styles.mt8, { color: theme.colors.warning }]}>旧版未完成任务不会继续执行；已完成章节和历史记录保留。</Text>
           ) : null}
-          {!legacyWorkflow && batch.status === 'paused_timeout_unknown' ? (
+          {isContinuation && continuationDrift ? (
+            <Text style={[styles.mt8, { color: theme.colors.warning }]}>
+              原著或 Canon 已变化，继续旧批次可能偏离最新设定；已生成章节保留。如需继续，请确认变更符合预期后在原边界下重新发起批次。
+            </Text>
+          ) : null}
+          {isContinuation && batch.errorCode === 'BATCH_CONTINUATION_FINAL_NEEDS_REVIEW' ? (
+            <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
+              可在续写工作台打开本章的续写结果人工确认；确认采用后回到这里点击「确认后继续」。
+            </Text>
+          ) : null}
+          {isContinuation && batch.errorCode === 'BATCH_CONTINUATION_CHAPTER_CONFLICT' ? (
+            <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
+              本章在生成期间被手动编辑过；继续前请先确认章节正文，批次不会静默覆盖你的修改。
+            </Text>
+          ) : null}
+          {!legacyWorkflow && !isContinuation && batch.status === 'paused_timeout_unknown' ? (
             <Text style={[styles.mt8, { color: theme.colors.warning }]}>
               提示：请求可能已在服务端执行，重新执行可能产生重复费用。
             </Text>
           ) : null}
-          {!legacyWorkflow && batch.status === 'paused_context_budget' ? (
+          {!legacyWorkflow && !isContinuation && batch.status === 'paused_context_budget' ? (
             <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
               当前章尚未调用模型；可重新弹性编译、更换更大上下文模型、降低目标字数或编辑当前章纲。
             </Text>
           ) : null}
-          {!legacyWorkflow && batch.status === 'paused_batch_budget' ? (
+          {!legacyWorkflow && !isContinuation && batch.status === 'paused_batch_budget' ? (
             <Text style={[styles.mt8, { color: theme.colors.textSecondary }]}>
               可增加预算、减少剩余章数、降低后续字数或结束批次。
             </Text>

@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { BookOpen, FileSearch, FilePlus2, Inbox, Network, Sparkles, Trash2 } from 'lucide-react-native';
+import { BookOpen, FileSearch, FilePlus2, Inbox, Layers, Network, Sparkles, Trash2 } from 'lucide-react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Button, Card, EmptyState, Header, Screen, spacing } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
@@ -65,7 +65,33 @@ export const ContinuationWorkspaceScreen: React.FC = () => {
   };
   if (!currentProject) return <Screen><Header title="原著续写" /><EmptyState title="请先选择续写项目" description="在作品库中创建或选择一个原著续写项目。" /></Screen>;
   return <Screen>
-    <Header testID="continuation-workspace" title={currentProject.name} subtitle="原著续写工作台" action={<Button testID="continuation-add-chapter" label="新建续写章节" icon={FilePlus2} compact onPress={() => add().catch(() => {})} />} />
+    <Header
+      testID="continuation-workspace"
+      title={currentProject.name}
+      subtitle="原著续写工作台"
+      action={
+        <View style={styles.headerActions}>
+          <Button
+            testID="continuation-batch-entry"
+            label="一键续写 N 章"
+            icon={Layers}
+            compact
+            onPress={() =>
+              navigation.navigate('MultiChapterBatch', {
+                writingMode: 'continuation',
+              })
+            }
+          />
+          <Button
+            testID="continuation-add-chapter"
+            label="新建续写章节"
+            icon={FilePlus2}
+            compact
+            onPress={() => add().catch(() => {})}
+          />
+        </View>
+      }
+    />
     <View style={styles.summary}>
       <Card style={styles.summaryCard}>
         <TouchableOpacity onPress={() => navigation.navigate('Resources')} accessibilityRole="button" accessibilityLabel="打开原著与 Canon 资料" style={styles.summaryItem}>
@@ -220,6 +246,7 @@ const ContinuationChapterList: React.FC<{
 
 const styles = StyleSheet.create({
   summary: { padding: spacing.lg },
+  headerActions: { flexDirection: 'row', gap: spacing.xs, alignItems: 'center' },
   summaryCard: { paddingVertical: 0 },
   summaryItem: {
     minHeight: 52,

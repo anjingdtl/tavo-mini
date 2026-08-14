@@ -1,0 +1,43 @@
+appId: com.shinewriter
+---
+# E2E-CB-00 (smoke): the continuation workspace exposes the 一键续写 N 章
+# entry and the batch create view renders in continuation mode. No LLM calls:
+# the flow stops before 生成续写计划 so it is safe to run at any time.
+- launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
+- extendedWaitUntil:
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-projects
+- tapOn:
+    id: project-mode-continuation
+- tapOn:
+    id: new-project-button
+- tapOn:
+    id: new-project-name
+- inputText: 'E2E_CONT_BATCH'
+- tapOn: '原著续写'
+- tapOn:
+    id: create-project-button
+- tapOn:
+    id: tab-editor
+- extendedWaitUntil:
+    visible: '原著续写工作台'
+    timeout: 10000
+- assertVisible:
+    id: continuation-batch-entry
+- tapOn:
+    id: continuation-batch-entry
+- extendedWaitUntil:
+    visible: '一键续写 N 章'
+    timeout: 10000
+- assertVisible: '本批续写目标'
+- assertVisible: '生成章数 (1~10)'
+- assertVisible: '生成续写计划'
+- tapOn: '返回'

@@ -39,6 +39,7 @@ jest.mock('../src/store/projectStore', () => ({
 const mockGoBack = jest.fn();
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ goBack: (...args: any[]) => mockGoBack(...args) }),
+  useRoute: () => ({ params: undefined }),
 }));
 
 const mockLoadActive = jest.fn();

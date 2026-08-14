@@ -52,6 +52,7 @@ import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   shouldIncludeBriefCheckpoint,
 } from '../pipeline/outlineWorkflowVersion';
+import { executeContinuationBatchStep } from './continuationBatchAdapter';
 
 export interface BatchProgressInfo {
   batchId: string;
@@ -240,6 +241,24 @@ export async function reconcileMultiChapterBatch(
         );
       }
       const items = await getBatchItems(batchId);
+      // Mode split (doc §4.3 / §46): continuation batches execute through the
+      // dedicated Continuation V5 adapter; the outline branch below stays
+      // exactly as before (never runChapterPipeline for continuation).
+      if (batch.writingMode === 'continuation') {
+        const handled = await executeContinuationBatchStep({
+          batchId,
+          batch,
+          items,
+          options: {
+            owner: options.owner,
+            leaseMs: options.leaseMs,
+            onProgress: options.onProgress,
+          },
+        });
+        if (handled === 'stop') return;
+        if (handled === 'break') break;
+        continue;
+      }
       const currentItem = items.find(i => i.ordinal === batch.currentOrdinal);
       const taskStatuses = await loadTaskStatuses(currentItem);
       const taskVersions = await loadTaskVersions(currentItem);

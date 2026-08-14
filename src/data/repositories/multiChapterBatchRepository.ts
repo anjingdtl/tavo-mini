@@ -21,6 +21,7 @@ import type {
   MultiChapterBatchStatus,
   MultiChapterBatchItemStatus,
   BatchItemCompletionQuality,
+  MultiChapterWritingMode,
 } from '../../types/multiChapterBatch';
 import type { PipelineReasoningEffort } from '../../types/pipeline';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
@@ -71,6 +72,12 @@ export interface MultiChapterBatchRow {
    */
   outlineWorkflowVersion: number;
   contextBudgetVersion: number;
+  /** Schema 53 writing mode; pre-53 rows read as 'outline'. */
+  writingMode: MultiChapterWritingMode;
+  /** Serialized ContinuationBatchAnchorV1 (continuation mode only). */
+  continuationAnchorJson: string | null;
+  /** Serialized ContinuationBatchExecutionPolicyV1 (continuation mode only). */
+  continuationExecutionPolicyJson: string | null;
   pauseReason: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -96,6 +103,12 @@ export interface MultiChapterBatchItemRow {
   status: MultiChapterBatchItemStatus;
   chapterId: number | null;
   activePipelineTaskId: string | null;
+  /**
+   * Schema 53 continuation-mode binding. Mutually exclusive with
+   * activePipelineTaskId by construction: continuation items never write
+   * pipeline task ids and vice versa (doc §6.2).
+   */
+  activeContinuationRunId: string | null;
   activeRunNo: number;
   completionQuality: BatchItemCompletionQuality | null;
   adoptionFingerprint: string | null;
@@ -242,6 +255,11 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     usedOutputTokens: Number(row.used_output_tokens ?? 0),
     outlineWorkflowVersion: Number(row.outline_workflow_version ?? 1),
     contextBudgetVersion: Number(row.context_budget_version ?? 1),
+    writingMode:
+      row.writing_mode === 'continuation' ? 'continuation' : 'outline',
+    continuationAnchorJson: row.continuation_anchor_json ?? null,
+    continuationExecutionPolicyJson:
+      row.continuation_execution_policy_json ?? null,
     pauseReason: row.pause_reason ?? null,
     errorCode: row.error_code ?? null,
     errorMessage: row.error_message ?? null,
@@ -269,6 +287,7 @@ function mapBatchItemRow(row: Row): MultiChapterBatchItemRow {
     status: row.status as MultiChapterBatchItemStatus,
     chapterId: row.chapter_id != null ? Number(row.chapter_id) : null,
     activePipelineTaskId: row.active_pipeline_task_id ?? null,
+    activeContinuationRunId: row.active_continuation_run_id ?? null,
     activeRunNo: Number(row.active_run_no ?? 0),
     completionQuality: row.completion_quality as BatchItemCompletionQuality | null,
     adoptionFingerprint: row.adoption_fingerprint ?? null,
@@ -325,6 +344,10 @@ export interface CreateBatchInput {
   contextBudgetVersion?: number;
   /** Frozen V3 policy copied to every child task at first execution. */
   contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
+  /** Schema 53: continuation mode + frozen anchor/policy JSON. */
+  writingMode?: MultiChapterWritingMode;
+  continuationAnchorJson?: string | null;
+  continuationExecutionPolicyJson?: string | null;
   createdAt?: number;
 }
 
@@ -347,9 +370,10 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
        target_words_per_chapter, pipeline_mode, reasoning_effort,
        max_llm_calls, max_input_tokens, max_output_tokens,
        outline_workflow_version, context_budget_version,
+       writing_mode, continuation_anchor_json, continuation_execution_policy_json,
        planner_request_json,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -363,6 +387,13 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.budget?.maxOutputTokens ?? null,
       input.outlineWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
       contextBudgetVersion,
+      input.writingMode ?? 'outline',
+      input.writingMode === 'continuation'
+        ? (input.continuationAnchorJson ?? null)
+        : null,
+      input.writingMode === 'continuation'
+        ? (input.continuationExecutionPolicyJson ?? null)
+        : null,
       frozenPolicy ? encodeFrozenBatchPlannerRequest(null, frozenPolicy) : null,
       now,
       now,
@@ -408,6 +439,8 @@ export async function updateBatchStatus(
     plannerRequestFingerprint?: string | null;
     startPosition?: number | null;
     expectedTailChapterId?: number | null;
+    continuationAnchorJson?: string | null;
+    continuationExecutionPolicyJson?: string | null;
   },
 ): Promise<void> {
   const sets = ['status = ?', 'updated_at = ?'];
@@ -442,6 +475,11 @@ export async function updateBatchStatus(
       ['plannerRequestFingerprint', 'planner_request_fingerprint'],
       ['startPosition', 'start_position'],
       ['expectedTailChapterId', 'expected_tail_chapter_id'],
+      ['continuationAnchorJson', 'continuation_anchor_json'],
+      [
+        'continuationExecutionPolicyJson',
+        'continuation_execution_policy_json',
+      ],
     ];
     for (const [key, column] of map) {
       if (fields[key] !== undefined) {
@@ -712,6 +750,7 @@ export async function updateBatchItem(
     targetWords: number;
     chapterId: number | null;
     activePipelineTaskId: string | null;
+    activeContinuationRunId: string | null;
     activeRunNo: number;
     completionQuality: BatchItemCompletionQuality | null;
     adoptionFingerprint: string | null;
@@ -733,6 +772,7 @@ export async function updateBatchItem(
     targetWords: 'target_words',
     chapterId: 'chapter_id',
     activePipelineTaskId: 'active_pipeline_task_id',
+    activeContinuationRunId: 'active_continuation_run_id',
     activeRunNo: 'active_run_no',
     completionQuality: 'completion_quality',
     adoptionFingerprint: 'adoption_fingerprint',
@@ -1087,9 +1127,18 @@ export async function commitBatchItemAdoption(params: {
   completionQuality: BatchItemCompletionQuality;
   adoptionFingerprint: string;
   adoptedRevisionId: number | null;
+  options?: {
+    /**
+     * Continuation-mode first commit writes the fingerprint in the same
+     * UPDATE (the atomic outline path does the same via folded statements):
+     * the batch lease guarantees a single writer, so matching a fingerprint
+     * that does not exist yet in the WHERE clause would always fail.
+     */
+    enforceFingerprintMatch?: boolean;
+  };
 }): Promise<void> {
   const statements = await buildCommitBatchItemAdoptionStatements(params, {
-    enforceFingerprintMatch: true,
+    enforceFingerprintMatch: params.options?.enforceFingerprintMatch ?? true,
   });
   if (statements.length === 0) return; // idempotent no-op
   await executeTransaction(await openDatabase(), statements, {
@@ -1225,4 +1274,41 @@ export async function buildCommitBatchItemAdoptionStatements(
       ],
     },
   ];
+}
+
+/**
+ * 4. Continuation-mode run binding (Schema 53). CAS-style UPDATE with both
+ * namespace guards: the item must not already carry a continuation run AND
+ * must never carry a pipeline task id (doc §6.2 — the two execution systems
+ * keep disjoint identifier namespaces). Returns false when the row was
+ * already bound (concurrent writer / crash recovery re-entry) — the caller
+ * re-reads and follows the existing binding instead of starting a new run.
+ */
+export async function bindContinuationRunForItem(params: {
+  batchId: string;
+  ordinal: number;
+  chapterId: number;
+  continuationRunId: string;
+  status?: MultiChapterBatchItemStatus;
+}): Promise<boolean> {
+  const now = Date.now();
+  const result = await execute(
+    await openDatabase(),
+    `UPDATE multi_chapter_batch_items
+     SET active_continuation_run_id = ?,
+         status = ?,
+         updated_at = ?
+     WHERE batch_id = ? AND ordinal = ? AND chapter_id = ?
+       AND active_continuation_run_id IS NULL
+       AND active_pipeline_task_id IS NULL`,
+    [
+      params.continuationRunId,
+      params.status ?? 'running_pipeline',
+      now,
+      params.batchId,
+      params.ordinal,
+      params.chapterId,
+    ],
+  );
+  return (result.rowsAffected ?? 0) > 0;
 }

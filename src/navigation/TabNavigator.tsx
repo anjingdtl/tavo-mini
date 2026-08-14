@@ -69,7 +69,9 @@ export type EditorStackParamList = {
     projectId: number;
   };
   ContextPreview: { chapterId: number };
-  MultiChapterBatch: undefined;
+  /** Route mode decides the CREATION mode only; the persisted batch's
+   * writingMode is authoritative once a batch exists (doc §29). */
+  MultiChapterBatch: { writingMode?: 'outline' | 'continuation' } | undefined;
   DraftPreview: {
     targetType: 'chapter' | 'freeform';
     targetId: number;
