@@ -9,8 +9,8 @@
 | 锚点 | 值 |
 | --- | --- |
 | 前一轮 Final Code HEAD | `b7321c3dd6ad8bc19b80b80bbb07581c1370afb2` |
-| 本轮工作树起点 | `03e2d11a8a30491ab35ffb9553c6c19471825105` |
-| GitHub Actions Run ID | 见本文件后续 GHA 节；不回写自己的 SHA |
+| 本轮 Code HEAD | `8cd67524ccbfec5f964549b62d1012159fe9514b` |
+| GitHub Actions Run ID | `31788851482` |
 
 第三期协议 Seal 仍以 `ShineWriter_第三期_Final-Seal_验收证据_20260814.md` 为准。本文只关闭 UX-01 / UX-02 / UX-03。
 
@@ -74,4 +74,4 @@ APK：`dist/apk/debug/ShineWriter-V2.11.51-debug.apk`（56.64 MB，59393738 byte
 | lint / typecheck / test:ci / verify | GO | `npm run verify` 退出码 0；414 suites passed / 3264 tests passed / 4 suites 9 tests skipped |
 | Android Debug + install -r | GO | 升级安装成功，数据与 LLM Key 保留 |
 | Maestro 01–14 | GO | 见上表 |
-| GitHub Actions | 待 push 后回填 Run ID | workflow：javascript / android-debug / migration-matrix |
+| GitHub Actions | GO | Run `31788851482` success：JavaScript validation、Android Debug build、Migration matrix。https://github.com/anjingdtl/tavo-mini/actions/runs/31788851482 |
