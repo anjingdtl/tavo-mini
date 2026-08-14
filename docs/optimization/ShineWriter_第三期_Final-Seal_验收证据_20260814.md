@@ -1,7 +1,7 @@
 # ShineWriter 第三期 Final Seal
 
 日期：2026-08-14  
-最终 HEAD：`dd7a70bf66ca91f8de34ddc72b1b043b96252d3e`
+最终 HEAD：`87eaf8ef81c191849854a74cf2f6e362e1ec04c4`
 产品版本：未升级，V2.11.51 仅沿用当前工作区版本元数据。
 
 ## Seal 判定
