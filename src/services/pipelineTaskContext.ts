@@ -31,6 +31,7 @@ import {
   type PipelineReasoningTier,
 } from './pipeline/reasoningPolicy';
 import type { ChatMessage } from './llm';
+import type { GenerationTraceRecordV1 } from '../types/generationTrace';
 import { OutlineContextError } from './outlineContextBuilder';
 import { isCurrentOutlinePipelineContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import { sha256Hex } from './continuation/hashUtils';
@@ -55,6 +56,12 @@ export interface PersistedPipelineTaskContextV2 {
    * Required for safe audit rebuild; missing → cannot recover full audits.
    */
   frozenAuditCandidates?: FrozenAuditCandidates;
+  /**
+   * Stability Phase 1 — generation trace identity. Frozen once with the
+   * envelope; resume reuses the id instead of minting a new one. Absent on
+   * historical tasks (tolerated, never blocks generation).
+   */
+  trace?: GenerationTraceRecordV1;
   createdAt: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -79,8 +86,29 @@ export interface ParsedPipelineTaskContext {
   execution: PipelineExecutionSnapshot | null;
   frozenDraftRequest: FrozenDraftRequest | null;
   frozenAuditCandidates: FrozenAuditCandidates | null;
+  /** Stability Phase 1 trace identity; null on pre-trace historical tasks. */
+  trace: GenerationTraceRecordV1 | null;
   createdAt: number;
   auditFellBack?: boolean;
+}
+
+/**
+ * Tolerant trace-record parse: absence and malformed values degrade to null —
+ * trace telemetry must NEVER block generation or resume (Stability Plan §6).
+ */
+function parseTraceRecord(raw: unknown): GenerationTraceRecordV1 | null {
+  if (!isPlainObject(raw)) return null;
+  const generationTraceId = String(raw.generationTraceId ?? '');
+  const createdAt = Number(raw.createdAt);
+  if (
+    Number(raw.version) !== 1 ||
+    !generationTraceId ||
+    !Number.isFinite(createdAt) ||
+    createdAt <= 0
+  ) {
+    return null;
+  }
+  return { version: 1, generationTraceId, createdAt };
 }
 
 export function computeFrozenDraftRequestFingerprint(
@@ -1271,6 +1299,7 @@ export function parsePipelineTaskContextV1(
     execution: null,
     frozenDraftRequest: null,
     frozenAuditCandidates: null,
+    trace: null,
     createdAt: draftContext.createdAt ?? Date.now(),
   };
 }
@@ -1321,6 +1350,7 @@ export function parsePipelineTaskContextV2(
     frozenAuditCandidates: parseFrozenAuditCandidates(
       raw.frozenAuditCandidates,
     ),
+    trace: parseTraceRecord(raw.trace),
     createdAt,
     auditFellBack: Boolean(raw.auditFellBack),
   };
@@ -1438,6 +1468,7 @@ export function serializePipelineTaskContext(params: {
   execution: PipelineExecutionSnapshot;
   frozenDraftRequest?: FrozenDraftRequest | null;
   frozenAuditCandidates?: FrozenAuditCandidates | null;
+  trace?: GenerationTraceRecordV1 | null;
   createdAt?: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -1502,6 +1533,9 @@ export function serializePipelineTaskContext(params: {
   }
   if (params.frozenAuditCandidates) {
     envelope.frozenAuditCandidates = params.frozenAuditCandidates;
+  }
+  if (params.trace) {
+    envelope.trace = params.trace;
   }
   if (params.draftCompletedAt != null) {
     envelope.draftCompletedAt = params.draftCompletedAt;

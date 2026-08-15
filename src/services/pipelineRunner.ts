@@ -24,6 +24,7 @@ import {
   reconcilePipelineTask,
   type StageInfo as ReconcileStageInfo,
 } from './pipeline/reconcile';
+import { createGenerationTraceId } from './pipeline/generationTrace';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import type {
   PipelineMode,
@@ -86,6 +87,11 @@ export interface PipelineRunOptions {
    * BatchBudgetExceededError and the batch reconciler pauses the item.
    */
   batchBudgetGate?: { batchId: string };
+  /**
+   * Stability Phase 1 — explicit generation trace id (tests / batch
+   * correlation). runChapterPipeline mints one when omitted.
+   */
+  generationTraceId?: string;
 }
 
 export function cancelPipeline(taskId: string): void {
@@ -247,6 +253,9 @@ export async function runChapterPipeline(
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,
+      // Stability Phase 1 — trace identity for a run that has not frozen
+      // yet. Post-freeze runs keep the id stored inside the envelope.
+      generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
     });
   } finally {
     releaseTaskAbort(taskId);
@@ -380,6 +389,9 @@ export async function resumePipeline(
       batchBudgetGate: options.batchBudgetGate,
       // CL-10: call-level foreground ownership (never module-global).
       foregroundOwner: options.foregroundOwner,
+      // Stability Phase 1 — trace identity for a run that has not frozen
+      // yet. Post-freeze runs keep the id stored inside the envelope.
+      generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
     });
   } finally {
     releaseTaskAbort(taskId);

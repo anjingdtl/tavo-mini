@@ -61,6 +61,7 @@ import { saveDraft } from '../draftService';
 import type { PipelineFactCheckReportV2 } from '../../types/pipelineRevision';
 import type { PipelineReviewReportV2 } from '../../types/pipelineRevision';
 import { sha256Hex } from '../continuation/hashUtils';
+import { createGenerationTraceId } from './generationTrace';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import {
   getPipelineStageOrder,
@@ -681,6 +682,12 @@ export interface ReconcileOptions {
    * Defaults to 'task'.
    */
   foregroundOwner?: 'task' | 'batch';
+  /**
+   * Stability Phase 1 — generation trace identity. Created by the public
+   * entry (runChapterPipeline) and frozen into the persisted envelope at
+   * first freeze; purely observational, never influences generation.
+   */
+  generationTraceId?: string;
 }
 
 /**
@@ -2293,6 +2300,11 @@ async function actionPersistInitialSnapshot(
       execution,
       frozenDraftRequest,
       frozenAuditCandidates,
+      trace: {
+        version: 1,
+        generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
+        createdAt: Date.now(),
+      },
     }),
   );
   void abortSignal;
@@ -2601,6 +2613,7 @@ async function actionBuildAuditContext(
       execution: runtime.parsed.execution,
       frozenDraftRequest: runtime.parsed.frozenDraftRequest,
       frozenAuditCandidates: runtime.parsed.frozenAuditCandidates,
+      trace: runtime.parsed.trace,
       draftCompletedAt: Date.now(),
       auditContextCreatedAt: Date.now(),
       auditFellBack,
