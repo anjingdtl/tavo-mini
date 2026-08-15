@@ -92,6 +92,15 @@ interface PipelineTaskState {
       pipelineContextHash: string;
     },
   ) => void;
+  /** Sync a context written by a narrow repository update without re-saving a stale full row. */
+  syncTaskPipelineContext: (
+    taskId: string,
+    snapshot: {
+      pipelineContextJson: string;
+      pipelineContextVersion: number;
+      pipelineContextHash: string;
+    },
+  ) => void;
   /**
    * Critical path: await SQLite write of the frozen pipeline context, then
    * sync Zustand memory. Throws OutlineContextError on failure so the runner
@@ -661,6 +670,23 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       if (task) persistTask(task);
       return { tasks };
     });
+  },
+
+  syncTaskPipelineContext: (taskId, snapshot) => {
+    const now = Date.now();
+    set(state => ({
+      tasks: state.tasks.map(t =>
+        t.id === taskId
+          ? {
+              ...t,
+              pipelineContextJson: snapshot.pipelineContextJson,
+              pipelineContextVersion: snapshot.pipelineContextVersion,
+              pipelineContextHash: snapshot.pipelineContextHash,
+              updatedAt: now,
+            }
+          : t,
+      ),
+    }));
   },
 
   persistTaskPipelineContext: async (taskId, snapshot) => {

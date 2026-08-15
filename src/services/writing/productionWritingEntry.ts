@@ -5,6 +5,7 @@ import {
   updatePipelineTaskContext,
 } from '../../data/repositories/pipelineTaskRepository';
 import { sha256Hex } from '../continuation/hashUtils';
+import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import {
   runChapterPipeline,
   runFreeformPipeline,
@@ -252,6 +253,14 @@ export async function persistWritingKernelTraceForTask(
     json,
     version: Number(task.pipelineContextVersion || envelope.version || 4),
     hash: sha256Hex(json).slice(0, 32),
+  });
+  // The repository update is intentionally narrow. Keep the in-memory task
+  // projection in sync as well, otherwise a later resolve/adoption save would
+  // re-persist its stale full-row snapshot and erase post-Freeze events.
+  usePipelineTaskStore.getState().syncTaskPipelineContext(taskId, {
+    pipelineContextJson: json,
+    pipelineContextVersion: Number(task.pipelineContextVersion || envelope.version || 4),
+    pipelineContextHash: sha256Hex(json).slice(0, 32),
   });
 }
 

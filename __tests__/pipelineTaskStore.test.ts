@@ -1,4 +1,5 @@
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';
+import * as db from '../src/services/database';
 
 jest.mock('../src/services/database', () => ({
   getAllPipelineTasks: jest.fn(async () => []),
@@ -249,5 +250,53 @@ describe('pipelineTaskStore.setTaskFinalText', () => {
     expect(task.status).toBe('completed');
     expect(task.error).toBeNull();
     expect(task.finalText).toBe('final text');
+  });
+});
+
+describe('pipelineTaskStore.syncTaskPipelineContext', () => {
+  beforeEach(() => {
+    usePipelineTaskStore.setState({ tasks: [], _loaded: true });
+    jest.clearAllMocks();
+  });
+
+  it('keeps a post-Freeze trace when resolveTask later persists the task projection', async () => {
+    usePipelineTaskStore.setState({
+      tasks: [{
+        id: 'trace-task',
+        targetType: 'chapter',
+        targetId: 1,
+        status: 'completed',
+        stageResults: [],
+        finalText: 'final text',
+        error: null,
+        pipelineContextJson: '{"writingKernelTrace":{"events":[{"stage":"freeze"}]}}',
+        pipelineContextVersion: 4,
+        pipelineContextHash: 'old-hash',
+        createdAt: 1,
+        updatedAt: 1,
+        resolvedAt: null,
+      } as any],
+    });
+
+    usePipelineTaskStore.getState().syncTaskPipelineContext('trace-task', {
+      pipelineContextJson:
+        '{"writingKernelTrace":{"events":[{"stage":"freeze"},{"stage":"persist"}]}}',
+      pipelineContextVersion: 4,
+      pipelineContextHash: 'new-hash',
+    });
+
+    expect(usePipelineTaskStore.getState().tasks[0].pipelineContextHash).toBe(
+      'new-hash',
+    );
+
+    usePipelineTaskStore.getState().resolveTask('trace-task', 'accept');
+    await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const save = db.savePipelineTask as jest.Mock;
+    expect(save).toHaveBeenCalled();
+    expect(save.mock.calls.at(-1)?.[0].pipelineContextJson).toContain(
+      '"stage":"persist"',
+    );
   });
 });
