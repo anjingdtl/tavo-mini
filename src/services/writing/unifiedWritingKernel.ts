@@ -14,6 +14,8 @@ export interface WritingKernelExecutionInput {
 
 export interface WritingKernelExecution<TResult = unknown> {
   execute: (input: WritingKernelExecutionInput) => Promise<TResult>;
+  /** Persist the final trace after the post-Freeze driver completes. */
+  persistTrace?: (trace: WritingKernelTrace) => Promise<void>;
 }
 
 export interface WritingKernelResult<TResult = unknown> {
@@ -62,5 +64,8 @@ export async function runWritingKernel<TResult>(input: {
     trace,
     emitStage,
   });
+  if (input.execution.persistTrace) {
+    await input.execution.persistTrace(trace);
+  }
   return { result, request: input.request, frozenContext, trace };
 }

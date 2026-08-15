@@ -1,6 +1,11 @@
 import type { Chapter } from '../../types/novel';
 import { v4 } from '../uuidBridge';
 import {
+  getPipelineTaskById,
+  updatePipelineTaskContext,
+} from '../../data/repositories/pipelineTaskRepository';
+import { sha256Hex } from '../continuation/hashUtils';
+import {
   runChapterPipeline,
   runFreeformPipeline,
   resumePipeline,
@@ -24,6 +29,7 @@ import {
   runWritingKernel,
   type WritingKernelExecution,
 } from './unifiedWritingKernel';
+import type { WritingKernelTrace } from './contracts/frozenWritingContext';
 
 export type { StageInfo } from '../pipelineRunner';
 
@@ -112,6 +118,93 @@ function makeContinuationSourceBundle(input: StartContinuationRunInput): Writing
     preferred: [],
     optional: [],
   };
+}
+
+function mergeKernelTrace(
+  existing: WritingKernelTrace,
+  completed: WritingKernelTrace,
+): WritingKernelTrace {
+  if (existing.sourceFingerprint !== completed.sourceFingerprint) {
+    throw new Error(
+      `Writing Kernel source fingerprint changed before trace persistence: ${existing.sourceFingerprint} != ${completed.sourceFingerprint}`,
+    );
+  }
+  const seen = new Set(
+    existing.events.map(event => JSON.stringify(event)),
+  );
+  const events = [...existing.events];
+  for (const event of completed.events) {
+    const key = JSON.stringify(event);
+    if (!seen.has(key)) {
+      seen.add(key);
+      events.push(event);
+    }
+  }
+  return {
+    ...existing,
+    events,
+    silentContextLossCount: Math.max(
+      existing.silentContextLossCount,
+      completed.silentContextLossCount,
+    ),
+    unexpectedLiveReadCount: Math.max(
+      existing.unexpectedLiveReadCount,
+      completed.unexpectedLiveReadCount,
+    ),
+    fatalCount: Math.max(existing.fatalCount, completed.fatalCount),
+    falseAppliedRequirementCount: Math.max(
+      existing.falseAppliedRequirementCount,
+      completed.falseAppliedRequirementCount,
+    ),
+  };
+}
+
+/**
+ * The durable pipeline owns the first Freeze snapshot. Once its post-Freeze
+ * driver returns, append the Kernel events to that exact snapshot instead of
+ * replacing its real context-plan/allocation fingerprints with a facade-only
+ * request. A failed write is fatal: a completed run without its trace is not
+ * an acceptable green result.
+ */
+export async function persistWritingKernelTraceForTask(
+  taskId: string,
+  completedTrace: WritingKernelTrace,
+): Promise<void> {
+  const task = await getPipelineTaskById(taskId);
+  if (!task?.pipelineContextJson) {
+    throw new Error(
+      `Writing Kernel trace persistence blocked: task ${taskId} has no context snapshot`,
+    );
+  }
+  let envelope: any;
+  try {
+    envelope = JSON.parse(task.pipelineContextJson);
+  } catch {
+    throw new Error(
+      `Writing Kernel trace persistence blocked: task ${taskId} context is invalid JSON`,
+    );
+  }
+  let updatedContexts = 0;
+  for (const contextKey of ['draftContext', 'auditContext'] as const) {
+    const context = envelope[contextKey];
+    if (!context || typeof context !== 'object') continue;
+    const existing = context.writingKernelTrace as WritingKernelTrace | undefined;
+    context.writingKernelTrace = existing
+      ? mergeKernelTrace(existing, completedTrace)
+      : completedTrace;
+    updatedContexts += 1;
+  }
+  if (updatedContexts === 0) {
+    throw new Error(
+      `Writing Kernel trace persistence blocked: task ${taskId} has no draft/audit context`,
+    );
+  }
+  const json = JSON.stringify(envelope);
+  await updatePipelineTaskContext(taskId, {
+    json,
+    version: Number(task.pipelineContextVersion || envelope.version || 4),
+    hash: sha256Hex(json).slice(0, 32),
+  });
 }
 
 function makeOutlineRequest(input: {
@@ -208,6 +301,7 @@ export function createOutlineWritingKernelExecution(input: {
           emitStage(stage, 'completed');
         }
       },
+      persistTrace: trace => persistWritingKernelTraceForTask(input.taskId, trace),
     },
   };
 }
@@ -234,6 +328,7 @@ export function createOutlineResumeWritingKernelExecution(input: {
         });
         emitStage('postWritingUpdate', 'completed');
       },
+      persistTrace: trace => persistWritingKernelTraceForTask(input.taskId, trace),
     },
   };
 }
@@ -278,6 +373,7 @@ export function createFreeformWritingKernelExecution(input: {
         emitStage('persist', 'completed');
         emitStage('postWritingUpdate', 'completed');
       },
+      persistTrace: trace => persistWritingKernelTraceForTask(input.taskId, trace),
     },
   };
 }

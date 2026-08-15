@@ -56,6 +56,7 @@ describe('Writing Kernel Reconstruction — Context / Replay / Golden', () => {
 
   test('runWritingKernel records one pre-freeze chain and delegates a frozen contract', async () => {
     const request = requestForFixture(WRITING_GOLDEN_FIXTURES[0]);
+    let persistedStages: string[] | null = null;
     const result = await runWritingKernel({
       request,
       execution: {
@@ -72,6 +73,9 @@ describe('Writing Kernel Reconstruction — Context / Replay / Golden', () => {
           emitStage('postWritingUpdate', 'completed');
           return 'persisted';
         },
+        persistTrace: async trace => {
+          persistedStages = trace.events.map(event => event.stage);
+        },
       },
     });
     expect(result.result).toBe('persisted');
@@ -85,5 +89,7 @@ describe('Writing Kernel Reconstruction — Context / Replay / Golden', () => {
     ]);
     expect(result.trace.silentContextLossCount).toBe(0);
     expect(result.trace.unexpectedLiveReadCount).toBe(0);
+    expect(persistedStages).toEqual(result.trace.events.map(event => event.stage));
+    expect(persistedStages).toContain('postWritingUpdate');
   });
 });

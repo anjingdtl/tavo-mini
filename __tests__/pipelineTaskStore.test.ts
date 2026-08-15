@@ -225,4 +225,29 @@ describe('pipelineTaskStore.setTaskFinalText', () => {
     expect(task.status).toBe('completed');
     expect(task.finalText).toBe('final text');
   });
+
+  it('clears a stale retry error when a task completes successfully', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [{
+        id: 'retry-ok-1',
+        targetType: 'chapter',
+        targetId: 1,
+        status: 'proofing',
+        stageResults: [],
+        finalText: null,
+        error: '请求可能已执行但结果未知，请确认后重新执行或更换模型',
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: null,
+      } as any],
+    });
+
+    usePipelineTaskStore.getState().completeTask('retry-ok-1', 'final text');
+
+    const task = usePipelineTaskStore.getState().tasks[0];
+    expect(task.status).toBe('completed');
+    expect(task.error).toBeNull();
+    expect(task.finalText).toBe('final text');
+  });
 });

@@ -463,6 +463,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         ...existing,
         status: 'completed',
         finalText,
+        error: null,
         updatedAt: Date.now(),
       };
       set(state => ({
@@ -480,6 +481,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       ...existing,
       status: 'completed',
       finalText,
+      error: null,
       updatedAt: Date.now(),
     };
     await db.savePipelineTask({
