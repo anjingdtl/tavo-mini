@@ -103,6 +103,7 @@ import type {
 } from './continuationGenerationRunner';
 import { activeContinuationControllers } from './continuationRunControllers';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
+import { adaptContinuationWritingSources } from '../../writing/scenario/continuationWritingAdapter';
 
 interface V5PipelineOptions {
   callStage?: StageLlmCaller;
@@ -2302,6 +2303,12 @@ export async function startContinuationV5Run(
     frozenModelConfigs: resolved.frozenModelConfigs,
     lengthPolicy: CONTINUATION_V5_LENGTH_POLICY,
   });
+  const sourceAdapter = adaptContinuationWritingSources({
+    snapshot,
+    userInstruction: input.userInstruction,
+  });
+  snapshot.writingSourceTrace = sourceAdapter.trace;
+  trace.writingSourceTrace = sourceAdapter.trace;
   const runId = newContinuationRunId();
   const unifiedTrace = createContinuationGenerationTrace({
     snapshot,

@@ -14,6 +14,7 @@ import type { ContinuationStageBudgets } from './continuationContextBudget';
 import type { ContinuationV4StageBudget } from './continuationV4Budget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
+import type { WritingSourceTrace } from '../../writing/contracts/writingSource';
 
 export type ContinuationStageName =
   | 'context'
@@ -1186,6 +1187,8 @@ export interface ContinuationContextSnapshot {
   settingsSnapshot: ContinuationGenerationSettingsSnapshot;
   bundles: ContinuationContextBundles;
   createdAt: string;
+  /** Phase I: unified pre-kernel source trace. */
+  writingSourceTrace?: WritingSourceTrace;
 }
 
 /**
@@ -1276,6 +1279,8 @@ export interface ContinuationContextTrace {
   generationTraceId?: string;
   batchTraceId?: string | null;
   generationTrace?: ContinuationGenerationTraceV2;
+  /** Phase I: normalized pre-kernel source boundary and fingerprint. */
+  writingSourceTrace?: WritingSourceTrace;
 }
 
 export interface StoryBeat {

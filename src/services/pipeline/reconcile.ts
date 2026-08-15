@@ -194,6 +194,7 @@ import {
 import { buildAuditFormatterPrompt } from './auditFormatter';
 import { buildBriefContractFormatterPrompt } from './briefFormatter';
 import { executeClaimedStage } from './executeClaimedStage';
+import { adaptOutlineWritingSources } from '../writing/scenario/outlineWritingAdapter';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
@@ -2292,6 +2293,34 @@ async function actionPersistInitialSnapshot(
   }
   const pipelineContext = compiled.draftCompile!.pipelineContext;
   const frozenDraftRequest = compiled.frozenDraftRequest!;
+
+  // Phase I source boundary: the existing outline compiler remains the
+  // execution implementation for this phase, but its captured semantic input
+  // is now normalized through the same Writing Source Contract used by
+  // Continuation. No downstream stage reads this adapter as a control branch.
+  if (pipelineContext.outlineText.trim()) {
+    const sourceInput = adaptOutlineWritingSources({
+      projectId: chapter.project_id,
+      chapter,
+      context: {
+        presetText: pipelineContext.presetText,
+        storyMemoryText: pipelineContext.storyMemoryText,
+        characterText: pipelineContext.characterText,
+        noteText: pipelineContext.noteText,
+        worldbookText: pipelineContext.worldbookText,
+        episodicMemoryText: pipelineContext.episodicMemoryText,
+        recentBridgeText: pipelineContext.recentBridgeText,
+        outlineText: pipelineContext.outlineText,
+        outlineFingerprint: pipelineContext.outlineFingerprint,
+        outlineIds: pipelineContext.outlineIds,
+        outlineComplete: pipelineContext.outlineComplete,
+        writerStyleText: pipelineContext.writerStyleSnapshot
+          ? JSON.stringify(pipelineContext.writerStyleSnapshot)
+          : undefined,
+      },
+    });
+    pipelineContext.writingSourceTrace = sourceInput.trace;
+  }
 
   // Freeze full-mode audit candidate pool at the same moment as draft context.
   let frozenAuditCandidates = runtime.parsed?.frozenAuditCandidates || null;
