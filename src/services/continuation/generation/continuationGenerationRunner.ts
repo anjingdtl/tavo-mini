@@ -2675,6 +2675,10 @@ export async function abandonRun(runId: string): Promise<void> {
       'interrupted',
       'running',
       'queued',
+      // The result screen renders 放弃 for failed runs too; without this
+      // source state the CAS matches nothing and the user can never clear
+      // a failed result (放弃失败：无法放弃该 run).
+      'failed',
     ],
     {
       state: 'completed',

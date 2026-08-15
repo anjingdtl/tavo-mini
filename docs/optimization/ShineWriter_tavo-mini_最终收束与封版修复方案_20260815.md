@@ -917,3 +917,53 @@ Seal 报告初版的 APK 检查仅覆盖方案 Round 4 最小冒烟（install -r
 
 封版构建 V2.11.52（122af8db/9ec52a96）在完整 UI 面与真实 LLM V5 续写全链路
 （含采纳/定稿/状态提取/记忆重建）上无新增 P0/P1；GO / SEALED 判定维持不变。
+
+---
+
+# 20. 穿测后 BUG 修复：失败流水线任务无法放弃（P1，2026-08-15 晚）
+
+## 20.1 现象与复现（用户报告 + 实机复现）
+
+用户在续写模式「流水线结果」页发现失败的流水线任务无法放弃。实机复现：
+设置 → 续写生成流水线 → 执行情况（未完成 1 项：第 4 章 · 生成失败 ·
+Network request failed，即 §19.2 断网期间产生的 run `ct_83939d…`）→
+查看并恢复 → 点「放弃」→ toast「放弃失败：无法放弃该 run」，任务永驻无法清理。
+
+## 20.2 根因
+
+`ContinuationResultScreen` 对 `state=failed` 的 run 渲染「放弃」按钮（两处分支），
+但 `abandonRun`（continuationGenerationRunner.ts:2669）的 CAS 期望状态列表
+`['awaiting_user','awaiting_regeneration','interrupted','running','queued']`
+**不含 `'failed'`**——真实 DB 中 `WHERE state IN (…)` 匹配 0 行 → rowsAffected=0
+→ 抛「无法放弃该 run」。UI 承诺与服务层状态机不一致，形成无法清理的死路。
+`resumeInterruptedRun` 仅接受 interrupted，与 failed 无冲突；`abandonRun` 仅被
+结果页调用，扩充安全。
+
+## 20.3 修复（最小 diff，TDD）
+
+- 测试（`__tests__/continuationPhase3Repository.test.ts`）：mock 增加纯增量
+  sqlLog（记录 run UPDATE 的 SQL 与绑定参数）；新增回归测试
+  「abandonRun can clear a failed run」——断言 failed run 可被放弃为
+  completed/abandoned、CAS 参数的期望状态列表包含 `'failed'`、二次放弃幂等。
+  修复前该断言红（期望列表缺 'failed'），修复后绿。
+- 实现（`continuationGenerationRunner.ts` abandonRun）：期望状态列表追加
+  `'failed'`（附注释说明 UI 渲染契约）。不改其余状态机、不改 UI。
+
+## 20.4 验证（先红后绿 + 实机再穿测）
+
+- 新测试：红（列表缺 failed）→ 修复 → 绿；
+- 定向回归：continuationPhase3Repository / continuationResultScreen /
+  continuationBatchAdapter / continuationBatchPlanner / continuationV5 等
+  9 suites / 133 tests 全过；
+- 实机：重建 debug APK `adb install -r` 后，执行情况「未完成 1 项」→
+  查看并恢复 → 放弃 → 「未完成 0 项」；DB 复核 `ct_83939d…` →
+  state=completed / completion_reason=abandoned（error_code=network_error
+  保留作诊断）；全程无 ReactNativeJS 错误；
+- 全量：lint 0 errors / typecheck exit 0 / test:ci exit 0
+  （424 suites，3345 passed +8 skipped，较上轮 +1 为新回归测试）。
+
+## 20.5 分级与判定
+
+P1 功能缺陷（UI 提供的操作必然失败且阻塞用户清理失败任务），非 §19 穿测
+引入（历史缺陷，断网失败 run 暴露了它）；已按最小闭环修复并实机验证。
+修复 commit 与 CI 结果见仓库 main 最新提交与 Verify 运行记录。

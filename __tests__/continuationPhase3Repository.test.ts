@@ -18,6 +18,7 @@ const store: {
   ctSettings: any[]; // continuation_settings (active source/canon)
   canonSnapshots: any[];
   contentRevisions: any[];
+  sqlLog: Array<{ sql: string; params: any[] }>;
 } = {
   settings: [],
   runs: [],
@@ -35,6 +36,7 @@ const store: {
   ctSettings: [],
   canonSnapshots: [],
   contentRevisions: [],
+  sqlLog: [],
 };
 
 function res(rows: any[]) {
@@ -52,6 +54,10 @@ function res(rows: any[]) {
 
 const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   const n = sql.replace(/\s+/g, ' ').trim();
+
+  if (/UPDATE continuation_generation_runs SET/i.test(n)) {
+    store.sqlLog.push({ sql: n, params });
+  }
 
   if (
     /SELECT \* FROM continuation_generation_settings WHERE project_id/i.test(n)
@@ -961,6 +967,7 @@ beforeEach(() => {
   store.events = [];
   store.entities = [];
   store.outbox = [];
+  store.sqlLog = [];
   store.chapters = [
     {
       id: 10,
@@ -1295,6 +1302,55 @@ describe('continuation Phase 3 repository coverage', () => {
       updated_at: 't',
     });
     await cancelContinuationRun('ct_cancel');
+  });
+
+  test('abandonRun can clear a failed run (result screen renders 放弃 for failed)', async () => {
+    const runId = 'ct_failed_abandon';
+    store.runs.push({
+      id: runId,
+      project_id: 1,
+      chapter_id: 10,
+      state: 'failed',
+      stage: 'awaiting_user',
+      input_revision_hash: 'x',
+      source_snapshot_json: '{}',
+      settings_snapshot_json: '{}',
+      token_usage_json: '{}',
+      target_position: 21,
+      canon_revision: 1,
+      story_memory_fingerprint: 'fp',
+      story_memory_through_position: -1,
+      user_instruction: '',
+      created_at: 't',
+      updated_at: 't',
+      completion_reason: null,
+      adopted_revision_hash: null,
+      finalized_revision_hash: null,
+      error_code: 'network_error',
+      error_message: 'Network request failed',
+    });
+
+    await expect(abandonRun(runId)).resolves.toBeUndefined();
+
+    const run = store.runs.find(r => r.id === runId);
+    expect(run?.state).toBe('completed');
+    expect(run?.completion_reason).toBe('abandoned');
+
+    // The mock applies SET unconditionally, so the real regression guard is
+    // the CAS contract itself: the WHERE state IN list must accept 'failed'
+    // as a source state, otherwise the real DB returns rowsAffected=0 and
+    // abandonRun throws '无法放弃该 run' (UI dead-end on failed results).
+    const cas = store.sqlLog.find(
+      e =>
+        /UPDATE continuation_generation_runs SET/i.test(e.sql) &&
+        e.params.includes(runId),
+    );
+    expect(cas).toBeTruthy();
+    const expectedStates = cas!.params.slice(cas!.params.indexOf(runId) + 1);
+    expect(expectedStates).toContain('failed');
+
+    // Abandoning an already-completed run stays idempotent (no throw).
+    await expect(abandonRun(runId)).resolves.toBeUndefined();
   });
 
   test('outbox worker extract with injector + cold start', async () => {
