@@ -1390,6 +1390,7 @@ export async function buildContext(
         currentChapter,
         options.retrievalUserPrompt || '',
         normalized.resourceSources,
+        pushDiagnostic,
       );
       snapshotCharacterText = resourceResult.characterText;
       snapshotNoteText = resourceResult.noteText;
@@ -1837,6 +1838,7 @@ async function buildResourceContext(
   currentChapter?: Chapter,
   retrievalUserPrompt = '',
   resourceSources?: GenerationResourceSources,
+  onDiagnostic?: DiagnosticSink,
 ): Promise<ResourceContextResult> {
   if (!resourceSources) {
     throw new Error('GENERATION_RESOURCE_SOURCES_NOT_CAPTURED');
@@ -1855,7 +1857,12 @@ async function buildResourceContext(
   };
 
   const [charSettled, noteSettled, wbSettled] = await Promise.allSettled([
-    buildCharacterContext(projectId, characterBudget, capturedSources.characters),
+    buildCharacterContext(
+      projectId,
+      characterBudget,
+      capturedSources.characters,
+      onDiagnostic,
+    ),
     buildNoteContext(
       projectId,
       noteBudget,
@@ -1863,7 +1870,7 @@ async function buildResourceContext(
       currentChapter?.title || '',
       currentChapter?.synopsis || '',
       retrievalUserPrompt,
-      undefined,
+      onDiagnostic,
       capturedSources,
     ),
     buildWorldbookContext(
@@ -1883,6 +1890,39 @@ async function buildResourceContext(
     noteSettled.status === 'fulfilled' ? noteSettled.value.text : '';
   const worldbookText =
     wbSettled.status === 'fulfilled' ? wbSettled.value.text : '';
+
+  const reportFailure = (
+    result: PromiseSettledResult<unknown>,
+    source: string,
+    message: string,
+  ) => {
+    if (result.status !== 'rejected') return;
+    onDiagnostic?.({
+      code: 'RESOURCE_RENDER_FAILED',
+      severity: 'warning',
+      message,
+      stage: 'render',
+      source,
+      detail: {
+        reason: String((result.reason as Error)?.message || result.reason),
+      },
+    });
+  };
+  reportFailure(
+    charSettled,
+    'contextBuilder.buildResourceContext.characters',
+    '角色资料渲染失败，角色资料未进入本次生成',
+  );
+  reportFailure(
+    noteSettled,
+    'contextBuilder.buildResourceContext.notes',
+    '笔记资料渲染失败，笔记资料未进入本次生成',
+  );
+  reportFailure(
+    wbSettled,
+    'contextBuilder.buildResourceContext.worldbook',
+    '世界书渲染失败，世界书资料未进入本次生成',
+  );
 
   if (charSettled.status === 'fulfilled') {
     addPart('人物设定', charSettled.value.text, characterBudget);
@@ -1910,6 +1950,7 @@ export async function buildCharacterContext(
   projectId: number,
   budget: number,
   capturedCharacters?: unknown[],
+  onDiagnostic?: DiagnosticSink,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   const characters =
     capturedCharacters ?? (await db.getCharactersByProject(projectId));
@@ -1918,7 +1959,7 @@ export async function buildCharacterContext(
   let remaining = budget;
 
   for (const character of characters as any[]) {
-    const data = safeJson(character.data_json);
+    const data = safeJson(character.data_json, onDiagnostic);
     const card = data.data || data;
     const charName = character.name || card.name || '未命名角色';
     const text = [
@@ -1968,7 +2009,7 @@ export async function buildCharacterContext(
     const character = (characters as any[])[i];
     const existingItem = items.find(it => it.sourceId === Number(character.id));
     if (!existingItem) {
-      const data = safeJson(character.data_json);
+      const data = safeJson(character.data_json, onDiagnostic);
       const card = data.data || data;
       const charName = character.name || card.name || '未命名角色';
       const text = [
@@ -2841,10 +2882,18 @@ function cosineSimilarity(
   return denom > 0 ? dot / denom : 0;
 }
 
-function safeJson(text: string): any {
+function safeJson(text: string, onDiagnostic?: DiagnosticSink): any {
   try {
     return JSON.parse(text || '{}');
-  } catch {
+  } catch (error) {
+    onDiagnostic?.({
+      code: 'RESOURCE_RENDER_FAILED',
+      severity: 'warning',
+      message: '角色资料 JSON 解析失败，角色仅保留可识别名称',
+      stage: 'render',
+      source: 'contextBuilder.buildCharacterContext.characterPayload',
+      detail: { reason: String((error as Error)?.message || error) },
+    });
     return {};
   }
 }

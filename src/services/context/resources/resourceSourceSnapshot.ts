@@ -214,12 +214,15 @@ async function hydrateFrozenStyleProfiles(
   const configuredIds = snapshot.noteConfig.enabledNoteIds || [];
   const selectedIds =
     configuredIds.length > 0 ? new Set(configuredIds) : undefined;
-  const notes = await Promise.all(
+  const hydrated = await Promise.all(
     snapshot.notes.map(async record => {
       const noteId = Number(record.id);
       if (selectedIds && !selectedIds.has(noteId)) return record;
       const corpusEntry = parseFrozenNoteBody(record);
       if (!corpusEntry || !corpusEntry.content.trim()) return record;
+
+      let hydratedRecord = record;
+      let warning: ResourceContextWarning | undefined;
 
       const sourceHash = computeNoteSourceHash(corpusEntry.content);
       if (typeof db.getNoteStyleProfile === 'function') {
@@ -249,18 +252,39 @@ async function hydrateFrozenStyleProfiles(
             corpusEntry.content,
             sourceHash,
           );
-          return {
+          hydratedRecord = {
             ...record,
             styleProfile: freezeStyleProfile(analyzed),
           };
         } catch {
-          // V6's Promise.allSettled behavior skips an unavailable profile.
+          warning = createNoteWarning(
+            'NOTE_STYLE_ANALYSIS_FAILED',
+            '笔记风格分析失败，该笔记风格画像未进入本次生成。',
+            { id: noteId, title: record.title },
+          );
         }
+      } else {
+        warning = createNoteWarning(
+          'NOTE_STYLE_ANALYSIS_FAILED',
+          '笔记风格分析能力不可用，该笔记风格画像未进入本次生成。',
+          { id: noteId, title: record.title },
+        );
       }
-      return record;
+      return { record: hydratedRecord, warning };
     }),
   );
-  return { ...snapshot, notes };
+  const notes = hydrated.map(item => 'record' in item ? item.record : item);
+  const warnings = [
+    ...(snapshot.warnings || []),
+    ...hydrated.flatMap(item =>
+      'warning' in item && item.warning ? [item.warning] : [],
+    ),
+  ];
+  return {
+    ...snapshot,
+    notes,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
 }
 
 async function hydrateFrozenRetrieval(
@@ -303,6 +327,7 @@ async function hydrateFrozenRetrieval(
   }
 
   let fragments: RetrievedNoteFragment[];
+  let warning: ResourceContextWarning | undefined;
   try {
     const result = await callLLMResult(
       buildNoteRetrievalMessages(query, candidates),
@@ -311,21 +336,38 @@ async function hydrateFrozenRetrieval(
     );
     const jsonText = extractJSON(result.text || '') || '{"selected":[]}';
     const parsed = JSON.parse(jsonText);
-    const selected = Array.isArray(parsed?.selected) ? parsed.selected : [];
+    if (!Array.isArray(parsed?.selected)) {
+      throw new Error('笔记检索结果缺少 selected 数组');
+    }
+    const selected = parsed.selected;
     fragments = validateFrozenNoteFragments(
       selected,
       candidates,
       fragmentChars,
     );
     if (selected.length > 0 && fragments.length === 0) {
+      warning = createNoteWarning(
+        'NOTE_RETRIEVAL_FAILED',
+        '笔记检索结果无法匹配冻结片段，已使用冻结候选兜底。',
+        { title: '资料库检索' },
+      );
       fragments = fallbackToFrozenNoteCandidates(candidates, topK);
     }
   } catch {
+    warning = createNoteWarning(
+      'NOTE_RETRIEVAL_FAILED',
+      '资料库笔记检索失败，已使用冻结候选兜底。',
+      { title: '资料库检索' },
+    );
     fragments = fallbackToFrozenNoteCandidates(candidates, topK);
   }
 
+  const warnings = warning
+    ? [...(snapshot.warnings || []), warning]
+    : snapshot.warnings;
   return {
     ...snapshot,
+    warnings,
     noteRetrieval: {
       query,
       fragments: fragments.slice(0, topK).map(fragment => ({

@@ -66,6 +66,7 @@ async function collectOutline(
   projectId: number,
   contextWindowOverride?: number,
   reservedOutputTokens?: number,
+  onDiagnostic?: DiagnosticSink,
 ): Promise<BuiltOutlineContext> {
   if (typeof (db as any).getProjectById !== 'function') {
     return EMPTY_OUTLINE_CONTEXT;
@@ -88,7 +89,15 @@ async function collectOutline(
     try {
       const llmConfig = await db.getActiveLLMConfig();
       contextWindow = Number(llmConfig?.context_window) || 0;
-    } catch {
+    } catch (error) {
+      onDiagnostic?.({
+        code: 'BUDGET_INVALID_CAPACITY',
+        severity: 'warning',
+        message: '模型上下文窗口读取失败，大纲预算按不可用容量处理',
+        stage: 'collect',
+        source: 'collectGenerationMaterials.collectOutline.activeModel',
+        detail: { reason: String((error as Error)?.message || error) },
+      });
       contextWindow = 0;
     }
   }
@@ -116,6 +125,7 @@ async function collectResourceSources(
     chapterSynopsis: string;
     retrievalUserPrompt: string;
   },
+  onDiagnostic?: DiagnosticSink,
 ): Promise<GenerationResourceSources> {
   const empty: GenerationResourceSources = {
     characters: [],
@@ -142,6 +152,90 @@ async function collectResourceSources(
         ? (db as any).getWorldbookEntriesByProject(projectId)
         : Promise.resolve([]),
     ]);
+  const reportFailure = (
+    result: PromiseSettledResult<unknown>,
+    code: string,
+    source: string,
+    message: string,
+  ) => {
+    if (result.status !== 'rejected') return;
+    onDiagnostic?.({
+      code,
+      severity: 'warning',
+      message,
+      stage: 'collect',
+      source,
+      detail: { reason: String((result.reason as Error)?.message || result.reason) },
+    });
+  };
+  reportFailure(
+    characters,
+    'RESOURCE_RETRIEVAL_FAILED',
+    'collectGenerationMaterials.resourceSources.characters',
+    '角色资料读取失败，角色资料按空参与本次生成',
+  );
+  reportFailure(
+    notes,
+    'RESOURCE_RETRIEVAL_FAILED',
+    'collectGenerationMaterials.resourceSources.notes',
+    '笔记索引读取失败，笔记资料按空参与本次生成',
+  );
+  reportFailure(
+    noteConfig,
+    'NOTE_RETRIEVAL_FAILED',
+    'collectGenerationMaterials.resourceSources.noteConfig',
+    '笔记模式配置读取失败，按默认模式处理',
+  );
+  reportFailure(
+    worldbookEntries,
+    'RESOURCE_RETRIEVAL_FAILED',
+    'collectGenerationMaterials.resourceSources.worldbook',
+    '世界书读取失败，世界书资料按空参与本次生成',
+  );
+  const reportInvalidArray = (
+    result: PromiseSettledResult<unknown>,
+    source: string,
+    label: string,
+  ) => {
+    if (result.status !== 'fulfilled' || Array.isArray(result.value)) return;
+    onDiagnostic?.({
+      code: 'RESOURCE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: `${label}返回格式无效，按空资料参与本次生成`,
+      stage: 'collect',
+      source,
+      detail: { reason: 'expected_array' },
+    });
+  };
+  reportInvalidArray(
+    characters,
+    'collectGenerationMaterials.resourceSources.characters',
+    '角色资料',
+  );
+  reportInvalidArray(
+    notes,
+    'collectGenerationMaterials.resourceSources.notes',
+    '笔记索引',
+  );
+  reportInvalidArray(
+    worldbookEntries,
+    'collectGenerationMaterials.resourceSources.worldbook',
+    '世界书',
+  );
+  if (
+    noteConfig.status === 'fulfilled' &&
+    noteConfig.value != null &&
+    (typeof noteConfig.value !== 'object' || Array.isArray(noteConfig.value))
+  ) {
+    onDiagnostic?.({
+      code: 'NOTE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: '笔记模式配置返回格式无效，按默认模式处理',
+      stage: 'collect',
+      source: 'collectGenerationMaterials.resourceSources.noteConfig',
+      detail: { reason: 'expected_object_or_null' },
+    });
+  }
   const notesValue = notes.status === 'fulfilled' && Array.isArray(notes.value)
     ? notes.value
     : [];
@@ -156,10 +250,26 @@ async function collectResourceSources(
     typeof (db as any).getNotesContentByIds === 'function'
   ) {
     try {
-      noteContents = await (db as any).getNotesContentByIds(
+      const loadedContents = await (db as any).getNotesContentByIds(
         notesValue.map((note: any) => Number(note.id)),
       );
-    } catch {
+      if (
+        !loadedContents ||
+        typeof loadedContents !== 'object' ||
+        Array.isArray(loadedContents)
+      ) {
+        throw new Error('expected_object');
+      }
+      noteContents = loadedContents;
+    } catch (error) {
+      onDiagnostic?.({
+        code: 'NOTE_RETRIEVAL_FAILED',
+        severity: 'warning',
+        message: '笔记正文读取失败，相关笔记未进入本次生成',
+        stage: 'collect',
+        source: 'collectGenerationMaterials.resourceSources.noteContents',
+        detail: { reason: String((error as Error)?.message || error) },
+      });
       noteContents = {};
     }
   }
@@ -178,9 +288,35 @@ async function collectResourceSources(
     const settled = await Promise.allSettled(
       noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)),
     );
-    settled.forEach(result => {
-      if (result.status === 'fulfilled' && result.value) {
+    settled.forEach((result, index) => {
+      if (
+        result.status === 'fulfilled' &&
+        result.value &&
+        result.value.profileJson &&
+        Object.keys(result.value.profileJson).length > 0
+      ) {
         noteStyleProfiles.push(result.value);
+      } else if (result.status === 'rejected') {
+        onDiagnostic?.({
+          code: 'NOTE_STYLE_ANALYSIS_FAILED',
+          severity: 'warning',
+          message: '笔记风格分析失败，该笔记风格画像未进入本次生成',
+          stage: 'collect',
+          source: 'collectGenerationMaterials.resourceSources.noteStyleProfiles',
+          detail: {
+            noteId: noteIds[index],
+            reason: String((result.reason as Error)?.message || result.reason),
+          },
+        });
+      } else {
+        onDiagnostic?.({
+          code: 'NOTE_STYLE_ANALYSIS_FAILED',
+          severity: 'warning',
+          message: '笔记风格分析返回空画像，该笔记风格画像未进入本次生成',
+          stage: 'collect',
+          source: 'collectGenerationMaterials.resourceSources.noteStyleProfiles',
+          detail: { noteId: noteIds[index], reason: 'empty_profile' },
+        });
       }
     });
   } else if (mode === 'retrieval' && capture) {
@@ -196,7 +332,15 @@ async function collectResourceSources(
         Number((noteConfigValue as any)?.retrievalTopK) || 5,
       );
       noteRetrievalFragments.push(...fragments);
-    } catch {
+    } catch (error) {
+      onDiagnostic?.({
+        code: 'NOTE_RETRIEVAL_FAILED',
+        severity: 'warning',
+        message: '资料库笔记检索失败，笔记内容未进入本次生成',
+        stage: 'collect',
+        source: 'collectGenerationMaterials.resourceSources.noteRetrieval',
+        detail: { reason: String((error as Error)?.message || error) },
+      });
       // The legacy renderer preserves its existing empty-on-retrieval-failure
       // behavior, but now receives the failed result as an empty capture.
     }
@@ -258,6 +402,7 @@ export async function collectGenerationMaterials(
     input.projectId,
     options.contextWindow,
     options.reservedOutputTokens,
+    input.onDiagnostic,
   );
   const worldbookScanContent = selectPreviousChapters(
     input.currentChapter,
@@ -304,6 +449,7 @@ export async function collectGenerationMaterials(
       chapterSynopsis: input.currentChapter.synopsis || '',
       retrievalUserPrompt: options.retrievalUserPrompt || '',
     },
+    input.onDiagnostic,
   );
   let storyMemoryText = '';
   if (prepared?.checkpoint && prepared.checkpointEligibility?.usable) {
@@ -316,7 +462,15 @@ export async function collectGenerationMaterials(
           retrievalUserPrompt: options.retrievalUserPrompt,
         },
       ).text;
-    } catch {
+    } catch (error) {
+      input.onDiagnostic?.({
+        code: 'STORY_MEMORY_RENDER_FAILED',
+        severity: 'warning',
+        message: '故事记忆渲染失败，故事记忆按空参与本次生成',
+        stage: 'collect',
+        source: 'collectGenerationMaterials.storyMemory',
+        detail: { reason: String((error as Error)?.message || error) },
+      });
       storyMemoryText = '';
     }
   }
@@ -367,6 +521,7 @@ export async function collectGenerationMaterials(
               outlineText: preOutlineContext.text || '',
               episodicText: episodicProbe.text,
             },
+            onDiagnostic: input.onDiagnostic,
           });
         } else {
           const collectedResources = await collectAllResourceCandidates(
@@ -376,6 +531,7 @@ export async function collectGenerationMaterials(
             {
               retrievalUserPrompt: options.retrievalUserPrompt,
               recursiveWorldbook: input.config.worldbookRecursive !== false,
+              onDiagnostic: input.onDiagnostic,
             },
           );
           v3ResourceCandidates = collectedResources.candidates;

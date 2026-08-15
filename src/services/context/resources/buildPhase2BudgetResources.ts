@@ -1,6 +1,7 @@
 import type { Chapter, ContextConfig, Preset } from '../../../types/novel';
 import { captureResourceSourceSnapshot } from './resourceSourceSnapshot';
 import { buildResourceContextV2 } from './resourceContextV2';
+import type { DiagnosticSink } from '../generationDiagnostics';
 import type {
   GlobalAwarenessCandidate,
   ResourceDetailCandidate,
@@ -40,6 +41,7 @@ export async function collectPhase2BudgetResources(input: {
   config: ContextConfig;
   preset?: Preset | null;
   haystack: Phase2HaystackInput;
+  onDiagnostic?: DiagnosticSink;
 }): Promise<Phase2BudgetResources> {
   const includeResources = input.config.includeResources !== false;
   const source = await captureResourceSourceSnapshot(input.projectId, {
@@ -91,6 +93,25 @@ export async function collectPhase2BudgetResources(input: {
     haystack,
     recursiveWorldbook: input.config.worldbookRecursive !== false,
     detailIntensity: input.config.resourceDetailIntensity,
+  });
+  built.warnings.forEach(warning => {
+    input.onDiagnostic?.({
+      code:
+        warning.code === 'NOTE_DETAIL_COMPILE_FAILED'
+          ? 'RESOURCE_RENDER_FAILED'
+          : warning.code === 'NOTE_STYLE_ANALYSIS_FAILED'
+            ? 'NOTE_STYLE_ANALYSIS_FAILED'
+            : 'NOTE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: warning.message,
+      stage: 'collect',
+      source: `collectPhase2BudgetResources.resourceWarnings.${warning.code}`,
+      detail: {
+        sourceId: warning.sourceId ?? null,
+        title: warning.title || null,
+        action: warning.action || null,
+      },
+    });
   });
 
   return {

@@ -68,7 +68,11 @@ export function renderGenerationContext(input: {
     const candidate = input.plan.candidates.find(
       item => item.candidateId === budgetItem.candidateId,
     );
-    if (!candidate) continue;
+    if (!candidate) {
+      throw new Error(
+        `GENERATION_CONTRACT_INVALID:render.missing_candidate:${budgetItem.candidateId}`,
+      );
+    }
     const source = String(input.blocks.sourceTextByCandidateId[candidate.candidateId] ?? '');
     const prefix = String(input.blocks.prefixByCandidateId?.[candidate.candidateId] ?? '');
     const rendered = source
@@ -218,7 +222,12 @@ function renderLegacyGenerationContext(
     const candidate = plan.candidates.find(
       item => item.candidateId === budgetItem.candidateId,
     );
-    if (!candidate) continue;
+    if (!candidate) {
+      // Legacy allocation keeps synthetic protocol items outside the material
+      // candidate contract. The legacy adapter renders those through its
+      // preassembled blocks, so this historical item is intentionally ignored.
+      continue;
+    }
     const source = candidate.content || sectionTextBySourceType[candidate.sourceType] || '';
     const rendered = source
       ? clipTextToTokenBudget(source, budgetItem.allocatedTokens)

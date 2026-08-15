@@ -16,6 +16,8 @@ export type ResourceDetailSourceKind = 'character' | 'worldbook' | 'note';
 export type ResourceContextWarningCode =
   | 'NOTE_LIST_READ_FAILED'
   | 'NOTE_CONTENT_READ_FAILED'
+  | 'NOTE_RETRIEVAL_FAILED'
+  | 'NOTE_STYLE_ANALYSIS_FAILED'
   | 'NOTE_DETAIL_COMPILE_FAILED';
 
 export interface ResourceContextWarning {

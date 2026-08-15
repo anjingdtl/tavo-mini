@@ -27,6 +27,7 @@ import {
 import { retrieveNoteFragments, type RetrievalQuery } from '../noteRetriever';
 import type { Chapter } from '../../types/novel';
 import type { ResourceActivationReason } from '../contextAutomationPolicy';
+import type { DiagnosticSink } from './generationDiagnostics';
 
 export interface ResourceContextCandidate {
   id: string;
@@ -63,6 +64,38 @@ export interface CollectCandidatesOptions {
   recursiveWorldbook?: boolean;
   /** Cap number of candidates to avoid pathological N. Default unlimited. */
   maxCandidatesPerKind?: number;
+  /** Generation semantic path sink for degradations that preserve empty output. */
+  onDiagnostic?: DiagnosticSink;
+}
+
+function reportCandidateFallback(
+  onDiagnostic: DiagnosticSink,
+  input: {
+    code: string;
+    source: string;
+    message: string;
+    error?: unknown;
+    detail?: Record<string, unknown>;
+  },
+): void {
+  onDiagnostic?.({
+    code: input.code,
+    severity: 'warning',
+    message: input.message,
+    stage: 'collect',
+    source: input.source,
+    detail: {
+      ...(input.detail || {}),
+      ...(input.error !== undefined
+        ? {
+            reason:
+              input.error instanceof Error
+                ? input.error.message
+                : String(input.error),
+          }
+        : {}),
+    },
+  });
 }
 
 const ACTIVATION_REASON_MAP: Record<string, ResourceActivationReason> = {
@@ -73,10 +106,16 @@ const ACTIVATION_REASON_MAP: Record<string, ResourceActivationReason> = {
   项目启用兜底: 'project_fallback',
 };
 
-function safeJson(text: string): any {
+function safeJson(text: string, onDiagnostic?: DiagnosticSink): any {
   try {
     return JSON.parse(text || '{}');
-  } catch {
+  } catch (error) {
+    reportCandidateFallback(onDiagnostic, {
+      code: 'RESOURCE_RENDER_FAILED',
+      source: 'resourceContextCandidates.characterPayload',
+      message: '角色资料 JSON 解析失败，角色仅保留可识别名称',
+      error,
+    });
     return {};
   }
 }
@@ -98,8 +137,11 @@ function normalizeKeys(raw: any): string[] {
   return [];
 }
 
-function formatCharacterCard(character: any): { text: string; name: string } {
-  const data = safeJson(character.data_json);
+function formatCharacterCard(
+  character: any,
+  onDiagnostic?: DiagnosticSink,
+): { text: string; name: string } {
+  const data = safeJson(character.data_json, onDiagnostic);
   const card = data.data || data;
   const charName = character.name || card.name || '未命名角色';
   const text = [
@@ -133,7 +175,7 @@ export async function collectCharacterCandidates(
   const candidates: ResourceContextCandidate[] = characters
     .slice(0, cap)
     .map((character, idx) => {
-      const { text, name } = formatCharacterCard(character);
+      const { text, name } = formatCharacterCard(character, options.onDiagnostic);
       return {
         id: `character:${character.id ?? idx}`,
         sourceKind: 'character' as const,
@@ -169,12 +211,18 @@ export async function collectNoteCandidates(
   let config: any = null;
   try {
     config = await db.getProjectNoteConfig(projectId);
-  } catch {
+  } catch (error) {
+    reportCandidateFallback(options.onDiagnostic, {
+      code: 'NOTE_RETRIEVAL_FAILED',
+      source: 'resourceContextCandidates.noteConfig',
+      message: '笔记模式配置读取失败，按默认模式处理',
+      error,
+    });
     config = null;
   }
   const mode = config?.mode || 'none';
   if (mode === 'style') {
-    return collectStyleNoteCandidates(projectId, config);
+    return collectStyleNoteCandidates(projectId, config, options);
   }
   if (mode === 'retrieval') {
     return collectRetrievalNoteCandidates(
@@ -184,6 +232,7 @@ export async function collectNoteCandidates(
       options.chapterTitle || '',
       options.chapterSynopsis || '',
       options.retrievalUserPrompt || '',
+      options,
     );
   }
   return collectOriginalNoteCandidates(projectId, options);
@@ -192,6 +241,7 @@ export async function collectNoteCandidates(
 async function collectStyleNoteCandidates(
   projectId: number,
   config: any,
+  options: CollectCandidatesOptions,
 ): Promise<CandidateCollectionResult> {
   try {
     const projectNotes = await db.getNotesByProject(projectId);
@@ -210,15 +260,25 @@ async function collectStyleNoteCandidates(
     const settled = await Promise.allSettled(
       noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)),
     );
-    const profiles = settled
-      .filter(
-        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>> =>
-          r.status === 'fulfilled',
-      )
-      .map(r => r.value)
-      .filter(
-        p => p && p.profileJson && Object.keys(p.profileJson).length > 0,
-      );
+    const profiles: Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>[] = [];
+    settled.forEach((result, index) => {
+      if (
+        result.status === 'fulfilled' &&
+        result.value &&
+        result.value.profileJson &&
+        Object.keys(result.value.profileJson).length > 0
+      ) {
+        profiles.push(result.value);
+        return;
+      }
+      reportCandidateFallback(options.onDiagnostic, {
+        code: 'NOTE_STYLE_ANALYSIS_FAILED',
+        source: 'resourceContextCandidates.noteStyleProfiles',
+        message: '笔记风格分析失败，该笔记风格画像未进入本次生成',
+        error: result.status === 'rejected' ? result.reason : 'empty_profile',
+        detail: { noteId: noteIds[index] },
+      });
+    });
     const weights: StyleWeights = {
       ...DEFAULT_STYLE_WEIGHTS,
       ...(config?.styleWeights || {}),
@@ -241,8 +301,14 @@ async function collectStyleNoteCandidates(
       sourceOrder: 0,
     };
     return { candidates: [candidate], totalActualTokens: candidate.actualTokens };
-  } catch {
-    return collectOriginalNoteCandidates(projectId, {});
+  } catch (error) {
+    reportCandidateFallback(options.onDiagnostic, {
+      code: 'NOTE_STYLE_ANALYSIS_FAILED',
+      source: 'resourceContextCandidates.noteStyleCollection',
+      message: '风格画像构建失败，回退为笔记全量注入',
+      error,
+    });
+    return collectOriginalNoteCandidates(projectId, options);
   }
 }
 
@@ -253,6 +319,7 @@ async function collectRetrievalNoteCandidates(
   chapterTitle: string,
   chapterSynopsis: string,
   userPrompt: string,
+  options: CollectCandidatesOptions,
 ): Promise<CandidateCollectionResult> {
   try {
     const topK = config?.retrievalTopK ?? 5;
@@ -283,14 +350,20 @@ async function collectRetrievalNoteCandidates(
       0,
     );
     return { candidates, totalActualTokens };
-  } catch {
+  } catch (error) {
+    reportCandidateFallback(options.onDiagnostic, {
+      code: 'NOTE_RETRIEVAL_FAILED',
+      source: 'resourceContextCandidates.noteRetrieval',
+      message: '资料库笔记检索失败，笔记内容未进入本次生成',
+      error,
+    });
     return { candidates: [], totalActualTokens: 0 };
   }
 }
 
 async function collectOriginalNoteCandidates(
   projectId: number,
-  _options: CollectCandidatesOptions,
+  options: CollectCandidatesOptions,
 ): Promise<CandidateCollectionResult> {
   const notes = await db.getNotesByProject(projectId);
   if (notes.length === 0) {
@@ -300,7 +373,13 @@ async function collectOriginalNoteCandidates(
   let contents: Record<number, string> = {};
   try {
     contents = await db.getNotesContentByIds(notes.map(n => Number(n.id)));
-  } catch {
+  } catch (error) {
+    reportCandidateFallback(options.onDiagnostic, {
+      code: 'NOTE_RETRIEVAL_FAILED',
+      source: 'resourceContextCandidates.noteContents',
+      message: '笔记正文读取失败，相关笔记以空正文参与本次生成',
+      error,
+    });
     contents = {};
   }
   const candidates: ResourceContextCandidate[] = notes.map((note, idx) => {
