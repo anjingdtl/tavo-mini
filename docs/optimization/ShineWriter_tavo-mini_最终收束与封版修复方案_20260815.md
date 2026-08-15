@@ -855,3 +855,65 @@ Known Existing Issues（既有，非本轮 NO-GO，未触碰）：
 A. continuationStateOutboxWorker：状态提取模型可能返回 reasoning-only / 空正文
 B. storyMemory v2：checkpoint rebuild 可能事务失败
 ```
+
+---
+
+# 19. 封版后补充穿测（Seal 后 UI + 真实 LLM E2E，2026-08-15 下午）
+
+Seal 报告初版的 APK 检查仅覆盖方案 Round 4 最小冒烟（install -r + 冷启动 + 崩溃日志）。
+经用户指出后补做完整穿测，证据目录 `test-logs/emulator-qa-20260815-180203/`（gitignore，
+79 个文件：UI 树/截图/DB 快照/logcat）。
+
+## 19.1 UI 穿测面（全部通过，无崩溃 / 无 ReactNativeJS 错误 / 无 ANR）
+
+冷启动（COLD 1215ms）→ 作品库（大纲 14 / 续写 2 分组）→ 写作页章节列表 →
+章节编辑器（概要/正文/摘要，已保存态）→ 构建独立资源页 → 一键写 N 章（outline 模式，
+章数 1~10 默认 3、3000 字/章）→ 设置（LLM/流水线/语音/主题）→ LLM 设置（DeepSeek
+在配，Key 掩码）→ 上下文自动化 V3（真实能力 1M/200K，策略 hash 4684f04609ec）→
+资料库 5 段 tab（续写/大纲/角色/世界书/笔记/作家风格）→ 笔记模式（禁用/仿写，合集
+预估 0 tokens，与 note none 零候选一致）→ 续写工作台（E2E_CB1）。
+
+操作失误 1 次并已恢复：误触「+章节」新建第 7 章，随即经删除确认 dialog 清理，
+项目回到 6 章。作品库卡片点击行为经源码核实为 `setCurrentProject`（切换当前项目，
+非导航），非缺陷。
+
+## 19.2 环境故障与修复（非应用缺陷）
+
+首次真实续写报「续写失败 / Network request failed」。定位：模拟器默认路由丢失
+（路由表无 default，DNS 全部解析失败），宿主网络正常（curl deepseek 401 可达）。
+飞行模式/wifi 重置无效，生产镜像无法 root 补路由；重启同一 AVD（Medium_Phone，
+数据保留）后网络恢复。应用侧该失败以 dialog 优雅呈现，无崩溃、无未捕获 JS 异常。
+
+## 19.3 真实 LLM 单章续写 V5 全链路（修复网络后重测，通过）
+
+- Preflight：E2E_CB1（project 16）source ready（3 章）/ boundary=3 / canon snapshot /
+  style profile / analysis_status=ready（DB 证实）。
+- 运行 `ct_0d91a0b153f84694a458ac799dd1a9c6`（chapter 93「第 4 章」）：
+  draft_writer→narrative_architect→revision_writer→adversarial_auditor→final_reviser
+  各 1 次物理请求（共 5，= `CONTINUATION_V5_MAX_PHYSICAL_REQUESTS`，代码 types.ts:84），
+  final_validate 本地门禁 0 请求；目标 3000 字，V3 终稿 3401 汉字、改动占比 2.5%；
+  revision_writer 记录一条 architectureHash 软门禁（软告警不阻断，按设计留痕）。
+- artifacts：draft→revision_1（intermediate）→final（eligible，无 rejection）。
+- run 停在 `awaiting_user`（不自动覆盖用户章节）；点「采纳」→
+  `adopted_revision_hash=57f9b9…`、章节写入 3952 字符；点「定稿」→
+  chapter status=finalized、`finalized_revision_hash=57f9b9…`（eligible→Adoption→
+  Finalize 串行门完整闭合）。
+- 定稿触发状态链（Known Issue A/B 本次均未复现）：outbox `extract_state` +
+  `rebuild_story_memory`（completed，attempt=1，无错误）；产出 5 条带证据区间的
+  state proposals（pending 待用户审，如 new_location「城隍庙大殿神像底座暗格」）；
+  state events 0（提案未批准前不落事件，符合设计）。
+
+## 19.4 穿测发现（分级）
+
+- 新 P0 = 0；新 P1 = 0。
+- P2 观察项 1 项（既有、受保护模块、本轮不修）：E2E_CB1 因当日早前导入的原著
+  副本与续写章共用 chapters position 空间，「一键续写 N 章」预览显示「本批将从
+  第 8 章开始续写」（boundary=3 + max(position)+1=4 + 1 叠加计号），编号出现
+  跳跃。属 MultiChapterBatchScreen/续写编号显示问题，非本轮引入，未触碰。
+- 环境项 1 项：模拟器长跑后默认路由丢失（重启 AVD 恢复），与仓库代码无关。
+- Known Issues A/B 在本次真实链路中未复现（保持既有登记，不标记已解决）。
+
+## 19.5 穿测结论
+
+封版构建 V2.11.52（122af8db/9ec52a96）在完整 UI 面与真实 LLM V5 续写全链路
+（含采纳/定稿/状态提取/记忆重建）上无新增 P0/P1；GO / SEALED 判定维持不变。
