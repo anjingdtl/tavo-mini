@@ -108,6 +108,7 @@ import type { LLMResult, ReasoningEffort } from '../llm/types';
 import {
   parsePersistedPipelineTaskContext,
   serializePipelineTaskContext,
+  hasFrozenWriterStyleProjection,
   type ParsedPipelineTaskContext,
 } from '../pipelineTaskContext';
 import { determineNextPipelineAction } from './determineNextPipelineAction';
@@ -2067,7 +2068,7 @@ function assertProtectedWriterStyleFits(
   reservedOutputTokens: number,
 ): void {
   const snapshot = runtime.parsed?.draftContext;
-  if (snapshot?.snapshotVersion === 5 || snapshot?.writerStyleSnapshot) {
+  if (hasFrozenWriterStyleProjection(snapshot)) {
     assertWriterStyleProjectionFits(
       snapshot,
       stage,

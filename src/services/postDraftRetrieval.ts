@@ -16,10 +16,7 @@
  * Rebuild (`buildPostDraftAuditContextFromFrozen`) is pure over frozen data.
  */
 import * as db from './database';
-import {
-  buildContext,
-  resolveStoryStateForRetrieval,
-} from './contextBuilder';
+import { resolveStoryStateForRetrieval } from './contextBuilder';
 import {
   buildEpisodicRetrievalQuery,
   collectStoryRetrievalTerms,
@@ -271,59 +268,6 @@ export function buildPostDraftAuditContextFromFrozen(
     return noop(
       error?.message ? String(error.message) : 'frozen post-draft retrieval error',
     );
-  }
-}
-
-/**
- * Legacy live-DB path. Prefer {@link buildPostDraftAuditContextFromFrozen}
- * for pipeline reconcile. Kept for tests that intentionally exercise live reads.
- */
-export async function buildPostDraftAuditContext(
-  original: PipelineContextSnapshot,
-  draftText: string,
-  projectId: number,
-  chapter: Chapter,
-  contextConfig: ContextConfig,
-): Promise<PostDraftRetrievalResult> {
-  if (!draftText || !draftText.trim()) {
-    return {
-      snapshot: original,
-      episodicHitsAdded: 0,
-      worldbookHitsAdded: 0,
-      characterHitsAdded: 0,
-      fellBack: true,
-      fallbackReason: 'empty draft',
-    };
-  }
-  if (!chapter || typeof chapter.position !== 'number') {
-    return {
-      snapshot: original,
-      episodicHitsAdded: 0,
-      worldbookHitsAdded: 0,
-      characterHitsAdded: 0,
-      fellBack: true,
-      fallbackReason: 'invalid chapter',
-    };
-  }
-  // Capture then pure rebuild so even the legacy entry freezes one snapshot.
-  try {
-    const frozen = await captureFrozenAuditCandidates(
-      chapter,
-      projectId,
-      contextConfig,
-    );
-    return buildPostDraftAuditContextFromFrozen(original, draftText, frozen);
-  } catch (error: any) {
-    return {
-      snapshot: original,
-      episodicHitsAdded: 0,
-      worldbookHitsAdded: 0,
-      characterHitsAdded: 0,
-      fellBack: true,
-      fallbackReason: error?.message
-        ? String(error.message)
-        : 'post-draft retrieval error',
-    };
   }
 }
 
@@ -703,34 +647,6 @@ function extractCharacterNames(text: string): string[] {
  * post-draft retrieval on top. Exposed for tests and for callers that want a
  * one-shot "draft snapshot + post-draft audit snapshot" pipeline.
  */
-export async function buildSnapshotWithPostDraftRetrieval(
-  chapter: Chapter,
-  config: ContextConfig,
-  projectId: number,
-  preset: Parameters<typeof buildContext>[3],
-  options: Parameters<typeof buildContext>[4],
-  draftText: string,
-): Promise<{
-  baseSnapshot: PipelineContextSnapshot;
-  auditSnapshot: PipelineContextSnapshot;
-  retrieval: PostDraftRetrievalResult;
-}> {
-  const built = await buildContext(chapter, config, projectId, preset, options);
-  const baseSnapshot = built.pipelineContext;
-  const retrieval = await buildPostDraftAuditContext(
-    baseSnapshot,
-    draftText,
-    projectId,
-    chapter,
-    config,
-  );
-  return {
-    baseSnapshot,
-    auditSnapshot: retrieval.snapshot,
-    retrieval,
-  };
-}
-
 // Re-export so callers / tests can inspect the pure helpers if needed.
 export const __debug = {
   extractChapterIdsFromEpisodicText,

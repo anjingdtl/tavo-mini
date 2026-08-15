@@ -37,7 +37,7 @@ jest.mock('../src/utils/idfCache', () => ({
   setCachedIdf: jest.fn(),
 }));
 
-import { buildPostDraftAuditContext } from '../src/services/postDraftRetrieval';
+import { buildPostDraftAuditContext } from '../src/services/pipeline/legacy/legacyPostDraftRetrieval';
 import type { Chapter } from '../src/types/novel';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import * as db from '../src/services/database';
