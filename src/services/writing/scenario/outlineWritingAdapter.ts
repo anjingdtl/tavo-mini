@@ -1,6 +1,8 @@
 import { v4 } from '../../uuidBridge';
 import { sha256Hex } from '../../continuation/hashUtils';
+import type { Chapter } from '../../../types/novel';
 import type {
+  OutlineSourceContext,
   OutlineWritingSourceInput,
   WritingSource,
   WritingSourceBundle,
@@ -28,6 +30,34 @@ function source(input: {
     requirement: input.requirement,
     activation: input.activation ?? 'automatic',
     metadata: input.metadata,
+  };
+}
+
+/**
+ * Resolve the mandatory outline source without allowing an empty compiler
+ * outline to bypass the Source Adapter. A chapter title/synopsis is the
+ * explicit, deterministic fallback for outline-mode chapters that have no
+ * separate outline row.
+ */
+export function resolveOutlineWritingSourceContext(input: {
+  chapter: Pick<Chapter, 'id' | 'title' | 'synopsis'>;
+  context: OutlineSourceContext;
+}): OutlineSourceContext {
+  const originalOutlineText = input.context.outlineText.trim();
+  const outlineText =
+    originalOutlineText ||
+    [input.chapter.title, input.chapter.synopsis].filter(Boolean).join('\n').trim() ||
+    '按当前章节定义完成本章写作。';
+  return {
+    ...input.context,
+    outlineText,
+    outlineFingerprint:
+      input.context.outlineFingerprint.trim() || sha256Hex(outlineText),
+    outlineIds:
+      input.context.outlineIds.length > 0
+        ? input.context.outlineIds
+        : [input.chapter.id],
+    outlineComplete: input.context.outlineComplete || !originalOutlineText,
   };
 }
 

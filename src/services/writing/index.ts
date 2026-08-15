@@ -5,6 +5,7 @@ export * from './trace/writingSourceTrace';
 export {
   adaptOutlineWritingSources,
   buildOutlineWritingSourceBundle,
+  resolveOutlineWritingSourceContext,
 } from './scenario/outlineWritingAdapter';
 export {
   adaptContinuationWritingSources,

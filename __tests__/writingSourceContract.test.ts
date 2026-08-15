@@ -2,6 +2,7 @@ import {
   adaptContinuationWritingSources,
   adaptOutlineWritingSources,
   fingerprintWritingSourceBundle,
+  resolveOutlineWritingSourceContext,
   validateWritingSourceBundle,
 } from '../src/services/writing';
 import { WRITING_GOLDEN_FIXTURES } from '../src/services/writing/regression/writingGoldenFixtures';
@@ -96,6 +97,25 @@ describe('Writing Source Interface Unification / Phase I', () => {
     expect(continuation.trace.scenario).toBe('continuation');
     expect(outline.bundle.mandatory.map(item => item.kind)).toEqual(expect.arrayContaining(['instruction', 'chapter', 'outline', 'preset']));
     expect(continuation.bundle.mandatory.map(item => item.kind)).toEqual(expect.arrayContaining(['instruction', 'canon', 'source_boundary', 'seam']));
+  });
+
+  it('keeps the outline adapter on the path when compiler outline text is empty', () => {
+    const input = outlineInput();
+    const context = resolveOutlineWritingSourceContext({
+      chapter: input.chapter,
+      context: {
+        ...input.context,
+        outlineText: '',
+        outlineFingerprint: '',
+        outlineIds: [],
+        outlineComplete: false,
+      },
+    });
+    expect(context.outlineText).toContain('发现线索');
+    expect(context.outlineFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(context.outlineIds).toEqual([11]);
+    expect(context.outlineComplete).toBe(true);
+    expect(adaptOutlineWritingSources({ ...input, context }).trace.sourceCandidateCount).toBeGreaterThan(0);
   });
 
   it('keeps source hashes and fingerprints deterministic across ten builds', () => {
