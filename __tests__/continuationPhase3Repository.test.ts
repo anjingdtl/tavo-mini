@@ -2502,7 +2502,10 @@ describe('continuation Phase 3 repository coverage', () => {
         } as any,
       ]).length,
     ).toBe(2);
-    expect(compileStateExtractionMessages('正文', '[]').length).toBe(2);
+    const stateExtractionMessages = compileStateExtractionMessages('正文', '[]');
+    expect(stateExtractionMessages.length).toBe(2);
+    expect(stateExtractionMessages[0].content).toContain('UTF-16 长度为 2');
+    expect(stateExtractionMessages[0].content).toContain('可以返回 {"proposals":[]}');
     expect(
       uncheckedCategories(
         {
