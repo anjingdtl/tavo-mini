@@ -816,3 +816,42 @@ PDCA 与真实仓库状态一致
 作为唯一完成标准。
 
 > **本轮必须保持克制：当前核心架构已经基本成立，真正需要解决的是最后两个 CI 阻断和 Seal 证据闭环。不要重新开启架构建设。**
+
+---
+
+# 18. 执行完成记录（Agent 回写，2026-08-15）
+
+## Round 执行结果
+
+| Round | Gate | 结果 |
+|-------|------|------|
+| 0 基线锁定 | GO-0 | PASS：本地 HEAD = origin/main = `c975155ef42303a89cfeb4c4507103866ad2e9d6`；工作区仅本方案文档未跟踪，无其他改动，未 reset/clean |
+| 1 复现 CI 错误 | GO-1 | PASS：`npm run lint` exit 1，2 errors + 202 warnings，与 Verify #296 完全一致（`__tests__/batchPlanner.test.ts:414:12` msgs、`src/services/contextAutoAllocator.ts:16:3` serializeContextAutomationPolicy） |
+| 2 最小修复 | GO-2 | PASS：删 1 行未使用 import（第 42 行 `export {} from` 再导出不受影响）；`[msgs,` → `[,`（与同文件 line 433 惯用写法一致）；修复后 lint 0 errors / 202 warnings；diff 共 +1/-2 行代码 |
+| 3 本地完整验证 | GO-3 | PASS：verify:version ok V2.11.52 versionCode=2115200；lint exit 0；typecheck exit 0；test:ci exit 0（424 suites passed / 3 skipped；3344 tests passed / 8 skipped） |
+| 4 Android/迁移 | GO-4 | PASS：`npm test -- migration --runInBand` exit 0（43 suites / 206 tests）；`npm run apk:debug` exit 0（`dist/apk/debug/ShineWriter-V2.11.52-debug.apk`，56.82 MB）；emulator-5554 `adb install -r` Success（无 uninstall / 无 pm clear / 无清库）；冷启动 COLD 1708ms，MainActivity 前台，无 FATAL / 无 AndroidRuntime 崩溃 / ReactNativeJS:E 为空 |
+| 5 防回归抽查 | GO-5 | PASS：pipelineContextSnapshotV5 / activeStyleResolver / contextAutoAllocator V2+V3 / noteSemanticsV7Regression / contextBuilderNoteMode / multiChapterBatchBudget / continuationBatchSchema / batchPlanner+adaptive / continuationBatchAdapter / continuationBatchPlanner = 12 suites / 139 tests 全过 |
+| 7 Commit/Push | GO-7 | PASS：单一收束 commit `122af8db`（显式逐文件 stage，未用 `git add .`），push `c975155e..122af8db` 成功，无强推 |
+| 8 远端 Actions 硬门 | — | PASS：Verify run `31877355451`：JavaScript validation SUCCESS（Version/Lint/TypeScript/Jest 四步均真实执行，无 skipped）、Android Debug build SUCCESS、Migration matrix SUCCESS |
+
+## 事实澄清
+
+- 第 7 节 push 前的 `git fetch` 出现一次网络瞬断（curl 28 connection reset），重试成功，非仓库问题。
+- Verify #296（run `31872426112`，HEAD `c975155e`）的失败根因确认为且仅为 2 个 lint error；修复后同 HEAD 血统的 run `31877355451` 三 Job 全绿。
+
+## 最终判定
+
+```text
+新 P0 = 0
+新 P1 = 0
+本轮剩余 NO-GO = 0
+GitHub Actions Verify = 全绿（run 31877355451，JS 四步无 skipped）
+→ GO / SEALED
+```
+
+Known Existing Issues（既有，非本轮 NO-GO，未触碰）：
+
+```text
+A. continuationStateOutboxWorker：状态提取模型可能返回 reasoning-only / 空正文
+B. storyMemory v2：checkpoint rebuild 可能事务失败
+```

@@ -196,3 +196,19 @@
   可能返回 reasoning-only / 空正文；story-memory v2 checkpoint rebuild 可能事务失败。
 - 提交与 push：已完成本轮收束 commit 并 push main（最终 commit SHA、Actions Run ID
   与三 Job 结果见下方「最终 Seal 证据」节，以 push 后远端实测为准）。
+
+## 7. 最终 Seal 证据（push 后远端实测回写，2026-08-15）
+
+- Seal（代码收束）commit：`122af8dbf3c424cd9af24a127ed6a749ecc661c8`
+  （`fix: seal architecture precision closure`，4 files：2 个最小代码修复 + 2 个 PDCA 文档）。
+- GitHub Actions Verify：run `31877355451`
+  （https://github.com/anjingdtl/tavo-mini/actions/runs/31877355451 ，触发于 push `c975155e..122af8db`）：
+  - JavaScript validation = SUCCESS（4m37s；步骤级实测：Version consistency / Lint /
+    TypeScript / Jest (CI mode) 四步均 `completed/success`，**无 skipped**——Verify #296
+    中 TypeScript 与 Jest 被跳过的失败模式已消除）；
+  - Android Debug build = SUCCESS（6m38s）；
+  - Migration matrix = SUCCESS（40s）。
+- 本节为 docs-only 证据回写，不含任何代码改动；本回写 commit push 后即为最终封版
+  main HEAD，其自身触发的 Verify 运行结果以仓库 Actions 历史为准（同样要求全绿）。
+- 最终判定：新 P0 = 0、新 P1 = 0、本轮剩余 NO-GO = 0、Verify 三 Job 全绿
+  → **GO / SEALED**。
