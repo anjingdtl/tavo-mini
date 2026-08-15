@@ -185,6 +185,45 @@ describe('lenient planning (user-friendly output)', () => {
   });
 });
 
+describe('JSON-shaped but unparseable output (regression: raw JSON must never become a synopsis)', () => {
+  /** Shape captured from a real truncated planner response (finish_reason=length). */
+  const truncatedJson =
+    '{\n  "chapters": [\n    {\n      "ordinal": 1,\n' +
+    '      "title": "第1章·灯塔之外",\n' +
+    '      "synopsis": "清晨，三人来到灯塔外墙寻找旧档案馆标记。",\n' +
+    '      "keyBeats": [\n        "沿灯塔外墙搜寻旧档案馆标记",\n' +
+    '        "确认北塔入口保持关闭",\n        "不进入北塔内部",\n' +
+    '        "将标记位置拍照存档"';
+
+  it('fails closed on truncated JSON instead of feeding it to the lenient fallback', () => {
+    const result = parseBatchChapterPlan(truncatedJson, 2);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.some(e => e.includes('无法解析'))).toBe(true);
+  });
+
+  it('fails closed on truncated JSON inside a closed markdown fence', () => {
+    const result = parseBatchChapterPlan(
+      '```json\n' + truncatedJson + '\n```',
+      2,
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('still falls back for brace-free prose output', () => {
+    const result = parseBatchChapterPlan(
+      '第一段摘要内容。\n\n第二段摘要内容。',
+      2,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('extractPlanJson repairs dangling commas after a strict-parse failure', () => {
+    const json = extractPlanJson('{"chapters": [],}');
+    expect(json).toEqual({ chapters: [] });
+  });
+});
+
 describe('planner hash + edited plan', () => {
   it('freezes a deterministic hash', () => {
     const hash1 = computePlannerHash(validPlan);
@@ -269,9 +308,10 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
   });
 
   it('repairs invalid structure exactly once using the frozen raw output', async () => {
+    const firstShot = JSON.stringify({ chapters: [validPlan.chapters[0]] }); // missing chapter
     mockCallLLMResult
       .mockResolvedValueOnce({
-        text: JSON.stringify({ chapters: [validPlan.chapters[0]] }), // missing chapter
+        text: firstShot,
         inputTokens: 10,
         outputTokens: 20,
         totalTokens: 30,
@@ -285,11 +325,14 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
     const result = await createBatchChapterPlan(baseInput);
     expect(result.usedRepair).toBe(true);
     expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
-    // Repair reuses the frozen original messages + fix instruction.
+    // Repair reuses the frozen original messages + fix instruction, and the
+    // stateless API can only see its previous output if we resend it.
     const secondCall = mockCallLLMResult.mock.calls[1][0] as any[];
     const repairText = secondCall[secondCall.length - 1].content;
     expect(repairText).toContain('仅修复 JSON 结构');
     expect(repairText).toContain('必须严格等于 2');
+    expect(repairText).toContain('<previous_output>');
+    expect(repairText).toContain(firstShot);
   });
 
   it('fails with BATCH_PLAN_INVALID when repair output is still invalid', async () => {
@@ -315,5 +358,80 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
       createBatchChapterPlan({ ...baseInput, sourcePrompt: '   ' }),
     ).rejects.toMatchObject({ code: 'BATCH_PLAN_INVALID' });
     expect(mockCallLLMResult).not.toHaveBeenCalled();
+  });
+
+  it('repairs a length-truncated first shot exactly once, with a truncation-aware fix instruction', async () => {
+    const truncatedFirstShot =
+      '{\n  "chapters": [\n    {\n      "ordinal": 1,\n      "title": "截断章",\n      "synopsis": "内容被 max_tokens 截';
+    mockCallLLMResult
+      .mockResolvedValueOnce({
+        text: truncatedFirstShot,
+        finishReason: 'length',
+        inputTokens: 10,
+        outputTokens: 4000,
+        totalTokens: 4010,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify(validPlan),
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+      });
+    const result = await createBatchChapterPlan(baseInput);
+    expect(result.usedRepair).toBe(true);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+    const secondCall = mockCallLLMResult.mock.calls[1][0] as any[];
+    const repairText = secondCall[secondCall.length - 1].content;
+    expect(repairText).toContain('截断');
+    expect(repairText).toContain(truncatedFirstShot);
+  });
+
+  it('throws with a truncation hint when the repair output is still truncated', async () => {
+    mockCallLLMResult.mockResolvedValue({
+      text: '{"chapters": [{"ordinal": 1, "title": "截',
+      finishReason: 'length',
+      inputTokens: 10,
+      outputTokens: 4000,
+      totalTokens: 4010,
+    });
+    await expect(createBatchChapterPlan(baseInput)).rejects.toThrow(
+      /截断/,
+    );
+    await expect(createBatchChapterPlan(baseInput)).rejects.toMatchObject({
+      code: 'BATCH_PLAN_INVALID',
+    });
+  });
+
+  it('honors the configured max_output_tokens as the wire cap (window math permitting)', async () => {
+    mockCallLLMResult.mockResolvedValue({
+      text: JSON.stringify(validPlan),
+      inputTokens: 10,
+      outputTokens: 20,
+      totalTokens: 30,
+    });
+    await createBatchChapterPlan(baseInput);
+    // beforeEach config: context_window 128000, max_output_tokens 8000.
+    const [msgs, maxTokensArg, options] = mockCallLLMResult.mock.calls[0];
+    expect(maxTokensArg).toBe(8000);
+    expect((options as any).max_tokens).toBe(8000);
+  });
+
+  it('keeps the 4000 reservation cap when max_output_tokens is unset', async () => {
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      id: 1,
+      context_window: 128000,
+      model_name: 'm',
+      provider_type: 'openai_compatible',
+    });
+    mockCallLLMResult.mockResolvedValue({
+      text: JSON.stringify(validPlan),
+      inputTokens: 10,
+      outputTokens: 20,
+      totalTokens: 30,
+    });
+    await createBatchChapterPlan(baseInput);
+    const [, maxTokensArg, options] = mockCallLLMResult.mock.calls[0];
+    expect(maxTokensArg).toBe(4000);
+    expect((options as any).max_tokens).toBe(4000);
   });
 });

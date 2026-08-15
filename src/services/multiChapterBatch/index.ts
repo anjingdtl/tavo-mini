@@ -18,6 +18,7 @@ export {
   validateBatchChapterPlan,
   parseBatchChapterPlan,
   computePlannerHash,
+  resolvePlannerWireMaxTokens,
   normalizeEditedPlan,
   BatchPlannerError,
   type CreateBatchChapterPlanResult,

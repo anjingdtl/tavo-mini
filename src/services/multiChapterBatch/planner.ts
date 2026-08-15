@@ -111,8 +111,26 @@ export function parseBatchChapterPlan(
     // 不落入宽松解析——宽松解析只用于模型完全没有输出 JSON 的场景。
     return validateBatchChapterPlan(json, expectedCount);
   }
+  // 形似 JSON 但解析失败（典型：被 max_tokens 截断、悬空逗号之外的语法
+  // 缺陷）同样必须失败闭合。否则宽松回退会把整段残缺 JSON 原文当成
+  // 第 1 章摘要塞进可编辑计划并冻结 hash，污染后续章节生成注入。
+  if (looksLikeJsonPlan(rawText)) {
+    return {
+      ok: false,
+      errors: ['模型输出形似 JSON 但无法解析（可能被输出长度截断或存在语法错误）'],
+    };
+  }
   // 宽松回退：输出不是严格 JSON 时按章节摘要解析。
   return parseBatchPlanFallback(rawText, expectedCount);
+}
+
+/** 去掉代码块围栏后以 { / [ 开头 —— 模型明确打算输出 JSON 的信号。 */
+function looksLikeJsonPlan(rawText: string): boolean {
+  let text = String(rawText || '').trim();
+  if (!text) return false;
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  return text.startsWith('{') || text.startsWith('[');
 }
 
 /**
@@ -134,7 +152,14 @@ export function extractPlanJson(rawText: string): unknown | null {
   try {
     return JSON.parse(text);
   } catch {
-    return null;
+    // 悬空逗号是模型 JSON 输出的高频缺陷。仅在严格解析已失败时才尝试
+    // 去掉 `,}` / `,]` 再解析一次：正常路径零影响；字符串内容里恰好含
+    // 该序列的极端场景最多让这次兜底也失败，仍返回 null 走失败分支。
+    try {
+      return JSON.parse(text.replace(/,\s*([}\]])/g, '$1'));
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -254,10 +279,52 @@ export function normalizeEditedPlan(
   return validateBatchChapterPlan({ chapters: items }, expectedCount);
 }
 
-const FIX_INSTRUCTION = (errors: string[]) => `
+const FIX_INSTRUCTION = (
+  errors: string[],
+  previousOutput: string,
+  lengthTruncated = false,
+) => `
 上一次输出的 JSON 结构不合法，错误如下：
 ${errors.map(e => `- ${e}`).join('\n')}
-请基于你刚才输出的内容，仅修复 JSON 结构，重新输出完整 JSON（不要解释）。`;
+${
+  lengthTruncated
+    ? '上一次输出疑似被输出长度上限截断：请大幅精简每章 synopsis 与 keyBeats，控制总长度，确保完整 JSON 能在限额内输出。\n'
+    : ''
+}你上一次的原始输出如下（供修复时参考，可能不完整）：
+<previous_output>
+${previousOutput}
+</previous_output>
+请基于该输出，仅修复 JSON 结构，重新输出完整 JSON（不要解释）。`;
+
+/**
+ * Planner wire max_tokens. The elastic compiler only sizes the INPUT side;
+ * the output side is the fixed `reservedOutputTokens` reservation (default
+ * 4000) — one constant doubling as the context-window reservation AND the
+ * wire cap. Reasoning models count chain-of-thought inside completion
+ * tokens, so a 4000 cap can starve the visible JSON and truncate it
+ * mid-stream (finish_reason=length). When the user configured an explicit
+ * max_output_tokens, honor it as the wire cap up to what the compiled
+ * window math allows (input + output ≤ window − safety margin), with the
+ * reservation as the floor. Unset configs keep the legacy reservation cap.
+ */
+export function resolvePlannerWireMaxTokens(input: {
+  reservedOutputTokens: number;
+  maxOutputTokens?: number | null;
+  contextWindow?: number | null;
+  estimatedInputTokens?: number | null;
+  safetyMargin?: number | null;
+}): number {
+  const reserved = Math.max(0, Number(input.reservedOutputTokens) || 0);
+  const configuredMax = Number(input.maxOutputTokens) || 0;
+  const contextWindow = Number(input.contextWindow) || 0;
+  if (!(configuredMax > 0) || !(contextWindow > 0)) {
+    return reserved;
+  }
+  const margin = Math.max(0, Number(input.safetyMargin) || 0);
+  const estimatedInput = Math.max(0, Number(input.estimatedInputTokens) || 0);
+  const ceiling = Math.max(0, contextWindow - estimatedInput - margin);
+  return Math.max(reserved, Math.min(configuredMax, ceiling));
+};
 
 export interface CreateBatchChapterPlanResult {
   plan: BatchChapterPlan;
@@ -409,6 +476,13 @@ export async function createBatchChapterPlan(
   }
   const ready = requireReadyStageRequest(compiled);
   const messages = ready.messages;
+  const wireMaxTokens = resolvePlannerWireMaxTokens({
+    reservedOutputTokens,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    contextWindow,
+    estimatedInputTokens: ready.estimatedInputTokens,
+    safetyMargin: ready.safetyMargin,
+  });
   const requestJson = JSON.stringify({
     messages,
     maxTokens: reservedOutputTokens,
@@ -416,16 +490,20 @@ export async function createBatchChapterPlan(
   });
   const requestFingerprint = sha256Hex(requestJson).slice(0, 32);
 
+  let sawLengthFinish = false;
   const runPlannerCall = async (msgs: ChatMessage[]) => {
-    const result = await callLLMResult(msgs, reservedOutputTokens, {
+    const result = await callLLMResult(msgs, wireMaxTokens, {
       requestConfig,
       scenario: 'batch_planner',
       temperature: 0.7,
       top_p: 0.9,
-      max_tokens: reservedOutputTokens,
+      max_tokens: wireMaxTokens,
       responseFormat: 'json_object',
       projectId: input.projectId,
     });
+    if (result.finishReason === 'length') {
+      sawLengthFinish = true;
+    }
     return result.text || '';
   };
 
@@ -439,7 +517,11 @@ export async function createBatchChapterPlan(
       ...messages,
       {
         role: 'user',
-        content: FIX_INSTRUCTION(validation.errors),
+        content: FIX_INSTRUCTION(
+          validation.errors,
+          rawText,
+          sawLengthFinish,
+        ),
       },
     ];
     rawText = await runPlannerCall(repairMessages);
@@ -449,7 +531,11 @@ export async function createBatchChapterPlan(
   if (!validation.ok) {
     throw new BatchPlannerError(
       'BATCH_PLAN_INVALID',
-      `规划输出不合法：${validation.errors.join('；')}`,
+      `规划输出不合法：${validation.errors.join('；')}${
+        sawLengthFinish
+          ? '（模型输出疑似被 max_tokens 截断，可在 LLM 设置中调大最大输出长度后重试）'
+          : ''
+      }`,
     );
   }
   const hash = computePlannerHash(validation.plan);

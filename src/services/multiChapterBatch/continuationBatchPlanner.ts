@@ -20,6 +20,7 @@ import {
 import {
   parseBatchChapterPlan,
   computePlannerHash,
+  resolvePlannerWireMaxTokens,
 } from './planner';
 import {
   BATCH_MAX_CHAPTERS,
@@ -322,10 +323,22 @@ export interface CreateContinuationBatchPlanInput {
   reservedOutputTokens?: number;
 }
 
-const FIX_INSTRUCTION = (errors: string[]) => `
+const FIX_INSTRUCTION = (
+  errors: string[],
+  previousOutput: string,
+  lengthTruncated = false,
+) => `
 上一次输出的 JSON 结构不合法，错误如下：
 ${errors.map(e => `- ${e}`).join('\n')}
-请基于你刚才输出的内容，仅修复 JSON 结构，重新输出完整 JSON（不要解释）。`;
+${
+  lengthTruncated
+    ? '上一次输出疑似被输出长度上限截断：请大幅精简每章 synopsis 与 keyBeats，控制总长度，确保完整 JSON 能在限额内输出。\n'
+    : ''
+}你上一次的原始输出如下（供修复时参考，可能不完整）：
+<previous_output>
+${previousOutput}
+</previous_output>
+请基于该输出，仅修复 JSON 结构，重新输出完整 JSON（不要解释）。`;
 
 /**
  * Run the continuation planner: compile → LLM → strict validation → (once)
@@ -377,6 +390,13 @@ export async function createContinuationBatchChapterPlan(
   }
   const ready = requireReadyStageRequest(compiled);
   const messages = ready.messages;
+  const wireMaxTokens = resolvePlannerWireMaxTokens({
+    reservedOutputTokens,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    contextWindow,
+    estimatedInputTokens: ready.estimatedInputTokens,
+    safetyMargin: ready.safetyMargin,
+  });
   const requestJson = JSON.stringify({
     messages,
     maxTokens: reservedOutputTokens,
@@ -384,16 +404,20 @@ export async function createContinuationBatchChapterPlan(
   });
   const requestFingerprint = sha256Hex(requestJson).slice(0, 32);
 
+  let sawLengthFinish = false;
   const runPlannerCall = async (msgs: ChatMessage[]) => {
-    const result = await callLLMResult(msgs, reservedOutputTokens, {
+    const result = await callLLMResult(msgs, wireMaxTokens, {
       requestConfig,
       scenario: 'batch_planner',
       temperature: 0.7,
       top_p: 0.9,
-      max_tokens: reservedOutputTokens,
+      max_tokens: wireMaxTokens,
       responseFormat: 'json_object',
       projectId: input.projectId,
     });
+    if (result.finishReason === 'length') {
+      sawLengthFinish = true;
+    }
     return result.text || '';
   };
 
@@ -403,7 +427,14 @@ export async function createContinuationBatchChapterPlan(
   if (!validation.ok) {
     const repairMessages: ChatMessage[] = [
       ...messages,
-      { role: 'user', content: FIX_INSTRUCTION(validation.errors) },
+      {
+        role: 'user',
+        content: FIX_INSTRUCTION(
+          validation.errors,
+          rawText,
+          sawLengthFinish,
+        ),
+      },
     ];
     rawText = await runPlannerCall(repairMessages);
     validation = parseBatchChapterPlan(rawText, input.chapterCount);
@@ -412,7 +443,11 @@ export async function createContinuationBatchChapterPlan(
   if (!validation.ok) {
     throw new ContinuationBatchPlannerError(
       'BATCH_PLAN_INVALID',
-      `续写规划输出不合法：${validation.errors.join('；')}`,
+      `续写规划输出不合法：${validation.errors.join('；')}${
+        sawLengthFinish
+          ? '（模型输出疑似被 max_tokens 截断，可在 LLM 设置中调大最大输出长度后重试）'
+          : ''
+      }`,
     );
   }
   const hash = computePlannerHash(validation.plan);

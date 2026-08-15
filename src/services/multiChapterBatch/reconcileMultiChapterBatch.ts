@@ -110,6 +110,17 @@ async function loadTaskStatuses(
   return task ? { [item.activePipelineTaskId]: String(task.status) } : {};
 }
 
+/** taskId → persisted task error (local fail-fast causes, no LLM attempt). */
+async function loadTaskErrors(
+  item: MultiChapterBatchItemRow | undefined,
+): Promise<Record<string, string | null>> {
+  if (!item?.activePipelineTaskId) return {};
+  const task = await getPipelineTaskSummaryById(item.activePipelineTaskId);
+  return task
+    ? { [item.activePipelineTaskId]: task.error ? String(task.error) : null }
+    : {};
+}
+
 async function loadTaskVersions(
   item: MultiChapterBatchItemRow | undefined,
 ): Promise<{
@@ -281,6 +292,7 @@ export async function reconcileMultiChapterBatch(
       const currentItem = items.find(i => i.ordinal === batch.currentOrdinal);
       const taskStatuses = await loadTaskStatuses(currentItem);
       const taskVersions = await loadTaskVersions(currentItem);
+      const taskErrors = await loadTaskErrors(currentItem);
       const latestAttempts = (await loadLatestAttempts(currentItem)) as Record<
         string,
         any
@@ -290,6 +302,7 @@ export async function reconcileMultiChapterBatch(
         batch,
         items,
         taskStatuses,
+        taskErrors,
         ...taskVersions,
         latestAttempts,
       });
@@ -683,6 +696,23 @@ async function executeBatchAction(params: {
         errorCode: 'BATCH_LLM_OUTCOME_UNKNOWN',
       });
       return 'stop';
+
+    case 'pause_task_failed': {
+      // 本地确定性失败（未发出任何请求，如上下文/风格校验拦截）：
+      // 展示真实原因，不用"结果未知"话术与重复费用警告误导用户。
+      const message =
+        action.errorMessage || '章节任务在本地校验阶段失败，请查看任务详情';
+      await updateBatchItem(batchId, action.ordinal, {
+        status: 'failed',
+        errorCode: 'BATCH_PIPELINE_FAILED',
+        errorMessage: message,
+      });
+      await updateBatchStatus(batchId, 'paused_user', {
+        errorCode: 'BATCH_PIPELINE_FAILED',
+        errorMessage: message,
+      });
+      return 'stop';
+    }
 
     case 'pause_response_invalid':
       await updateBatchItem(batchId, action.ordinal, {

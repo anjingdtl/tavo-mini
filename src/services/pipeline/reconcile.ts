@@ -2044,16 +2044,22 @@ async function loadRuntime(
     }
     writerStyle = freezeWriterStyle(asset);
   }
-  const activePreset = presetFromFrozen({
-    id: writerStyle.assetId,
-    name: writerStyle.assetName,
-    system_prompt: writerStyle.stageProjections.draft.text,
-    writing_style: '',
-    extra_instructions: '',
-    temperature: writerStyle.samplerResolution.temperature ?? 0.7,
-    top_p: writerStyle.samplerResolution.topP ?? 1,
-    max_tokens: 0,
-  });
+  // Baseline (assetId 0) must NOT be synthesized into a Preset: the V7
+  // preset-source contract only accepts user-selected styles with real ids,
+  // and an id-0 preset makes parseFrozenPresetSource block generation.
+  const activePreset =
+    Number(writerStyle.assetId) > 0
+      ? presetFromFrozen({
+          id: writerStyle.assetId,
+          name: writerStyle.assetName,
+          system_prompt: writerStyle.stageProjections.draft.text,
+          writing_style: '',
+          extra_instructions: '',
+          temperature: writerStyle.samplerResolution.temperature ?? 0.7,
+          top_p: writerStyle.samplerResolution.topP ?? 1,
+          max_tokens: 0,
+        })
+      : null;
   return {
     parsed,
     config,

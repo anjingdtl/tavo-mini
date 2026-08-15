@@ -353,6 +353,53 @@ describe('continuation batch planner', () => {
       expect(result.plan.chapters[0].keyBeats.length).toBeGreaterThan(0);
     });
 
+    it('repairs length-truncated JSON once instead of using it as a synopsis (regression)', async () => {
+      mockCall
+        .mockResolvedValueOnce({
+          text: '{\n  "chapters": [\n    {\n      "ordinal": 1,\n      "title": "夜访旧宅",\n      "synopsis": "主角深夜再访旧宅，寻找密',
+          finishReason: 'length',
+        })
+        .mockResolvedValueOnce({ text: VALID_PLAN_JSON });
+      const result = await createContinuationBatchChapterPlan({
+        projectId: 1,
+        sourcePrompt: '本批目标',
+        chapterCount: 2,
+        targetWordsPerChapter: 3000,
+        materials: await collectContinuationBatchPlannerMaterials(1),
+      });
+      expect(result.usedRepair).toBe(true);
+      expect(mockCall).toHaveBeenCalledTimes(2);
+      expect(result.plan.chapters).toHaveLength(2);
+      expect(result.plan.chapters[0].synopsis).not.toContain('"chapters"');
+      const secondCall = mockCall.mock.calls[1][0] as any[];
+      expect(secondCall[secondCall.length - 1].content).toContain('截断');
+    });
+
+    it('fails closed with a truncation hint when repair stays truncated', async () => {
+      mockCall.mockResolvedValue({
+        text: '{"chapters": [{"ordinal": 1, "title": "夜',
+        finishReason: 'length',
+      });
+      await expect(
+        createContinuationBatchChapterPlan({
+          projectId: 1,
+          sourcePrompt: '本批目标',
+          chapterCount: 2,
+          targetWordsPerChapter: 3000,
+          materials: await collectContinuationBatchPlannerMaterials(1),
+        }),
+      ).rejects.toThrow(ContinuationBatchPlannerError);
+      await expect(
+        createContinuationBatchChapterPlan({
+          projectId: 1,
+          sourcePrompt: '本批目标',
+          chapterCount: 2,
+          targetWordsPerChapter: 3000,
+          materials: await collectContinuationBatchPlannerMaterials(1),
+        }),
+      ).rejects.toThrow(/截断/);
+    });
+
     it('throws BATCH_CONTEXT_BUDGET_BLOCKED with 0 LLM calls on protected overflow', async () => {
       testLlmConfig.context_window = 2000;
       try {

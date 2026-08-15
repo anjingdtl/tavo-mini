@@ -206,3 +206,6 @@ scripts/zswebdav-put.ps1
 
 # Local LLM probe keys (never commit)
 /docs/TEST-MINI*
+
+# Local QA scratch (contains device DB backups with user data - never commit)
+/.qa-tmp/

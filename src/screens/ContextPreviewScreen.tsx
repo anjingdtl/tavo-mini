@@ -434,18 +434,23 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         }
         previewWriterStyle = freezeWriterStyle(asset);
       }
-      const previewPreset = {
-        id: previewWriterStyle.assetId ?? 0,
-        project_id: chapter.project_id,
-        name: previewWriterStyle.assetName,
-        is_default: 0,
-        system_prompt: previewWriterStyle.stageProjections.draft.text,
-        writing_style: '',
-        extra_instructions: '',
-        temperature: previewWriterStyle.samplerResolution.temperature ?? 0.7,
-        top_p: previewWriterStyle.samplerResolution.topP ?? 1,
-        max_tokens: 0,
-      };
+      // 与 reconcile.loadRuntime 同一契约：基线（assetId 0）不得合成为
+      // Preset——V7 冻结源只接受真实 id，id 0 会让预览 fail-closed。
+      const previewPreset =
+        Number(previewWriterStyle.assetId) > 0
+          ? {
+              id: previewWriterStyle.assetId as number,
+              project_id: chapter.project_id,
+              name: previewWriterStyle.assetName,
+              is_default: 0,
+              system_prompt: previewWriterStyle.stageProjections.draft.text,
+              writing_style: '',
+              extra_instructions: '',
+              temperature: previewWriterStyle.samplerResolution.temperature ?? 0.7,
+              top_p: previewWriterStyle.samplerResolution.topP ?? 1,
+              max_tokens: 0,
+            }
+          : null;
       const { compileDraftStageRequest } = await import(
         '../services/pipeline/compileStageRequest'
       );

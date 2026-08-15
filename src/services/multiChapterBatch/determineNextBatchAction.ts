@@ -42,6 +42,7 @@ export type MultiChapterBatchAction =
   | { type: 'pause_account_quota'; ordinal: number }
   | { type: 'pause_context_budget'; ordinal: number }
   | { type: 'pause_batch_budget'; ordinal: number }
+  | { type: 'pause_task_failed'; ordinal: number; errorMessage?: string | null }
   | { type: 'pause_project_changed'; ordinal: number }
   | { type: 'adopt_full_result'; ordinal: number }
   | { type: 'adopt_draft_result'; ordinal: number }
@@ -55,6 +56,8 @@ export interface DetermineBatchActionInput {
   items: MultiChapterBatchItemRow[];
   /** taskId → persisted pipeline task status (from SQLite, not UI). */
   taskStatuses?: Record<string, string>;
+  /** taskId → persisted pipeline task error message (local fail-fast causes). */
+  taskErrors?: Record<string, string | null>;
   /** taskId → frozen workflow version, used to block old Resume paths. */
   taskWorkflowVersions?: Record<string, number>;
   /** taskId → frozen context budget version, used to block old Resume paths. */
@@ -299,8 +302,16 @@ function decideFailedItem(
     // Retry budget exhausted → pause for the user.
     return { type: 'pause_unknown_outcome', ordinal };
   }
-  // Generic failure without classification → pause for the user.
-  return { type: 'pause_unknown_outcome', ordinal };
+  // Unclassified local failure (e.g. a fail-fast context/preset validation
+  // error): no request was sent, so "outcome unknown" + duplicate-cost
+  // warnings would mislead. Surface the real cause for the user instead.
+  return {
+    type: 'pause_task_failed',
+    ordinal,
+    errorMessage:
+      latest?.errorMessage ||
+      (taskId ? input.taskErrors?.[taskId] || null : null),
+  };
 }
 
 function isLegacyIncompleteTask(

@@ -384,6 +384,33 @@ describe('determineNextBatchAction — item-level', () => {
     ).toBe('pause_response_invalid');
   });
 
+  it('routes unclassified local failures to pause_task_failed with the real cause', () => {
+    const failedItem = itemRow(1, {
+      chapterId: 10,
+      status: 'running_pipeline',
+      activePipelineTaskId: 't1',
+    });
+    // No stage attempt, task-level error only: a deterministic local
+    // fail-fast (e.g. preset/style validation) that never sent a request.
+    const action = decide({
+      batch: batchRow(),
+      items: [failedItem],
+      taskStatuses: { t1: 'failed' },
+      taskErrors: { t1: '冻结作家风格缺少有效 id，已阻止生成。' },
+    });
+    expect(action.type).toBe('pause_task_failed');
+    if (action.type === 'pause_task_failed') {
+      expect(action.errorMessage).toContain('冻结作家风格缺少有效 id');
+    }
+    // With neither attempt nor task error the action still degrades safely.
+    const bare = decide({
+      batch: batchRow(),
+      items: [failedItem],
+      taskStatuses: { t1: 'failed' },
+    });
+    expect(bare.type).toBe('pause_task_failed');
+  });
+
   it('waits for the persisted retry time, then re-runs', () => {
     const future = Date.now() + 60_000;
     const past = Date.now() - 1_000;

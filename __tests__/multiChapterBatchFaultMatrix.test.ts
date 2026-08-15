@@ -180,10 +180,15 @@ describe('crash-point recovery', () => {
       runPipeline: failingRunner.run as any,
     });
     // 状态机必须把失败落库：批次暂停，而非停留在 running_pipeline。
+    // 无 LLM attempt 的本地失败属于确定性错误：展示真实原因，不落
+    // "结果未知"（那会附带重复费用警告并误导用户走确认重试）。
     const batch = await getBatchById('b1');
-    expect(batch?.status).toBe('paused_timeout_unknown');
+    expect(batch?.status).toBe('paused_user');
+    expect(batch?.errorCode).toBe('BATCH_PIPELINE_FAILED');
+    expect(String(batch?.errorMessage || '')).toContain('模拟网络失败');
     const item = (await getBatchItems('b1'))[0];
-    expect(item.status).toBe('outcome_unknown');
+    expect(item.status).toBe('failed');
+    expect(String(item.errorMessage || '')).toContain('模拟网络失败');
   });
 
   it('resumes with a NEW run after a user-confirmed retry (no deadlock)', async () => {
@@ -230,13 +235,14 @@ describe('crash-point recovery', () => {
         });
       },
     };
-    // 第一次 reconcile：pipeline 失败 → 暂停落库。
+    // 第一次 reconcile：pipeline 失败 → 暂停落库（本地未发请求的确定性
+    // 失败走 pause_task_failed → paused_user，展示真实原因）。
     await reconcileMultiChapterBatch('b1', {
       owner: 'o1',
       runPipeline: flakyRunner.run as any,
     });
     const paused = await getBatchById('b1');
-    expect(paused?.status).toBe('paused_timeout_unknown');
+    expect(paused?.status).toBe('paused_user');
     const pausedItem = (await getBatchItems('b1'))[0];
     const oldTaskId = pausedItem.activePipelineTaskId;
     expect(oldTaskId).toBeTruthy();
