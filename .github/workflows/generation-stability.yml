@@ -37,6 +37,7 @@ jobs:
           __tests__/writingSourceContract.test.ts
           __tests__/writingLegacyRestart.test.ts
           __tests__/writingKernelReconstruction.test.ts
+          __tests__/writingTracePersistence.test.ts
           __tests__/writingSemanticApply.test.ts
           __tests__/continuationV5Contracts.test.ts
           __tests__/goldenJourneysV2.test.ts

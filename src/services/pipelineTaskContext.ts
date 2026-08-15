@@ -46,6 +46,11 @@ import {
   type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
 import { parseFrozenGenerationContextContract } from './context/generation/generationContractValidation';
+import type { WritingKernelTrace } from './writing/contracts/frozenWritingContext';
+import type {
+  WritingScenario,
+  WritingSourceTrace,
+} from './writing/contracts/writingSource';
 
 /** Envelope protocol version stored in pipeline_context_version. */
 export const PIPELINE_TASK_CONTEXT_VERSION = 2 as const;
@@ -357,6 +362,222 @@ function requireNonNegativeFinite(value: unknown, field: string): number {
     );
   }
   return n;
+}
+
+function parseWritingScenario(
+  value: unknown,
+  field: string,
+): WritingScenario {
+  if (value === 'outline' || value === 'continuation') return value;
+  throw new OutlineContextError(
+    'OUTLINE_SNAPSHOT_INVALID',
+    `Writing Trace 字段 ${field} 非法，已阻止恢复。请重新开始生成。`,
+    'restart_task',
+  );
+}
+
+function parseTraceStringList(raw: unknown, field: string): string[] {
+  if (!Array.isArray(raw) || raw.some(value => typeof value !== 'string')) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      `Writing Trace 字段 ${field} 非法，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
+  return raw as string[];
+}
+
+function parseTraceCounter(raw: unknown, field: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      `Writing Trace 字段 ${field} 非法，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
+  return value;
+}
+
+function parseWritingSourceTrace(
+  raw: unknown,
+): WritingSourceTrace | undefined {
+  if (raw == null) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Writing Source Trace 结构无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const sourceAdapter = raw.sourceAdapter;
+  const sourceFingerprint = raw.sourceFingerprint;
+  if (
+    typeof sourceAdapter !== 'string' ||
+    !sourceAdapter.trim() ||
+    typeof sourceFingerprint !== 'string' ||
+    !sourceFingerprint.trim()
+  ) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Writing Source Trace 标识字段无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const scenario = parseWritingScenario(raw.scenario, 'scenario');
+  const sourceCandidateCount = parseTraceCounter(
+    raw.sourceCandidateCount,
+    'sourceCandidateCount',
+  );
+  const mandatoryCount = parseTraceCounter(raw.mandatoryCount, 'mandatoryCount');
+  const preferredCount = parseTraceCounter(raw.preferredCount, 'preferredCount');
+  const optionalCount = parseTraceCounter(raw.optionalCount, 'optionalCount');
+  if (
+    sourceCandidateCount !==
+    mandatoryCount + preferredCount + optionalCount
+  ) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Writing Source Trace 数量不一致，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const legacyRestart =
+    raw.legacyRestart == null
+      ? undefined
+      : isPlainObject(raw.legacyRestart) &&
+        typeof raw.legacyRestart.restartedFromLegacyTaskId === 'string' &&
+        raw.legacyRestart.restartedFromLegacyTaskId.trim()
+      ? {
+          restartedFromLegacyTaskId: raw.legacyRestart.restartedFromLegacyTaskId,
+        }
+      : (() => {
+          throw new OutlineContextError(
+            'OUTLINE_SNAPSHOT_INVALID',
+            'Writing Source Trace legacyRestart 无效，已阻止恢复。请重新开始生成。',
+            'restart_task',
+          );
+        })();
+  return {
+    scenario,
+    sourceAdapter,
+    sourceCandidateCount,
+    mandatoryCount,
+    preferredCount,
+    optionalCount,
+    sourceFingerprint,
+    rejectedSources: parseTraceStringList(raw.rejectedSources, 'rejectedSources'),
+    missingSources: parseTraceStringList(raw.missingSources, 'missingSources'),
+    ...(legacyRestart ? { legacyRestart } : {}),
+  };
+}
+
+const WRITING_KERNEL_STAGES = new Set([
+  'collect',
+  'normalize',
+  'plan',
+  'allocate',
+  'render',
+  'freeze',
+  'draft',
+  'review',
+  'audit',
+  'factCheck',
+  'revision',
+  'proof',
+  'finalValidate',
+  'persist',
+  'postWritingUpdate',
+]);
+
+function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
+  if (raw == null) return undefined;
+  if (!isPlainObject(raw) || Number(raw.version) !== 1) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Writing Kernel Trace 结构或版本无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const stringFields = [
+    'writingRunId',
+    'generationTraceId',
+    'sourceFingerprint',
+    'contextPlanFingerprint',
+    'allocationFingerprint',
+    'renderFingerprint',
+    'freezeFingerprint',
+  ] as const;
+  for (const field of stringFields) {
+    if (typeof raw[field] !== 'string' || !raw[field].trim()) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        `Writing Kernel Trace 字段 ${field} 无效，已阻止恢复。请重新开始生成。`,
+        'restart_task',
+      );
+    }
+  }
+  const writingRunId = raw.writingRunId as string;
+  const generationTraceId = raw.generationTraceId as string;
+  const sourceFingerprint = raw.sourceFingerprint as string;
+  const contextPlanFingerprint = raw.contextPlanFingerprint as string;
+  const allocationFingerprint = raw.allocationFingerprint as string;
+  const renderFingerprint = raw.renderFingerprint as string;
+  const freezeFingerprint = raw.freezeFingerprint as string;
+  if (!Array.isArray(raw.events)) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Writing Kernel Trace events 无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  const events = raw.events.map((event, index) => {
+    if (
+      !isPlainObject(event) ||
+      typeof event.stage !== 'string' ||
+      !WRITING_KERNEL_STAGES.has(event.stage) ||
+      (event.status !== 'started' &&
+        event.status !== 'completed' &&
+        event.status !== 'blocked') ||
+      (event.detail != null && typeof event.detail !== 'string')
+    ) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        `Writing Kernel Trace events[${index}] 无效，已阻止恢复。请重新开始生成。`,
+        'restart_task',
+      );
+    }
+    return {
+      stage: event.stage as WritingKernelTrace['events'][number]['stage'],
+      status: event.status as WritingKernelTrace['events'][number]['status'],
+      ...(typeof event.detail === 'string' ? { detail: event.detail } : {}),
+    };
+  });
+  return {
+    version: 1,
+    writingRunId,
+    generationTraceId,
+    scenario: parseWritingScenario(raw.scenario, 'scenario'),
+    sourceFingerprint,
+    contextPlanFingerprint,
+    allocationFingerprint,
+    renderFingerprint,
+    freezeFingerprint,
+    events,
+    silentContextLossCount: parseTraceCounter(
+      raw.silentContextLossCount,
+      'silentContextLossCount',
+    ),
+    unexpectedLiveReadCount: parseTraceCounter(
+      raw.unexpectedLiveReadCount,
+      'unexpectedLiveReadCount',
+    ),
+    fatalCount: parseTraceCounter(raw.fatalCount, 'fatalCount'),
+    falseAppliedRequirementCount: parseTraceCounter(
+      raw.falseAppliedRequirementCount,
+      'falseAppliedRequirementCount',
+    ),
+  };
 }
 
 function parseFrozenWriterStyle(
@@ -796,6 +1017,12 @@ export function parsePipelineContextSnapshotStrict(
             'OUTLINE_SNAPSHOT_INVALID',
           ),
         }
+      : {}),
+    ...(raw.writingSourceTrace != null
+      ? { writingSourceTrace: parseWritingSourceTrace(raw.writingSourceTrace) }
+      : {}),
+    ...(raw.writingKernelTrace != null
+      ? { writingKernelTrace: parseWritingKernelTrace(raw.writingKernelTrace) }
       : {}),
   };
 
