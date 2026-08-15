@@ -13,7 +13,6 @@
 import {
   cloneDefaultContextAutomationPolicy,
   DEFAULT_CONTEXT_AUTOMATION_POLICY_V2,
-  serializeContextAutomationPolicy,
   type ContextAutomationPolicyV2,
   DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3,
   type OutlinePipelineBudgetPolicyV3,

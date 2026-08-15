@@ -411,7 +411,7 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
     });
     await createBatchChapterPlan(baseInput);
     // beforeEach config: context_window 128000, max_output_tokens 8000.
-    const [msgs, maxTokensArg, options] = mockCallLLMResult.mock.calls[0];
+    const [, maxTokensArg, options] = mockCallLLMResult.mock.calls[0];
     expect(maxTokensArg).toBe(8000);
     expect((options as any).max_tokens).toBe(8000);
   });

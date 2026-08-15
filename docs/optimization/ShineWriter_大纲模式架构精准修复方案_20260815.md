@@ -162,4 +162,37 @@
   schema、冻结 prompt、`frozenRequestJson`、`input_fingerprint` 或旧版本兼容判定；
   `git diff --check` exit 0。
 - Act：FIX-1/2/3/4/5/8 已完成并有证据闭环；FIX-6/7 仍因覆盖率和可复核失败样本不足
-  保持待证，不把假设扩展为行为改动。提交与 push 在最终工作区审查通过后执行。
+  保持待证，不把假设扩展为行为改动。
+
+## 6. Seal 收束回写（2026-08-15，基于远端 Verify #296 失败的最小闭环）
+
+上一轮代码已随 `c975155e` push 至远端 main，但 Verify #296（run `31872426112`）
+因 `npm run lint` 存在 2 个 error 失败，同一 Job 内 TypeScript 与 Jest 被跳过。
+本轮按《最终收束与封版修复方案_20260815》只做 2 行级最小修复，不扩边界。
+
+- Seal 前 HEAD：`c975155ef42303a89cfeb4c4507103866ad2e9d6`（本地 HEAD 与 origin/main 一致，工作区无其他已跟踪改动）。
+- Seal 修复（仅 2 处，无行为变化）：
+  - `src/services/contextAutoAllocator.ts`：删除未使用的 `serializeContextAutomationPolicy`
+    import（第 42 行 `export { ... } from './contextAutomationPolicy'` 再导出不受影响）；
+  - `__tests__/batchPlanner.test.ts`：line 414 `const [msgs, ...]` 改为 `const [, ...]`，
+    与同文件 line 433 既有写法一致，`maxTokensArg`/`options` 断言语义不变。
+- 本地验证（2026-08-15 实测，证据日志 `lint-before.log`/`lint-after.log`/`test-ci.log`/`migration-ci.log`/`targeted-regression.log`/`apk-debug.log`，均被 gitignore）：
+  - `npm run lint`：修复前 2 errors + 202 warnings（exit 1，精确复现远端 CI 失败）→
+    修复后 0 errors + 202 warnings（exit 0；warnings 原样保留，未借机清理）；
+  - `npm run verify:version` = ok V2.11.52 versionCode=2115200；
+  - `npm run typecheck` = exit 0；
+  - `npm run test:ci` = exit 0：424 suites passed / 3 skipped，3344 tests passed / 8 skipped；
+  - `npm test -- migration --runInBand` = exit 0：43 suites / 206 tests 全过（无 schema 改动，未新增 migration）；
+  - 定向抽查（pipelineContextSnapshotV5 / activeStyleResolver / contextAutoAllocator V2+V3 /
+    noteSemanticsV7Regression / contextBuilderNoteMode / multiChapterBatchBudget /
+    continuationBatchSchema / batchPlanner+adaptive / continuationBatchAdapter /
+    continuationBatchPlanner）= 12 suites / 139 tests 全过；
+  - `npm run apk:debug` = exit 0，产物 `dist/apk/debug/ShineWriter-V2.11.52-debug.apk`（56.82 MB）；
+    `emulator-5554` 上 `adb install -r` Success（未 uninstall、未 pm clear、未清用户数据），
+    冷启动 LaunchState=COLD TotalTime=1708ms 至 `com.shinewriter/.MainActivity` 并处于前台，
+    logcat 无 FATAL EXCEPTION、无 AndroidRuntime 崩溃、ReactNativeJS:E 为空
+    （仅一条系统侧 WindowOrganizerController 无害噪音）。
+- Known Existing Issues（既有，非本轮 NO-GO，本轮未触碰）：continuation 状态提取模型
+  可能返回 reasoning-only / 空正文；story-memory v2 checkpoint rebuild 可能事务失败。
+- 提交与 push：已完成本轮收束 commit 并 push main（最终 commit SHA、Actions Run ID
+  与三 Job 结果见下方「最终 Seal 证据」节，以 push 后远端实测为准）。
