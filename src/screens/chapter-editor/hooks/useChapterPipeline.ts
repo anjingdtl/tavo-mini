@@ -21,7 +21,7 @@ import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
 import { useProjectStore } from '../../../store/projectStore';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
-  PHASE2_CONTEXT_BUDGET_VERSION,
+  resolveNewChapterContextBudgetVersion,
 } from '../../../services/pipeline/outlineWorkflowVersion';
 import { cancelContinuationRun } from '../../../services/continuation/generation';
 import { getContinuationChapterNumbering } from '../../../services/continuation/chapterNumbering/continuationChapterNumbering';
@@ -293,9 +293,10 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         // V2 tasks remain frozen and resume on their own version.
         const project = useProjectStore.getState().currentProject;
         const isOutlineChapter = project?.mode === 'outline' && chapter.id > 0;
-        const contextBudgetVersion = isOutlineChapter
-          ? PHASE2_CONTEXT_BUDGET_VERSION
-          : 1;
+        const contextBudgetVersion = resolveNewChapterContextBudgetVersion({
+          projectMode: project?.mode,
+          chapterId: chapter.id,
+        });
         taskId = await createTask('chapter', chapter.id, {
           outlineWorkflowVersion: isOutlineChapter
             ? CURRENT_OUTLINE_WORKFLOW_VERSION
@@ -617,7 +618,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
           project!.id,
           chapter,
           contextConfig,
-          { mode: 'preview' },
+          {
+            mode: 'preview',
+            contextBudgetVersion: resolveNewChapterContextBudgetVersion({
+              projectMode: project?.mode,
+              chapterId: chapter.id,
+            }),
+          },
         );
         if (prepared.fatal || prepared.hardGap) {
           if (prepared.hardGap || prepared.maintenanceDue) {

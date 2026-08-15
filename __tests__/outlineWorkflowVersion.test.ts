@@ -15,6 +15,8 @@ import {
 import {
   DEFAULT_OUTLINE_WORKFLOW_VERSION,
   CURRENT_CONTEXT_BUDGET_VERSION,
+  PHASE2_CONTEXT_BUDGET_VERSION,
+  resolveNewChapterContextBudgetVersion,
   shouldFreezeOutlineWorkflowV2,
   shouldFreezeOutlineWorkflowV3,
   type ContextBudgetVersion,
@@ -230,5 +232,26 @@ describe('snapshot outlineWorkflowVersion round-trip', () => {
     const v: ContextBudgetVersion = 5;
     expect(v).toBe(CURRENT_CONTEXT_BUDGET_VERSION);
     expect(CURRENT_CONTEXT_BUDGET_VERSION).toBe(5);
+  });
+
+  test('new outline chapter preflight uses the same Phase II budget version as task creation', () => {
+    expect(
+      resolveNewChapterContextBudgetVersion({
+        projectMode: 'outline',
+        chapterId: 18,
+      }),
+    ).toBe(PHASE2_CONTEXT_BUDGET_VERSION);
+    expect(
+      resolveNewChapterContextBudgetVersion({
+        projectMode: 'continuation',
+        chapterId: 18,
+      }),
+    ).toBe(1);
+    expect(
+      resolveNewChapterContextBudgetVersion({
+        projectMode: 'outline',
+        chapterId: 0,
+      }),
+    ).toBe(1);
   });
 });

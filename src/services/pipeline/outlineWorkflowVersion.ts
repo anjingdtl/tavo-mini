@@ -50,6 +50,23 @@ export const PHASE2_CONTEXT_BUDGET_VERSION = 7 as const;
 export const PHASE2_RESOURCE_CONTEXT_VERSION = 2 as const;
 
 /**
+ * Resolve the budget contract for a newly started chapter from the same
+ * project/chapter boundary used by the editor task creator. Keeping this
+ * decision pure prevents the preflight Story Memory gate from silently
+ * falling back to the historical V5 coverage rules for a Phase II task.
+ */
+export function resolveNewChapterContextBudgetVersion(input: {
+  projectMode?: string | null;
+  chapterId: number;
+}): ContextBudgetVersion {
+  return input.projectMode === 'outline' &&
+    Number.isInteger(input.chapterId) &&
+    input.chapterId > 0
+    ? PHASE2_CONTEXT_BUDGET_VERSION
+    : 1;
+}
+
+/**
  * @deprecated Rollback-era default (Legacy 1). Kept only for callers that
  * build version-less historical records; new tasks must use the CURRENT
  * constants instead.
