@@ -41,6 +41,7 @@ import {
   adoptArtifactAsDraft,
   finalizeContinuationChapter,
 } from '../continuation/generation/continuationGenerationRunner';
+import { createContinuationBatchTraceId } from '../continuation/generation/continuationGenerationTrace';
 import type { StageLlmCaller } from '../continuation/generation/continuationGenerationRunner';
 import {
   getRunById,
@@ -499,6 +500,9 @@ async function executeContinuationItemStep(params: {
         userInstruction,
         currentChapterContent: '',
         callStage: options.callStage,
+        batchTraceId: createContinuationBatchTraceId(batchId),
+        chapterOrdinal: currentItem.ordinal,
+        chapterCount: batch.chapterCount,
       });
       const bound = await bindContinuationRunForItem({
         batchId,

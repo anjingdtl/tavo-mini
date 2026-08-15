@@ -49,6 +49,11 @@ import {
   buildContinuationV4Context,
 } from './continuationContextBuilder';
 import {
+  appendContinuationGenerationTraceEvent,
+  createContinuationGenerationTrace,
+  ensureContinuationGenerationTrace,
+} from './continuationGenerationTrace';
+import {
   resolveContinuationV4BudgetPreview,
 } from './continuationV4Budget';
 import {
@@ -2151,6 +2156,7 @@ async function runControlNode(input: {
 async function settleWithoutRepair(input: {
   run: ContinuationGenerationRun;
   artifact: ContinuationArtifact;
+  trace?: ContinuationContextTrace;
   reason: string;
   localVerifyPassed: boolean;
   localChecks?: RawCheckIssue[];
@@ -2173,6 +2179,21 @@ async function settleWithoutRepair(input: {
   await casUpdateRunState(input.run.id, ['running'], {
     state: 'awaiting_user',
     stage: 'awaiting_user',
+    contextTraceJson: input.trace
+      ? JSON.stringify(
+          appendContinuationGenerationTraceEvent(input.trace, {
+            event: 'awaiting_user',
+            state: 'awaiting_user',
+            stage: 'awaiting_user',
+            eligibility: {
+              status: input.localVerifyPassed ? 'eligible' : 'rejected',
+              rejectionCode: input.localVerifyPassed
+                ? null
+                : 'local_gate_failed',
+            },
+          }),
+        )
+      : undefined,
   });
   await updateTelemetry(input.run.id);
 }
@@ -2875,6 +2896,14 @@ async function runV4Pipeline(
       stage: 'writer',
       errorCode: 'writer_reserved_no_result',
       errorMessage: 'Writer 已 reservation 但没有完整初稿，禁止自动重发。',
+      contextTraceJson: JSON.stringify(
+        appendContinuationGenerationTraceEvent(originalTrace, {
+          event: 'failed',
+          state: 'failed',
+          stage: 'writer',
+          reason: 'writer_reserved_no_result',
+        }),
+      ),
       completedAt: new Date().toISOString(),
     });
     await updateTelemetry(run.id);
@@ -2903,6 +2932,7 @@ async function runV4Pipeline(
     await settleWithoutRepair({
       run,
       artifact: writer.artifact,
+      trace: originalTrace,
       reason: 'control_metrics_failed',
       localVerifyPassed: false,
       localChecks: writerChecks,
@@ -2968,6 +2998,7 @@ async function runV4Pipeline(
     await settleWithoutRepair({
       run,
       artifact: writer.artifact,
+      trace: actual.trace,
       reason: 'control_metrics_failed',
       localVerifyPassed: false,
       localChecks: writerChecks,
@@ -3030,6 +3061,7 @@ async function runV4Pipeline(
     await settleWithoutRepair({
       run,
       artifact: writer.artifact,
+      trace: actual.trace,
       reason: 'checker_and_control_failed',
       localVerifyPassed: false,
       localChecks: writerChecks,
@@ -3044,6 +3076,7 @@ async function runV4Pipeline(
     await settleWithoutRepair({
       run,
       artifact: writer.artifact,
+      trace: actual.trace,
       reason,
       localVerifyPassed: localSafetyIssues.length === 0,
       localChecks: writerChecks,
@@ -3096,6 +3129,7 @@ function isUserCancelError(error: unknown): boolean {
 async function finalizeV4OnError(
   runId: string,
   error: unknown,
+  trace?: ContinuationContextTrace,
 ): Promise<void> {
   try {
     const run = await getRunById(runId).catch(() => null);
@@ -3119,6 +3153,16 @@ async function finalizeV4OnError(
           state: 'cancelled',
           errorCode: 'cancelled',
           errorMessage: '用户取消',
+          contextTraceJson: trace
+            ? JSON.stringify(
+                appendContinuationGenerationTraceEvent(trace, {
+                  event: 'cancelled',
+                  state: 'cancelled',
+                  stage: 'awaiting_user',
+                  reason: 'cancelled',
+                }),
+              )
+            : undefined,
           completedAt: new Date().toISOString(),
         },
       ).catch(() => false);
@@ -3147,6 +3191,22 @@ async function finalizeV4OnError(
         ? 'continuation_v4_degraded'
         : stableTruncationCode ?? 'continuation_v4_failed',
       errorMessage: writer ? `${message}；已保留 Writer 初稿。` : message,
+      contextTraceJson: trace
+        ? JSON.stringify(
+            appendContinuationGenerationTraceEvent(trace, {
+              event: writer ? 'awaiting_user' : 'failed',
+              state: writer ? 'awaiting_user' : 'failed',
+              stage: writer ? 'awaiting_user' : 'writer',
+              reason: writer
+                ? 'continuation_v4_degraded'
+                : stableTruncationCode ?? 'continuation_v4_failed',
+              eligibility: {
+                status: writer ? 'eligible' : 'unknown',
+                rejectionCode: null,
+              },
+            }),
+          )
+        : undefined,
       completedAt: writer ? null : new Date().toISOString(),
     }).catch(() => false);
     await updateTelemetry(runId).catch(() => {});
@@ -3181,22 +3241,36 @@ export async function startContinuationV4Run(
     frozenModelConfigs: resolved.frozenModelConfigs,
   });
   const runId = newContinuationRunId();
+  const unifiedTrace = createContinuationGenerationTrace({
+    snapshot,
+    trace,
+    runId,
+    batchTraceId: input.batchTraceId,
+    chapterOrdinal: input.chapterOrdinal,
+    chapterCount: input.chapterCount,
+    state: 'running',
+    stage: 'writer',
+  });
+  const snapshotWithTraceId: ContinuationContextSnapshotV3 = {
+    ...snapshot,
+    generationTraceId: unifiedTrace.generationTraceId,
+  };
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,
     chapterId: input.chapterId,
     targetPosition: input.targetPosition as any,
-    sourceId: snapshot.source.sourceId,
-    sourceSnapshotJson: JSON.stringify({ schemaVersion: 1, ...snapshot.source }),
-    canonSnapshotId: snapshot.canon.snapshotId,
-    canonRevision: snapshot.canon.revision,
-    storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
-    storyMemoryThroughPosition: snapshot.storyMemory.throughPosition,
-    inputRevisionHash: snapshot.inputRevisionHash,
+    sourceId: snapshotWithTraceId.source.sourceId,
+    sourceSnapshotJson: JSON.stringify({ schemaVersion: 1, ...snapshotWithTraceId.source }),
+    canonSnapshotId: snapshotWithTraceId.canon.snapshotId,
+    canonRevision: snapshotWithTraceId.canon.revision,
+    storyMemoryFingerprint: snapshotWithTraceId.storyMemory.stateFingerprint,
+    storyMemoryThroughPosition: snapshotWithTraceId.storyMemory.throughPosition,
+    inputRevisionHash: snapshotWithTraceId.inputRevisionHash,
     userInstruction: input.userInstruction,
-    settingsSnapshotJson: JSON.stringify(snapshot.settingsSnapshot),
-    contextSnapshotJson: JSON.stringify(snapshot),
-    contextTraceJson: JSON.stringify(trace),
+    settingsSnapshotJson: JSON.stringify(snapshotWithTraceId.settingsSnapshot),
+    contextSnapshotJson: JSON.stringify(snapshotWithTraceId),
+    contextTraceJson: JSON.stringify(unifiedTrace),
     tokenUsageJson: JSON.stringify({
       workflowVersion: 4,
       maxPhysicalRequests: 4,
@@ -3215,7 +3289,7 @@ export async function startContinuationV4Run(
   activeContinuationControllers.set(runId, controller);
   void (async () => {
     try {
-      await runV4Pipeline(run, snapshot, trace, {
+      await runV4Pipeline(run, snapshotWithTraceId, unifiedTrace, {
         callStage: input.callStage,
         deterministicOnly: input.deterministicOnly,
         signal: controller.signal,
@@ -3225,7 +3299,7 @@ export async function startContinuationV4Run(
       // finalizeV4OnError never throws; still guard so the floating task
       // cannot surface as a fatal unhandled rejection on Android.
       try {
-        await finalizeV4OnError(runId, error);
+        await finalizeV4OnError(runId, error, unifiedTrace);
       } catch (finalizeError) {
         console.warn('[continuation-v4] pipeline finalizer failed:', finalizeError);
       }
@@ -3256,7 +3330,7 @@ export async function resumeContinuationV4Run(
   if (snapshot.schemaVersion !== 3 || snapshot.workflowVersion !== 4) {
     throw new Error('V4 context snapshot 版本不匹配。');
   }
-  const trace = run.contextTraceJson
+  const parsedTrace = run.contextTraceJson
     ? (JSON.parse(run.contextTraceJson) as ContinuationContextTrace)
     : ({
         sourceId: snapshot.source.sourceId,
@@ -3271,12 +3345,23 @@ export async function resumeContinuationV4Run(
         reservedOutputTokens: 0,
         omittedCapabilities: [],
       } satisfies ContinuationContextTrace);
+  const trace = ensureContinuationGenerationTrace(parsedTrace, snapshot, {
+    runId,
+    state: 'interrupted',
+    stage: run.stage,
+  });
+  const resumedTrace = appendContinuationGenerationTraceEvent(trace, {
+    event: 'resume',
+    state: 'running',
+    stage: run.stage === 'writer' ? 'writer' : 'auditing',
+  });
   const changed = await casUpdateRunState(runId, ['interrupted', 'failed'], {
     state: 'running',
     stage: run.stage === 'writer' ? 'writer' : 'auditing',
     errorCode: null,
     errorMessage: null,
     completedAt: null,
+    contextTraceJson: JSON.stringify(resumedTrace),
   });
   if (!changed) return;
   const controller = new AbortController();
@@ -3285,7 +3370,7 @@ export async function resumeContinuationV4Run(
     await runV4Pipeline(
       { ...run, state: 'running', stage: run.stage === 'writer' ? 'writer' : 'auditing' },
       snapshot,
-      trace,
+      resumedTrace,
       {
         callStage,
         deterministicOnly,
@@ -3294,7 +3379,7 @@ export async function resumeContinuationV4Run(
       },
     );
   } catch (error) {
-    await finalizeV4OnError(runId, error);
+    await finalizeV4OnError(runId, error, resumedTrace);
     throw error;
   } finally {
     activeContinuationControllers.delete(runId);

@@ -7,6 +7,10 @@ import { openDatabase } from '../../../data/connection/openDatabase';
 import { executeTransaction } from '../../database/transaction';
 import { sha256Hex } from '../hashUtils';
 import { v4 } from '../../uuidBridge';
+import {
+  appendContinuationGenerationTraceEvent,
+  ensureContinuationGenerationTrace,
+} from './continuationGenerationTrace';
 import type {
   CheckCategory,
   CheckResolutionStatus,
@@ -33,6 +37,8 @@ import type {
   ProposalType,
   StrictnessProfile,
   TypedEntityRef,
+  ContinuationContextSnapshot,
+  ContinuationContextTrace,
 } from './types';
 import type { ContinuationV4StageBudget } from './continuationV4Budget';
 
@@ -594,20 +600,73 @@ export async function casUpdateRunState(
 export async function markRunsInterruptedOnColdStart(): Promise<number> {
   const db = await openDatabase();
   const ts = nowIso();
-  const [res] = await db.executeSql(
-    `UPDATE continuation_generation_runs
-     SET state = 'interrupted', error_code = 'cold_start',
-         error_message = '应用重启，运行中断', updated_at = ?
+  const [runningRows] = await db.executeSql(
+    `SELECT id, state, stage, context_snapshot_json, context_trace_json
+     FROM continuation_generation_runs
      WHERE state IN ('queued', 'running')`,
-    [ts],
   );
+  let interruptedRuns = 0;
+  for (let index = 0; index < runningRows.rows.length; index += 1) {
+    const row = runningRows.rows.item(index);
+    let contextTraceJson: string | null = null;
+    try {
+      const snapshot = JSON.parse(
+        row.context_snapshot_json || '{}',
+      ) as ContinuationContextSnapshot;
+      const trace = row.context_trace_json
+        ? (JSON.parse(row.context_trace_json) as ContinuationContextTrace)
+        : ({
+            sourceId: snapshot.source.sourceId,
+            canonSnapshotId: snapshot.canon.snapshotId,
+            canonRevision: snapshot.canon.revision,
+            targetPosition: snapshot.targetPosition,
+            entityRefs: [],
+            storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
+            freshness: snapshot.bundles.effectiveState.freshness,
+            categories: [],
+            totalInputTokens: 0,
+            reservedOutputTokens: 0,
+            omittedCapabilities: [],
+          } satisfies ContinuationContextTrace);
+      const unified = ensureContinuationGenerationTrace(trace, snapshot, {
+        runId: String(row.id),
+        state: row.state as ContinuationRunState,
+        stage: row.stage as ContinuationStageName,
+      });
+      contextTraceJson = JSON.stringify(
+        appendContinuationGenerationTraceEvent(unified, {
+          event: 'interrupted',
+          state: 'interrupted',
+          stage: row.stage as ContinuationStageName,
+          reason: 'cold_start',
+          finalization: {
+            status: 'not_started',
+            finalizedRevisionHash: null,
+            completionReason: null,
+          },
+        }),
+      );
+    } catch {
+      // Historical rows without a frozen snapshot remain recoverable; no
+      // invented evidence is written for them.
+    }
+    const [updated] = await db.executeSql(
+      `UPDATE continuation_generation_runs
+       SET state = 'interrupted', error_code = 'cold_start',
+           error_message = '应用重启，运行中断',
+           context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
+       WHERE id = ? AND state IN ('queued', 'running')`,
+      [contextTraceJson, ts, row.id],
+    );
+    interruptedRuns += updated.rowsAffected ?? 0;
+  }
   const [outboxRes] = await db.executeSql(
     `UPDATE continuation_state_sync_outbox
      SET state = 'interrupted', updated_at = ?
      WHERE state = 'running'`,
     [ts],
   );
-  return (res.rowsAffected ?? 0) + (outboxRes.rowsAffected ?? 0);
+  return interruptedRuns + (outboxRes.rowsAffected ?? 0);
 }
 
 export async function markRunsOutdatedForProject(
@@ -1128,6 +1187,8 @@ export async function finalizeContinuationV5Final(input: {
     ContinuationStageResultStatus,
     'success' | 'failed'
   >;
+  /** Optional unified Trace snapshot written in the same settlement transaction. */
+  contextTraceJson?: string | null;
   runState?: Extract<
     ContinuationRunState,
     'awaiting_user' | 'awaiting_regeneration'
@@ -1212,13 +1273,15 @@ export async function finalizeContinuationV5Final(input: {
   statements.push({
     sql: `UPDATE continuation_generation_runs SET
         state = ?, stage = 'awaiting_user',
-        token_usage_json = ?, error_code = ?, error_message = ?, updated_at = ?
+        token_usage_json = ?, error_code = ?, error_message = ?,
+        context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
       WHERE id = ? AND state IN (${statePlaceholders})`,
     params: [
       runState,
       input.tokenUsageJson,
       input.errorCode ?? input.rejectionCode ?? null,
       input.errorMessage ?? null,
+      input.contextTraceJson ?? null,
       ts,
       input.runId,
       ...expectedStates,
@@ -1272,6 +1335,8 @@ export async function finalizeContinuationV5ValidatorOnly(input: {
   >;
   errorCode?: string | null;
   errorMessage?: string | null;
+  /** Optional unified Trace snapshot written in the same settlement transaction. */
+  contextTraceJson?: string | null;
   expectedRunStates?: ContinuationRunState[];
   ts?: string;
 }): Promise<ContinuationGenerationStageResult> {
@@ -1314,13 +1379,15 @@ export async function finalizeContinuationV5ValidatorOnly(input: {
     {
       sql: `UPDATE continuation_generation_runs SET
         state = ?, stage = 'awaiting_user',
-        token_usage_json = ?, error_code = ?, error_message = ?, updated_at = ?
+        token_usage_json = ?, error_code = ?, error_message = ?,
+        context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
       WHERE id = ? AND state IN (${statePlaceholders})`,
       params: [
         runState,
         input.tokenUsageJson,
         input.errorCode ?? input.rejectionCode ?? null,
         input.errorMessage ?? null,
+        input.contextTraceJson ?? null,
         ts,
         input.runId,
         ...expectedStates,

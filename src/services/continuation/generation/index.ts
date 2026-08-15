@@ -239,6 +239,17 @@ export {
 } from './continuationV5PromptCompiler';
 export { summarizeTrace, parseTraceJson } from './continuationContextTrace';
 export {
+  appendContinuationGenerationTraceEvent,
+  createContinuationGenerationTrace,
+  createContinuationBatchTraceId,
+  ensureContinuationGenerationTrace,
+} from './continuationGenerationTrace';
+export type {
+  AppendContinuationGenerationTraceEventInput,
+  CreateContinuationGenerationTraceInput,
+  EnsureContinuationGenerationTraceOptions,
+} from './continuationGenerationTrace';
+export {
   extractAndSaveStyleProfile,
   getStyleProfile,
 } from './continuationStyleService';

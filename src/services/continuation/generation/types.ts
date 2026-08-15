@@ -1044,6 +1044,99 @@ export interface ContinuationV5StageViews {
   final_reviser: FrozenContinuationV5FinalReviserView;
 }
 
+/** Phase II observability adapter event names. The execution protocol keeps
+ * its existing state machine; these names describe what happened to the
+ * durable run without changing that protocol. */
+export type ContinuationGenerationTraceEventName =
+  | 'queued'
+  | 'running'
+  | 'awaiting_user'
+  | 'awaiting_regeneration'
+  | 'interrupted'
+  | 'resume'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'outdated';
+
+export interface ContinuationGenerationTraceEvent {
+  sequence: number;
+  event: ContinuationGenerationTraceEventName;
+  state: ContinuationRunState;
+  stage: ContinuationStageName | null;
+  at: string;
+  reason: string | null;
+}
+
+export interface ContinuationGenerationTraceV2 {
+  schemaVersion: 2;
+  generationTraceId: string;
+  batchTraceId: string | null;
+  lineage: {
+    batchTraceId: string | null;
+    chapterOrdinal: number | null;
+    chapterCount: number | null;
+    chapterFingerprint: string;
+  };
+  sourceSnapshot: {
+    sourceId: number;
+    sourceVersion: number;
+    normalizedSha256: string;
+    parserVersion: string;
+    normalizationVersion: string;
+    boundaryChapterId: number | null;
+    boundaryPosition: number | null;
+    boundaryCharOffsetExclusive: number | null;
+  };
+  canon: {
+    snapshotId: string;
+    revision: number;
+  };
+  tail: {
+    kind: 'source_seam' | 'continuation_chapter' | 'legacy';
+    chapterId: number | null;
+    position: ContinuationChapterPosition | null;
+    storyMemoryThroughPosition: ContinuationChapterPosition | -1;
+    storyMemoryFingerprint: string;
+  };
+  currentInstruction: {
+    sha256: string;
+    charCount: number;
+  };
+  budget: {
+    modelContextLimit: number | null;
+    inputBudget: number | null;
+    effectiveInputBudget: number | null;
+    reservedOutputTokens: number;
+    requestedMaxTokens: number | null;
+    effectiveWindow: number | null;
+    pressure: number | null;
+  };
+  llmRequestIdentity: {
+    stageConfigIds: Record<string, number | null>;
+    stageModelNames: Record<string, string | null>;
+    secretsExcluded: true;
+  };
+  eligibility: {
+    status: 'unknown' | 'eligible' | 'rejected' | 'intermediate';
+    rejectionCode: string | null;
+  };
+  adoption: {
+    status: 'not_attempted' | 'pending' | 'adopted' | 'abandoned' | 'conflict';
+    adoptedRevisionHash: string | null;
+  };
+  finalization: {
+    status: 'not_started' | 'pending' | 'finalized' | 'failed';
+    finalizedRevisionHash: string | null;
+    completionReason: 'adopted' | 'abandoned' | null;
+  };
+  stateGate: {
+    currentState: ContinuationRunState;
+    lastEvent: ContinuationGenerationTraceEventName;
+  };
+  events: ContinuationGenerationTraceEvent[];
+}
+
 export interface ContinuationContextSnapshot {
   schemaVersion: 1 | 2;
   /** New standard workflow marker; absent on historical snapshots. */
@@ -1088,6 +1181,8 @@ export interface ContinuationContextSnapshot {
   style?: ContinuationFrozenStyle | null;
   /** Frozen正文接缝. Optional so Schema 1 runs remain readable. */
   primaryAnchor?: import('./continuationAnchor').ContinuationAnchor;
+  /** Phase II unified trace identity, persisted for resume stability. */
+  generationTraceId?: string;
   settingsSnapshot: ContinuationGenerationSettingsSnapshot;
   bundles: ContinuationContextBundles;
   createdAt: string;
@@ -1177,6 +1272,10 @@ export interface ContinuationContextTrace {
   v4StageViewHashes?: Partial<Record<ContinuationV4ContextStage, string>>;
   v5StageBudgets?: ContinuationV5StageBudgets;
   v5StageViewHashes?: Partial<Record<ContinuationV5PhysicalNode, string>>;
+  /** Phase II adapter: legacy trace fields remain authoritative for old UI. */
+  generationTraceId?: string;
+  batchTraceId?: string | null;
+  generationTrace?: ContinuationGenerationTraceV2;
 }
 
 export interface StoryBeat {

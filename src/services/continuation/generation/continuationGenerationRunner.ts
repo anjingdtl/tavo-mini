@@ -11,6 +11,11 @@ import {
 import { stripModelJson } from '../canon/canonJsonValidators';
 import { buildContinuationContext } from './continuationContextBuilder';
 import {
+  appendContinuationGenerationTraceEvent,
+  createContinuationGenerationTrace,
+  ensureContinuationGenerationTrace,
+} from './continuationGenerationTrace';
+import {
   bindIssuesToArtifact,
   filterBySettings,
   parseCheckerLlmJson,
@@ -142,6 +147,61 @@ export interface StartContinuationRunInput {
   deterministicOnly?: boolean;
   /** Test/compatibility escape hatch for historical V2 fixtures. */
   workflowVersion?: 2 | 4 | 5;
+  /** Optional batch lineage metadata; observability only. */
+  batchTraceId?: string | null;
+  chapterOrdinal?: number | null;
+  chapterCount?: number | null;
+}
+
+function traceJsonForRunState(input: {
+  run: ContinuationGenerationRun;
+  event: Parameters<typeof appendContinuationGenerationTraceEvent>[1]['event'];
+  state: ContinuationRunState;
+  stage?: import('./types').ContinuationStageName | null;
+  reason?: string | null;
+  adoption?: Partial<
+    NonNullable<ContinuationContextTrace['generationTrace']>['adoption']
+  >;
+  finalization?: Partial<
+    NonNullable<ContinuationContextTrace['generationTrace']>['finalization']
+  >;
+}): string | null {
+  if (!input.run.contextSnapshotJson) return null;
+  try {
+    const snapshot = JSON.parse(input.run.contextSnapshotJson) as ContinuationContextSnapshot;
+    const trace = input.run.contextTraceJson
+      ? (JSON.parse(input.run.contextTraceJson) as ContinuationContextTrace)
+      : ({
+          sourceId: snapshot.source.sourceId,
+          canonSnapshotId: snapshot.canon.snapshotId,
+          canonRevision: snapshot.canon.revision,
+          targetPosition: snapshot.targetPosition,
+          entityRefs: [],
+          storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
+          freshness: snapshot.bundles.effectiveState.freshness,
+          categories: [],
+          totalInputTokens: 0,
+          reservedOutputTokens: 0,
+          omittedCapabilities: [],
+        } satisfies ContinuationContextTrace);
+    const unified = ensureContinuationGenerationTrace(trace, snapshot, {
+      runId: input.run.id,
+      state: input.run.state,
+      stage: input.run.stage,
+    });
+    return JSON.stringify(
+      appendContinuationGenerationTraceEvent(unified, {
+        event: input.event,
+        state: input.state,
+        stage: input.stage ?? null,
+        reason: input.reason ?? null,
+        adoption: input.adoption,
+        finalization: input.finalization,
+      }),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function defaultPlan(instruction: string): ContinuationPlan {
@@ -566,24 +626,38 @@ async function startContinuationRunLegacy(
   });
 
   const runId = newContinuationRunId();
+  const unifiedTrace = createContinuationGenerationTrace({
+    snapshot,
+    trace,
+    runId,
+    batchTraceId: input.batchTraceId,
+    chapterOrdinal: input.chapterOrdinal,
+    chapterCount: input.chapterCount,
+    state: 'running',
+    stage: 'writer',
+  });
+  const snapshotWithTraceId = {
+    ...snapshot,
+    generationTraceId: unifiedTrace.generationTraceId,
+  };
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,
     chapterId: input.chapterId,
     targetPosition: input.targetPosition as any,
-    sourceId: snapshot.source.sourceId,
+    sourceId: snapshotWithTraceId.source.sourceId,
     sourceSnapshotJson: JSON.stringify({
       schemaVersion: 1,
-      ...snapshot.source,
+      ...snapshotWithTraceId.source,
     }),
-    canonSnapshotId: snapshot.canon.snapshotId,
-    canonRevision: snapshot.canon.revision,
-    storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
-    storyMemoryThroughPosition: snapshot.storyMemory.throughPosition,
-    inputRevisionHash: snapshot.inputRevisionHash,
+    canonSnapshotId: snapshotWithTraceId.canon.snapshotId,
+    canonRevision: snapshotWithTraceId.canon.revision,
+    storyMemoryFingerprint: snapshotWithTraceId.storyMemory.stateFingerprint,
+    storyMemoryThroughPosition: snapshotWithTraceId.storyMemory.throughPosition,
+    inputRevisionHash: snapshotWithTraceId.inputRevisionHash,
     userInstruction: input.userInstruction,
-    settingsSnapshotJson: JSON.stringify(snapshot.settingsSnapshot),
-    contextSnapshotJson: JSON.stringify(snapshot),
+    settingsSnapshotJson: JSON.stringify(snapshotWithTraceId.settingsSnapshot),
+    contextSnapshotJson: JSON.stringify(snapshotWithTraceId),
     // H6 修复：contextTraceJson 延迟到 run 结束才写。原 insertRun 时三连
     // JSON.stringify(source/settings/snapshot/trace) 产生 300KB-1MB+ 字符串，
     // 1M 上下文下峰值 2× snapshot 体积，低内存 Android 易 OOM。trace 仅调试
@@ -608,12 +682,12 @@ async function startContinuationRunLegacy(
   // casUpdateRunState 抛错时 controller 泄漏，run 卡 running 且无法 cancel。
   void (async () => {
     try {
-      await runStages(runId, snapshot, {
+      await runStages(runId, snapshotWithTraceId, {
         callStage: input.callStage,
         deterministicOnly: input.deterministicOnly,
         signal: controller.signal,
         projectId: input.projectId,
-        trace,
+        trace: unifiedTrace,
       });
     } catch (err) {
       await finalizeRunOnError(runId, controller, err);
@@ -2594,6 +2668,21 @@ export async function adoptArtifactAsDraft(input: {
       completionReason: 'adopted',
       adoptedRevisionHash: adoptedHash,
       completedAt: ts,
+      contextTraceJson: traceJsonForRunState({
+        run,
+        event: 'completed',
+        state: 'completed',
+        stage: 'awaiting_user',
+        adoption: {
+          status: 'adopted',
+          adoptedRevisionHash: adoptedHash,
+        },
+        finalization: {
+          status: 'pending',
+          finalizedRevisionHash: null,
+          completionReason: 'adopted',
+        },
+      }) ?? undefined,
     },
   );
   if (!claimed) {
@@ -2667,6 +2756,7 @@ export async function adoptArtifactAsDraft(input: {
 }
 
 export async function abandonRun(runId: string): Promise<void> {
+  const run = await getRunById(runId);
   const ok = await casUpdateRunState(
     runId,
     [
@@ -2684,11 +2774,25 @@ export async function abandonRun(runId: string): Promise<void> {
       state: 'completed',
       completionReason: 'abandoned',
       completedAt: new Date().toISOString(),
+      contextTraceJson: run
+        ? traceJsonForRunState({
+            run,
+            event: 'completed',
+            state: 'completed',
+            stage: 'awaiting_user',
+            adoption: { status: 'abandoned', adoptedRevisionHash: null },
+            finalization: {
+              status: 'not_started',
+              finalizedRevisionHash: null,
+              completionReason: 'abandoned',
+            },
+          }) ?? undefined
+        : undefined,
     },
   );
   if (!ok) {
-    const run = await getRunById(runId);
-    if (run?.state === 'completed') return;
+    const freshRun = await getRunById(runId);
+    if (freshRun?.state === 'completed') return;
     throw new Error('无法放弃该 run');
   }
   activeControllers.get(runId)?.abort();
@@ -2778,6 +2882,19 @@ export async function finalizeContinuationChapter(input: {
   const rebuildDedupeKey = `rebuild_story_memory:auto:${input.projectId}:${position}:${revisionHash}`;
   const outboxId = `co_${v4().replace(/-/g, '')}`;
   const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
+  const finalizedTraceJson = sourceRun
+    ? traceJsonForRunState({
+        run: sourceRun,
+        event: 'completed',
+        state: 'completed',
+        stage: 'awaiting_user',
+        finalization: {
+          status: 'finalized',
+          finalizedRevisionHash: revisionHash,
+          completionReason: sourceRun.completionReason,
+        },
+      })
+    : null;
 
   const statements: Array<{ sql: string; params?: any[] }> = [
     {
@@ -2807,9 +2924,10 @@ export async function finalizeContinuationChapter(input: {
   if (resolvedSourceRunId) {
     statements.push({
       sql: `UPDATE continuation_generation_runs
-        SET finalized_revision_hash = ?, updated_at = ?
+        SET finalized_revision_hash = ?,
+            context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
         WHERE id = ? AND state IN ('completed', 'awaiting_user', 'interrupted')`,
-      params: [revisionHash, ts, resolvedSourceRunId],
+      params: [revisionHash, finalizedTraceJson, ts, resolvedSourceRunId],
     });
   }
 

@@ -25,6 +25,11 @@ import { ensureContextAutomationPolicy } from '../../contextAutoAllocator';
 import { countHanCharacters } from './continuationLengthContract';
 import { buildContinuationV5Context } from './continuationContextBuilder';
 import {
+  appendContinuationGenerationTraceEvent,
+  createContinuationGenerationTrace,
+  ensureContinuationGenerationTrace,
+} from './continuationGenerationTrace';
+import {
   CONTINUATION_V5_LENGTH_POLICY,
   CONTINUATION_V5_SOFT_GATES,
   buildFallbackArchitecture,
@@ -1281,7 +1286,7 @@ async function runRound2(
         errorCode: softBinding ? 'adversarial_audit_binding_soft' : null,
         errorMessage: softWarnings.length
           ? `软门禁：${softWarnings.slice(0, 4).join('; ')}`
-          : null,
+          : undefined,
       });
       audit = envelope;
       auditContractHash = hash;
@@ -1367,6 +1372,7 @@ function softStageDistinctContent(content: string, generation: 1 | 2): string {
 async function softDeliverRevisionAsFinal(input: {
   run: ContinuationGenerationRun;
   snapshot: ContinuationContextSnapshotV5;
+  trace?: ContinuationContextTrace;
   revisionArtifact: ContinuationArtifact;
   architecture: ContinuationV5ArchitectureEnvelope;
   architectureHash: string;
@@ -1486,6 +1492,21 @@ async function softDeliverRevisionAsFinal(input: {
           }),
           finalValidateStatus: passed ? 'success' : 'failed',
           runState: passed ? 'awaiting_user' : 'awaiting_regeneration',
+          contextTraceJson: input.trace
+            ? JSON.stringify(
+                appendContinuationGenerationTraceEvent(input.trace, {
+                  event: passed ? 'awaiting_user' : 'awaiting_regeneration',
+                  state: passed ? 'awaiting_user' : 'awaiting_regeneration',
+                  stage: 'awaiting_user',
+                  eligibility: {
+                    status: passed ? 'eligible' : 'rejected',
+                    rejectionCode: passed
+                      ? null
+                      : validation.blockingCodes[0] ?? reasonCode,
+                  },
+                }),
+              )
+            : null,
           errorCode: passed
             ? reasonCode
             : validation.blockingCodes[0] ?? reasonCode,
@@ -1558,6 +1579,21 @@ async function softDeliverRevisionAsFinal(input: {
         errorMessage: passed
           ? `软门禁：${input.reasonMessage}`
           : input.reasonMessage,
+        contextTraceJson: input.trace
+          ? JSON.stringify(
+              appendContinuationGenerationTraceEvent(input.trace, {
+                event: passed ? 'awaiting_user' : 'awaiting_regeneration',
+                state: passed ? 'awaiting_user' : 'awaiting_regeneration',
+                stage: 'awaiting_user',
+                eligibility: {
+                  status: passed ? 'eligible' : 'rejected',
+                  rejectionCode: passed
+                    ? null
+                    : validation.blockingCodes[0] ?? reasonCode,
+                },
+              }),
+            )
+          : undefined,
         tokenUsageJson,
         completedAt: null,
       },
@@ -1599,6 +1635,7 @@ async function softDeliverRevisionAsFinal(input: {
 async function runRound3AndValidate(
   run: ContinuationGenerationRun,
   snapshot: ContinuationContextSnapshotV5,
+  trace: ContinuationContextTrace,
   options: V5PipelineOptions,
   revisionArtifact: ContinuationArtifact,
   architecture: ContinuationV5ArchitectureEnvelope,
@@ -1608,6 +1645,21 @@ async function runRound3AndValidate(
   architectureDegraded: boolean,
   auditorDegraded: boolean,
 ): Promise<void> {
+  const traceForState = (
+    state: 'awaiting_user' | 'awaiting_regeneration',
+    rejectionCode?: string | null,
+  ) =>
+    JSON.stringify(
+      appendContinuationGenerationTraceEvent(trace, {
+        event: state,
+        state,
+        stage: 'awaiting_user',
+        eligibility: {
+          status: state === 'awaiting_user' ? 'eligible' : 'rejected',
+          rejectionCode: rejectionCode ?? null,
+        },
+      }),
+    );
   await casUpdateRunState(run.id, ['running'], { stage: 'round3' });
   const existingFinal = await getLatestArtifactForStage(run.id, 'final');
   const finalStage = await getStageResult(run.id, 'final_reviser');
@@ -1674,6 +1726,12 @@ async function runRound3AndValidate(
       errorMessage: validation.passed
         ? null
         : '最终稿未通过技术完整性验证。本次没有可交付终稿，请重新生成。',
+      contextTraceJson: traceForState(
+        validation.passed ? 'awaiting_user' : 'awaiting_regeneration',
+        validation.passed
+          ? null
+          : validation.blockingCodes[0] ?? 'final_invalid_envelope',
+      ),
     });
     return;
   }
@@ -1684,6 +1742,7 @@ async function runRound3AndValidate(
       await softDeliverRevisionAsFinal({
         run,
         snapshot,
+        trace,
         revisionArtifact,
         architecture,
         architectureHash,
@@ -1726,6 +1785,10 @@ async function runRound3AndValidate(
         auditorDegraded,
         finalValidationPassed: false,
       }),
+      contextTraceJson: traceForState(
+        'awaiting_regeneration',
+        'final_reviser_reserved_without_artifact',
+      ),
     });
     return;
   }
@@ -1748,6 +1811,7 @@ async function runRound3AndValidate(
       await softDeliverRevisionAsFinal({
         run,
         snapshot,
+        trace,
         revisionArtifact,
         architecture,
         architectureHash,
@@ -1797,6 +1861,10 @@ async function runRound3AndValidate(
         auditorDegraded,
         finalValidationPassed: false,
       }),
+      contextTraceJson: traceForState(
+        'awaiting_regeneration',
+        'final_reviser_prompt_budget_exceeded',
+      ),
     });
     return;
   }
@@ -1823,6 +1891,7 @@ async function runRound3AndValidate(
       await softDeliverRevisionAsFinal({
         run,
         snapshot,
+        trace,
         revisionArtifact,
         architecture,
         architectureHash,
@@ -1865,6 +1934,10 @@ async function runRound3AndValidate(
         architectureDegraded,
         auditorDegraded,
       }),
+      contextTraceJson: traceForState(
+        'awaiting_regeneration',
+        error?.code || 'final_reviser_failed',
+      ),
     });
     return;
   }
@@ -1907,6 +1980,7 @@ async function runRound3AndValidate(
         auditorDegraded,
         finalValidationPassed: false,
       }),
+      contextTraceJson: traceForState('awaiting_regeneration', 'final_output_truncated'),
     });
     return;
   }
@@ -1927,6 +2001,7 @@ async function runRound3AndValidate(
       await softDeliverRevisionAsFinal({
         run,
         snapshot,
+        trace,
         revisionArtifact,
         architecture,
         architectureHash,
@@ -1977,6 +2052,7 @@ async function runRound3AndValidate(
         architectureDegraded,
         auditorDegraded,
       }),
+      contextTraceJson: traceForState('awaiting_regeneration', 'final_invalid_envelope'),
     });
     return;
   }
@@ -2063,13 +2139,19 @@ async function runRound3AndValidate(
     errorMessage: validation.passed
       ? softNote
       : '最终稿未通过技术完整性验证。本次没有可交付终稿，请重新生成。本次不会自动回退到初稿或第一次修订稿。',
+    contextTraceJson: traceForState(
+      validation.passed ? 'awaiting_user' : 'awaiting_regeneration',
+      validation.passed
+        ? null
+        : validation.blockingCodes[0] ?? 'final_invalid_envelope',
+    ),
   });
 }
 
 async function runV5Pipeline(
   run: ContinuationGenerationRun,
   snapshot: ContinuationContextSnapshotV5,
-  _trace: ContinuationContextTrace,
+  trace: ContinuationContextTrace,
   options: V5PipelineOptions,
 ): Promise<void> {
   assertNotAborted(options.signal);
@@ -2138,6 +2220,7 @@ async function runV5Pipeline(
   await runRound3AndValidate(
     run,
     snapshot,
+    trace,
     options,
     round2.revisionArtifact,
     round1.architecture,
@@ -2149,7 +2232,11 @@ async function runV5Pipeline(
   );
 }
 
-async function finalizeV5OnError(runId: string, error: unknown): Promise<void> {
+async function finalizeV5OnError(
+  runId: string,
+  error: unknown,
+  trace?: ContinuationContextTrace,
+): Promise<void> {
   try {
     const message = formatUnknownError(error);
     const code =
@@ -2175,6 +2262,20 @@ async function finalizeV5OnError(runId: string, error: unknown): Promise<void> {
         errorMessage: isRegenerate
           ? `${message} 本次不会自动回退到初稿或第一次修订稿。`
           : message,
+        contextTraceJson: trace
+          ? JSON.stringify(
+              appendContinuationGenerationTraceEvent(trace, {
+                event: isRegenerate ? 'awaiting_regeneration' : 'failed',
+                state: isRegenerate ? 'awaiting_regeneration' : 'failed',
+                stage: 'awaiting_user',
+                reason: code,
+                eligibility: {
+                  status: isRegenerate ? 'rejected' : 'unknown',
+                  rejectionCode: isRegenerate ? code : null,
+                },
+              }),
+            )
+          : undefined,
         completedAt: isRegenerate ? null : new Date().toISOString(),
       },
     );
@@ -2202,25 +2303,39 @@ export async function startContinuationV5Run(
     lengthPolicy: CONTINUATION_V5_LENGTH_POLICY,
   });
   const runId = newContinuationRunId();
+  const unifiedTrace = createContinuationGenerationTrace({
+    snapshot,
+    trace,
+    runId,
+    batchTraceId: input.batchTraceId,
+    chapterOrdinal: input.chapterOrdinal,
+    chapterCount: input.chapterCount,
+    state: 'running',
+    stage: 'round1',
+  });
+  const snapshotWithTraceId: ContinuationContextSnapshotV5 = {
+    ...snapshot,
+    generationTraceId: unifiedTrace.generationTraceId,
+  };
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,
     chapterId: input.chapterId,
     targetPosition: input.targetPosition as any,
-    sourceId: snapshot.source.sourceId,
+    sourceId: snapshotWithTraceId.source.sourceId,
     sourceSnapshotJson: JSON.stringify({
       schemaVersion: 1,
-      ...snapshot.source,
+      ...snapshotWithTraceId.source,
     }),
-    canonSnapshotId: snapshot.canon.snapshotId,
-    canonRevision: snapshot.canon.revision,
-    storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
-    storyMemoryThroughPosition: snapshot.storyMemory.throughPosition,
-    inputRevisionHash: snapshot.inputRevisionHash,
+    canonSnapshotId: snapshotWithTraceId.canon.snapshotId,
+    canonRevision: snapshotWithTraceId.canon.revision,
+    storyMemoryFingerprint: snapshotWithTraceId.storyMemory.stateFingerprint,
+    storyMemoryThroughPosition: snapshotWithTraceId.storyMemory.throughPosition,
+    inputRevisionHash: snapshotWithTraceId.inputRevisionHash,
     userInstruction: input.userInstruction,
-    settingsSnapshotJson: JSON.stringify(snapshot.settingsSnapshot),
-    contextSnapshotJson: JSON.stringify(snapshot),
-    contextTraceJson: JSON.stringify(trace),
+    settingsSnapshotJson: JSON.stringify(snapshotWithTraceId.settingsSnapshot),
+    contextSnapshotJson: JSON.stringify(snapshotWithTraceId),
+    contextTraceJson: JSON.stringify(unifiedTrace),
     tokenUsageJson: JSON.stringify({
       workflowVersion: 5,
       maxPhysicalRequests: CONTINUATION_V5_MAX_PHYSICAL_REQUESTS,
@@ -2239,7 +2354,7 @@ export async function startContinuationV5Run(
   activeContinuationControllers.set(runId, controller);
   void (async () => {
     try {
-      await runV5Pipeline(run, snapshot, trace, {
+      await runV5Pipeline(run, snapshotWithTraceId, unifiedTrace, {
         callStage: input.callStage,
         deterministicOnly: input.deterministicOnly,
         signal: controller.signal,
@@ -2247,7 +2362,7 @@ export async function startContinuationV5Run(
       });
     } catch (error) {
       try {
-        await finalizeV5OnError(runId, error);
+        await finalizeV5OnError(runId, error, unifiedTrace);
       } catch (finalizeError) {
         console.warn(
           '[continuation-v5] pipeline finalizer failed:',
@@ -2285,7 +2400,7 @@ export async function resumeContinuationV5Run(
   if (snapshot.schemaVersion !== 4 || snapshot.workflowVersion !== 5) {
     throw new Error('V5 context snapshot 版本不匹配。');
   }
-  const trace = run.contextTraceJson
+  const parsedTrace = run.contextTraceJson
     ? (JSON.parse(run.contextTraceJson) as ContinuationContextTrace)
     : ({
         sourceId: snapshot.source.sourceId,
@@ -2300,25 +2415,36 @@ export async function resumeContinuationV5Run(
         reservedOutputTokens: 0,
         omittedCapabilities: [],
       } satisfies ContinuationContextTrace);
+  const trace = ensureContinuationGenerationTrace(parsedTrace, snapshot, {
+    runId,
+    state: 'interrupted',
+    stage: run.stage,
+  });
+  const resumedTrace = appendContinuationGenerationTraceEvent(trace, {
+    event: 'resume',
+    state: 'running',
+    stage: run.stage === 'round1' ? 'round1' : run.stage,
+  });
   const changed = await casUpdateRunState(runId, ['interrupted', 'failed'], {
     state: 'running',
     stage: run.stage === 'round1' ? 'round1' : run.stage,
     errorCode: null,
     errorMessage: null,
     completedAt: null,
+    contextTraceJson: JSON.stringify(resumedTrace),
   });
   if (!changed) return;
   const controller = new AbortController();
   activeContinuationControllers.set(runId, controller);
   try {
-    await runV5Pipeline({ ...run, state: 'running' }, snapshot, trace, {
+    await runV5Pipeline({ ...run, state: 'running' }, snapshot, resumedTrace, {
       callStage,
       deterministicOnly,
       signal: controller.signal,
       projectId: run.projectId,
     });
   } catch (error) {
-    await finalizeV5OnError(runId, error);
+    await finalizeV5OnError(runId, error, resumedTrace);
     throw error;
   } finally {
     activeContinuationControllers.delete(runId);

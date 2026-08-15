@@ -602,6 +602,11 @@ describe('continuation batch adapter', () => {
       // exists and is finalized (positions ascend in start order).
       for (let i = 0; i < 3; i += 1) {
         expect(mockWorld.startCalls[i].chapterId).toBe(chapters[i].id);
+        expect(mockWorld.startCalls[i].batchTraceId).toBe(
+          mockWorld.startCalls[0].batchTraceId,
+        );
+        expect(mockWorld.startCalls[i].chapterOrdinal).toBe(i + 1);
+        expect(mockWorld.startCalls[i].chapterCount).toBe(3);
       }
     });
 
@@ -1223,6 +1228,9 @@ describe('continuation batch adapter', () => {
       const batch = (await getBatchById(batchId))!;
       const expected = buildContinuationBatchChapterInstruction(batch, items[0]);
       expect(mockWorld.startCalls[0].userInstruction).toBe(expected);
+      expect(mockWorld.startCalls[0].batchTraceId).toMatch(/^bt_[a-f0-9]{32}$/);
+      expect(mockWorld.startCalls[0].chapterOrdinal).toBe(1);
+      expect(mockWorld.startCalls[0].chapterCount).toBe(1);
     });
   });
 });
