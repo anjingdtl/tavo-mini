@@ -2003,8 +2003,19 @@ async function loadRuntime(
         expectedProjectId: chapter.project_id,
         expectedChapterId: chapter.id,
       });
-    } catch {
-      parsed = null;
+    } catch (error) {
+      // Stability Phase 3 (Plan §5): a task that already owns a frozen
+      // envelope must NEVER silently fall back to live business state —
+      // that would re-freeze from changed data and drift this generation's
+      // semantics without any diagnostic. Fail closed instead.
+      throw new OutlineContextError(
+        'SNAPSHOT_PARSE_FAILED',
+        `冻结上下文解析失败：${getErrorMessage(
+          error,
+          '未知错误',
+        )}。已阻止回退到实时数据，请重新开始生成。`,
+        'restart_task',
+      );
     }
   }
 
