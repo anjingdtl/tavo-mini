@@ -53,6 +53,98 @@ import * as db from '../services/database';
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
 
+type PersistedBatchItemForHydration = {
+  ordinal: number;
+  title: string;
+  synopsis: string;
+  keyBeatsJson: string;
+  carryIn: string | null;
+  carryOut: string | null;
+  targetWords: number;
+};
+
+function isCompleteBatchPlan(items: readonly BatchChapterPlanItem[]): boolean {
+  return (
+    items.length > 0 &&
+    items.every(
+      item =>
+        Number.isFinite(item.ordinal) &&
+        item.title.trim().length > 0 &&
+        item.synopsis.trim().length > 0 &&
+        item.keyBeats.length > 0 &&
+        item.keyBeats.every(beat => beat.trim().length > 0) &&
+        Number.isFinite(item.targetWords) &&
+        item.targetWords > 0,
+    )
+  );
+}
+
+/**
+ * Restore the editable preview from durable data without promoting placeholder
+ * rows to a valid plan. During a cold re-entry the batch row and item rows can
+ * arrive in separate reads; plannerOutputJson is authoritative while items
+ * still contain empty placeholders.
+ */
+export function hydratePersistedBatchPlan(
+  plannerOutputJson: string | null | undefined,
+  items: readonly PersistedBatchItemForHydration[],
+): BatchChapterPlanItem[] {
+  if (plannerOutputJson) {
+    try {
+      const parsed: unknown = JSON.parse(plannerOutputJson);
+      const chapters =
+        parsed && typeof parsed === 'object' && 'chapters' in parsed
+          ? (parsed as { chapters?: unknown }).chapters
+          : null;
+      if (Array.isArray(chapters)) {
+        const fromPlanner = chapters.map((chapter: unknown) => {
+          const c =
+            chapter && typeof chapter === 'object'
+              ? (chapter as Record<string, unknown>)
+              : {};
+          return {
+            ordinal: Number(c.ordinal),
+            title: String(c.title ?? ''),
+            synopsis: String(c.synopsis ?? ''),
+            keyBeats: Array.isArray(c.keyBeats)
+              ? c.keyBeats.map(String).map(value => value.trim()).filter(Boolean)
+              : [],
+            carryIn: String(c.carryIn ?? ''),
+            carryOut: String(c.carryOut ?? ''),
+            targetWords: Number(c.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
+          } satisfies BatchChapterPlanItem;
+        });
+        if (isCompleteBatchPlan(fromPlanner)) return fromPlanner;
+      }
+    } catch {
+      // Fall through to a complete item-row snapshot, if one exists.
+    }
+  }
+
+  const fromItems = items.map(item => {
+    let keyBeats: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(item.keyBeatsJson || '[]');
+      keyBeats = Array.isArray(parsed)
+        ? parsed.map(String).map(value => value.trim()).filter(Boolean)
+        : [];
+    } catch {
+      keyBeats = [];
+    }
+    return {
+      ordinal: item.ordinal,
+      title: item.title,
+      synopsis: item.synopsis,
+      keyBeats,
+      carryIn: item.carryIn || '',
+      carryOut: item.carryOut || '',
+      targetWords: item.targetWords,
+    } satisfies BatchChapterPlanItem;
+  });
+
+  return isCompleteBatchPlan(fromItems) ? fromItems : [];
+}
+
 /** Continuation V5 sub-stage labels (doc §32). */
 const CONTINUATION_STAGE_LABELS: Record<string, string> = {
   round1: '第一轮生成',
@@ -115,6 +207,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     targetWords: String(BATCH_DEFAULT_TARGET_WORDS),
   });
   const [edited, setEdited] = useState<BatchChapterPlanItem[]>([]);
+  const hydratedPlanRef = useRef(false);
   /** Continuation anchor summary for the create/preview views. */
   const [continuationAnchorInfo, setContinuationAnchorInfo] = useState<{
     boundaryChapterNumber: number | null;
@@ -222,57 +315,24 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   }, [batchStatus, store.reconciling, store.items, resumeSubmitting]);
 
   // 冷启动恢复：编辑计划从持久化数据重建（本地 edited state 是易失的，
-  // 新进程后为空）。planner 的产物在用户确认前只落在批次行的
-  // plannerOutputJson（items 仍是占位行），必须优先从它重建——否则重启
-  // 后预览退化为空占位，确认时还会因 synopsis 为空被校验卡死。
+  // 新进程后为空）。等待一份完整的 durable plan，避免 batch 行和 item 行
+  // 分开加载时把空占位行锁进 edited state。
   useEffect(() => {
-    if (view === 'preview' && edited.length === 0 && store.items.length > 0) {
-      const fromPlanner = (() => {
-        const raw = store.batch?.plannerOutputJson;
-        if (!raw) return null;
-        try {
-          const parsed = JSON.parse(raw);
-          const chapters = Array.isArray(parsed?.chapters) ? parsed.chapters : null;
-          if (!chapters || chapters.length === 0) return null;
-          return chapters.map((c: Record<string, unknown>) => ({
-            ordinal: Number(c.ordinal),
-            title: String(c.title ?? ''),
-            synopsis: String(c.synopsis ?? ''),
-            keyBeats: Array.isArray(c.keyBeats)
-              ? c.keyBeats.map(String)
-              : [],
-            carryIn: String(c.carryIn ?? ''),
-            carryOut: String(c.carryOut ?? ''),
-            targetWords: Number(c.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
-          }));
-        } catch {
-          return null;
-        }
-      })();
-      if (fromPlanner) {
-        setEdited(fromPlanner);
-        return;
-      }
-      setEdited(
-        store.items.map(item => ({
-          ordinal: item.ordinal,
-          title: item.title,
-          synopsis: item.synopsis,
-          keyBeats: (() => {
-            try {
-              const parsed = JSON.parse(item.keyBeatsJson || '[]');
-              return Array.isArray(parsed) ? parsed : [];
-            } catch {
-              return [];
-            }
-          })(),
-          carryIn: item.carryIn || '',
-          carryOut: item.carryOut || '',
-          targetWords: item.targetWords,
-        })),
-      );
+    if (
+      view !== 'preview' ||
+      hydratedPlanRef.current ||
+      store.items.length === 0
+    ) {
+      return;
     }
-  }, [view, edited.length, store.items, store.batch]);
+    const hydrated = hydratePersistedBatchPlan(
+      store.batch?.plannerOutputJson,
+      store.items,
+    );
+    if (hydrated.length === 0) return;
+    hydratedPlanRef.current = true;
+    setEdited(hydrated);
+  }, [view, store.items, store.batch?.plannerOutputJson]);
 
   const handleCreate = async () => {
     const count = Number(form.chapterCount);
@@ -296,6 +356,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         projectMode: currentProject.mode,
       });
       const plan = await store.runPlanner(id);
+      hydratedPlanRef.current = true;
       setEdited(plan.chapters.map(c => ({ ...c })));
       setView('preview');
     } catch (error: any) {
