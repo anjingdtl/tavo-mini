@@ -8,7 +8,10 @@
 import {
   replayFrozenGeneration,
   replayDeterminism,
+  replayGenerationFixtureV2,
+  replayDeterminismV2,
 } from '../src/services/pipeline/replayHarness';
+import type { GenerationReplayFixtureV2 } from '../src/services/pipeline/replayHarness';
 import {
   serializePipelineTaskContext,
   computeFrozenDraftRequestFingerprint,
@@ -204,5 +207,212 @@ describe('replayDeterminism (Phase 6 gate)', () => {
     expect(result.iterations).toBe(10);
     expect(result.allIdentical).toBe(true);
     expect(new Set(result.fingerprints).size).toBe(1);
+  });
+});
+
+function replayChapter(position = 2): any {
+  return {
+    id: position + 1,
+    project_id: 7,
+    position,
+    title: `第${position + 1}章`,
+    synopsis: '主角抵达青秀路。',
+    content: '',
+    status: 'planned',
+    summary_json: null,
+    created_at: '2026-08-15T00:00:00.000Z',
+    updated_at: '2026-08-15T00:00:00.000Z',
+  };
+}
+
+function replayFixture(overrides: Partial<GenerationReplayFixtureV2> = {}): GenerationReplayFixtureV2 {
+  return {
+    fixtureId: 'REG-001',
+    project: { id: 7, mode: 'outline' },
+    chapter: replayChapter(),
+    previousChapters: [
+      { ...replayChapter(1), content: '前章正文。' },
+    ],
+    outline: {
+      text: '主线：主角抵达青秀路。',
+      estimatedTokens: 12,
+      fingerprint: 'outline-replay-v2',
+      outlineIds: [1],
+      complete: true,
+    },
+    resources: {
+      characters: [
+        {
+          id: 1,
+          name: '林晚',
+          data_json: JSON.stringify({ description: '克制的主角。' }),
+        },
+      ],
+      notes: [{ id: 2, title: '反派动机' }],
+      noteConfig: { mode: 'original' },
+      noteContents: { 2: '旧怨未消。' },
+      worldbookEntries: [
+        {
+          id: 3,
+          keyword_primary: '青秀路',
+          content: '青秀路存在雨夜杀人狂。',
+          constant: 0,
+          position: 0,
+        },
+      ],
+      candidates: [],
+    },
+    storyMemory: {
+      text: '主线状态：主角正在调查。',
+      prepared: { checkpointEligibility: { usable: true, reason: 'usable' } },
+    },
+    contextConfig: {
+      strategy: 'sliding',
+      slidingWindowSize: 4,
+      customRangeStart: 0,
+      customRangeEnd: -1,
+      resourceBudget: 2000,
+      includeResources: true,
+    },
+    preset: '你是一位稳定的中文小说作者。',
+    writerStyle: { text: '克制、清晰、少用套话。' },
+    modelConfig: {
+      contextWindow: 128000,
+      reservedOutputTokens: 4000,
+      safetyMargin: 2000,
+    },
+    policy: { allocationMode: 'legacy' },
+    expected: null,
+    ...overrides,
+  };
+}
+
+function fixtureWithExpected(replayCase: GenerationReplayFixtureV2): GenerationReplayFixtureV2 {
+  const first = replayGenerationFixtureV2(replayCase);
+  expect(first.ok).toBe(true);
+  expect(first.actual).toBeDefined();
+  return { ...replayCase, expected: first.actual! };
+}
+
+describe('replayGenerationFixtureV2 (Phase 4 Decision Replay)', () => {
+  test('executes every stage and returns structured decision diffs', () => {
+    const replayCase = fixtureWithExpected(replayFixture());
+    const result = replayGenerationFixtureV2(replayCase);
+    expect(result.ok).toBe(true);
+    expect(result.stageOrder).toEqual([
+      'collect',
+      'normalize',
+      'plan',
+      'allocate',
+      'render',
+      'freeze',
+      'compare',
+    ]);
+    expect(result.actual?.candidates.length).toBeGreaterThan(0);
+    expect(result.actual?.budget.length).toBeGreaterThan(0);
+    expect(result.actual?.rendered.length).toBeGreaterThan(0);
+
+    const tamperedExpected = {
+      ...replayCase.expected!,
+      candidates: replayCase.expected!.candidates.map(candidate =>
+        candidate.candidateId === 'character:1'
+          ? { ...candidate, selected: !candidate.selected }
+          : candidate,
+      ),
+      budget: replayCase.expected!.budget.map(item =>
+        item.candidateId === 'character:1'
+          ? { ...item, allocatedTokens: item.allocatedTokens + 1 }
+          : item,
+      ),
+      rendered: replayCase.expected!.rendered.map(item =>
+        item.candidateId === 'character:1'
+          ? { ...item, renderedHash: '0'.repeat(64) }
+          : item,
+      ),
+      diagnostics: [
+        {
+          code: 'REPLAY_EXPECTED_DIAGNOSTIC',
+          severity: 'warning' as const,
+          message: 'expected mismatch',
+        },
+      ],
+      fingerprint: 'f'.repeat(64),
+    };
+    const mismatch = replayGenerationFixtureV2({
+      ...replayCase,
+      expected: tamperedExpected,
+    });
+    expect(mismatch.ok).toBe(false);
+    expect(mismatch.diffs.map(diff => diff.kind)).toEqual(
+      expect.arrayContaining([
+        'selection_mismatch',
+        'allocation_mismatch',
+        'render_mismatch',
+        'fingerprint_mismatch',
+        'diagnostics_mismatch',
+      ]),
+    );
+  });
+
+  test('replays one fixture ten times with identical decisions and render', () => {
+    const replayCase = fixtureWithExpected(replayFixture());
+    const result = replayDeterminismV2(replayCase, 10);
+    expect(result.iterations).toBe(10);
+    expect(result.allIdentical).toBe(true);
+    expect(new Set(result.candidateSignatures).size).toBe(1);
+    expect(new Set(result.selectedSignatures).size).toBe(1);
+    expect(new Set(result.allocationSignatures).size).toBe(1);
+    expect(new Set(result.renderSignatures).size).toBe(1);
+    expect(new Set(result.fingerprints).size).toBe(1);
+  });
+
+  test.each([
+    ['REG-001', replayFixture()],
+    ['GJ-07 Writer Style', replayFixture({
+      fixtureId: 'GJ-07 Writer Style',
+      writerStyle: { text: '只使用冻结的作家风格。' },
+    })],
+    ['Note None', replayFixture({
+      fixtureId: 'Note None',
+      resources: {
+        ...replayFixture().resources,
+        noteConfig: { mode: 'none' },
+      },
+    })],
+    ['Story Memory Dirty', replayFixture({
+      fixtureId: 'Story Memory Dirty',
+      storyMemory: {
+        text: '',
+        prepared: { checkpointEligibility: { usable: false, reason: 'not_clean' } },
+      },
+    })],
+    ['1M Context', replayFixture({
+      fixtureId: '1M Context',
+      modelConfig: {
+        contextWindow: 1_000_000,
+        reservedOutputTokens: 8000,
+        safetyMargin: 2000,
+      },
+      resources: {
+        ...replayFixture().resources,
+        candidates: Array.from({ length: 30 }, (_, index) => ({
+          candidateId: `other:large-${index}`,
+          sourceType: 'other' as const,
+          sourceId: index,
+          content: `大窗口资料-${index}-`.repeat(60),
+          selected: true,
+          selectedReason: 'fixture_source',
+          demandTokens: 300,
+          sourceOrder: index,
+        })),
+      },
+    })],
+  ])('supports required fixture %s through the full replay pipeline', (_name, replayCase) => {
+    const replayed = replayGenerationFixtureV2(
+      fixtureWithExpected(replayCase as GenerationReplayFixtureV2),
+    );
+    expect(replayed.ok).toBe(true);
+    expect(replayed.actual?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(replayed.diffs).toEqual([]);
   });
 });
