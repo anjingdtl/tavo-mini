@@ -6,6 +6,7 @@ import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import type { WritingKernelTrace } from '../src/services/writing/contracts/frozenWritingContext';
 import type { WritingSourceTrace } from '../src/services/writing/contracts/writingSource';
+import { mergePostFreezeKernelTrace } from '../src/services/writing/productionWritingEntry';
 
 function context(): PipelineContextSnapshot {
   const sourceTrace: WritingSourceTrace = {
@@ -142,6 +143,29 @@ function execution(): PipelineExecutionSnapshot {
 }
 
 describe('Writing Trace persistence', () => {
+  test('bridges facade trace events onto the durable Freeze without source drift', () => {
+    const durable = context().writingKernelTrace!;
+    const facade = {
+      ...durable,
+      writingRunId: 'wr_facade-run',
+      sourceFingerprint: 'facade-source-fingerprint',
+      events: [
+        ...durable.events,
+        { stage: 'draft' as const, status: 'started' as const },
+        { stage: 'postWritingUpdate' as const, status: 'completed' as const },
+      ],
+    };
+
+    const merged = mergePostFreezeKernelTrace(durable, facade);
+
+    expect(merged.sourceFingerprint).toBe(durable.sourceFingerprint);
+    expect(merged.events).toEqual([
+      ...durable.events,
+      { stage: 'draft', status: 'started' },
+      { stage: 'postWritingUpdate', status: 'completed' },
+    ]);
+  });
+
   test('preserves source and Kernel traces across post-draft reserialization', () => {
     const first = serializePipelineTaskContext({
       draftContext: context(),

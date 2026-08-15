@@ -120,20 +120,66 @@ function makeContinuationSourceBundle(input: StartContinuationRunInput): Writing
   };
 }
 
-function mergeKernelTrace(
+/**
+ * The durable pipeline freezes the authoritative source bundle before its
+ * stage driver starts. The public entry also builds a small facade request so
+ * the driver can be invoked through the one Kernel API; that facade has its
+ * own pre-freeze trace and must never replace the durable source decision.
+ *
+ * Only post-Freeze events cross this bridge. The durable trace keeps its own
+ * source/context fingerprints and counters, so a facade placeholder cannot
+ * create source drift or a false context-loss signal.
+ */
+export function mergePostFreezeKernelTrace(
   existing: WritingKernelTrace,
   completed: WritingKernelTrace,
 ): WritingKernelTrace {
-  if (existing.sourceFingerprint !== completed.sourceFingerprint) {
+  if (existing.scenario !== completed.scenario) {
     throw new Error(
-      `Writing Kernel source fingerprint changed before trace persistence: ${existing.sourceFingerprint} != ${completed.sourceFingerprint}`,
+      `Writing Kernel trace scenario changed before persistence: ${existing.scenario} != ${completed.scenario}`,
+    );
+  }
+  if (existing.generationTraceId !== completed.generationTraceId) {
+    throw new Error(
+      `Writing Kernel generation trace changed before persistence: ${existing.generationTraceId} != ${completed.generationTraceId}`,
+    );
+  }
+  const lastFreezeIndex = completed.events.reduce(
+    (lastIndex, event, index) =>
+      event.stage === 'freeze' && event.status === 'completed'
+        ? index
+        : lastIndex,
+    -1,
+  );
+  if (lastFreezeIndex < 0) {
+    throw new Error(
+      'Writing Kernel trace persistence blocked: facade trace has no completed Freeze',
+    );
+  }
+  const postFreezeEvents = completed.events.slice(lastFreezeIndex + 1);
+  if (postFreezeEvents.length === 0) {
+    throw new Error(
+      'Writing Kernel trace persistence blocked: facade trace has no post-Freeze events',
+    );
+  }
+  const preFreezeStages = new Set([
+    'collect',
+    'normalize',
+    'plan',
+    'allocate',
+    'render',
+    'freeze',
+  ]);
+  if (postFreezeEvents.some(event => preFreezeStages.has(event.stage))) {
+    throw new Error(
+      'Writing Kernel trace persistence blocked: post-Freeze bridge contains a pre-Freeze event',
     );
   }
   const seen = new Set(
     existing.events.map(event => JSON.stringify(event)),
   );
   const events = [...existing.events];
-  for (const event of completed.events) {
+  for (const event of postFreezeEvents) {
     const key = JSON.stringify(event);
     if (!seen.has(key)) {
       seen.add(key);
@@ -143,19 +189,6 @@ function mergeKernelTrace(
   return {
     ...existing,
     events,
-    silentContextLossCount: Math.max(
-      existing.silentContextLossCount,
-      completed.silentContextLossCount,
-    ),
-    unexpectedLiveReadCount: Math.max(
-      existing.unexpectedLiveReadCount,
-      completed.unexpectedLiveReadCount,
-    ),
-    fatalCount: Math.max(existing.fatalCount, completed.fatalCount),
-    falseAppliedRequirementCount: Math.max(
-      existing.falseAppliedRequirementCount,
-      completed.falseAppliedRequirementCount,
-    ),
   };
 }
 
@@ -189,9 +222,24 @@ export async function persistWritingKernelTraceForTask(
     const context = envelope[contextKey];
     if (!context || typeof context !== 'object') continue;
     const existing = context.writingKernelTrace as WritingKernelTrace | undefined;
-    context.writingKernelTrace = existing
-      ? mergeKernelTrace(existing, completedTrace)
-      : completedTrace;
+    if (
+      existing &&
+      context.writingSourceTrace?.sourceFingerprint &&
+      context.writingSourceTrace.sourceFingerprint !== existing.sourceFingerprint
+    ) {
+      throw new Error(
+        `Writing Kernel trace persistence blocked: ${contextKey} source trace does not match durable Freeze`,
+      );
+    }
+    if (!existing) {
+      throw new Error(
+        `Writing Kernel trace persistence blocked: ${contextKey} has no durable Freeze trace`,
+      );
+    }
+    context.writingKernelTrace = mergePostFreezeKernelTrace(
+      existing,
+      completedTrace,
+    );
     updatedContexts += 1;
   }
   if (updatedContexts === 0) {
