@@ -39,6 +39,10 @@ import {
 } from './contextAutomationPolicy';
 import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
+import {
+  GenerationStageStopwatch,
+  assertNoFutureSourceLeakage,
+} from './context/generationStageContracts';
 import type { ContextTraceItem } from '../types/contextTrace';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
@@ -115,6 +119,13 @@ export interface BuildContextResult {
    * these so the user can see WHY each section got the budget it did.
    */
   hierarchicalBudgetTrace?: HierarchicalBudgetResult;
+  /**
+   * Stability Phase 4 (layer 1) — per-stage wall-clock telemetry for the
+   * collect/allocate/render/freeze spans (plan §21). Observation only.
+   */
+  stageTimings?: import('./context/generationStageContracts').GenerationStageTimings;
+  /** Stability Phase 4 — observational collect-stage summary (plan §4.1). */
+  collectedMaterials?: import('./context/generationStageContracts').CollectedGenerationMaterialsSummary;
 }
 
 export interface BuildContextOptions {
@@ -409,6 +420,10 @@ export async function buildContext(
   preset?: Preset | string,
   options: BuildContextOptions = {},
 ): Promise<BuildContextResult> {
+  // Stability Phase 4 (layer 1): named stage spans + freeze-time guards.
+  // Observation only — no budget/render logic moves in this layer.
+  const stageWatch = new GenerationStageStopwatch();
+  stageWatch.mark('collect');
   const trace: ContextTraceItem[] = [];
   let chapters = await db.getChaptersByProject(projectId);
   const budgetVersion = Number(options.contextBudgetVersion) || 0;
@@ -550,6 +565,8 @@ export async function buildContext(
     options.reservedOutputTokens != null && options.reservedOutputTokens > 0
       ? Number(options.reservedOutputTokens)
       : 0;
+  stageWatch.close('collect', 'collect');
+  stageWatch.mark('allocate');
   if (resolvedContextWindow > 0 && reservedOut > 0) {
     const safety = deriveContextSafetyMargin(resolvedContextWindow);
     const fixedProtocol = 256;
@@ -1029,6 +1046,8 @@ export async function buildContext(
   // Episodic query / retrieval options were computed above (before the budget
   // block) so the V3 branch could measure real demand + enrich the worldbook
   // scan haystack. Reused unchanged here for the final memoryText render.
+  stageWatch.close('allocate', 'allocate');
+  stageWatch.mark('render');
 
   // V2.2.0：IDF 缓存——同项目 memory_summary 不变时复用，避免每次 tokenize+buildIdf
   let memoryText: string;
@@ -1468,6 +1487,16 @@ export async function buildContext(
   // Keep the immediately preceding chapter separate from the sliding bridge.
   // The bridge may be clipped or assembled from several chapters, while Final
   // V3 must always be able to recover the exact last-chapter seam.
+  stageWatch.close('render', 'render');
+  stageWatch.mark('freeze');
+  // Stability Phase 4 (plan §4.6): future source leakage must be zero at
+  // freeze time. The position filters above guarantee this today; the assert
+  // turns silent regressions of that filter into hard failures.
+  assertNoFutureSourceLeakage({
+    currentPosition: currentChapter.position,
+    previousChapters,
+    episodicCandidates,
+  });
   const immediatePreviousChapter = chapters
     .filter(chapter => chapter.position < currentChapter.position && chapter.content)
     .sort((a, b) => b.position - a.position)[0];
@@ -1549,6 +1578,8 @@ export async function buildContext(
       : {}),
   };
 
+  stageWatch.close('freeze', 'freeze');
+
   return {
     messages,
     chapters,
@@ -1558,6 +1589,16 @@ export async function buildContext(
     storyMemoryWarnings: prepared?.warnings || [],
     elasticBudgetTrace,
     hierarchicalBudgetTrace,
+    stageTimings: stageWatch.result(),
+    collectedMaterials: {
+      chapterCount: chapters.length,
+      previousChapterCount: previousChapters.length,
+      episodicCandidateCount: episodicCandidates.length,
+      storyMemoryCheckpointUsable:
+        prepared?.checkpointEligibility?.usable ?? null,
+      outlineEstimatedTokens: preOutlineContext.estimatedTokens ?? null,
+      contextBudgetVersion: budgetVersion,
+    },
   };
 }
 
