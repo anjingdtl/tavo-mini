@@ -13,6 +13,9 @@ import {
 import {
   freezeGenerationContext,
 } from '../src/services/context/generation/freezeGenerationContext';
+import {
+  parseFrozenGenerationContextContract,
+} from '../src/services/context/generation/generationContractValidation';
 
 const currentChapter = {
   id: 3,
@@ -121,8 +124,33 @@ describe('Phase II six-stage generation contracts', () => {
           demandTokens: expect.any(Number),
           allocatedTokens: expect.any(Number),
           allocationReason: expect.any(String),
+          budgetClipped: expect.any(Boolean),
         }),
       ]),
+    );
+  });
+
+  test('candidate contract carries every selection fact needed for replay', () => {
+    const normalized = normalizeGenerationMaterials(collected);
+    const plan = buildGenerationContextPlan({ normalized });
+    const candidate = plan.candidates.find(item => item.candidateId === 'character:1');
+    expect(candidate).toEqual(
+      expect.objectContaining({
+        candidateId: 'character:1',
+        sourceType: 'character',
+        sourceId: 1,
+        sourceRevision: null,
+        contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        activation: 'automatic',
+        selected: true,
+        selectedReason: expect.any(String),
+        rejectedReason: null,
+        requirement: 'preferred',
+        relevance: expect.any(Number),
+        priority: expect.any(Number),
+        selectionBoost: expect.any(Number),
+        demandTokens: expect.any(Number),
+      }),
     );
   });
 
@@ -193,5 +221,6 @@ describe('Phase II six-stage generation contracts', () => {
     expect(frozen.budget).toEqual(expect.any(Array));
     expect(frozen.rendered).toEqual(expect.any(Array));
     expect(JSON.parse(JSON.stringify(frozen))).toEqual(frozen);
+    expect(parseFrozenGenerationContextContract(frozen)).toEqual(frozen);
   });
 });

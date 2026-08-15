@@ -8,6 +8,7 @@ import type {
   NormalizedGenerationMaterials,
   RenderedGenerationContext,
 } from './generationContracts';
+import { computeGenerationContractFingerprint } from './generationContractValidation';
 
 /** Freeze is the sole assembler of the decision/render contract. */
 export function freezeGenerationContext(input: {
@@ -39,6 +40,46 @@ export function freezeGenerationContext(input: {
     throw new Error('GENERATION_CONTEXT_MESSAGE_RENDER_MISMATCH');
   }
   const budgetIds = new Set(input.allocation.items.map(item => item.candidateId));
+  const materialCandidates = input.plan.candidates.map(candidate => ({
+    ...candidate,
+  }));
+  const candidateIds = new Set(materialCandidates.map(item => item.candidateId));
+  const legacyStageIds = new Set(
+    [...input.allocation.items, ...input.rendered.items]
+      .map(item => item.candidateId)
+      .filter(candidateId => !candidateIds.has(candidateId)),
+  );
+  // Elastic/hierarchical compatibility adapters may publish stage-level
+  // grants (protocol, storyState, resources, ...), while the material plan
+  // publishes source-level candidates. Preserve those grants as explicit
+  // adapter candidates rather than dropping budget evidence or rejecting a
+  // historically valid allocation shape.
+  for (const candidateId of legacyStageIds) {
+    const allocation = input.allocation.items.find(
+      item => item.candidateId === candidateId,
+    );
+    const mandatory =
+      allocation?.waterLevel === 'mandatory' || candidateId === 'protocol';
+    materialCandidates.push({
+      candidateId,
+      sourceType: 'other',
+      sourceId: null,
+      sourceRevision: null,
+      contentHash: sha256Hex(''),
+      activation: mandatory ? 'mandatory' : 'automatic',
+      selected: true,
+      selectedReason: 'legacy_stage_budget_adapter',
+      rejectedReason: null,
+      requirement: mandatory ? 'mandatory' : 'optional',
+      relevance: null,
+      priority: null,
+      selectionBoost: null,
+      demandTokens: allocation?.demandTokens || 0,
+      content: '',
+      sourceOrder: materialCandidates.length,
+    });
+    candidateIds.add(candidateId);
+  }
   const messagePayload = input.rendered.messages
     .map(message => String(message.content || ''))
     .join('\n');
@@ -60,22 +101,37 @@ export function freezeGenerationContext(input: {
     }
   }
   const candidates = [
-    ...input.plan.candidates.map(({ content: _content, sourceOrder: _sourceOrder, ...candidate }) => candidate),
+    ...materialCandidates.map(({ content: _content, sourceOrder: _sourceOrder, ...candidate }) => candidate),
     ...input.plan.rejectedCandidates,
   ];
+  const budget = input.allocation.items.map(item => {
+    const budgetClipped =
+      typeof item.budgetClipped === 'boolean'
+        ? item.budgetClipped
+        : Boolean(item.clippedByBudget);
+    return {
+      ...item,
+      budgetClipped,
+      clippedByBudget: budgetClipped,
+    };
+  });
   const payload = {
     version: 2 as const,
     projectId: input.normalized.projectId,
     chapterId: input.normalized.currentChapter.id ?? null,
     currentPosition: Number(input.normalized.currentChapter.position),
     candidates,
-    budget: input.allocation.items,
+    budget,
     rendered: input.rendered.items,
     messages: input.rendered.messages,
     diagnostics: input.diagnostics,
   };
-  return {
+  const contract = {
     ...payload,
-    fingerprint: sha256Hex(JSON.stringify(payload)),
+    fingerprint: '',
+  } as FrozenGenerationContextContractV2;
+  return {
+    ...contract,
+    fingerprint: computeGenerationContractFingerprint(contract),
   };
 }

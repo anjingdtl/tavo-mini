@@ -19,6 +19,8 @@ import type { PipelineContextSnapshot } from '../../types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../../types/pipelineExecution';
 import type { FrozenDraftRequest } from '../../types/pipelineFrozen';
 import { sha256Hex } from '../continuation/hashUtils';
+import type { FrozenGenerationContextContractV2 } from '../context/generation/generationContracts';
+import { computeGenerationContractFingerprint } from '../context/generation/generationContractValidation';
 
 export const FROZEN_GENERATION_CONTEXT_VERSION = 1 as const;
 
@@ -83,6 +85,17 @@ export interface GenerationFingerprintInputV1 {
     safetyMargin: number;
     contextWindow: number;
   } | null;
+}
+
+/**
+ * Phase 2 fingerprint input. V1 remains unchanged for historical snapshots;
+ * current snapshots that carry a complete Candidate/Budget/Render contract
+ * opt into this additive semantic version.
+ */
+export interface GenerationFingerprintInputV2
+  extends Omit<GenerationFingerprintInputV1, 'v'> {
+  v: 2;
+  candidateContractFingerprint: string;
 }
 
 /**
@@ -180,9 +193,31 @@ export function buildGenerationFingerprintInput(
   };
 }
 
+export function buildGenerationFingerprintInputV2(
+  draftContext: PipelineContextSnapshot,
+  execution: PipelineExecutionSnapshot,
+  frozenDraftRequest: FrozenDraftRequest | null | undefined,
+): GenerationFingerprintInputV2 {
+  const base = buildGenerationFingerprintInput(
+    draftContext,
+    execution,
+    frozenDraftRequest,
+  );
+  if (!draftContext.generationContract) {
+    throw new Error('GENERATION_CONTRACT_REQUIRED_FOR_FINGERPRINT_V2');
+  }
+  return {
+    ...base,
+    v: 2,
+    candidateContractFingerprint: computeGenerationContractFingerprint(
+      draftContext.generationContract,
+    ),
+  };
+}
+
 /** Deterministic fingerprint over the canonical input (full sha256 hex). */
 export function computeGenerationFingerprint(
-  input: GenerationFingerprintInputV1,
+  input: GenerationFingerprintInputV1 | GenerationFingerprintInputV2,
 ): string {
   return sha256Hex(JSON.stringify(input));
 }
@@ -207,6 +242,12 @@ export interface FrozenGenerationContextV1 {
   computedGenerationFingerprint: string;
 }
 
+export interface FrozenGenerationContextV2
+  extends Omit<FrozenGenerationContextV1, 'version'> {
+  version: 2;
+  generationContract: FrozenGenerationContextContractV2;
+}
+
 /**
  * Derive the FrozenGenerationContext view from a parsed envelope.
  * Returns null for V1 bare snapshots (no execution snapshot — nothing
@@ -215,15 +256,24 @@ export interface FrozenGenerationContextV1 {
 export function deriveFrozenGenerationContext(params: {
   pipelineTaskId: string;
   parsed: ParsedPipelineTaskContext | null;
-}): FrozenGenerationContextV1 | null {
+}): FrozenGenerationContextV1 | FrozenGenerationContextV2 | null {
   const { parsed } = params;
   if (!parsed?.draftContext || !parsed.execution) return null;
-  const input = buildGenerationFingerprintInput(
-    parsed.draftContext,
-    parsed.execution,
-    parsed.frozenDraftRequest,
-  );
-  return {
+  const useV2 =
+    parsed.generationFingerprintVersion === 2 &&
+    parsed.draftContext.generationContract != null;
+  const input = useV2
+    ? buildGenerationFingerprintInputV2(
+        parsed.draftContext,
+        parsed.execution,
+        parsed.frozenDraftRequest,
+      )
+    : buildGenerationFingerprintInput(
+        parsed.draftContext,
+        parsed.execution,
+        parsed.frozenDraftRequest,
+      );
+  const base: FrozenGenerationContextV1 = {
     version: FROZEN_GENERATION_CONTEXT_VERSION,
     pipelineTaskId: params.pipelineTaskId,
     generationTraceId: parsed.trace?.generationTraceId ?? null,
@@ -239,4 +289,12 @@ export function deriveFrozenGenerationContext(params: {
     storedGenerationFingerprint: parsed.generationFingerprint ?? null,
     computedGenerationFingerprint: computeGenerationFingerprint(input),
   };
+  return useV2
+    ? {
+        ...base,
+        version: 2,
+        generationContract: parsed.draftContext
+          .generationContract as FrozenGenerationContextContractV2,
+      }
+    : base;
 }

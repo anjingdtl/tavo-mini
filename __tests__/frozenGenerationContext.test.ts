@@ -16,6 +16,8 @@ import {
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import type { FrozenDraftRequest } from '../src/types/pipelineFrozen';
+import type { FrozenGenerationContextContractV2 } from '../src/services/context/generation/generationContracts';
+import { computeGenerationContractFingerprint } from '../src/services/context/generation/generationContractValidation';
 
 function context(
   overrides: Partial<PipelineContextSnapshot> = {},
@@ -118,6 +120,66 @@ function frozenRequest(
     prevEnding: '……',
     userPrompt: '继续',
     ...overrides,
+  };
+}
+
+function generationContract(): FrozenGenerationContextContractV2 {
+  const payload = {
+    version: 2 as const,
+    projectId: 7,
+    chapterId: 23,
+    currentPosition: 3,
+    candidates: [
+      {
+        candidateId: 'character:1',
+        sourceType: 'character' as const,
+        sourceId: 1,
+        sourceRevision: 'rev-1',
+        contentHash: 'a'.repeat(64),
+        activation: 'automatic' as const,
+        selected: true,
+        selectedReason: 'project_character',
+        rejectedReason: null,
+        requirement: 'preferred' as const,
+        relevance: 0.9,
+        priority: 7,
+        selectionBoost: 1,
+        demandTokens: 12,
+      },
+    ],
+    budget: [
+      {
+        candidateId: 'character:1',
+        demandTokens: 12,
+        requestedTokens: 12,
+        minTokens: 0,
+        targetTokens: 12,
+        maxTokens: 12,
+        allocatedTokens: 12,
+        allocationReason: 'preferred',
+        waterLevel: 'soft' as const,
+        budgetClipped: false,
+        clippedByBudget: false,
+      },
+    ],
+    rendered: [
+      {
+        candidateId: 'character:1',
+        allocatedTokens: 12,
+        actualTokens: 8,
+        included: true,
+        clipped: true,
+        clippingReason: 'allocation_limit',
+        renderedHash: 'b'.repeat(64),
+      },
+    ],
+    messages: [{ role: 'system' as const, content: '角色资料' }],
+    diagnostics: [],
+  };
+  const contract = { ...payload, fingerprint: '' } as FrozenGenerationContextContractV2;
+  return {
+    ...contract,
+    fingerprint: computeGenerationContractFingerprint(contract),
   };
 }
 
@@ -268,6 +330,51 @@ describe('envelope fingerprint embed & verify', () => {
       }),
     ).toThrow(expect.objectContaining({ code: 'SNAPSHOT_FINGERPRINT_MISMATCH' }));
   });
+
+  test('candidate contract round-trips and participates in the snapshot fingerprint', () => {
+    const serialized = serializePipelineTaskContext({
+      draftContext: context({ generationContract: generationContract() }),
+      execution: execution(),
+      frozenDraftRequest: frozenRequest(),
+    });
+    const parsed = parsePersistedPipelineTaskContext(serialized);
+    expect(parsed.draftContext.generationContract?.candidates[0]).toEqual(
+      expect.objectContaining({
+        candidateId: 'character:1',
+        selected: true,
+        selectedReason: 'project_character',
+        demandTokens: 12,
+      }),
+    );
+    expect(parsed.generationFingerprint).toBe(serialized.generationFingerprint);
+
+    const raw = JSON.parse(serialized.pipelineContextJson);
+    raw.draftContext.generationContract.candidates[0].selected = false;
+    expect(() =>
+      parsePersistedPipelineTaskContext({
+        pipelineContextJson: JSON.stringify(raw),
+        pipelineContextVersion: serialized.pipelineContextVersion,
+        pipelineContextHash: null,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'SNAPSHOT_FINGERPRINT_MISMATCH' }));
+  });
+
+  test('tampered contract fingerprint fails closed even before envelope verification', () => {
+    const serialized = serializePipelineTaskContext({
+      draftContext: context({ generationContract: generationContract() }),
+      execution: execution(),
+      frozenDraftRequest: frozenRequest(),
+    });
+    const raw = JSON.parse(serialized.pipelineContextJson);
+    raw.draftContext.generationContract.candidates[0].priority = 99;
+    expect(() =>
+      parsePersistedPipelineTaskContext({
+        pipelineContextJson: JSON.stringify(raw),
+        pipelineContextVersion: serialized.pipelineContextVersion,
+        pipelineContextHash: null,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'SNAPSHOT_FINGERPRINT_MISMATCH' }));
+  });
 });
 
 describe('deriveFrozenGenerationContext view', () => {
@@ -306,5 +413,35 @@ describe('deriveFrozenGenerationContext view', () => {
     expect(
       deriveFrozenGenerationContext({ pipelineTaskId: 't', parsed: null }),
     ).toBeNull();
+  });
+
+  test('historical V1 bare snapshots remain readable without a candidate contract', () => {
+    const historical = context();
+    const parsed = parsePersistedPipelineTaskContext({
+      pipelineContextJson: JSON.stringify(historical),
+      pipelineContextVersion: 1,
+      pipelineContextHash: null,
+    });
+    expect(parsed.version).toBe(1);
+    expect(parsed.generationFingerprint).toBeNull();
+    expect(parsed.draftContext.generationContract).toBeUndefined();
+    expect(deriveFrozenGenerationContext({ pipelineTaskId: 'legacy', parsed })).toBeNull();
+  });
+
+  test('current contract envelopes expose the V2 frozen view', () => {
+    const serialized = serializePipelineTaskContext({
+      draftContext: context({ generationContract: generationContract() }),
+      execution: execution(),
+      frozenDraftRequest: frozenRequest(),
+    });
+    const parsed = parsePersistedPipelineTaskContext(serialized);
+    const view = deriveFrozenGenerationContext({
+      pipelineTaskId: 'task-v2',
+      parsed,
+    });
+    expect(view?.version).toBe(2);
+    expect((view as any).generationContract.candidates[0].candidateId).toBe(
+      'character:1',
+    );
   });
 });

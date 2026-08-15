@@ -44,6 +44,9 @@ export interface GenerationCandidateContractV1 {
   demandTokens: number;
 }
 
+/** Phase 2 contract names used by the persisted FrozenGenerationContext V2. */
+export type FrozenContextCandidateV1 = GenerationCandidateContractV1;
+
 export interface GenerationMaterialCandidate
   extends GenerationCandidateContractV1 {
   content: string;
@@ -72,8 +75,13 @@ export interface GenerationBudgetItem {
   allocatedTokens: number;
   allocationReason: string;
   waterLevel: 'mandatory' | 'soft' | 'burst' | 'hard' | 'none';
-  clippedByBudget: boolean;
+  /** Canonical Phase 2 name. */
+  budgetClipped: boolean;
+  /** Phase 1 compatibility alias; new snapshots keep both values identical. */
+  clippedByBudget?: boolean;
 }
+
+export type FrozenBudgetItem = GenerationBudgetItem;
 
 export interface GenerationRenderedContextItem {
   candidateId: string;
@@ -84,6 +92,8 @@ export interface GenerationRenderedContextItem {
   clippingReason: string | null;
   renderedHash: string;
 }
+
+export type FrozenRenderedContextItem = GenerationRenderedContextItem;
 
 export interface GenerationContextPlan {
   version: 1;

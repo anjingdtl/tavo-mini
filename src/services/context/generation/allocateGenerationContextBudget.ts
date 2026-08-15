@@ -51,6 +51,7 @@ function buildItems(
     );
     const allocationReason =
       (allocationId && reasons.get(allocationId)) || 'not_activated';
+    const budgetClipped = allocatedTokens < demand.demandTokens;
     return {
       candidateId: demand.candidateId,
       demandTokens: finiteFloor(demand.demandTokens),
@@ -66,7 +67,8 @@ function buildItems(
         demand.demandTokens,
         hardInputLimit,
       ),
-      clippedByBudget: allocatedTokens < demand.demandTokens,
+      budgetClipped,
+      clippedByBudget: budgetClipped,
     };
   });
 }

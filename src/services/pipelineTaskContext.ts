@@ -34,6 +34,7 @@ import type { ChatMessage } from './llm';
 import type { GenerationTraceRecordV1 } from '../types/generationTrace';
 import {
   buildGenerationFingerprintInput,
+  buildGenerationFingerprintInputV2,
   computeGenerationFingerprint,
 } from './pipeline/frozenGenerationContext';
 import { OutlineContextError } from './outlineContextBuilder';
@@ -44,6 +45,7 @@ import {
   isContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
+import { parseFrozenGenerationContextContract } from './context/generation/generationContractValidation';
 
 /** Envelope protocol version stored in pipeline_context_version. */
 export const PIPELINE_TASK_CONTEXT_VERSION = 2 as const;
@@ -72,6 +74,8 @@ export interface PersistedPipelineTaskContextV2 {
    * re-verified at parse time. Absent on historical tasks (tolerated).
    */
   generationFingerprint?: string;
+  /** Fingerprint input protocol; absent means the historical V1 input. */
+  generationFingerprintVersion?: 1 | 2;
   createdAt: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -100,6 +104,7 @@ export interface ParsedPipelineTaskContext {
   trace: GenerationTraceRecordV1 | null;
   /** Stability Phase 2 semantic fingerprint; null on historical envelopes. */
   generationFingerprint: string | null;
+  generationFingerprintVersion: 1 | 2 | null;
   createdAt: number;
   auditFellBack?: boolean;
 }
@@ -638,6 +643,28 @@ export function parsePipelineContextSnapshotStrict(
     }
   }
 
+  let generationContract: PipelineContextSnapshot['generationContract'];
+  if (raw.generationContract != null) {
+    try {
+      generationContract = parseFrozenGenerationContextContract(
+        raw.generationContract,
+      );
+    } catch (error: any) {
+      const contractFingerprintMismatch = String(error?.message || '').includes(
+        'GENERATION_CONTRACT_FINGERPRINT_MISMATCH',
+      );
+      throw new OutlineContextError(
+        contractFingerprintMismatch
+          ? 'SNAPSHOT_FINGERPRINT_MISMATCH'
+          : 'OUTLINE_SNAPSHOT_INVALID',
+        `冻结 Generation Candidate/Budget/Render Contract 无效：${String(
+          error?.message || error,
+        )}`,
+        'restart_task',
+      );
+    }
+  }
+
   const snap: PipelineContextSnapshot = {
     presetText: String(raw.presetText),
     storyMemoryText: String(raw.storyMemoryText),
@@ -760,6 +787,7 @@ export function parsePipelineContextSnapshotStrict(
       : {}),
     // Stability Phase 5 — tolerant passthrough of structured diagnostics.
     stabilityDiagnostics: parseStabilityDiagnostics(raw.stabilityDiagnostics),
+    ...(generationContract ? { generationContract } : {}),
     ...(Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
       ? {
           writerStyleSnapshot: parseFrozenWriterStyle(
@@ -1351,6 +1379,7 @@ export function parsePipelineTaskContextV1(
     frozenAuditCandidates: null,
     trace: null,
     generationFingerprint: null,
+    generationFingerprintVersion: null,
     createdAt: draftContext.createdAt ?? Date.now(),
   };
 }
@@ -1398,17 +1427,44 @@ export function parsePipelineTaskContextV2(
   // carries one. Mismatch means semantic content drifted from what was
   // frozen → fail closed (Plan §12 / §14 SNAPSHOT_FINGERPRINT_MISMATCH).
   let generationFingerprint: string | null = null;
+  let generationFingerprintVersion: 1 | 2 | null = null;
   if (
     typeof raw.generationFingerprint === 'string' &&
     raw.generationFingerprint
   ) {
-    generationFingerprint = computeGenerationFingerprint(
-      buildGenerationFingerprintInput(
-        draftContext,
-        execution,
-        frozenDraftRequest,
-      ),
-    );
+    const declaredFingerprintVersion =
+      raw.generationFingerprintVersion == null
+        ? 1
+        : Number(raw.generationFingerprintVersion);
+    if (declaredFingerprintVersion !== 1 && declaredFingerprintVersion !== 2) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        '生成语义指纹版本非法，已阻止恢复。请重新开始生成。',
+        'restart_task',
+      );
+    }
+    generationFingerprintVersion = declaredFingerprintVersion;
+    try {
+      generationFingerprint = computeGenerationFingerprint(
+        declaredFingerprintVersion === 2
+          ? buildGenerationFingerprintInputV2(
+              draftContext,
+              execution,
+              frozenDraftRequest,
+            )
+          : buildGenerationFingerprintInput(
+              draftContext,
+              execution,
+              frozenDraftRequest,
+            ),
+      );
+    } catch (error: any) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        `生成语义指纹输入无效：${String(error?.message || error)}`,
+        'restart_task',
+      );
+    }
     if (generationFingerprint !== raw.generationFingerprint) {
       throw new OutlineContextError(
         'SNAPSHOT_FINGERPRINT_MISMATCH',
@@ -1428,6 +1484,7 @@ export function parsePipelineTaskContextV2(
     ),
     trace,
     generationFingerprint,
+    generationFingerprintVersion,
     createdAt,
     auditFellBack: Boolean(raw.auditFellBack),
   };
@@ -1556,6 +1613,7 @@ export function serializePipelineTaskContext(params: {
   pipelineContextHash: string;
   /** Stability Phase 2 — semantic fingerprint embedded in the envelope. */
   generationFingerprint: string;
+  generationFingerprintVersion: 1 | 2;
 } {
   const createdAt = params.createdAt ?? Date.now();
   // Context builders now know about V3 fields, but a frozen V1/V2 execution
@@ -1619,13 +1677,26 @@ export function serializePipelineTaskContext(params: {
   // Stability Phase 2 — deterministic semantic fingerprint, embedded once.
   // Re-serialization (draft completion adds auditContext) recomputes the
   // identical value because the fingerprint covers semantic content only.
-  envelope.generationFingerprint = computeGenerationFingerprint(
-    buildGenerationFingerprintInput(
-      draftContext,
-      params.execution,
-      params.frozenDraftRequest ?? null,
-    ),
-  );
+  const usesGenerationContract = draftContext.generationContract != null;
+  if (usesGenerationContract) {
+    envelope.generationFingerprintVersion = 2;
+    envelope.generationFingerprint = computeGenerationFingerprint(
+      buildGenerationFingerprintInputV2(
+        draftContext,
+        params.execution,
+        params.frozenDraftRequest ?? null,
+      ),
+    );
+  } else {
+    envelope.generationFingerprintVersion = 1;
+    envelope.generationFingerprint = computeGenerationFingerprint(
+      buildGenerationFingerprintInput(
+        draftContext,
+        params.execution,
+        params.frozenDraftRequest ?? null,
+      ),
+    );
+  }
   if (params.draftCompletedAt != null) {
     envelope.draftCompletedAt = params.draftCompletedAt;
   }
@@ -1642,6 +1713,7 @@ export function serializePipelineTaskContext(params: {
       isV33 || isV32 ? 4 : isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
     generationFingerprint: envelope.generationFingerprint,
+    generationFingerprintVersion: envelope.generationFingerprintVersion,
   };
 }
 
