@@ -1,14 +1,11 @@
 import * as db from './database';
 import { processMacros } from './macroReplace';
 import { clipTextToTokenBudget, estimateTokens } from '../utils/tokenEstimator';
-import { allocateElasticStageContextBudget } from './pipeline/elasticBudgetAllocator';
 import {
-  allocateHierarchicalContextBudget,
   type HierarchicalBudgetInput,
   type HierarchicalBudgetResult,
 } from './context/hierarchicalContextAllocator';
 import {
-  collectAllResourceCandidates,
   renderCandidateToText,
   type ResourceContextCandidate,
 } from './context/resourceContextCandidates';
@@ -18,7 +15,6 @@ import {
   buildFrozenPresetContextFromSource,
   buildPhase2ContextTrace,
   buildResourceSelectionTrace,
-  collectPhase2BudgetResources,
   freezeAwarenessItems,
   intensityToDetailSoftRatio,
   projectCharacterText,
@@ -41,7 +37,6 @@ import type { Chapter, ContextConfig, Preset } from '../types/novel';
 import type { ChatMessage } from './llm';
 import {
   GenerationStageStopwatch,
-  assertNoFutureSourceLeakage,
 } from './context/generationStageContracts';
 import {
   createGenerationDiagnosticCollector,
@@ -51,12 +46,8 @@ import type { GenerationDiagnostic } from '../types/generationTrace';
 import type { ContextTraceItem } from '../types/contextTrace';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
-  buildOutlineContext,
   deriveContextSafetyMargin,
-  deriveOutlineBudgetTokens,
-  EMPTY_OUTLINE_CONTEXT,
   OutlineContextError,
-  type BuiltOutlineContext,
 } from './outlineContextBuilder';
 import {
   getOrAnalyzeNoteStyle,
@@ -82,13 +73,11 @@ import {
 import type { StoryMemoryCoveragePlan } from './storyMemory/storyMemoryTypes';
 import * as episodicMemoryRetriever from './episodicMemoryRetriever';
 import {
-  buildEpisodicRetrievalQuery,
   collectStoryRetrievalTerms,
   findActiveStoryTerms,
   formatMemoryCandidateLine,
   orderCandidatesForDisplay,
   resolveEpisodicRetrievalMode,
-  resolvePreviousChapterForQuery,
   scoreMemoryCandidates,
   selectCandidatesWithinTokenBudget,
   selectMemoryCandidates,
@@ -96,11 +85,37 @@ import {
   type MemoryRetrievalOptions,
 } from './episodicMemoryRetriever';
 import * as idfCache from '../utils/idfCache';
+import {
+  buildGenerationContextPlan,
+} from './context/generation/buildGenerationContextPlan';
+import {
+  collectGenerationMaterials,
+  deriveGenerationOutlineBudgetTokens,
+} from './context/generation/collectGenerationMaterials';
+import { normalizeGenerationMaterials } from './context/generation/normalizeGenerationMaterials';
+import { allocateGenerationContextBudget } from './context/generation/allocateGenerationContextBudget';
+import type {
+  GenerationBudgetDemand,
+  GenerationBudgetAllocation,
+  GenerationResourceSources,
+} from './context/generation/generationContracts';
+import {
+  renderGenerationContext,
+  type LegacyRenderBlocks,
+} from './context/generation/renderGenerationContext';
+import { freezeGenerationContext } from './context/generation/freezeGenerationContext';
+import {
+  selectPreviousChapters as selectPreviousChaptersPure,
+  type PreviousChapterSelectionConfig,
+} from './context/generation/selectPreviousChapters';
+
+export { deriveGenerationOutlineBudgetTokens };
 
 const DEFAULT_SYSTEM_PROMPT =
   '你是一位经验丰富的中文小说作者。请根据既有设定、人物状态、章节概要和前文内容，继续创作自然、连贯、有画面感的中文小说。';
 
-type PartialContextConfig = Partial<ContextConfig>;
+type PartialContextConfig = Partial<ContextConfig> &
+  Partial<PreviousChapterSelectionConfig>;
 
 export interface BuildContextResult {
   messages: ChatMessage[];
@@ -446,11 +461,29 @@ export async function buildContext(
   const pushDiagnostic: DiagnosticSink = (diagnostic: GenerationDiagnostic) =>
     diagnostics.push(diagnostic);
   const trace: ContextTraceItem[] = [];
-  let chapters = await db.getChaptersByProject(projectId);
   const budgetVersion = Number(options.contextBudgetVersion) || 0;
   const useV7 = budgetVersion >= 7;
   const useV3Hierarchical = budgetVersion === 6;
   const useHierarchicalBoards = budgetVersion >= 6;
+
+  // Phase 2 Layer 2: source IO / checkpoint preparation / outline capture /
+  // episodic query capture now live behind the real Collect stage.
+  const collected = await collectGenerationMaterials({
+    currentChapter,
+    config,
+    projectId,
+    preset,
+    options: options as unknown as Record<string, unknown>,
+    measureEpisodicDemand: measureV3EpisodicDemand,
+    onDiagnostic: pushDiagnostic,
+  });
+  stageWatch.close('collect', 'collect');
+  stageWatch.mark('normalize');
+  const normalized = normalizeGenerationMaterials(collected);
+  stageWatch.close('normalize', 'normalize');
+  stageWatch.mark('plan');
+  const generationPlan = buildGenerationContextPlan({ normalized });
+  stageWatch.close('plan', 'plan');
 
   // Checkpoint / pending bridge / seam preparation. This is local-only:
   // generation mode may signal background maintenance, but never waits for
@@ -459,80 +492,33 @@ export async function buildContext(
   // (prepare() itself falls back to ensureProjectStoryMemoryRow when
   // getProjectStoryMemory is absent), so the gate was misleading. Coverage,
   // entity weighting, Renderer and trace all reuse this single snapshot.
-  const prepared = await prepareStoryMemoryForGeneration(
-    projectId,
-    currentChapter,
-    config,
-    {
-      mode: options.storyMemoryMode === 'preview' ? 'preview' : 'generation',
-      contextBudgetVersion: options.contextBudgetVersion,
-    },
-  );
-  // A hard coverage gap and an illegal target position are both fail-closed
-  // local safety decisions. No network request is awaited on this path.
-  if (prepared.fatal) {
-    throw new Error(
-      prepared.blockReason || '故事记忆覆盖不足，无法安全生成。',
-    );
-  }
-  if (prepared.checkpointUpdated) {
-    chapters = await db.getChaptersByProject(projectId);
-  }
-
+  let chapters = normalized.chapters;
+  const prepared = normalized.prepared as Awaited<
+    ReturnType<typeof prepareStoryMemoryForGeneration>
+  >;
   let coverage = prepared?.coverage;
   const coverageCandidates = prepared?.coverageCandidates;
-  let rawChapterIds = coverage?.rawChapterIds || [];
-  const previousChapters = chapters.filter(
-    chapter => chapter.position < currentChapter.position,
-  );
-  let episodicCandidates = excludeRawFromEpisodicCandidates(
-    previousChapters,
-    useHierarchicalBoards && coverageCandidates
-      ? []
-      : rawChapterIds,
-  );
+  let rawChapterIds = coverage?.rawChapterIds || normalized.rawChapterIds;
+  const previousChapters = normalized.previousChapters;
+  let episodicCandidates = normalized.episodicCandidates;
 
   // Resolve outline first so soft budgets can yield to the full outline plan.
   // Generation packing uses the real remaining input budget (not the 30%
   // management suggestion), so a 40% outline is allowed when the total request fits.
-  const preOutlineContext = await buildOutlineContextForProject(
-    projectId,
-    options.contextWindow,
-    options.reservedOutputTokens,
-  );
+  const preOutlineContext = normalized.preOutlineContext;
   // Worldbook keyword scan haystack. Computed once, before the budget block,
   // so the V3 candidate collector can run upstream of the hierarchical
   // allocator. memoryText is appended later for the final scanText used by the
   // legacy V2 builders; the provisional scanText here omits it because episodic
   // memory building depends on effective budgets (circular dependency).
-  const worldbookScanContent = selectPreviousChapters(
-    currentChapter,
-    {
-      strategy: 'sliding',
-      recentChapterCount: useHierarchicalBoards
-        ? STORY_MEMORY_MAX_RAW_CHAPTERS
-        : config.worldbookScanDepth ?? 4,
-    },
-    chapters,
-  )
-    .map(chapter => chapter.content)
-    .join('\n\n');
+  const worldbookScanContent = normalized.worldbookScanContent;
   // Episodic query is computed ONCE here (before the budget block) so the V3
   // branch can measure REAL episodic demand and build a worldbook scan haystack
   // that includes episodic keywords — without re-deriving it downstream.
   // Entity boosts only from prepare()-usable checkpoints.
-  const previousForQuery = resolvePreviousChapterForQuery(
-    previousChapters,
-    currentChapter,
-  );
-  const episodicQuery = buildEpisodicRetrievalQuery({
-    currentChapter,
-    previousChapter: previousForQuery,
-    retrievalUserPrompt: options.retrievalUserPrompt,
-  });
   const storyStateForRetrieval = resolveStoryStateForRetrieval(prepared);
   const retrievalOptions: MemoryRetrievalOptions = {
-    queryText: episodicQuery,
+    ...(normalized.retrievalOptions as unknown as MemoryRetrievalOptions),
     storyState: storyStateForRetrieval,
   };
   // Preset + outline are the only mandatory sections; the allocator result
@@ -543,14 +529,29 @@ export async function buildContext(
   let hierarchicalBudgetTrace: HierarchicalBudgetResult | undefined;
   // V3 candidate state — populated only when the V3 branch runs. The resources
   // rendering block downstream consumes these instead of buildResourceContext.
-  let v3ResourceCandidates: ResourceContextCandidate[] = [];
+  let v3ResourceCandidates: ResourceContextCandidate[] =
+    normalized.resourcePreparation?.v3ResourceCandidates || [];
   let v3ResourceItemAllocations: ReadonlyMap<string, number> | undefined;
   let v3ResourceItemTraces: HierarchicalBudgetResult['resourceItemTraces'];
   let v3HierarchicalInput: HierarchicalBudgetInput | undefined;
-  let v7Resources: Phase2BudgetResources | undefined;
+  let v7Resources: Phase2BudgetResources | undefined =
+    normalized.resourcePreparation?.v7Resources;
   let v7FrozenPreset: FrozenPresetContext | undefined;
   let v7FrozenDetails: FrozenResourceDetailItem[] = [];
   let v7Awareness: GlobalAwarenessCandidate[] = [];
+  let generationAllocation: GenerationBudgetAllocation | undefined;
+  if (normalized.resourcePreparation?.resourceCollectionError) {
+    pushDiagnostic({
+      code: 'RESOURCE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: '资料候选收集失败，角色/世界书/笔记按空参与本次生成',
+      stage: 'collect',
+      source: 'collectGenerationMaterials.resourcePreparation',
+      detail: {
+        reason: normalized.resourcePreparation.resourceCollectionError,
+      },
+    });
+  }
   const applyV3Allocation = (result: HierarchicalBudgetResult) => {
     hierarchicalBudgetTrace = result;
     v3ResourceItemAllocations = result.resourceItemAllocations;
@@ -586,7 +587,6 @@ export async function buildContext(
     options.reservedOutputTokens != null && options.reservedOutputTokens > 0
       ? Number(options.reservedOutputTokens)
       : 0;
-  stageWatch.close('collect', 'collect');
   stageWatch.mark('allocate');
   if (resolvedContextWindow > 0 && reservedOut > 0) {
     const safety = deriveContextSafetyMargin(resolvedContextWindow);
@@ -658,52 +658,16 @@ export async function buildContext(
         }
       }
 
-      // --- Episodic demand (real) + scan haystack (for worldbook) -------------
-      // Run the same IDF retrieval the downstream render uses, but with a huge
-      // budget so selectCandidatesWithinTokenBudget keeps every TopK candidate.
-      // The resulting text doubles as the episodic keyword source for the
-      // worldbook scan (Closure Plan §13 Phase A). Empty retrieval → demand 0.
-      const episodicProbe = await measureV3EpisodicDemand({
-        projectId,
-        candidates: episodicCandidates,
-        currentChapter,
-        retrievalOptions,
-        onDiagnostic: pushDiagnostic,
-      });
-      const episodicDemand = episodicProbe.demandTokens;
-      const v3ScanMemoryText = episodicProbe.text;
-
-      // --- Phase A → Phase B: full worldbook scan haystack -------------------
-      // Includes episodic memory text so historical-event keywords can trigger
-      // worldbook. Resources are collected against THIS haystack.
-      const v3FullScanText = [
-        currentChapter.title,
-        currentChapter.synopsis,
-        currentChapter.content,
-        options.retrievalUserPrompt || '',
-        worldbookScanContent,
-        v3ScanMemoryText,
-      ]
-        .filter(Boolean)
-        .join('\n\n');
+      // Episodic demand and resource candidates are captured by Collect. The
+      // allocator only consumes those immutable facts; it never opens a
+      // repository or invokes a source selector.
+      const resourcePreparation = normalized.resourcePreparation;
+      const episodicDemand =
+        resourcePreparation?.episodicProbeDemandTokens || 0;
 
       // --- Resources demand --------------------------------------------------
       let resourcesActualDemand = 0;
-      if (useV7) {
-        v7Resources = await collectPhase2BudgetResources({
-          projectId,
-          config,
-          preset: typeof preset === 'string' ? undefined : preset || null,
-          haystack: {
-            chapter: currentChapter,
-            retrievalUserPrompt: options.retrievalUserPrompt,
-            previousChaptersText: worldbookScanContent,
-            previousEnding: v3FullScanText.slice(-500),
-            storyMemoryText: '',
-            outlineText: preOutlineContext.text || '',
-            episodicText: v3ScanMemoryText,
-          },
-        });
+      if (useV7 && v7Resources) {
         if (v7Resources.source.preset) {
           const capturedPreset = buildFrozenPresetContextFromSource(
             v7Resources.source.preset,
@@ -756,32 +720,10 @@ export async function buildContext(
           v7Resources.detailDemandTokens * intensity,
         );
       } else if (useV3Hierarchical || config.includeResources) {
-        try {
-          const collected = await collectAllResourceCandidates(
-            projectId,
-            v3FullScanText,
-            currentChapter,
-            {
-              retrievalUserPrompt: options.retrievalUserPrompt,
-              recursiveWorldbook: config.worldbookRecursive !== false,
-            },
-          );
-          v3ResourceCandidates = collected.candidates;
-          resourcesActualDemand = collected.totalActualTokens;
-        } catch (error) {
-          // V6: Resource collection failure must never block generation —
-          // but the loss must be observable, never silent (plan §9).
-          pushDiagnostic({
-            code: 'RESOURCE_RETRIEVAL_FAILED',
-            severity: 'warning',
-            message: '资料候选收集失败，角色/世界书/笔记按空参与本次生成',
-            stage: 'collect',
-            source: 'contextBuilder.v3ResourceCandidates',
-            detail: { reason: String((error as Error)?.message || error) },
-          });
-          v3ResourceCandidates = [];
-          resourcesActualDemand = 0;
-        }
+        resourcesActualDemand = v3ResourceCandidates.reduce(
+          (sum, candidate) => sum + candidate.actualTokens,
+          0,
+        );
       }
 
       // --- Sliding demand (real raw-bridge size, ≤ 10 chapters) --------------
@@ -832,7 +774,16 @@ export async function buildContext(
               sourceOrder: c.sourceOrder,
             })),
       };
-      const v3Result = allocateHierarchicalContextBudget(v3HierarchicalInput);
+      const v3Allocation = allocateGenerationContextBudget({
+        plan: generationPlan,
+        contextWindow: v3HierarchicalInput.contextWindow,
+        reservedOutputTokens: v3HierarchicalInput.reservedOutputTokens,
+        safetyMargin: v3HierarchicalInput.safetyMargin,
+        mode: 'hierarchical',
+        hierarchicalInput: v3HierarchicalInput,
+      });
+      generationAllocation = v3Allocation;
+      const v3Result = v3Allocation.trace as HierarchicalBudgetResult;
       applyV3Allocation(v3Result);
       if (useV7 && v7Resources) {
         v7FrozenDetails = allocateAndFreezeDetails(
@@ -857,41 +808,33 @@ export async function buildContext(
       const storyStateAvailable = config.storyStateBudgetTokens ?? 8000;
       const episodicAvailable =
         config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
-      const allocResult = allocateElasticStageContextBudget({
-        contextWindow: resolvedContextWindow,
-        reservedOutputTokens: reservedOut,
-        safetyMargin: safety,
-        demands: [
+      const elasticDemands: GenerationBudgetDemand[] = [
           {
-            id: 'protocol',
-            availableTokens: fixedProtocol,
+            candidateId: 'protocol',
+            demandTokens: fixedProtocol,
             minTokens: fixedProtocol,
             targetTokens: fixedProtocol,
             maxTokens: fixedProtocol,
             priority: 10,
             relevance: 1,
             requirement: 'mandatory',
-            reclaimable: false,
-            shrinkPriority: 10,
-            burstPriority: 0,
+            selectionBoost: 1,
           },
           {
-            id: 'outline',
-            availableTokens: outlineTokens,
+            candidateId: 'outline',
+            demandTokens: outlineTokens,
             minTokens: outlineTokens,
             targetTokens: outlineTokens,
             maxTokens: outlineTokens,
             priority: 10,
             relevance: 1,
             requirement: 'mandatory',
-            reclaimable: false,
-            shrinkPriority: 10,
-            burstPriority: 0,
+            selectionBoost: 1,
           },
           ...(Number(options.protectedWriterStyleTokens) > 0
             ? [{
-                id: 'writerStyle',
-                availableTokens: Math.floor(
+                candidateId: 'writerStyle',
+                demandTokens: Math.floor(
                   Number(options.protectedWriterStyleTokens),
                 ),
                 minTokens: Math.floor(
@@ -906,72 +849,72 @@ export async function buildContext(
                 priority: 10,
                 relevance: 1,
                 requirement: 'mandatory' as const,
-                reclaimable: false,
-                shrinkPriority: 10,
-                burstPriority: 0,
+                selectionBoost: 1,
               }]
             : []),
           {
-            id: 'storyState',
-            availableTokens: storyStateAvailable,
+            candidateId: 'storyState',
+            demandTokens: storyStateAvailable,
             minTokens: Math.floor(storyStateAvailable * 0.3),
             targetTokens: storyStateAvailable,
             maxTokens: storyStateAvailable,
             priority: 5,
             relevance: 0.8,
             requirement: 'preferred',
-            reclaimable: true,
-            shrinkPriority: 6,
-            burstPriority: 3,
+            selectionBoost: 1,
           },
           {
-            id: 'resources',
-            availableTokens: config.resourceBudget,
+            candidateId: 'resources',
+            demandTokens: config.resourceBudget,
             minTokens: Math.floor(config.resourceBudget * 0.3),
             targetTokens: config.resourceBudget,
             maxTokens: config.resourceBudget,
             priority: 4,
             relevance: 0.75,
             requirement: 'preferred',
-            reclaimable: true,
-            shrinkPriority: 5,
-            burstPriority: 2,
+            selectionBoost: 1,
           },
           {
-            id: 'slidingWindow',
-            availableTokens: config.slidingWindowSize,
+            candidateId: 'slidingWindow',
+            demandTokens: config.slidingWindowSize,
             minTokens: Math.floor(config.slidingWindowSize * 0.2),
             targetTokens: config.slidingWindowSize,
             maxTokens: config.slidingWindowSize,
             priority: 3,
             relevance: 0.6,
             requirement: 'optional',
-            reclaimable: true,
-            shrinkPriority: 3,
-            burstPriority: 0,
+            selectionBoost: 1,
           },
           {
-            id: 'episodic',
-            availableTokens: episodicAvailable,
+            candidateId: 'episodic',
+            demandTokens: episodicAvailable,
             minTokens: Math.floor(episodicAvailable * 0.3),
             targetTokens: episodicAvailable,
             maxTokens: episodicAvailable,
             priority: 4,
             relevance: 0.7,
             requirement: 'optional',
-            reclaimable: true,
-            shrinkPriority: 4,
-            burstPriority: 1,
+            selectionBoost: 1,
           },
-        ],
+        ];
+      const allocationContract = allocateGenerationContextBudget({
+        plan: generationPlan,
+        demands: elasticDemands,
+        contextWindow: resolvedContextWindow,
+        reservedOutputTokens: reservedOut,
+        safetyMargin: safety,
+        mode: 'elastic',
       });
-      elasticBudgetTrace = allocResult.trace;
-      if (allocResult.ok) {
-        effectiveStoryStateBudget =
-          allocResult.allocations.get('storyState') || 0;
-        effectiveResourceBudget = allocResult.allocations.get('resources') || 0;
-        effectiveSlidingWindow = allocResult.allocations.get('slidingWindow') || 0;
-        effectiveEpisodicBudget = allocResult.allocations.get('episodic') || 0;
+      generationAllocation = allocationContract;
+      elasticBudgetTrace = allocationContract.trace as import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
+      const allocationById = new Map(
+        allocationContract.items.map(item => [item.candidateId, item.allocatedTokens]),
+      );
+      if (allocationContract.ok) {
+        effectiveStoryStateBudget = allocationById.get('storyState') || 0;
+        effectiveResourceBudget = allocationById.get('resources') || 0;
+        effectiveSlidingWindow = allocationById.get('slidingWindow') || 0;
+        effectiveEpisodicBudget = allocationById.get('episodic') || 0;
         if (remainingAfterOutline < 1500) {
           effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
         } else if (remainingAfterOutline < 4000) {
@@ -1080,7 +1023,16 @@ export async function buildContext(
             },
           },
         };
-        applyV3Allocation(allocateHierarchicalContextBudget(finalInput));
+        const finalAllocation = allocateGenerationContextBudget({
+          plan: generationPlan,
+          contextWindow: finalInput.contextWindow,
+          reservedOutputTokens: finalInput.reservedOutputTokens,
+          safetyMargin: finalInput.safetyMargin,
+          mode: 'hierarchical',
+          hierarchicalInput: finalInput,
+        });
+        generationAllocation = finalAllocation;
+        applyV3Allocation(finalAllocation.trace as HierarchicalBudgetResult);
       }
     }
   }
@@ -1088,6 +1040,56 @@ export async function buildContext(
   // Episodic query / retrieval options were computed above (before the budget
   // block) so the V3 branch could measure real demand + enrich the worldbook
   // scan haystack. Reused unchanged here for the final memoryText render.
+  if (!generationAllocation) {
+    const legacyAllocations = new Map<string, number>();
+    const legacyReasons = new Map<string, string>();
+    let resourceRemaining = Math.max(0, Math.floor(effectiveResourceBudget));
+    let episodicRemaining = Math.max(0, Math.floor(effectiveEpisodicBudget));
+    for (const candidate of generationPlan.candidates) {
+      const demand = Math.max(0, Math.floor(candidate.demandTokens));
+      let allocated = 0;
+      let reason = 'not_activated';
+      if (candidate.sourceType === 'preset' || candidate.sourceType === 'outline') {
+        allocated = demand;
+        reason = 'mandatory';
+      } else if (candidate.sourceType === 'story_memory') {
+        allocated = Math.min(
+          demand,
+          Math.max(0, Math.floor(effectiveStoryStateBudget)),
+        );
+        reason = allocated > 0 ? 'legacy_story_state' : 'budget_zero';
+      } else if (candidate.sourceType === 'episodic_memory') {
+        allocated = Math.min(demand, episodicRemaining);
+        episodicRemaining = Math.max(0, episodicRemaining - allocated);
+        reason = allocated > 0 ? 'legacy_episodic' : 'budget_zero';
+      } else if (
+        candidate.sourceType === 'character' ||
+        candidate.sourceType === 'note' ||
+        candidate.sourceType === 'worldbook'
+      ) {
+        allocated = Math.min(demand, resourceRemaining);
+        resourceRemaining = Math.max(0, resourceRemaining - allocated);
+        reason = allocated > 0 ? 'legacy_resource_pool' : 'budget_zero';
+      } else if (candidate.candidateId.startsWith('chapter:current:')) {
+        allocated = demand;
+        reason = 'mandatory';
+      }
+      legacyAllocations.set(candidate.candidateId, allocated);
+      legacyReasons.set(candidate.candidateId, reason);
+    }
+    generationAllocation = allocateGenerationContextBudget({
+      plan: generationPlan,
+      contextWindow: resolvedContextWindow,
+      reservedOutputTokens: reservedOut,
+      safetyMargin:
+        resolvedContextWindow > 0
+          ? deriveContextSafetyMargin(resolvedContextWindow)
+          : 0,
+      mode: 'legacy',
+      legacyAllocations,
+      legacyReasons,
+    });
+  }
   stageWatch.close('allocate', 'allocate');
   stageWatch.mark('render');
 
@@ -1155,24 +1157,24 @@ export async function buildContext(
   // to the full outline before episodic / resource assembly.
   const outlineContext = preOutlineContext;
 
-  const messages: ChatMessage[] = [
-    { role: 'system', content: resolvedSystemPrompt },
-  ];
-
-  trace.push({
-    kind: 'preset',
-    sourceId:
-      typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
-    title:
-      typeof preset !== 'string' && preset
-        ? preset.name || '作家风格'
-        : '系统提示词',
-    reason: '系统提示词和作家风格配置',
-    estimatedTokens: estimateTokens(resolvedSystemPrompt),
-    included: true,
-    clipped: false,
-    preview: resolvedSystemPrompt.slice(0, 500),
-  });
+  const renderStageBlocks: LegacyRenderBlocks = {
+    preset: {
+      traceItem: {
+        kind: 'preset',
+        sourceId:
+          typeof preset !== 'string' && preset ? (preset as any).id ?? null : null,
+        title:
+          typeof preset !== 'string' && preset
+            ? preset.name || '作家风格'
+            : '系统提示词',
+        reason: '系统提示词和作家风格配置',
+        estimatedTokens: estimateTokens(resolvedSystemPrompt),
+        included: true,
+        clipped: false,
+        preview: resolvedSystemPrompt.slice(0, 500),
+      },
+    },
+  };
 
   // Outline injection: the highest creative constraint. Compiled into the
   // primary system message (together with the preset) so providers that
@@ -1186,25 +1188,22 @@ export async function buildContext(
         'open_outlines',
       );
     }
-    const primary = messages[0];
-    if (primary?.role === 'system') {
-      primary.content = `${primary.content}\n\n${outlineContext.text}`;
-    } else {
-      messages.unshift({ role: 'system', content: outlineContext.text });
-    }
     // Keep presetText in the snapshot as the raw preset; outline is separate.
-    trace.push({
-      kind: 'outline',
-      sourceId: null,
-      title: '★ 项目大纲',
-      reason: outlineContext.enabledCount
-        ? `最高创作约束｜${outlineContext.enabledCount} 份｜完整注入`
-        : '最高创作约束',
-      estimatedTokens: outlineContext.estimatedTokens,
-      included: true,
-      clipped: false,
-      preview: outlineContext.text.slice(0, 500),
-    });
+    renderStageBlocks.outline = {
+      text: outlineContext.text,
+      traceItem: {
+        kind: 'outline',
+        sourceId: null,
+        title: '★ 项目大纲',
+        reason: outlineContext.enabledCount
+          ? `最高创作约束｜${outlineContext.enabledCount} 份｜完整注入`
+          : '最高创作约束',
+        estimatedTokens: outlineContext.estimatedTokens,
+        included: true,
+        clipped: false,
+        preview: outlineContext.text.slice(0, 500),
+      },
+    };
   } else if (!outlineContext.complete) {
     // No text but blocked (e.g. all outlines disabled yet budget check failed
     // defensively). Surface the block reason so the user can act.
@@ -1225,9 +1224,6 @@ export async function buildContext(
     effectiveStoryStateBudget,
     { retrievalUserPrompt: options.retrievalUserPrompt },
   );
-  if (storyMemory.text) {
-    messages.push({ role: 'system', content: storyMemory.text });
-  }
   if (coverage) {
     // V2.5.15: a single consolidated story_memory trace item. For an unusable
     // checkpoint `prepared.checkpoint` is null, so the Renderer above only saw
@@ -1235,17 +1231,21 @@ export async function buildContext(
     // prepared eligibility (the real cause: future / dirty / empty / invalid),
     // never from a second DB read. For a usable checkpoint the reason is the
     // checkpoint position and tokens/clipped/preview come from the Renderer.
-    trace.push(
-      buildStoryMemoryTraceItem({
+    renderStageBlocks.storyMemory = {
+      text: storyMemory.text,
+      traceItem: buildStoryMemoryTraceItem({
         eligibility: prepared?.checkpointEligibility,
         rendererResult: storyMemory,
         coverage,
         rawChapterIds,
         projectId,
       }),
-    );
+    };
   } else {
-    trace.push(...storyMemory.traceItems);
+    renderStageBlocks.storyMemory = {
+      text: storyMemory.text,
+      traceItems: storyMemory.traceItems,
+    };
   }
 
   // Snapshot partition capture (SPEC §7). Capture each section's text as it is
@@ -1255,12 +1255,11 @@ export async function buildContext(
   let snapshotWorldbookText = '';
 
   if (useV7 && v7Resources) {
+    const v7ResourceMessages: string[] = [];
+    const v7ResourceTraceItems: ContextTraceItem[] = [];
     const awarenessText = v7Resources.globalResourceAwarenessText;
     if (awarenessText) {
-      messages.push({
-        role: 'system',
-        content: awarenessText,
-      });
+      v7ResourceMessages.push(awarenessText);
     }
     const detailBodies: string[] = [];
     for (const item of v7FrozenDetails) {
@@ -1269,16 +1268,15 @@ export async function buildContext(
       }
     }
     if (detailBodies.length > 0) {
-      messages.push({
-        role: 'system',
-        content: `以下是本次写作可展开的资料详情（全局骨架已单独注入）：\n\n${detailBodies.join('\n\n')}`,
-      });
+      v7ResourceMessages.push(
+        `以下是本次写作可展开的资料详情（全局骨架已单独注入）：\n\n${detailBodies.join('\n\n')}`,
+      );
     }
     snapshotCharacterText = projectCharacterText('', v7FrozenDetails);
     snapshotWorldbookText = projectWorldbookText('', v7FrozenDetails);
     snapshotNoteText = projectNoteText(v7FrozenDetails);
     if (!v7Resources.includeResources) {
-      trace.push({
+      v7ResourceTraceItems.push({
         kind: 'character',
         sourceId: null,
         title: '资料上下文已关闭',
@@ -1299,7 +1297,7 @@ export async function buildContext(
         warnings: v7Resources.warnings,
       });
       if (v7FrozenPreset) {
-        trace.push(
+        v7ResourceTraceItems.push(
           ...buildPhase2ContextTrace({
             preset: v7FrozenPreset,
             awareness: v7Awareness,
@@ -1311,6 +1309,10 @@ export async function buildContext(
         );
       }
     }
+    renderStageBlocks.resources = {
+      messages: v7ResourceMessages,
+      traceItems: v7ResourceTraceItems,
+    };
   } else if ((useV3Hierarchical || config.includeResources) && effectiveResourceBudget > 0) {
     if (useV3Hierarchical && v3ResourceCandidates.length > 0) {
       // ----- V3 candidate-first resource rendering (Plan §6 / §15) ----------
@@ -1326,6 +1328,7 @@ export async function buildContext(
         note: '项目笔记',
         worldbook: '世界书',
       };
+      const resourceTraceItems: ContextTraceItem[] = [];
       const itemTracesById = new Map(
         (v3ResourceItemTraces ?? []).map(t => [t.id, t]),
       );
@@ -1337,7 +1340,7 @@ export async function buildContext(
         if (included) {
           renderedByKind[candidate.sourceKind].push(text);
         }
-        trace.push({
+        resourceTraceItems.push({
           kind:
             candidate.sourceKind === 'character'
               ? 'character'
@@ -1371,7 +1374,12 @@ export async function buildContext(
       snapshotWorldbookText = renderedByKind.worldbook.join('\n\n');
       if (resourceText) {
         const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceText}`;
-        messages.push({ role: 'system', content: resourceMessage });
+        renderStageBlocks.resources = {
+          text: resourceMessage,
+          traceItems: resourceTraceItems,
+        };
+      } else {
+        renderStageBlocks.resources = { traceItems: resourceTraceItems };
       }
     } else {
       const resourceResult = await buildResourceContext(
@@ -1381,31 +1389,40 @@ export async function buildContext(
         config.worldbookRecursive !== false,
         currentChapter,
         options.retrievalUserPrompt || '',
+        normalized.resourceSources,
       );
       snapshotCharacterText = resourceResult.characterText;
       snapshotNoteText = resourceResult.noteText;
       snapshotWorldbookText = resourceResult.worldbookText;
       if (resourceResult.text) {
         const resourceMessage = `以下是本次写作必须参考的设定资料：\n\n${resourceResult.text}`;
-        messages.push({ role: 'system', content: resourceMessage });
+        renderStageBlocks.resources = {
+          text: resourceMessage,
+          traceItems: resourceResult.traceItems,
+        };
+      } else {
+        renderStageBlocks.resources = {
+          traceItems: resourceResult.traceItems,
+        };
       }
-      trace.push(...resourceResult.traceItems);
     }
   }
 
   if (memoryText) {
     const memoryMessage = `以下是相关历史章节事件：\n\n${memoryText}`;
-    messages.push({ role: 'system', content: memoryMessage });
-    trace.push({
-      kind: 'memory',
-      sourceId: null,
-      title: '相关历史章节事件',
-      reason: '章节事件记忆 TF-IDF 检索（已排除 raw bridge 章节）',
-      estimatedTokens: estimateTokens(memoryMessage),
-      included: true,
-      clipped: false,
-      preview: memoryMessage.slice(0, 500),
-    });
+    renderStageBlocks.memory = {
+      text: memoryMessage,
+      traceItem: {
+        kind: 'memory',
+        sourceId: null,
+        title: '相关历史章节事件',
+        reason: '章节事件记忆 TF-IDF 检索（已排除 raw bridge 章节）',
+        estimatedTokens: estimateTokens(memoryMessage),
+        included: true,
+        clipped: false,
+        preview: memoryMessage.slice(0, 500),
+      },
+    };
   }
 
   // Pending bridge + seam: prefer coverage plan; fall back to sliding window.
@@ -1477,25 +1494,27 @@ export async function buildContext(
       : processedBeforeBudget;
     snapshotRecentBridgeText = processed;
     const prevMessage = `以下是检查点之后的近期正文/桥接内容，请重点承接最后发生的事件；若与长期状态冲突，以位置更晚的近期正文为准：\n\n${processed}`;
-    messages.push({ role: 'user', content: prevMessage });
-    trace.push({
-      kind: coverage?.pendingChapters.length
-        ? 'story_memory_bridge'
-        : 'chapter',
-      sourceId: currentChapter.id ?? null,
-      title: coverage?.pendingChapters.length
-        ? 'Pending Bridge / Seam'
-        : '前文滑动窗口',
-      reason: coverage?.pendingChapters.length
-        ? `raw:${coverage.rawChapterIds.join(',') || '无'}; episodicFallback:${
-            coverage.episodicFallbackChapterIds.join(',') || '无'
-          }; tokens≈${coverage.estimatedRawTokens}`
-        : '前文滑动窗口',
-      estimatedTokens: estimateTokens(prevMessage),
-      included: true,
-      clipped: false,
-      preview: prevMessage.slice(0, 500),
-    });
+    renderStageBlocks.previousBridge = {
+      messageText: prevMessage,
+      traceItem: {
+        kind: coverage?.pendingChapters.length
+          ? 'story_memory_bridge'
+          : 'chapter',
+        sourceId: currentChapter.id ?? null,
+        title: coverage?.pendingChapters.length
+          ? 'Pending Bridge / Seam'
+          : '前文滑动窗口',
+        reason: coverage?.pendingChapters.length
+          ? `raw:${coverage.rawChapterIds.join(',') || '无'}; episodicFallback:${
+              coverage.episodicFallbackChapterIds.join(',') || '无'
+            }; tokens≈${coverage.estimatedRawTokens}`
+          : '前文滑动窗口',
+        estimatedTokens: estimateTokens(prevMessage),
+        included: true,
+        clipped: false,
+        preview: prevMessage.slice(0, 500),
+      },
+    };
   }
 
   const instructionContent = [
@@ -1506,38 +1525,51 @@ export async function buildContext(
       currentChapter.synopsis || '无明确概要，请自然承接前文推进剧情。'
     }`,
   ].join('\n');
-  messages.push({
-    role: 'user',
-    content: instructionContent,
-  });
-  trace.push({
-    kind: 'instruction',
-    sourceId: currentChapter.id ?? null,
-    title: currentChapter.title || `第 ${currentChapter.position + 1} 章`,
-    reason: '当前章节指令',
-    estimatedTokens: estimateTokens(instructionContent),
-    included: true,
-    clipped: false,
-    preview: instructionContent.slice(0, 500),
-  });
+  renderStageBlocks.instruction = {
+    messageText: instructionContent,
+    traceItem: {
+      kind: 'instruction',
+      sourceId: currentChapter.id ?? null,
+      title: currentChapter.title || `第 ${currentChapter.position + 1} 章`,
+      reason: '当前章节指令',
+      estimatedTokens: estimateTokens(instructionContent),
+      included: true,
+      clipped: false,
+      preview: instructionContent.slice(0, 500),
+    },
+  };
 
-  const estimatedInputTokens = trace.reduce(
-    (sum, item) => sum + item.estimatedTokens,
-    0,
-  );
+  const finalGenerationAllocation = generationAllocation;
+  if (!finalGenerationAllocation) {
+    throw new Error('GENERATION_BUDGET_ALLOCATION_MISSING');
+  }
+
+  const renderedContext = renderGenerationContext({
+    normalized,
+    plan: generationPlan,
+    allocation: finalGenerationAllocation,
+    blocks: {
+      systemText: resolvedSystemPrompt,
+      instructionText: '',
+      sourceTextByCandidateId: {},
+      legacy: renderStageBlocks,
+    },
+  });
+  const messages = renderedContext.messages;
+  trace.push(...renderedContext.trace);
+  const estimatedInputTokens = renderedContext.estimatedInputTokens;
 
   // Keep the immediately preceding chapter separate from the sliding bridge.
   // The bridge may be clipped or assembled from several chapters, while Final
   // V3 must always be able to recover the exact last-chapter seam.
   stageWatch.close('render', 'render');
   stageWatch.mark('freeze');
-  // Stability Phase 4 (plan §4.6): future source leakage must be zero at
-  // freeze time. The position filters above guarantee this today; the assert
-  // turns silent regressions of that filter into hard failures.
-  assertNoFutureSourceLeakage({
-    currentPosition: currentChapter.position,
-    previousChapters,
-    episodicCandidates,
+  const frozenGenerationContract = freezeGenerationContext({
+    normalized,
+    plan: generationPlan,
+    allocation: finalGenerationAllocation,
+    rendered: renderedContext,
+    diagnostics: diagnostics.list(),
   });
   const immediatePreviousChapter = chapters
     .filter(chapter => chapter.position < currentChapter.position && chapter.content)
@@ -1572,6 +1604,7 @@ export async function buildContext(
     outlineBlockingReason: outlineContext.blockingReason,
     outlineEstimatedTokens: outlineContext.estimatedTokens,
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
+    generationContract: frozenGenerationContract,
     // Stability Phase 5 — semantic degradations frozen with the snapshot.
     stabilityDiagnostics:
       diagnostics.list().length > 0 ? diagnostics.list() : undefined,
@@ -1781,76 +1814,6 @@ function buildPresetPrompt(preset?: Preset): string {
  * Actual generation only blocks when full outline + fixed prompt + mandatory
  * body + output reserve + safety margin exceed the model window.
  */
-export function deriveGenerationOutlineBudgetTokens(
-  contextWindow: number,
-  reservedOutputTokens = 0,
-): number {
-  if (!(contextWindow > 0)) return 0;
-  const safety = deriveContextSafetyMargin(contextWindow);
-  const reserved = Math.max(0, Number(reservedOutputTokens) || 0);
-  // Leave a small fixed-protocol floor so packing is not the sole gate.
-  const fixedProtocolFloor = 256;
-  return Math.max(
-    0,
-    contextWindow - reserved - safety - fixedProtocolFloor,
-  );
-}
-
-async function buildOutlineContextForProject(
-  projectId: number,
-  contextWindowOverride?: number,
-  reservedOutputTokens?: number,
-): Promise<BuiltOutlineContext> {
-  // Partial database facades (tests / incomplete mocks) may omit getProjectById.
-  // Without a project row we cannot claim outline mode — return empty legally.
-  if (typeof (db as any).getProjectById !== 'function') {
-    return EMPTY_OUTLINE_CONTEXT;
-  }
-  let project;
-  try {
-    project = await db.getProjectById(projectId);
-  } catch (error: any) {
-    throw new OutlineContextError(
-      'OUTLINE_READ_FAILED',
-      `读取项目信息失败：${error?.message ? String(error.message) : '数据库错误'}`,
-      'open_outlines',
-    );
-  }
-  const projectMode = project?.mode;
-  if (projectMode !== 'outline') {
-    return EMPTY_OUTLINE_CONTEXT;
-  }
-  let contextWindow = 0;
-  if (contextWindowOverride != null && contextWindowOverride > 0) {
-    contextWindow = Number(contextWindowOverride);
-  } else {
-    try {
-      const llmConfig = await db.getActiveLLMConfig();
-      contextWindow = Number(llmConfig?.context_window) || 0;
-    } catch {
-      // Preview / pre-config: budget unknown. Do not treat as empty outline.
-      contextWindow = 0;
-    }
-  }
-  // Prefer generation budget (full remaining input). Fall back to 30% suggest
-  // only when window is unknown (0) so packing does not silently accept infinite.
-  const generationBudget = deriveGenerationOutlineBudgetTokens(
-    contextWindow,
-    reservedOutputTokens,
-  );
-  const outlineBudgetTokens =
-    generationBudget > 0
-      ? generationBudget
-      : deriveOutlineBudgetTokens(contextWindow);
-  // buildOutlineContext throws OutlineContextError on repository failure —
-  // never swallow into EMPTY_OUTLINE_CONTEXT.
-  return await buildOutlineContext({
-    projectId,
-    projectMode,
-    outlineBudgetTokens,
-  });
-}
-
 /**
  * Resource context result with per-section text (SPEC §7.4). `text` keeps the
  * legacy combined string the draft consumes; `characterText` / `noteText` /
@@ -1873,7 +1836,12 @@ async function buildResourceContext(
   recursiveWorldbook: boolean,
   currentChapter?: Chapter,
   retrievalUserPrompt = '',
+  resourceSources?: GenerationResourceSources,
 ): Promise<ResourceContextResult> {
+  if (!resourceSources) {
+    throw new Error('GENERATION_RESOURCE_SOURCES_NOT_CAPTURED');
+  }
+  const capturedSources = resourceSources;
   const parts: string[] = [];
   const allTraceItems: ContextTraceItem[] = [];
   const characterBudget = Math.floor(budget * 0.35);
@@ -1887,7 +1855,7 @@ async function buildResourceContext(
   };
 
   const [charSettled, noteSettled, wbSettled] = await Promise.allSettled([
-    buildCharacterContext(projectId, characterBudget),
+    buildCharacterContext(projectId, characterBudget, capturedSources.characters),
     buildNoteContext(
       projectId,
       noteBudget,
@@ -1895,12 +1863,15 @@ async function buildResourceContext(
       currentChapter?.title || '',
       currentChapter?.synopsis || '',
       retrievalUserPrompt,
+      undefined,
+      capturedSources,
     ),
     buildWorldbookContext(
       projectId,
       worldbookBudget,
       scanText,
       recursiveWorldbook,
+      capturedSources.worldbookEntries,
     ),
   ]);
 
@@ -1938,8 +1909,10 @@ async function buildResourceContext(
 export async function buildCharacterContext(
   projectId: number,
   budget: number,
+  capturedCharacters?: unknown[],
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
-  const characters = await db.getCharactersByProject(projectId);
+  const characters =
+    capturedCharacters ?? (await db.getCharactersByProject(projectId));
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
   let remaining = budget;
@@ -2035,20 +2008,23 @@ async function buildNoteContext(
   chapterSynopsis = '',
   userPrompt = '',
   onDiagnostic?: DiagnosticSink,
+  resourceSources?: GenerationResourceSources,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
-  let config;
-  try {
-    config = await db.getProjectNoteConfig(projectId);
-  } catch (error) {
-    onDiagnostic?.({
-      code: 'NOTE_RETRIEVAL_FAILED',
-      severity: 'warning',
-      message: '笔记模式配置读取失败，按默认模式处理',
-      stage: 'collect',
-      source: 'contextBuilder.buildNoteContext',
-      detail: { reason: String((error as Error)?.message || error) },
-    });
-    config = null;
+  let config: any = resourceSources?.noteConfig;
+  if (!resourceSources) {
+    try {
+      config = await db.getProjectNoteConfig(projectId);
+    } catch (error) {
+      onDiagnostic?.({
+        code: 'NOTE_RETRIEVAL_FAILED',
+        severity: 'warning',
+        message: '笔记模式配置读取失败，按默认模式处理',
+        stage: 'collect',
+        source: 'contextBuilder.buildNoteContext',
+        detail: { reason: String((error as Error)?.message || error) },
+      });
+      config = null;
+    }
   }
   const mode = config?.mode;
 
@@ -2056,7 +2032,13 @@ async function buildNoteContext(
     return { text: '', items: [] };
   }
   if (mode === 'style') {
-    return buildStyleContext(projectId, budget, config, onDiagnostic);
+    return buildStyleContext(
+      projectId,
+      budget,
+      config,
+      onDiagnostic,
+      resourceSources,
+    );
   }
   if (mode === 'retrieval') {
     return buildRetrievedNoteContext(
@@ -2068,9 +2050,10 @@ async function buildNoteContext(
       chapterSynopsis,
       userPrompt,
       onDiagnostic,
+      resourceSources,
     );
   }
-  return buildNoteContextOriginal(projectId, budget);
+  return buildNoteContextOriginal(projectId, budget, resourceSources);
 }
 
 // 仿写模式：注入缓存的风格画像 + 项目级要素权重
@@ -2079,12 +2062,15 @@ async function buildStyleContext(
   budget: number,
   config: any,
   onDiagnostic?: DiagnosticSink,
+  resourceSources?: GenerationResourceSources,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
     // project_note_config 中可能残留已被当前项目关闭的笔记 ID。
     // 无论是否配置了显式名单，都必须以当前项目实际启用的笔记为边界，
     // 避免“当前项目使用”已关闭的笔记继续参与画像，甚至跨项目串用。
-    const projectNotes = await db.getNotesByProject(projectId);
+    const projectNotes =
+      (resourceSources?.notes as any[] | undefined) ??
+      (await db.getNotesByProject(projectId));
     const eligibleIds = projectNotes.map((note: any) => Number(note.id));
     const eligibleSet = new Set(eligibleIds);
     const configuredIds: number[] = Array.isArray(config?.enabledNoteIds)
@@ -2116,18 +2102,22 @@ async function buildStyleContext(
 
     // 用 allSettled：单条笔记风格分析失败（空内容 / LLM 报错）不影响整体注入，
     // 避免整个仿写被一条坏数据拉回到原始笔记注入
-    const settled = await Promise.allSettled(
-      noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)),
-    );
+    const settled = resourceSources?.noteStyleProfiles
+      ? resourceSources.noteStyleProfiles.map(value => ({
+          status: 'fulfilled' as const,
+          value,
+        }))
+      : await Promise.allSettled(
+          noteIds.map((id: number) => getOrAnalyzeNoteStyle(id)),
+        );
     const profiles = settled
       .filter(
         (
           r,
-        ): r is PromiseFulfilledResult<
-          Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>
-        > => r.status === 'fulfilled',
+        ): r is { status: 'fulfilled'; value: Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>> } =>
+          r.status === 'fulfilled',
       )
-      .map(r => r.value)
+      .map(r => r.value as Awaited<ReturnType<typeof getOrAnalyzeNoteStyle>>)
       .filter(p => p && p.profileJson && Object.keys(p.profileJson).length > 0);
 
     const weights: StyleWeights = {
@@ -2190,7 +2180,7 @@ async function buildStyleContext(
       source: 'contextBuilder.buildStyleContext',
       detail: { reason: String((error as Error)?.message || error) },
     });
-    return buildNoteContextOriginal(projectId, budget);
+    return buildNoteContextOriginal(projectId, budget, resourceSources);
   }
 }
 
@@ -2204,6 +2194,7 @@ async function buildRetrievedNoteContext(
   chapterSynopsis = '',
   userPrompt = '',
   onDiagnostic?: DiagnosticSink,
+  resourceSources?: GenerationResourceSources,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
     const topK = config?.retrievalTopK ?? 5;
@@ -2213,7 +2204,11 @@ async function buildRetrievedNoteContext(
       previousEnding: scanText.slice(-500),
       userPrompt,
     };
-    const fragments = await retrieveNoteFragments(projectId, query, topK);
+    const fragments = resourceSources?.noteRetrievalFragments
+      ? (resourceSources.noteRetrievalFragments as Awaited<
+          ReturnType<typeof retrieveNoteFragments>
+        >)
+      : await retrieveNoteFragments(projectId, query, topK);
     if (fragments.length === 0) {
       return {
         text: '',
@@ -2267,8 +2262,11 @@ async function buildRetrievedNoteContext(
 async function buildNoteContextOriginal(
   projectId: number,
   budget: number,
+  resourceSources?: GenerationResourceSources,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
-  const notes = await db.getNotesByProject(projectId);
+  const notes =
+    (resourceSources?.notes as any[] | undefined) ??
+    (await db.getNotesByProject(projectId));
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
   let remaining = budget;
@@ -2276,13 +2274,15 @@ async function buildNoteContextOriginal(
   // V2.2.0：bulk fetch 一次拿回所有笔记内容，避免对每条 getNoteContentById 的 N 次 round-trip。
   // 单条实现里每条笔记还会按 120k chunk 分块拉多次，所以 60 条笔记 = 上百次往返；
   // 现在统一 1 次往返 + 仅对超大笔记追加 chunk。
-  let contents: Record<number, string> = {};
+  let contents: Record<number, string> = resourceSources?.noteContents || {};
   if (notes.length > 0) {
-    try {
-      contents = await db.getNotesContentByIds(notes.map(n => Number(n.id)));
-    } catch {
-      // bulk 失败时回退单条，最坏情况是性能回退到老路径
-      contents = {};
+    if (!resourceSources) {
+      try {
+        contents = await db.getNotesContentByIds(notes.map(n => Number(n.id)));
+      } catch {
+        // bulk 失败时回退单条，最坏情况是性能回退到老路径
+        contents = {};
+      }
     }
   }
 
@@ -2343,9 +2343,10 @@ export async function buildWorldbookContext(
   budget: number,
   scanText: string,
   recursive = true,
+  capturedEntries?: unknown[],
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   if (budget <= 0) return { text: '', items: [] };
-  const entries = ((await db.getWorldbookEntriesByProject(projectId)) as any[]).sort(
+  const entries = ((capturedEntries ?? (await db.getWorldbookEntriesByProject(projectId))) as any[]).sort(
       (a, b) =>
         Number(a.position || 0) - Number(b.position || 0) ||
         Number(a.id || 0) - Number(b.id || 0),
@@ -2516,42 +2517,7 @@ export function selectPreviousChapters(
   config: PartialContextConfig,
   chapters: Chapter[],
 ): Chapter[] {
-  const previous = chapters
-    .filter(
-      chapter =>
-        chapter.position < currentChapter.position && Boolean(chapter.content),
-    )
-    .sort((a, b) => a.position - b.position);
-
-  if (config.strategy === 'full') return previous;
-
-  if (config.strategy === 'custom') {
-    const start = Math.max(0, Number(config.customRangeStart ?? 0));
-    const end = Number(config.customRangeEnd ?? -1);
-    return previous.filter(
-      chapter =>
-        chapter.position >= start && (end < 0 || chapter.position <= end),
-    );
-  }
-
-  // Sliding strategy: hard business clamp at STORY_MEMORY_MAX_RAW_CHAPTERS —
-  // a huge context window or legacy/hostile config (recentChapterCount=100)
-  // must never push more than 10 chapters of raw full text into the prompt.
-  // Token budget is a SECOND layer applied on top of this count cap.
-  // Non-finite values (NaN / Infinity / garbage) fall back to the max raw
-  // chapter count instead of degenerating into "all history" (slice(-NaN)
-  // would select everything).
-  const rawRecent = Number(config.recentChapterCount ?? 3);
-  const recentCount = Math.min(
-    STORY_MEMORY_MAX_RAW_CHAPTERS,
-    Math.max(
-      1,
-      Number.isFinite(rawRecent)
-        ? Math.round(rawRecent)
-        : STORY_MEMORY_MAX_RAW_CHAPTERS,
-    ),
-  );
-  return previous.slice(-recentCount);
+  return selectPreviousChaptersPure(currentChapter, config, chapters);
 }
 
 export function buildPreviousContentText(

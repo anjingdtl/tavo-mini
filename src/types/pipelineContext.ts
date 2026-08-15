@@ -195,6 +195,8 @@ export interface PipelineContextSnapshot {
    * degraded. Absent on historical snapshots.
    */
   stabilityDiagnostics?: import('./generationTrace').GenerationDiagnostic[];
+  /** Phase II decision-level Candidate/Allocation/Render contract. */
+  generationContract?: import('../services/context/generation/generationContracts').FrozenGenerationContextContractV2;
 }
 
 /**
