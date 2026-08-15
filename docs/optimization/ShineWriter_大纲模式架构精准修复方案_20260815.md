@@ -1,304 +1,165 @@
-# ShineWriter 大纲模式架构精准修复方案（PDCA）
+# ShineWriter 大纲模式架构精准修复方案（实证版 PDCA）
 
 - 日期：2026-08-15
-- 范围：大纲创作模式（资料库 / 流水线 / 弹性系统）架构评审结论的精准修复
-- 基线：code head `e78f1888` + 本轮工作区 7 处已修 bug（见批次 0）
-- 依据：
-  - 架构评审（2026-08-15，三子系统全量扫描，证据均核实到 file:line）
-  - `ShineWriter_第三期_作家风格预设全链路重构_PDCA方案_20260814.md`（§26/§29-§33）
-  - `ShineWriter_第二期_资料资产_写作流水线_弹性上下文接驳方案_20260813.md`（§8.5）
-  - `tavo-mini-multi-chapter-batch-and-elastic-budget-pool-plan.md`（§3/§7.3/§11）
-  - `docs/EMULATOR_QA_PLAYBOOK.md`（冒烟环境与绕行）
+- 范围：大纲创作模式的快照、作家风格决议、上下文自动化遗留写库、笔记模式和多章批次预算
+- 审查对象：当前 `main` 的 `9687b0ea`，而不是原方案记录的旧工作区状态
+- 工作原则：**实践是检验真理的唯一标准**。静态扫描只产生假设；只有可重复的测试、数据库观察、装机冒烟和回归结果才能把假设升级为结论。
 
----
+## 0. 基线与审查结论
 
-## 0. 问题索引（本方案针对的评审结论）
+### 0.1 已完成的冒烟基线
 
-| 编号 | 问题 | 严重度 | 批次 |
+基线在任何产品代码修改前完成，证据目录为
+`test-logs/precision-fix-plan-review-20260815/baseline/`：
+
+| 项目 | 实际结果 |
+|---|---|
+| Git | `main` 与 `origin/main` 一致，工作区干净；HEAD=`9687b0ea` |
+| `npm run typecheck` | exit 0 |
+| `npx jest --runInBand --ci` | 421 个套件中 421 个通过；3350 passed、8 skipped、无 failed（总计 3358 tests） |
+| `npm run apk:debug` | exit 0，生成 `dist/apk/debug/ShineWriter-V2.11.52-debug.apk` |
+| Android | `emulator-5554`，API 37，`adb install -r` 成功，`com.shinewriter/.MainActivity` 冷启动成功 |
+| 启动日志 | 未见 FATAL/崩溃；首屏显示的是设备原有“流水线完成”历史状态，不能把它误判为本轮功能通过或失败 |
+| 设备数据库 | 只读拉取成功；`pipeline_stage_attempts` 的历史样本中，Brief/弹性 trace 有 `finalEstimatedInputTokens`，draft/review/factCheck/proof 多数没有可回比估算值 |
+
+原方案中“`e78f1888` + 工作区 7 处未提交修复”“3349 tests”均与当前仓库事实不符，已删除，不再作为验收依据。基线日志和设备快照均不进入 Git 提交。
+
+### 0.2 问题索引（按实测后的处理结论）
+
+| 编号 | 原评审假设 | 当前结论 | 本轮动作 |
 |---|---|---|---|
-| A1 | V5 快照写入/序列化/解析三方不一致，作家风格分阶段投影持久化后失效 | A | 批次 1（FIX-1） |
-| A2 | 作家风格→preset 决议逻辑 5 处复制且已漂移 | A | 批次 1（FIX-2） |
-| C6 | 遗留 `applyContextAutoAllocation` 内无 WHERE 的全表 UPDATE llm_config/presets | A（待引爆） | 批次 1（FIX-3） |
-| B6 | 笔记模式"禁用"名不符实：none → 全量注入 | B（用户可感） | 批次 1（FIX-4） |
-| A3 | token 估算器（1 token/汉字）无校准回路，输入侧硬门全部押注估算 | A | 批次 2（FIX-5 观测先行） |
-| A4 | 三套安全边际公式，1M 窗口下差约 40 倍 | A | 批次 2（FIX-6，数据到位后统一） |
-| C5 | 遗留任务（无冻结 stageBudgets）审计预留 1500 + thinking 可开 → 截断 | B | 批次 2（FIX-7） |
-| B1 | 批次预算池按 128K 时代调参：window×4 输入上限 vs 弹性单次占窗 70-95% | B | 批次 2（FIX-8） |
-
-明确**不在本方案内**（另立方案）：B2 双 God module 拆分、B3 错误分类器合一、B4 版本兼容表收敛、B5 资源三代栈下线、C1-C4/C7/C8。理由见 §5。
-
----
-
-## 1. 修复纪律（硬性，先读后动）
-
-### 1.1 冒烟先行协议 —— 任何修复动手之前必须完成并留档
-
-> 原则：**没有绿色基线就没有修复**。基线不绿（环境问题/既有失败）时，先停下修环境或上报，
-> 禁止在红色基线上叠加改动——那是边界扩大的头号来源。
-
-每个 FIX 动手前，依次执行并归档到 `test-logs/precision-fix-<FIX-ID>/baseline/`：
-
-1. **全局基线三件套**
-   - `npm run typecheck`（0 错误）
-   - `npx jest`（全量，记录通过总数；与上一次归档总数差异需可解释）
-   - `npm run apk:debug` 构建成功 + 安装 `emulator-5554`（`adb install -r`）
-2. **关键路径装机冒烟子集**（三系统各一条，与被修子系统对应者必跑，其余可按卡说明豁免）
-   - 流水线：`02-writing-lifecycle`（或 MCP UI 等价路径）
-   - 资料库：`03-resource-library`
-   - 流水线取消/暂停：`06-pipeline-cancel`
-   - 注意：Maestro 对中文匹配不稳，失败时按 `EMULATOR_QA_PLAYBOOK.md` 用
-     `scripts/qa/ui-find.mjs` + 坐标点按复测，不得直接判失败。
-3. **定向复现（缺陷证据）**：按每张修复卡的"修复前冒烟"步骤，捕获当前（缺陷）行为
-   的可复核证据（单测输出 / DB 查询结果 / 截图）。**该证据就是修复后行为翻转的对照物。**
-
-### 1.2 边界控制
-
-- **单 FIX 单 commit**，commit message 以 `fix(<FIX-ID>):` 开头；禁止一个 commit 混多张卡。
-- **diff 预算**：每张卡产品代码 ≤ 150 行（测试与文档不计）；超限必须拆卡或升级为独立方案。
-- **禁区清单**（触碰即停，需先升级讨论）：
-  - SQLite schema 迁移与 schemaVersion 变更；
-  - 任何进入冻结上下文的提示词文本（改文本即改协议指纹，破坏"冻结请求复用"不变量 §3.7）；
-  - `frozenRequestJson` / `input_fingerprint` / `pipeline_context_*` 的写入路径；
-  - V4 及以下旧批次的兼容判定（只允许更严格，不允许放松）。
-
-### 1.3 修复后验证与回滚
-
-- 顺序：新回归单测（先红后绿）→ 重跑定向复现（行为按预期翻转）→ 全量 `npx jest` +
-  `typecheck` → 按卡的"装机验证"复验 → §1.1 的装机冒烟子集重跑全绿。
-- 任何一步不绿：**立即 revert 该 FIX 的 commit**，不带病叠加修补。回滚后基线三件套重跑留档。
-- 真实 LLM 冒烟的费用控制：一律用小项目（如 P2_AWARENESS / E2E_CB1）、章节目标字数调小、
-  验证到"阶段开始/首个成功检查点"即取消批次。
-
----
-
-## 2. 批次 0：本轮已完成修复（工作区待提交，先行归组）
-
-以下 7 处已实现并通过全量 3349 测试 + 装机验证，**提交前须完整跑一次 §1.1 基线**，按逻辑归组提交：
-
-| 组 | 内容 | 文件 |
-|---|---|---|
-| b0-1 planner 解析 | 截断/损坏 JSON 失败闭合、悬空逗号兜底、wire max_tokens 尊重用户配置、修复请求携带原始输出、finishReason=length 透传 | `multiChapterBatch/planner.ts`、`continuationBatchPlanner.ts`、`index.ts` |
-| b0-2 预览恢复 | 冷启动预览从 plannerOutputJson 重建 | `screens/MultiChapterBatchScreen.tsx` |
-| b0-3 风格基线 | 基线 writer style 不再合成非法 preset（流水线 + 预览屏两处） | `pipeline/reconcile.ts`、`screens/ContextPreviewScreen.tsx` |
-| b0-4 错误分类 | 新增 pause_task_failed，本地确定性失败展示真实原因 | `determineNextBatchAction.ts`、`reconcileMultiChapterBatch.ts` |
-
-对应测试：`batchPlanner.test.ts`、`continuationBatchPlanner.test.ts`、
-`multiChapterBatchScreen.test.tsx`、`multiChapterBatchStateMachine.test.ts`、`multiChapterBatchFaultMatrix.test.ts`。
-
----
-
-## 3. 批次 1（P0：立即修，全部有界）
-
-### FIX-1 V5 快照三方对齐（A1）
-
-**证据（已核实）**
-- 写入方：`src/services/draftPipelineCompiler.ts:262-269` —— 有 `writerStyleSnapshot` 时标
-  `snapshotVersion: 5`（硬编码 5；`PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5` 常量从未被引用）。
-- 序列化方：`src/services/pipelineTaskContext.ts:1302-1307` —— `snapshotVersion = isV33||isV32 ? 4 : isV3 ? 3 : 1`，
-  **把 5 强制改写为 4**（但 spread 保留了 `writerStyleSnapshot` 字段在 JSON blob 中）。
-- 解析方：同文件 415-429 只认 {1,3,4}，字面 5 会抛 `OUTLINE_SNAPSHOT_INVALID`；解析输出为
-  显式字段列表，`writerStyleSnapshot` 与 `execution.writerStyle` 全文 0 处读取——**解析即丢失**。
-- 后果：首次持久化-解析循环后，`reconcile.ts:2082`、`stageResourceContextV4.ts` 的 V5 分支
-  永远走 V4；resume 后 `runtime.writerStyle` 为 null，`assertProtectedWriterStyleFits` 空转；
-  审校/事实核对/终审的风格投影静默降级。反向地雷：谁让序列化如实写 5，解析方立即把任务判死。
-
-**修复前冒烟（定向复现）**
-1. 单测复现（新增，预期先红后绿用）：构造含 `writerStyleSnapshot` 的 V5 draftContext →
-   `serializePipelineTaskContext` → `parsePipelineContextSnapshotStrict` → 断言当前
-   `snapshotVersion === 4 && writerStyleSnapshot === undefined`（把缺陷钉进测试日志）。
-2. 装机复现：绑定真实作家风格的项目生成一章 → 任务落库后拉取
-   `pipeline_tasks.pipeline_context_json`，确认 blob 内含 `writerStyleSnapshot` 但恢复运行时
-   `runtime.writerStyle` 为 null（logcat 或调试断言取证）。
+| FIX-1 / A1 | V5 快照写入、序列化、解析不一致，作家风格投影会在恢复时丢失 | 已由代码路径和回归用例证明 | 修复 |
+| FIX-2 / A2 | 作家风格决议在 5 处复制并漂移 | 已由调用点、错误文案和 b0-3 两处重复修复证明 | 修复 |
+| FIX-3 / C6 | 遗留函数可对 `llm_config`/`presets` 全表 UPDATE | 函数仍存在且无生产调用，风险真实 | 删除遗留入口，V3 不动 |
+| FIX-4 / B6 | `none/禁用` 实际仍全量注入笔记 | 单测当前明确证明该行为 | 修复为零候选 |
+| FIX-5 / A3 | 估算器缺少漂移观测 | 估算值没有覆盖所有 attempt，不能直接算全量漂移 | 增加只读观测脚本，报告覆盖率；不改估算公式 |
+| FIX-6 / A4 | 三套安全余量必须统一 | 三者分别属于默认弹性、最终请求检查、V3 策略层；没有行为失败证据 | 本轮不改，列为待证项 |
+| FIX-7 / C5 | legacy thinking 必然沿用 1500 并截断 | 当前冻结流程会在首次冻结时保存 V2 预算；尚无可复现旧任务证据 | 本轮不改，列为待证项 |
+| FIX-8 / B1 | 批次 `window×4` 输入上限与章数无关 | 代码和设备批次记录均证明上限固定，而调用上限按章数增长 | 修复为按章数扩展的自动上限 |
 
-**修复内容（最小 diff）**
-1. 序列化方：`writerStyleSnapshot` 存在时保留版本 5（`snapshotVersion` 计算加入该分支），
-   并改用 `PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5` 常量。
-2. 解析方：版本门 {1,3,4} → {1,3,4,5}；按既有严格校验风格解析 `writerStyleSnapshot`
-   （结构校验对齐 `FrozenWriterStyleV1`，非法即 `OUTLINE_SNAPSHOT_INVALID` fail-closed）。
-3. `parsePipelineExecutionSnapshot` 输出字段列表补 `writerStyle`（缺省 null，旧 blob 兼容）。
-4. 引用常量替换硬编码 5。
+明确不在本轮：God module 拆分、错误分类器合并、版本兼容表重构、资源三代栈下线、schema/migration、提示词文本和冻结指纹协议变更。
 
-**边界**：不改 envelope 版本判定（isV3/isV32/isV33）；旧 blob（版本 4 + 残留
-`writerStyleSnapshot` 字段）继续按 V4 解析、忽略多余字段，行为不变；不迁移历史数据
-（§30：禁止重写旧 context）。
+## 1. 执行纪律
 
-**修复后验证**：上述单测翻转为断言 V5 往返保持；补"旧 V4 blob 解析不变"回归用例；
-装机：绑风格项目跑完一章 + 中途强杀 resume 一次，确认审校阶段消费风格投影
-（ContextPreviewScreen 或 stage trace 中 `writer_style_projection` 出现）。
-**回滚**：revert 单 commit，新旧 blob 均不受影响（版本 5 只在新任务产生）。
+1. 先基线、再定向复现、再写回归测试；测试必须先红后绿，不能把原有错误期望当成“绿基线”。
+2. 本轮不在中途提交。所有修复、测试、APK 和装机验证完成后，才形成一个闭环 commit 并 push 到 `main`；commit body 列出 FIX-1/2/3/4/5/8。
+3. 不执行 `adb uninstall`、`pm clear`、删除或替换用户数据库；只用 `adb install -r`。真实 LLM 不可用时，不伪造生成结果，以纯函数/SQLite 只读证据替代，并在 PDCA 中标明边界。
+4. 不触碰 SQLite schema、冻结 prompt 文本、`frozenRequestJson`、`input_fingerprint` 和旧 V4 及以下兼容判定。
+5. 每个修复保持最小 diff；任何失败先定位并回退工作区改动，不在红色结果上继续叠加。
 
-### FIX-2 作家风格决议收编为单一服务（A2）
+## 2. 修复卡
 
-**证据（已核实）**：5 处独立实现——
-`pipeline/reconcile.ts:2032-2062`、`screens/ContextPreviewScreen.tsx:424-453`（近乎逐字重复）、
-`data/repositories/pipelineTaskRepository.ts:89-100 与 154-166`（内联 SQL 校验）、
-`data/repositories/presetRepository.ts:214-229`。错误文案已漂移（"不存在" vs "不存在或已失去项目归属"）。
-本周 b0-3 两个 bug（流水线 + 预览屏各一处）即此病灶产物。
+### FIX-1：V5 快照三方对齐（A1）
 
-**修复前冒烟**：grep 清单归档（5 处实现逐字对比）；装机三态取证——空绑定（baseline 正常）、
-悬空绑定（`ACTIVE_WRITER_STYLE_MISSING` 拦截）、正常绑定（风格生效），当前三处入口行为一致性的
-文字记录。
+**已证缺陷**：`draftPipelineCompiler.ts` 写死 `snapshotVersion: 5`；`pipelineTaskContext.ts` 序列化时只产生 1/3/4，解析门只接受 1/3/4，且解析结果没有 `writerStyleSnapshot` 和 `execution.writerStyle`。因此 V5 内容在持久化往返后要么被改成 V4，要么 fail-closed，恢复运行时作家风格为空。
 
-**修复内容（最小 diff）**
-1. 新建 `src/services/writerStyle/activeStyleResolver.ts`：唯一实现 §26.2/§26.3 契约——
-   `resolveActiveWriterStyle(projectId)` 返回 `{ writerStyle, draftPreset | null, missing?: error }`：
-   空绑定 → 默认基线 + `draftPreset = null`；悬空 → 抛 `ACTIVE_WRITER_STYLE_MISSING`；
-   正常绑定 → 资产冻结 + `assetId > 0` 时合成 draft preset（与 b0-3 守卫同一规则）。
-   错误文案收敛为单一常量。
-2. 五处调用点改为消费该服务（`getPipelineConfig` 的内联 SQL 校验改为调用服务并保留其异常语义）。
+**修复**：
 
-**边界**：不改 DB 读写函数签名；`setProjectActiveWriterStyle` 的事务行为不动，仅校验内部收编；
-不新增错误码（沿用 `ACTIVE_WRITER_STYLE_MISSING`）。
+- 使用 `PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5`，序列化保留 V5；envelope 版本判定不改。
+- V5 解析严格校验 `FrozenWriterStyleV1` 的版本、资产身份、采样字段和五个阶段投影；V5 缺字段或结构非法时抛 `OUTLINE_SNAPSHOT_INVALID`。
+- 解析执行快照时保留可选 `writerStyle`；V4 及更早 blob 没有该字段时保持旧行为。
+- V4 blob 即使残留 `writerStyleSnapshot` 也继续忽略，不放松旧版本兼容判定。
 
-**修复后验证**：单测三态（空/悬空/正常）对服务直接断言；5 处调用点的既有测试全绿；
-装机三态与冒烟记录逐条对照（文案统一为预期内差异）。
-**回滚**：revert 后回到 5 处复制现状，无数据影响。
+**红绿证据**：新增 V5 往返、非法 V5 fail-closed、旧 V4 忽略残留字段三组回归；检查序列化 JSON 的 `snapshotVersion` 和解析后的投影文本/`execution.writerStyle`。
 
-### FIX-3 删除无 WHERE 的 Context Auto 遗留写库（C6）
+### FIX-2：作家风格活动决议收编（A2）
 
-**证据（已核实）**：`src/services/contextAutoAllocator.ts:585-593` ——
-`UPDATE llm_config SET context_window = ?, max_output_tokens = ?` 与 `UPDATE presets SET max_tokens = ?`
-均无 WHERE；函数 `applyContextAutoAllocation` 当前零调用（仅 `contextAutoRepository.ts:155` 文档注释
-引用）。距重演 V2.11.52"Context Auto 覆写 LLM 能力"事故只差一次误调用。
+**已证缺陷**：流水线、预览屏、pipeline repository 和 preset repository 各自查询、冻结和合成 preset，且错误文案不同。
 
-**修复前冒烟**：`grep -rn "applyContextAutoAllocation\b" src/` 归档零调用证据；基线三件套。
+**修复**：新增 `activeStyleResolver.ts`，集中定义三态：空绑定返回默认基线且无 draft preset；悬空/未启用绑定抛统一 `ACTIVE_WRITER_STYLE_MISSING`；正常绑定只冻结一次并按 `assetId > 0` 合成 draft preset。五个入口消费同一决议服务；DB 签名和事务边界不变。
 
-**修复内容（最小 diff）**：删除 `applyContextAutoAllocation` 整个函数及配套常量与文档引用；
-补一个导出面回归测试（模块不再导出该符号），防复活。
+**红绿证据**：对纯决议核心做空绑定、悬空绑定、正常绑定三态测试；`rg` 确认入口不再各自复制冻结/错误决策；现有 pipeline/preset 测试全绿。设备侧只做保留数据的启动和资源页冒烟，不伪造未配置的真实三态。
 
-**边界**：`applyContextAutoAllocationV3`（现行）与 `restoreContextAutoDefaults` 不动。
+### FIX-3：删除无 WHERE 的 Context Auto 遗留写库（C6）
 
-**修复后验证**：全量测试 + typecheck；导出面测试通过。
-**回滚**：revert 即恢复死代码，无行为影响。
+**已证缺陷**：`applyContextAutoAllocation` 仍包含无 WHERE 的 `UPDATE llm_config ...` 和 `UPDATE presets ...`，虽当前无生产调用，但一旦误接会覆盖全库。
 
-### FIX-4 笔记模式"禁用"语义修正（B6）
+**修复**：删除该遗留导出及其专属测试；保留 `applyContextAutoAllocationV3`、V3 策略和只读/项目级计数逻辑不变。增加导出面测试，防止旧入口复活。
 
-**证据（已核实）**：UI 标签 `{ value: 'none', label: '禁用' }`（`ResourceLibrary.tsx:1375`）+
-提示"如需全部关闭，请将笔记模式切换为'禁用'"（692-698）；运行时 `none` 落入
-`compileOriginalNotes`（`noteDetailCompiler.ts:303-315` dispatch 的 else 支），V7 与
-legacy（`contextBuilder.ts:1957-1973`）两路均全量注入启用笔记——标签与行为相反，预算白烧+内容照漏。
+### FIX-4：笔记模式“禁用”语义修正（B6）
 
-**修复前冒烟（定向复现）**：小项目启用 2 条笔记 → 模式切"禁用" → 上下文预览
-（`ContextPreviewScreen`）确认当前笔记内容**仍在** prompt 中（截图归档）。
+**已证缺陷**：V7 `compileNoteDetailCandidatesFromSnapshot` 和 legacy `buildNoteContext` 都把 `mode=none` 落到原文全量注入；UI 却把 none 标为“禁用”。
 
-**修复内容（最小 diff）**：两处分发将 `mode === 'none'` 改为返回空候选（V7：
-`noteDetailCompiler` dispatch 前置短路；legacy：`contextBuilder` note 分发前置短路）；
-`compileOriginalNotes` 保留给显式需要原文的模式值（若有历史项目依赖 none=全量，见下方边界）。
+**修复**：两条运行路径的 `none` 均返回空候选/空文本；style/retrieval 不改；存储结构不改；`CHANGELOG.md` 记录这是用户可见的语义修正。旧的原文编译函数不再由合法模式调用，保留与删除均以测试结果为准，不新增隐藏模式。
 
-**边界**：`style`/`retrieval` 模式行为零变化；不改 `project_note_config` 存储结构；
-**用户可见行为变更**（none 从"全量注入"变"真禁用"），需在 CHANGELOG 记录。
+**红绿证据**：V7 快照 none 由“有候选”翻转为“零候选”；legacy `buildContext` 在 none 下不读取笔记正文；style/retrieval 回归；资源库 UI 冒烟仍能切换三种标签。
 
-**修复后验证**：单测（none → 空候选；style/retrieval 回归不变）；装机重跑冒烟步骤，
-确认预览中笔记内容消失、另两模式不受影响；03-resource-library 冒烟流绿。
-**回滚**：revert 恢复旧行为（回到"标签误导"现状），无数据影响。
+### FIX-5：估算漂移只读观测（A3 第一阶段）
 
----
+设备证据表明不能从现有 attempt 行推导所有阶段的冻结估算：只有部分 `allocation_trace_json` 或 `frozen_request_json.elasticBudgetTrace` 含 `finalEstimatedInputTokens`。因此不新增虚假的全量比值，也不在本轮改变 token 估算算法。
 
-## 4. 批次 2（P1：观测先行 / 数据到位后动手）
+**修复**：新增 `scripts/qa/measure-estimator-drift.mjs`，只读 SQLite，报告：可比较行数/覆盖率、按 stage 的 P50/P95/最大 `actual input_tokens / estimated input_tokens`、未覆盖行数；不输出 prompt、API key 或正文。
 
-### FIX-5 估算漂移观测脚本（A3 第一阶段，零产品代码）
+**判定**：脚本能对基线设备快照产出“部分覆盖”报告即通过；覆盖率不足时 FIX-6 不得据此改数。若以后需要全阶段校准，另立方案增加非敏感观测字段并重新评审协议边界。
 
-**证据**：`estimateTokens` 为 1 token/汉字启发式（`tokenEstimator.ts:20-44`）；输入侧硬门
-（`CONTEXT_WINDOW_EXCEEDED` / `OUTLINE_OVER_BUDGET`）全部依赖它；真实 `usage.prompt_tokens`
-已在 attempt 行入库（`reconcile.ts:498-505`）但从不与 `estimatedInputTokens` 回比。
+### FIX-8：批次预算池按章数扩展（B1）
 
-**修复前冒烟**：无产品行为变更，仅需基线三件套。
+**已证缺陷**：`multiChapterBatchStore.ts` 当前 `maxInputTokens = contextWindow × 4`、`maxOutputTokens = contextWindow × 2`，与章数无关，而 `maxLlmCalls = chapterCount × 12` 随章数增长。设备中多个 3 章批次也固定为 4,000,000/2,000,000，证实不是文档误读。
 
-**修复内容（最小 diff）**：新增 `scripts/qa/measure-estimator-drift.js`——从设备拉 DB，
-对每条 attempt 求真实 input_tokens 与冻结请求中估算值的比值，输出分布（P50/P95/最大）。
-产出漂移报告归档，作为 FIX-6/FIX-8 的参数依据。
+**修复**：抽出纯函数 `deriveAutomaticBatchBudget`。保留 1–2 章批次的原有最低 envelope；从 3 章起按章数扩展：输入上限为 `window × max(4, chapterCount × 2)`，输出上限为 `window × max(2, chapterCount)`，调用上限仍为 `chapterCount × 12`。只改新规划阶段写入的自动上限，旧批次的冻结值不变，闸门和暂停分类不变。
 
-**边界**：不改任何产品代码、不改 schema。
+**红绿证据**：纯函数覆盖 1/2/3/20 章和非法章数；现有批次闸门测试证明手工小上限仍会 `paused_batch_budget`；设备历史批次只读检查证明旧值未被迁移。
 
-**修复后验证**：脚本在真机 DB 上产出报告；报告进入本方案附录。
-**回滚**：删脚本即可。
+## 3. 本轮不实施但保留为待证项
 
-### FIX-6 安全边际统一（A4，以 FIX-5 数据为前置）
+### FIX-6：安全余量
 
-**证据**：`deriveDefaultSafetyMargin = min(1024, max(256, 2%窗口))`（`budgetAllocator.ts:52-55`）
-vs `max(512, 4%)`（`outlineContextBuilder.ts:210-213`）vs `policy.safetyMarginRatio`
-（`contextAutoAllocator.ts:871-874`）。1M 窗口下 1024 vs 40000。
+`deriveDefaultSafetyMargin`、`deriveContextSafetyMargin`、V3 `safetyMarginRatio` 是三个拥有不同职责和边界的策略。当前只有静态数值差，没有因余量不足导致的真实失败样本；统一公式会改变冻结外编译边界，故本轮不改。待 FIX-5 未来达到足够覆盖率并出现明确越窗/截断证据后另立卡。
 
-**修复内容（最小 diff，两步）**
-1. 抽公共 `deriveSafetyMargin(window, tier)`，三处消费点改为传 tier 调用（**数值先不变**，
-   仅消除公式复制）；
-2. 依据 FIX-5 漂移报告的 P95 决定弹性审计档的下限修正（预期：把 `min(1024,…)` 的 1024 上限
-   改为 `clamp(2%窗口, 256, 漂移P95×2)` 量级），**只在数据证明当前余量不足时才改数值**。
+### FIX-7：legacy thinking 输出上限
 
-**边界**：分配器结构与水位逻辑不动；改数值前必须附漂移数据引用；冻结任务不受影响
-（边际在编译期计算，不进指纹）。
+当前 V2 首次冻结会先执行 `applyPipelineReasoningBudget`，并把 stage max tokens 写进 execution；恢复则从 execution 读取，而不是重新回到 1500 默认值。当前没有一个可复核的“无 stageBudgets + thinking enabled + wire=1500 + 实际截断”样本，故不把假设写成修复。后续若拿到旧数据库样本，再按旧任务兼容边界单独设计。
 
-**修复后验证**：三处消费点单测（各 tier 数值断言）；装机：大窗口模型跑一次弹性审计阶段
-编译预览不越窗。
-**回滚**：revert 单 commit。
+## 4. PDCA 验收门
 
-### FIX-7 遗留任务审计输出预留下限（C5）
+### Plan
 
-**证据**：无冻结 `stageBudgets` 的任务（cbv 1-4 或缺省）走 1500 配置兜底
-（`pipelineTaskRepository.ts:136-139` 经 `stageMaxTokens` 回退 `reconcile.ts:2724-2735`），
-而 `stageReasoning`（2737-2755）可能开启 thinking——推理计入 completion，1500 共享即截断
-（与已修的 planner 截断同族）；`bumpRetryBudget`（1103-1108）只在事后补救。
+完成本文件修订、记录实测基线、锁定 FIX-1/2/3/4/5/8 的最小范围，并将 FIX-6/7 标记为待证。
 
-**修复内容（最小 diff）**：仅 legacy 兜底路径——当该阶段 thinking 开启时，wire 上限取
-`max(配置值, resolvePlannerWireMaxTokens 同款规则)`（复用 b0-1 抽出的
-`resolvePlannerWireMaxTokens`，参数：预留=配置值、configuredMax=模型 `max_output_tokens`、
-窗口减输入减边际为顶）。冻结 stageBudgets 的任务路径零变化。
+### Do
 
-**修复前冒烟**：构造 cbv 遗留任务（或单测桩）+ thinking 开启，记录当前 wire=1500；
-**修复后验证**：同场景 wire 提升且受窗口约束；现行任务（cbv 6/7）wire 不变的回归用例。
-**回滚**：revert 单 commit。
+按卡先添加回归断言并记录红色结果，再实施最小代码改动；运行观测脚本；构建 Debug APK 并用 `adb install -r` 覆盖安装。
 
-### FIX-8 批次预算池参数重标定（B1）
+### Check
 
-**证据**：`multiChapterBatchStore.ts:380-391`——输入上限 `window×4`（与章数无关）、调用上限
-`章数×12`；弹性阶段单次合法占窗 70-95%（`reconcile.ts:1453-1467` 按"已用真实值+本次估算"计费）。
-1M 模型 6-10 次近满窗调用即触 `paused_batch_budget`，20 章批次中途停机。
+必须同时满足：
 
-**修复内容（最小 diff，以 FIX-5 数据校核后定值）**：
-`maxInputTokens = window × chapterCount × k`（k 起始建议 2，即"平均每章两次近满窗输入"的
-失控保护）、`maxOutputTokens = chapterCount × 五阶段预留之和`（按 20% 包络记账口径对齐）、
-`maxLlmCalls = chapterCount × 12` 维持。只改 `updateBatchBudget` 入参公式，不改闸门语义。
-
-**边界**：闸门判断逻辑（`assertBatchBudgetAvailable`）与 `BatchBudgetExceededError` 分类不动；
-仅对新批次生效（批次上限在 planner 期冻结，旧批次保持自身冻结值——符合 §4.4 冻结原则）。
-
-**修复前冒烟**：小目标字数 3 章批次在 1M 窗口模型上完整跑通（记录各阶段 input_tokens，
-验证当前公式确实会在中途触顶的场景用数据推演即可，不必真触顶）；
-**修复后验证**：同批次完整跑通不误触顶；人为调小上限仍能正确 `paused_batch_budget`（分类回归）。
-**回滚**：revert 单 commit，旧批次不受影响。
-
----
-
-## 5. 明确不做（防边界扩大）
-
-1. **B2 拆 God module**（reconcile.ts 6321 行 / contextBuilder.ts 2766 行）：纯重构无行为收益
-   配高风险，需独立重构方案与专属回归矩阵，不混入精准修复。
-2. **B3 错误分类器三合一**：涉及单章/批次两套 UI 语义，先在本方案各卡内保持"三处同步修改"
-   纪律，合并另立方案。
-3. **B4 版本兼容表收敛、B5 资源三代栈下线**：均需迁移与兼容设计，另立 PDCA。
-4. **C1（捕获期 LLM/写库）、C4（崩溃窗口候选恢复）、C7（O(attempts²) 聚合）、C8（开关扇入）**：
-   中期优化项，非阻滞。
-5. **任何 schema / 协议指纹 / 提示词文本变更**：见 §1.2 禁区。
-
-## 6. 冒烟用例矩阵（FIX × 冒烟方式）
-
-| FIX | 全局基线三件套 | 装机冒烟子集 | 定向复现（修复前捕获 / 修复后翻转） |
-|---|---|---|---|
-| FIX-1 | 必跑 | 02 + 06（强杀 resume） | 单测往返丢失 / V5 保持 + blob 对照 |
-| FIX-2 | 必跑 | 02 + 03 | 三态（空/悬空/正常）行为与文案对照 |
-| FIX-3 | 必跑 | 豁免（零调用死代码） | grep 零调用归档 / 导出面测试 |
-| FIX-4 | 必跑 | 03 | 预览含笔记 → 不含；另两模式不变 |
-| FIX-5 | 必跑 | 豁免（纯脚本） | 漂移报告产出 |
-| FIX-6 | 必跑 | 02 | 三 tier 数值断言 + 大窗口编译不越窗 |
-| FIX-7 | 必跑 | 06 | legacy+thinking wire=1500 → 受窗口约束提升；现行任务不变 |
-| FIX-8 | 必跑 | 02 | 3 章批次全程不误触顶 + 人为触顶分类正确 |
-
-## 7. 验收标准总表
-
-1. 每张卡：基线留档 → 单 FIX 单 commit → 新回归测试先红后绿 → 定向复现翻转 →
-   全量 jest + typecheck 绿 → 装机验证 → 冒烟子集绿。
-2. 批次 1 完成后：`冻结作家风格缺少有效 id` 类缺陷在本仓库不可再现（决议单一来源）；
-   V5 风格投影在持久化往返后保持；笔记"禁用"不再注入；无 WHERE UPDATE 不可达。
-3. 批次 2 完成后：漂移报告归档；安全边际单一函数；遗留任务无 1500 截断路径；
-   1M 窗口 3 章批次全程无误触 `paused_batch_budget`。
-4. 全程不触碰 §1.2 禁区；任何一步不绿即 revert 并留档原因。
+- 定向红绿测试、全量 Jest、typecheck 全部通过；
+- APK 构建、保留数据安装、冷启动通过；logcat 无新增 FATAL/未捕获异常；
+- FIX-1/2/3/4/8 的行为证据完成翻转；FIX-5 报告诚实标注覆盖率；
+- 资源库/流水线最小 UI 冒烟通过，旧设备数据库仍可读；
+- `git diff --check` 通过，改动未触碰 schema、冻结 prompt 和旧兼容判定。
+
+### Act
+
+把实际测试计数、APK 路径、设备结果、观测报告覆盖率和剩余 FIX-6/7 的理由回写本节；确认没有未完成的必需动作后，才 commit 并 push `main`。若任何硬门失败，停止提交并记录阻断原因。
+
+## 5. 最终实测回写（PDCA Check / Act）
+
+- 定向红绿：先红后绿已完成。首轮红测记录于
+  `test-logs/precision-fix-plan-review-20260815/red-targeted.log` 和
+  `red-fix3.log`；实现后最终 6 个定向套件 39/39 通过，5 个原回归套件
+  75/75 通过，证据分别为 `pre-final-targeted.log`、
+  `regression-targeted-1.log`。
+- 全量 Jest / typecheck：`npx jest --runInBand --ci` exit 0，424 个套件通过、3
+  个跳过；3344 项测试通过、8 项跳过（总计 3352 项），证据为
+  `final-jest-3.log`。`npm run typecheck` exit 0，证据为
+  `final-typecheck-2.log`。
+- APK / `adb install -r` / 冷启动：`npm run apk:debug` exit 0，生成
+  `dist/apk/debug/ShineWriter-V2.11.52-debug.apk`；在 `emulator-5554` 上保留
+  用户数据执行 `adb install -r` 成功，启动到
+  `com.shinewriter/.MainActivity`，证据目录为
+  `test-logs/precision-fix-plan-review-20260815/post-fix-final/emulator/`，最终
+  构建日志为 `final-apk-debug.log`。
+- FIX-5 观测报告：基线设备快照共 269 次 attempt，91 次可比较，覆盖率
+  `33.83%`；总体比值 P50=`0.7224`、P95=`3.6126`、最大=`3.6126`。draft/proof
+  没有可比较估算值，报告没有补造数据，因此未修改估算公式；报告为
+  `baseline/emulator/estimator-drift-report.json`。
+- UI 与 logcat：作品库和当前“大纲创作”写作页冒烟通过，UI 树可见
+  “章节 · 大纲 · 摘要 · 上下文”、章节内容和底部导航；应用过滤日志未见
+  `FATAL EXCEPTION`、`Process: com.shinewriter` 崩溃或 ReactNativeJS 未捕获异常。
+- 静态安全门：旧的无范围 Context Auto 入口在 `src` 中不再存在；未触碰
+  schema、冻结 prompt、`frozenRequestJson`、`input_fingerprint` 或旧版本兼容判定；
+  `git diff --check` exit 0。
+- Act：FIX-1/2/3/4/5/8 已完成并有证据闭环；FIX-6/7 仍因覆盖率和可复核失败样本不足
+  保持待证，不把假设扩展为行为改动。提交与 push 在最终工作区审查通过后执行。

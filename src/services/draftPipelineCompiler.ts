@@ -23,6 +23,7 @@ import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
   PIPELINE_CONTEXT_SNAPSHOT_VERSION,
   PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4,
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5,
 } from '../types/pipelineContext';
 import { ResourceContextError } from './context/resources/resourceContextErrors';
 import { isPhase2ContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
@@ -260,7 +261,7 @@ export async function compileDraftPipelineRequest(params: {
       (chapter as any).updated_at ?? (chapter as any).updatedAt ?? '',
     createdAt: Date.now(),
     snapshotVersion: params.writerStyleSnapshot
-      ? 5
+      ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
       : phase2
         ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
         : PIPELINE_CONTEXT_SNAPSHOT_VERSION,

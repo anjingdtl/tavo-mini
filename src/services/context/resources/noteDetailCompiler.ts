@@ -300,10 +300,12 @@ export function compileNoteDetailCandidatesFromSnapshot(
     }
   });
 
-  const mode = input.noteConfig?.mode || 'none';
+  const mode = input.noteConfig?.mode;
   const selectedIds = selectedNoteIds(input.noteConfig);
   const compiled =
-    mode === 'style'
+    mode === 'none'
+      ? { candidates: [], styleNotePresent: false }
+      : mode === 'style'
       ? compileStyleNotes(parsedNotes, selectedIds, input.noteConfig)
       : mode === 'retrieval'
         ? compileRetrievedNotes(
@@ -312,7 +314,7 @@ export function compileNoteDetailCandidatesFromSnapshot(
             input.noteConfig,
             selectedIds,
           )
-        : compileOriginalNotes(parsedNotes, mode, null);
+        : compileOriginalNotes(parsedNotes, mode ?? 'original', null);
 
   return {
     candidates: compiled.candidates,

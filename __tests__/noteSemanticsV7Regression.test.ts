@@ -299,12 +299,12 @@ test('V6 live retrieval and V7 frozen retrieval return the same selected fragmen
   expect(db.getNotesContentByIds).toHaveBeenCalledTimes(readsAtSnapshot.noteContents);
 });
 
-test('V7 original Note mode remains literal frozen-body injection', () => {
+test('V7 disabled Note mode emits no frozen-body candidates', () => {
   const result = compileNoteDetailCandidatesFromSnapshot({
     notes: [noteRecord(10, '普通笔记', '原始资料正文')],
     noteConfig: { mode: 'none', enabledNoteIds: [] },
     haystack,
   });
   expect(result.warnings).toHaveLength(0);
-  expect(result.candidates[0].content).toBe('笔记「普通笔记」：原始资料正文');
+  expect(result.candidates).toHaveLength(0);
 });

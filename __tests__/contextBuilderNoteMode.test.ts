@@ -1,7 +1,6 @@
 /* eslint-env jest */
 
-// 测试 buildNoteContext 的模式分发逻辑（mode=none/style/retrieval）
-// 以及 mode=none 时的向后兼容行为
+// 测试 buildNoteContext 的模式分发逻辑，以及 mode=none 的真实禁用语义。
 
 jest.mock('../src/services/database', () => ({
   getProjectNoteConfig: jest.fn(async () => null),
@@ -79,9 +78,7 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
     expect(result).toEqual({});
   });
 
-  test('buildNoteContext 用 bulk API 替代逐条 getNoteContentById', async () => {
-    // 直接 patch database 模块内的 getNotesContentByIds 实现（最简单可控）
-    // 然后通过 buildContext 走完整链路：它的 buildNoteContext 内部分支会触发 bulk 路径。
+  test('mode=none 不读取笔记正文，也不把正文放进 prompt', async () => {
     jest.resetModules();
     const cbPath = require.resolve('../src/services/contextBuilder');
     delete require.cache[cbPath];
@@ -113,7 +110,7 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
     // 重新载入 contextBuilder，注入 mocked database
     const cb = require('../src/services/contextBuilder');
 
-    // 让 getNotesByProject 返回 50 条；getNotesContentByIds 返回 bulk map
+    // 即使数据库仍有 50 条笔记，禁用模式也不能读取正文。
     const notes = Array.from({ length: 50 }, (_, i) => ({
       id: i + 1,
       project_id: 1,
@@ -152,11 +149,9 @@ describe('V2.2.0: getNotesContentByIds bulk fetch', () => {
 
     const result = await cb.buildContext(chapter, config, 1);
 
-    expect(fakeDb.getNotesContentByIds).toHaveBeenCalledTimes(1);
-    expect(fakeDb.getNotesContentByIds.mock.calls[0][0]).toEqual(expect.arrayContaining([1, 2, 50]));
-    // 拼接出的 messages 应包含笔记内容
+    expect(fakeDb.getNotesContentByIds).not.toHaveBeenCalled();
     const allText = result.messages.map((m: any) => m.content).join('\n');
-    expect(allText).toContain('content-of-note-1');
+    expect(allText).not.toContain('content-of-note-1');
   });
 
   test('V2.2.0: utils/idfCache 提供按 signature 的命中跳过', async () => {

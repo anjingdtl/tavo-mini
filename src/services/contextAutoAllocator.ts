@@ -404,7 +404,6 @@ import { all } from '../data/connection/query';
 import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
 import { setContextConfig } from '../data/repositories/settingsRepository';
 import {
-  buildAppliedRecord,
   getContextAutomationPolicy,
   getContextAutomationPolicyV3,
   setContextAutoInput,
@@ -412,34 +411,8 @@ import {
   setContextAutoMode,
   setContextAutomationPolicy,
   setContextAutomationPolicyV3,
-  type ContextAutoAppliedRecord,
   type ContextAutoMode,
 } from '../data/repositories/contextAutoRepository';
-
-/**
- * 查询所有项目的资源数量（用于动态分配单项上限）。
- * 跨项目，无 WHERE 限制。
- *
- * @deprecated for V3 auto-config — V3 mode uses `countResourcesForProject`
- * (Plan §1.4 / §23 GO Gate #1/#2). Retained for the V2 path and the Auto
- * Config preview's "all-resources" projection.
- */
-export async function countAllResources(): Promise<ResourceCounts> {
-  // 触发数据库初始化（与 connection/query.ts 内部行为一致）
-  await openDatabase();
-  const countOf = async (table: string): Promise<number> => {
-    const rows = await all<{ c: number }>(`SELECT COUNT(*) AS c FROM ${table}`);
-    return Number(rows[0]?.c ?? 0);
-  };
-  const [characters, notes, worldbookEntries, worldbookCollections] =
-    await Promise.all([
-      countOf('characters'),
-      countOf('notes'),
-      countOf('worldbook_entries'),
-      countOf('worldbook_collections'),
-    ]);
-  return { characters, notes, worldbookEntries, worldbookCollections };
-}
 
 /**
  * V3 project-scoped resource count (Plan §1.4 / §23 GO Gate #1/#2).
@@ -472,25 +445,6 @@ export async function countResourcesForProject(
 }
 
 /**
- * 查询 LLM 配置数。
- */
-export async function countLlmConfigs(): Promise<number> {
-  const rows = await all<{ c: number }>('SELECT COUNT(*) AS c FROM llm_config');
-  return Number(rows[0]?.c ?? 0);
-}
-
-/** @deprecated Kept as an alias for callers compiled against the previous API. */
-export const countNonLocalLlmConfigs = countLlmConfigs;
-
-/**
- * 查询 preset 总数。
- */
-export async function countAllPresets(): Promise<number> {
-  const rows = await all<{ c: number }>(`SELECT COUNT(*) AS c FROM presets`);
-  return Number(rows[0]?.c ?? 0);
-}
-
-/**
  * Load the persisted policy or create the single versioned default preset for
  * installations that predate ContextAutomationPolicyV2.
  */
@@ -500,146 +454,6 @@ export async function ensureContextAutomationPolicy(): Promise<ContextAutomation
   const policy = cloneDefaultContextAutomationPolicy();
   await setContextAutomationPolicy(policy);
   return policy;
-}
-
-/**
- * 应用上下文自动化分配方案。
- *
- * 单一 executeTransaction 原子写入所有目标字段。任一步失败 → 整体回滚。
- *
- * 1. 读资源数量 + LLM 配置数 + preset 数
- * 2. 计算 AllocationResult
- * 3. 构建 SqlStatement[] 一次性执行
- * 4. 写 last_applied 记录（单独调用，主事务已成功后写）
- *
- * @returns 应用记录（含 allocation 与 affectedCounts）
- */
-export async function applyContextAutoAllocation(
-  maxContextTokens: number,
-): Promise<ContextAutoAppliedRecord> {
-  // 阶段 1：读 + 算
-  const [resourceCounts, llmCount, presetCount, persistedPolicy] =
-    await Promise.all([
-      countAllResources(),
-      countLlmConfigs(),
-      countAllPresets(),
-      getContextAutomationPolicy(),
-    ]);
-
-  const policy = persistedPolicy || cloneDefaultContextAutomationPolicy();
-  const allocation = allocateContextBudget(
-    maxContextTokens,
-    resourceCounts,
-    policy,
-  );
-  const serializedPolicy = serializeContextAutomationPolicy(policy);
-
-  // 构建语句列表。settings 表用 INSERT OR REPLACE，其他表用 UPDATE。
-  // 注意：INSERT OR REPLACE 只覆写单个 key，不会影响其他 settings 字段，
-  // 因此 ContextConfig 的 strategy/recentChapterCount 等保留不动，
-  // PipelineConfig 的 pipelineMode 与 *PresetId 保留不动。
-  const statements: SqlStatement[] = [
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['context_auto_input', String(Math.round(maxContextTokens))],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['context_auto_policy_v2', serializedPolicy],
-    },
-    // ContextConfig 字段
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['sliding_window_size', String(allocation.slidingWindowSize)],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['resource_budget', String(allocation.resourceBudget)],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['summary_budget_tokens', String(allocation.summaryBudgetTokens)],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'story_state_budget_tokens',
-        String(allocation.storyStateBudgetTokens),
-      ],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'episodic_memory_budget_tokens',
-        String(allocation.episodicMemoryBudgetTokens),
-      ],
-    },
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: [
-        'memory_patch_max_tokens',
-        String(allocation.memoryPatchMaxTokens),
-      ],
-    },
-    // llm_config
-    {
-      sql: 'UPDATE llm_config SET context_window = ?, max_output_tokens = ?',
-      params: [allocation.llmContextWindow, allocation.llmMaxOutputTokens],
-    },
-    // presets：全部
-    {
-      sql: 'UPDATE presets SET max_tokens = ?',
-      params: [allocation.presetMaxTokens],
-    },
-  ];
-
-  // 资源表：仅 count > 0 时加入
-  if (resourceCounts.characters > 0) {
-    statements.push({
-      sql: 'UPDATE characters SET max_tokens = ?',
-      params: [allocation.characterMaxTokens],
-    });
-  }
-  if (resourceCounts.notes > 0) {
-    statements.push({
-      sql: 'UPDATE notes SET max_tokens = ?',
-      params: [allocation.noteMaxTokens],
-    });
-  }
-  if (resourceCounts.worldbookEntries > 0) {
-    statements.push({
-      sql: 'UPDATE worldbook_entries SET max_tokens = ?',
-      params: [allocation.worldbookEntryMaxTokens],
-    });
-  }
-  if (resourceCounts.worldbookCollections > 0) {
-    statements.push({
-      sql: 'UPDATE worldbook_collections SET max_tokens = ?',
-      params: [allocation.worldbookCollectionMaxTokens],
-    });
-  }
-
-  // 阶段 2：执行单一事务
-  const db = await openDatabase();
-  await executeTransaction(db, statements);
-
-  // 阶段 3：写 last_applied 记录（与主事务分开，避免读现有值与执行时机冲突）
-  const record = buildAppliedRecord(
-    maxContextTokens,
-    allocation,
-    {
-      llmConfigs: llmCount,
-      presets: presetCount,
-      characters: resourceCounts.characters,
-      notes: resourceCounts.notes,
-      worldbookEntries: resourceCounts.worldbookEntries,
-      worldbookCollections: resourceCounts.worldbookCollections,
-    },
-    policy,
-  );
-  await setContextAutoLastApplied(record);
-
-  return record;
 }
 
 // ============================================================================

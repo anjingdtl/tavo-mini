@@ -7,6 +7,8 @@
  */
 import {
   PIPELINE_CONTEXT_SNAPSHOT_VERSION,
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4,
+  PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5,
   type ContextBudgetV3Summary,
   type PipelineContextSnapshot,
 } from '../types/pipelineContext';
@@ -23,6 +25,7 @@ import type {
 } from '../types/pipelineFrozen';
 import type { PipelineMode, PipelineStageName } from '../types/pipeline';
 import type { PipelineReasoningEffort } from '../types/pipeline';
+import type { FrozenWriterStyleV1 } from './writerStyle/types';
 import {
   isPipelineReasoningTier,
   type PipelineReasoningTier,
@@ -307,6 +310,151 @@ function requireNonNegativeFinite(value: unknown, field: string): number {
   return n;
 }
 
+function parseFrozenWriterStyle(
+  raw: unknown,
+  code: 'OUTLINE_SNAPSHOT_INVALID' | 'OUTLINE_EXECUTION_CONFIG_INVALID',
+): FrozenWriterStyleV1 {
+  const fail = (field: string): never => {
+    throw new OutlineContextError(
+      code,
+      `冻结作家风格字段 ${field} 非法，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  };
+  if (!isPlainObject(raw)) {
+    throw new OutlineContextError(
+      code,
+      '冻结作家风格结构无效，已阻止恢复。请重新开始生成。',
+      'restart_task',
+    );
+  }
+  if (Number(raw.semanticVersion) !== 1) fail('semanticVersion');
+  if (
+    raw.assetId != null &&
+    (!Number.isInteger(Number(raw.assetId)) || Number(raw.assetId) < 0)
+  ) {
+    fail('assetId');
+  }
+  if (typeof raw.assetName !== 'string' || typeof raw.sourceFingerprint !== 'string') {
+    fail('assetName/sourceFingerprint');
+  }
+  const sourceFormats = [
+    'shinewriter',
+    'legacy_shinewriter',
+    'sillytavern_openai',
+    'default_runtime_baseline',
+  ];
+  if (!sourceFormats.includes(String(raw.sourceFormat))) fail('sourceFormat');
+
+  const sampler = isPlainObject(raw.samplerResolution)
+    ? raw.samplerResolution
+    : fail('samplerResolution');
+  for (const field of [
+    'temperature',
+    'topP',
+    'frequencyPenalty',
+    'presencePenalty',
+    'seed',
+  ]) {
+    if (
+      sampler[field] != null &&
+      (typeof sampler[field] !== 'number' || !Number.isFinite(sampler[field]))
+    ) {
+      fail(`samplerResolution.${field}`);
+    }
+  }
+  if (
+    !Array.isArray(sampler.preservedFields) ||
+    !sampler.preservedFields.every((value: unknown) => typeof value === 'string') ||
+    !Array.isArray(sampler.ignoredAtPipeline) ||
+    !sampler.ignoredAtPipeline.every((value: unknown) => typeof value === 'string')
+  ) {
+    fail('samplerResolution.fields');
+  }
+
+  const projections = isPlainObject(raw.stageProjections)
+    ? raw.stageProjections
+    : fail('stageProjections');
+  const stages = ['draft', 'review', 'factCheck', 'brief', 'proof'] as const;
+  const modes = ['FULL', 'EVALUATION', 'HARD', 'MINIMAL'];
+  for (const stage of stages) {
+    const projectionValue = projections[stage];
+    if (!isPlainObject(projectionValue)) {
+      fail(`stageProjections.${stage}`);
+    }
+    const projection = projectionValue as Record<string, unknown>;
+    if (
+      projection.stage !== stage ||
+      !modes.includes(String(projection.mode)) ||
+      projection.protected !== true ||
+      typeof projection.text !== 'string' ||
+      typeof projection.compilerVersion !== 'string'
+    ) {
+      fail(`stageProjections.${stage}`);
+    }
+    const estimatedTokens = Number(projection.estimatedTokens);
+    if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0) {
+      fail(`stageProjections.${stage}.estimatedTokens`);
+    }
+  }
+
+  if (raw.semantic != null) {
+    const semantic = isPlainObject(raw.semantic)
+      ? raw.semantic
+      : fail('semantic');
+    if (Number(semantic.version) !== 1) {
+      fail('semantic');
+    }
+    for (const field of [
+      'applicability',
+      'narration',
+      'language',
+      'sceneAndCharacter',
+      'narrativeMechanics',
+      'literaryTexture',
+    ]) {
+      if (!isPlainObject(semantic[field])) fail(`semantic.${field}`);
+    }
+    for (const field of ['prohibitions', 'extraInstructions']) {
+      if (
+        semantic[field] != null &&
+        (!Array.isArray(semantic[field]) ||
+          !semantic[field].every((value: unknown) => typeof value === 'string'))
+      ) {
+        fail(`semantic.${field}`);
+      }
+    }
+  }
+  for (const field of [
+    'legacySystemText',
+    'legacyWritingStyleText',
+    'legacyExtraInstructionsText',
+    'compatibilityFingerprint',
+  ]) {
+    if (raw[field] != null && typeof raw[field] !== 'string') fail(field);
+  }
+  if (raw.compatibilitySummary != null) {
+    const compatibilitySummary = isPlainObject(raw.compatibilitySummary)
+      ? raw.compatibilitySummary
+      : fail('compatibilitySummary');
+    for (const field of [
+      'promptCount',
+      'injectedCount',
+      'handledByModuleCount',
+      'preservedCount',
+      'unknownFieldCount',
+    ]) {
+      if (
+        !Number.isInteger(Number(compatibilitySummary[field])) ||
+        Number(compatibilitySummary[field]) < 0
+      ) {
+        fail(`compatibilitySummary.${field}`);
+      }
+    }
+  }
+  return raw as unknown as FrozenWriterStyleV1;
+}
+
 function parseOutlineIds(value: unknown): number[] {
   if (!Array.isArray(value)) {
     throw new OutlineContextError(
@@ -416,7 +564,8 @@ export function parsePipelineContextSnapshotStrict(
     if (
       Number(raw.snapshotVersion) !== 1 &&
       Number(raw.snapshotVersion) !== 3 &&
-      Number(raw.snapshotVersion) !== 4
+      Number(raw.snapshotVersion) !== PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4 &&
+      Number(raw.snapshotVersion) !== PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
     ) {
       throw new OutlineContextError(
         'OUTLINE_SNAPSHOT_INVALID',
@@ -479,8 +628,10 @@ export function parsePipelineContextSnapshotStrict(
     snapshotVersion:
       raw.snapshotVersion == null || Number(raw.snapshotVersion) === 1
         ? 1
-        : Number(raw.snapshotVersion) === 4
-        ? 4
+        : Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
+        ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
+        : Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
+        ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
         : 3,
     immediatePreviousChapterText:
       typeof raw.immediatePreviousChapterText === 'string'
@@ -561,6 +712,14 @@ export function parsePipelineContextSnapshotStrict(
       ? {
           contextBudgetV7Summary:
             raw.contextBudgetV7Summary as unknown as PipelineContextSnapshot['contextBudgetV7Summary'],
+        }
+      : {}),
+    ...(Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
+      ? {
+          writerStyleSnapshot: parseFrozenWriterStyle(
+            raw.writerStyleSnapshot,
+            'OUTLINE_SNAPSHOT_INVALID',
+          ),
         }
       : {}),
   };
@@ -1045,6 +1204,14 @@ export function parsePipelineExecutionSnapshot(
   }
 
   return {
+    ...(raw.writerStyle != null
+      ? {
+          writerStyle: parseFrozenWriterStyle(
+            raw.writerStyle,
+            'OUTLINE_EXECUTION_CONFIG_INVALID',
+          ),
+        }
+      : {}),
     pipelineMode: mode as PipelineMode,
     outlineWorkflowVersion,
     contextBudgetVersion,
@@ -1299,7 +1466,16 @@ export function serializePipelineTaskContext(params: {
       isCurrentOutlinePipelineContextBudgetVersion(
         params.execution.contextBudgetVersion,
       ));
-  const snapshotVersion = isV33 || isV32 ? 4 : isV3 ? 3 : 1;
+  const hasV5WriterStyleSnapshot =
+    params.draftContext.snapshotVersion === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5 ||
+    params.draftContext.writerStyleSnapshot != null;
+  const snapshotVersion = hasV5WriterStyleSnapshot
+    ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
+    : isV33 || isV32
+    ? PIPELINE_CONTEXT_SNAPSHOT_VERSION_V4
+    : isV3
+    ? PIPELINE_CONTEXT_SNAPSHOT_VERSION
+    : 1;
   const draftContext: PipelineContextSnapshot = {
     ...params.draftContext,
     snapshotVersion,

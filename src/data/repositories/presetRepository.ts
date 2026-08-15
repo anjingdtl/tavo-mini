@@ -9,6 +9,7 @@ import {
 import { openDatabase } from '../connection/openDatabase';
 import { linkResourceToProject, usageJoin } from './projectRepository';
 import type { WriterStyleAssetFields } from '../../services/writerStyle/types';
+import { resolveActiveWriterStyle } from '../../services/writerStyle/activeStyleResolver';
 
 export async function getAllPresets(projectId?: number): Promise<Preset[]> {
   return all<Preset>(
@@ -215,12 +216,7 @@ export async function setProjectActiveWriterStyle(
   projectId: number,
   styleId: number | null,
 ): Promise<void> {
-  if (styleId != null) {
-    const style = await getWriterStyleAssetById(projectId, styleId);
-    if (!style) {
-      throw new Error('ACTIVE_WRITER_STYLE_MISSING：作家风格不属于当前项目或已被删除。');
-    }
-  }
+  await resolveActiveWriterStyle(projectId, styleId);
   await execute(
     await openDatabase(),
     'UPDATE projects SET active_writer_style_id = ?, updated_at = ? WHERE id = ?',

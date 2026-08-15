@@ -1954,8 +1954,11 @@ async function buildNoteContext(
   } catch {
     config = null;
   }
-  const mode = config?.mode || 'none';
+  const mode = config?.mode;
 
+  if (mode === 'none') {
+    return { text: '', items: [] };
+  }
   if (mode === 'style') {
     return buildStyleContext(projectId, budget, config);
   }

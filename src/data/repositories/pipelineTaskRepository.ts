@@ -12,6 +12,7 @@ import {
   type SqlStatement,
 } from '../../services/database/transaction';
 import { setSetting } from './settingsRepository';
+import { resolveActiveWriterStyle } from '../../services/writerStyle/activeStyleResolver';
 import type { Row } from './shared';
 import type { PipelineCheckpointStage } from '../../services/pipeline/types';
 import {
@@ -79,25 +80,9 @@ export async function getPipelineConfig(options?: {
   };
   let activeWriterStyleId: number | null = null;
   if (options?.projectId != null) {
-    const project = await one<{ active_writer_style_id: number | null }>(
-      'SELECT active_writer_style_id FROM projects WHERE id = ? LIMIT 1',
-      [options.projectId],
-    );
-    activeWriterStyleId = project?.active_writer_style_id == null
-      ? null
-      : Number(project.active_writer_style_id);
-    if (activeWriterStyleId != null) {
-      const style = await one<{ id: number }>(
-        `SELECT p.id FROM presets p
-         JOIN project_resources pr ON pr.resource_type = 'preset'
-          AND pr.resource_id = p.id AND pr.project_id = ? AND pr.enabled = 1
-         WHERE p.id = ? LIMIT 1`,
-        [options.projectId, activeWriterStyleId],
-      );
-      if (!style) {
-        throw new Error('ACTIVE_WRITER_STYLE_MISSING：当前项目绑定的作家风格不存在或未启用。');
-      }
-    }
+    activeWriterStyleId = (
+      await resolveActiveWriterStyle(options.projectId)
+    ).activeStyleId;
   }
 
   const isV3Profile = ['2', '3', '4', '5'].includes(
@@ -152,18 +137,7 @@ export async function setPipelineConfig(
 ): Promise<void> {
   await setSetting('pipeline_mode', 'full');
   if (projectId != null) {
-    if (config.activeWriterStyleId != null) {
-      const style = await one<{ id: number }>(
-        `SELECT p.id FROM presets p
-         JOIN project_resources pr ON pr.resource_type = 'preset'
-          AND pr.resource_id = p.id AND pr.project_id = ? AND pr.enabled = 1
-         WHERE p.id = ? LIMIT 1`,
-        [projectId, config.activeWriterStyleId],
-      );
-      if (!style) {
-        throw new Error('ACTIVE_WRITER_STYLE_MISSING：不能把其他项目的作家风格设为当前项目风格。');
-      }
-    }
+    await resolveActiveWriterStyle(projectId, config.activeWriterStyleId);
     await execute(
       await openDatabase(),
       'UPDATE projects SET active_writer_style_id = ?, updated_at = ? WHERE id = ?',

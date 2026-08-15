@@ -46,10 +46,7 @@ import {
   type FrozenContinuationStageModel,
 } from '../services/continuation/generation/continuationV4Budget';
 import { ensureContextAutomationPolicy } from '../services/contextAutoAllocator';
-import {
-  freezeDefaultWriterStyleBaseline,
-  freezeWriterStyle,
-} from '../services/writerStyle/compiler';
+import { resolveActiveWriterStyle } from '../services/writerStyle/activeStyleResolver';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
 import type {
   ContextTraceItem,
@@ -421,36 +418,13 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       const pipelineConfig = await db.getPipelineConfig({
         projectId: chapter.project_id,
       });
-      let previewWriterStyle = freezeDefaultWriterStyleBaseline();
-      if (pipelineConfig.activeWriterStyleId != null) {
-        const asset = await db.getWriterStyleAssetById(
-          chapter.project_id,
-          pipelineConfig.activeWriterStyleId,
-        );
-        if (!asset) {
-          const error = new Error('ACTIVE_WRITER_STYLE_MISSING：当前项目绑定的作家风格不存在。');
-          (error as Error & { code?: string }).code = 'ACTIVE_WRITER_STYLE_MISSING';
-          throw error;
-        }
-        previewWriterStyle = freezeWriterStyle(asset);
-      }
-      // 与 reconcile.loadRuntime 同一契约：基线（assetId 0）不得合成为
-      // Preset——V7 冻结源只接受真实 id，id 0 会让预览 fail-closed。
-      const previewPreset =
-        Number(previewWriterStyle.assetId) > 0
-          ? {
-              id: previewWriterStyle.assetId as number,
-              project_id: chapter.project_id,
-              name: previewWriterStyle.assetName,
-              is_default: 0,
-              system_prompt: previewWriterStyle.stageProjections.draft.text,
-              writing_style: '',
-              extra_instructions: '',
-              temperature: previewWriterStyle.samplerResolution.temperature ?? 0.7,
-              top_p: previewWriterStyle.samplerResolution.topP ?? 1,
-              max_tokens: 0,
-            }
-          : null;
+      const {
+        writerStyle: previewWriterStyle,
+        draftPreset: previewPreset,
+      } = await resolveActiveWriterStyle(
+        chapter.project_id,
+        pipelineConfig.activeWriterStyleId,
+      );
       const { compileDraftStageRequest } = await import(
         '../services/pipeline/compileStageRequest'
       );

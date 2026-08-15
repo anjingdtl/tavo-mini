@@ -151,8 +151,7 @@ export async function setContextAutoLastApplied(
 }
 
 /**
- * 应用函数构建 last_applied 记录时的辅助。
- * 仅供 applyContextAutoAllocation 使用。
+ * 历史 V2 last_applied 记录的兼容构建辅助；当前运行时只应用 V3 策略。
  */
 export function buildAppliedRecord(
   maxContextTokens: number,

@@ -38,10 +38,7 @@ import type {
   PipelineExecutionSnapshot,
 } from '../../types/pipelineExecution';
 import type { FrozenWriterStyleV1 } from '../writerStyle/types';
-import {
-  freezeDefaultWriterStyleBaseline,
-  freezeWriterStyle,
-} from '../writerStyle/compiler';
+import { resolveActiveWriterStyle } from '../writerStyle/activeStyleResolver';
 import { resolveFinalReviserReasoning } from './finalReviserReasoningPolicy';
 import {
   applyPipelineReasoningBudget,
@@ -2029,46 +2026,19 @@ async function loadRuntime(
     chapter.project_id,
   )) as Preset[];
   const requestConfig = await resolveLLMRequestConfig();
-  let writerStyle = freezeDefaultWriterStyleBaseline();
-  if (config.activeWriterStyleId != null) {
-    const asset = await db.getWriterStyleAssetById(
-      chapter.project_id,
-      config.activeWriterStyleId,
-    );
-    if (!asset) {
-      throw new OutlineContextError(
-        'ACTIVE_WRITER_STYLE_MISSING',
-        '当前项目绑定的作家风格不存在或已失去项目归属，已阻断新任务。',
-        'open_writer_style',
-      );
-    }
-    writerStyle = freezeWriterStyle(asset);
-  }
-  // Baseline (assetId 0) must NOT be synthesized into a Preset: the V7
-  // preset-source contract only accepts user-selected styles with real ids,
-  // and an id-0 preset makes parseFrozenPresetSource block generation.
-  const activePreset =
-    Number(writerStyle.assetId) > 0
-      ? presetFromFrozen({
-          id: writerStyle.assetId,
-          name: writerStyle.assetName,
-          system_prompt: writerStyle.stageProjections.draft.text,
-          writing_style: '',
-          extra_instructions: '',
-          temperature: writerStyle.samplerResolution.temperature ?? 0.7,
-          top_p: writerStyle.samplerResolution.topP ?? 1,
-          max_tokens: 0,
-        })
-      : null;
+  const activeStyle = await resolveActiveWriterStyle(
+    chapter.project_id,
+    config.activeWriterStyleId ?? null,
+  );
   return {
     parsed,
     config,
     requestConfig,
-    draftPreset: activePreset,
+    draftPreset: activeStyle.draftPreset,
     reviewPreset: resolvePreset(config.reviewPresetId, presets),
     factCheckPreset: resolvePreset(config.factCheckPresetId, presets),
     proofPreset: resolvePreset(config.proofPresetId, presets),
-    writerStyle,
+    writerStyle: activeStyle.writerStyle,
   };
 }
 

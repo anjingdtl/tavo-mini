@@ -52,6 +52,7 @@ function isBatchContextBudgetVersionResumable(version: unknown): boolean {
   );
 }
 import { collectPlannerMaterials, createBatchChapterPlan, normalizeEditedPlan, computePlannerHash } from '../services/multiChapterBatch/planner';
+import { deriveAutomaticBatchBudget } from '../services/multiChapterBatch/batchBudget';
 import {
   collectContinuationBatchPlannerMaterials,
   createContinuationBatchChapterPlan,
@@ -381,11 +382,13 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           const requestConfig = await resolveLLMRequestConfig();
           const contextWindow =
             Number(requestConfig?.context_window) || 128000;
-          await batchRepo.updateBatchBudget(batchId, {
-            maxLlmCalls: batch.chapterCount * 12,
-            maxInputTokens: Math.floor(contextWindow * 4),
-            maxOutputTokens: Math.floor(contextWindow * 2),
-          });
+          await batchRepo.updateBatchBudget(
+            batchId,
+            deriveAutomaticBatchBudget({
+              contextWindow,
+              chapterCount: batch.chapterCount,
+            }),
+          );
         } catch {
           // 自动分配失败不阻断规划；保持无上限（单章弹性预算仍生效）。
         }
