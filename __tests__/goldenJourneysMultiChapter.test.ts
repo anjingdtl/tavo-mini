@@ -63,6 +63,7 @@ import {
 import {
   deriveFrozenGenerationContext,
 } from '../src/services/pipeline/frozenGenerationContext';
+import { computeGenerationContractFingerprint } from '../src/services/context/generation/generationContractValidation';
 import { assertNoFutureSourceLeakage } from '../src/services/context/generationStageContracts';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 
@@ -136,6 +137,38 @@ function execution(): PipelineExecutionSnapshot {
   } as PipelineExecutionSnapshot;
 }
 
+function assertGenerationContractV2(draftContext: any) {
+  const contract = draftContext.generationContract;
+  expect(contract).toBeDefined();
+  if (!contract) return;
+  expect(contract.version).toBe(2);
+  expect(contract.candidates.length).toBeGreaterThan(0);
+  const ids = new Set<string>();
+  contract.candidates.forEach((candidate: any) => {
+    expect(ids.has(candidate.candidateId)).toBe(false);
+    ids.add(candidate.candidateId);
+    expect(typeof candidate.selected).toBe('boolean');
+    expect(
+      candidate.selected ? candidate.selectedReason : candidate.rejectedReason,
+    ).toEqual(expect.any(String));
+  });
+  expect(contract.budget.length).toBeGreaterThan(0);
+  contract.budget.forEach((item: any) => {
+    expect(ids.has(item.candidateId)).toBe(true);
+    expect(item.allocationReason).not.toBe('');
+    expect(item.allocatedTokens).toBeGreaterThanOrEqual(0);
+  });
+  expect(contract.rendered.length).toBeGreaterThan(0);
+  contract.rendered.forEach((item: any) => {
+    expect(ids.has(item.candidateId)).toBe(true);
+    expect(item.renderedHash).toMatch(/^[0-9a-f]{64}$/i);
+  });
+  expect(Array.isArray(contract.diagnostics)).toBe(true);
+  expect(contract.fingerprint).toBe(
+    computeGenerationContractFingerprint(contract),
+  );
+}
+
 /** 逐章冻结（模拟 batch 顺序生成：每章生成后其正文才进入 DB）。 */
 async function freezeEachChapter() {
   const frozen: Array<{
@@ -153,6 +186,7 @@ async function freezeEachChapter() {
       reservedOutputTokens: 4000,
       contextBudgetVersion: 5,
     });
+    assertGenerationContractV2(result.pipelineContext);
     frozen.push({
       position,
       serialized: serializePipelineTaskContext({
@@ -179,6 +213,7 @@ describe('GJ-17 单章 / GJ-18 一键 N 章：每章独立 Snapshot，泄漏=0',
       reservedOutputTokens: 4000,
       contextBudgetVersion: 5,
     });
+    assertGenerationContractV2(result.pipelineContext);
     // §4.6 守卫放行 = 未来来源泄漏为 0
     expect(() =>
       assertNoFutureSourceLeakage({

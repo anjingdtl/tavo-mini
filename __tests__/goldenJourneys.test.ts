@@ -110,6 +110,7 @@ import {
 } from '../src/services/pipeline/frozenGenerationContext';
 import { buildGenerationTraceSummary } from '../src/services/pipeline/generationTrace';
 import { compileDraftFromFrozenRequest } from '../src/services/pipeline/compileStageRequest';
+import { computeGenerationContractFingerprint } from '../src/services/context/generation/generationContractValidation';
 import type { Outline } from '../src/types/outline';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
@@ -256,7 +257,56 @@ function fingerprintOf(result: Awaited<ReturnType<typeof buildContext>>, exec?: 
   );
 }
 
+/** Phase 7 V2 upgrade: all retained GJ-01..20 paths assert the full
+ * Candidate → Selection/Reason → Allocation → Rendered → Fingerprint →
+ * Diagnostic contract, not only text presence and a top-level fingerprint. */
+function assertGenerationContractV2(draftContext: PipelineContextSnapshot) {
+  const contract = draftContext.generationContract;
+  expect(contract).toBeDefined();
+  if (!contract) return;
+  expect(contract.version).toBe(2);
+  expect(contract.candidates.length).toBeGreaterThan(0);
+  const ids = new Set<string>();
+  for (const candidate of contract.candidates) {
+    expect(ids.has(candidate.candidateId)).toBe(false);
+    ids.add(candidate.candidateId);
+    expect(typeof candidate.selected).toBe('boolean');
+    const reason = candidate.selected
+      ? candidate.selectedReason
+      : candidate.rejectedReason;
+    expect(typeof reason).toBe('string');
+    expect(reason).not.toBe('');
+    expect(candidate.contentHash).toMatch(/^[0-9a-f]{64}$/i);
+  }
+  expect(contract.budget.length).toBeGreaterThan(0);
+  contract.budget.forEach(item => {
+    expect(ids.has(item.candidateId)).toBe(true);
+    expect(item.demandTokens).toBeGreaterThanOrEqual(0);
+    expect(item.allocatedTokens).toBeGreaterThanOrEqual(0);
+    expect(item.allocationReason).not.toBe('');
+    expect(item.budgetClipped).toBe(item.clippedByBudget);
+  });
+  expect(contract.rendered.length).toBeGreaterThan(0);
+  contract.rendered.forEach(item => {
+    expect(ids.has(item.candidateId)).toBe(true);
+    expect(item.actualTokens).toBeGreaterThanOrEqual(0);
+    expect(typeof item.included).toBe('boolean');
+    expect(typeof item.clipped).toBe('boolean');
+    expect(item.renderedHash).toMatch(/^[0-9a-f]{64}$/i);
+  });
+  expect(contract.messages.length).toBeGreaterThan(0);
+  expect(Array.isArray(contract.diagnostics)).toBe(true);
+  contract.diagnostics.forEach(diagnostic => {
+    expect(diagnostic.code).not.toBe('');
+    expect(diagnostic.message).not.toBe('');
+  });
+  expect(contract.fingerprint).toBe(
+    computeGenerationContractFingerprint(contract),
+  );
+}
+
 function assertTraceV2Snapshot(draftContext: PipelineContextSnapshot, traceId: string) {
+  assertGenerationContractV2(draftContext);
   const serialized = serializePipelineTaskContext({
     draftContext,
     execution: execution(),
@@ -445,6 +495,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
       writerStyleSnapshot: style('A'),
     });
     expect(compiledA.pipelineContext?.writerStyleSnapshot?.assetName).toBe('A');
+    assertGenerationContractV2(compiledA.pipelineContext!);
     // 风格进入冻结快照；换风格 → 快照与指纹都变化
     const compiledB = await compileDraftPipelineRequest({
       chapter: chapterAt(1) as any,
@@ -453,6 +504,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
       writerStyleSnapshot: style('B'),
     });
     expect(compiledB.pipelineContext?.writerStyleSnapshot?.assetName).toBe('B');
+    assertGenerationContractV2(compiledB.pipelineContext!);
     const frozenA = serializePipelineTaskContext({
       draftContext: compiledA.pipelineContext!,
       execution: execution(),
@@ -494,6 +546,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
     expect(a.pipelineContext!.presetText).toContain('严肃文学作家');
     expect(b.pipelineContext!.presetText).toContain('网文作家');
     assertTraceV2Snapshot(a.pipelineContext!, 'gt-gj08-00000008');
+    assertGenerationContractV2(b.pipelineContext!);
     expect(
       serializePipelineTaskContext({
         draftContext: a.pipelineContext!,
@@ -566,6 +619,7 @@ describe('Golden Journeys — Context 策略与窗口 (GJ-09..13)', () => {
   test('GJ-12 128K 窗口 → 硬限内完成渲染', async () => {
     const result = await buildWith(128000, 5);
     expect(result.estimatedInputTokens).toBeLessThanOrEqual(128000 - 4000);
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj12-00000012');
   });
 
   test('GJ-13 1M Provider → 不因窗口巨大无界吞入资料', async () => {
@@ -603,6 +657,7 @@ describe('Golden Journeys — Context 策略与窗口 (GJ-09..13)', () => {
     expect(
       result.chapters.every(c => c.position < current.position),
     ).toBe(true);
+    assertGenerationContractV2(result.pipelineContext);
   });
 });
 
@@ -632,6 +687,7 @@ describe('Golden Journeys — 预算压力 (GJ-14..16)', () => {
     if (!failed && result) {
       // 若成功：大纲必须未被截断（outline 不裁剪契约）
       expect(result.pipelineContext.outlineText).toContain('主线大纲内容-');
+      assertGenerationContractV2(result.pipelineContext);
     }
   });
 
@@ -655,6 +711,7 @@ describe('Golden Journeys — 预算压力 (GJ-14..16)', () => {
       expect(softInputLimit).toBeLessThanOrEqual(burstInputLimit);
       expect(burstInputLimit).toBeLessThanOrEqual(hardInputLimit);
     }
+    assertGenerationContractV2(result.pipelineContext);
   });
 
   test('GJ-16 接近 95% burst → 不崩溃、硬限成立、指纹稳定', async () => {
@@ -677,6 +734,8 @@ describe('Golden Journeys — 预算压力 (GJ-14..16)', () => {
     expect(first.estimatedInputTokens).toBeLessThanOrEqual(24576 - 6000);
     // 同输入 → 同输出（预算稳定性）
     expect(fingerprintOf(first)).toBe(fingerprintOf(second));
+    assertGenerationContractV2(first.pipelineContext);
+    assertGenerationContractV2(second.pipelineContext);
   });
 });
 
@@ -704,6 +763,7 @@ describe('Golden Journeys — Resume / Freeze 语义 (GJ-19..20)', () => {
     });
     // Cold start = 进程内状态全丢，仅剩持久化 JSON
     const restored = parsePersistedPipelineTaskContext(frozen);
+    assertGenerationContractV2(restored.draftContext);
     expect(restored.generationFingerprint).toBe(frozen.generationFingerprint);
     expect(restored.trace?.generationTraceId).toBe('gt-golden19-deadbeef');
     const view = deriveFrozenGenerationContext({
@@ -735,6 +795,7 @@ describe('Golden Journeys — Resume / Freeze 语义 (GJ-19..20)', () => {
       contextBudgetVersion: 5,
     });
     const frozenBefore = freeze(result);
+    assertGenerationContractV2(result.pipelineContext);
     const fpBefore = frozenBefore.generationFingerprint;
 
     // DB 在 freeze 之后被大改：大纲、角色、章节全部变化
