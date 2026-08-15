@@ -85,8 +85,10 @@ New P2 = 0
 
 ## GitHub Actions
 
-- Phase 7 commit Verify Run ID: pending push.
-- Required remote JavaScript / Android / Migration results: pending push.
+- Phase 7 commit Verify Run ID: `31896281801`.
+- JavaScript validation: SUCCESS (`95039985305`).
+- Android Debug build: SUCCESS (`95039985292`).
+- Migration matrix: SUCCESS (`95039985369`).
 - Generation Stability: intentionally not present until Phase 9.
 
 ## Decision
