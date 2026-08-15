@@ -10,7 +10,7 @@
  *
  * The batch state lives in SQLite; this screen mirrors it via the store.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -104,6 +104,11 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   const { currentProject } = useProjectStore();
   const store = useMultiChapterBatchStore();
   const [view, setView] = useState<BatchView>('create');
+  const [resumeSubmitting, setResumeSubmitting] = useState(false);
+  // React state updates are batched. Keep an imperative guard as well so two
+  // rapid taps cannot both enter the confirmation/resume path before the
+  // disabled button has re-rendered.
+  const resumeGuardRef = useRef(false);
   const [form, setForm] = useState({
     sourcePrompt: '',
     chapterCount: String(BATCH_DEFAULT_CHAPTERS),
@@ -181,6 +186,10 @@ export function MultiChapterBatchScreen(): React.ReactElement {
 
   const batchStatus = store.batch?.status;
   useEffect(() => {
+    // After the user confirms a resume, keep the progress view visible while
+    // the store re-arms the checkpoint and starts its background drive. The
+    // in-memory row may still say paused until refreshBatch completes.
+    if (resumeSubmitting) return;
     if (!batchStatus) {
       setView('create');
     } else if (batchStatus === 'completed' || batchStatus === 'cancelled') {
@@ -210,7 +219,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     } else {
       setView('running');
     }
-  }, [batchStatus, store.reconciling, store.items]);
+  }, [batchStatus, store.reconciling, store.items, resumeSubmitting]);
 
   // 冷启动恢复：编辑计划从已持久化的批次条目重建（本地 edited state 是
   // 易失的，新进程后为空）。
@@ -285,7 +294,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   };
 
   const handleResume = async () => {
-    if (!store.batch) return;
+    if (!store.batch || resumeGuardRef.current) return;
     if (
       Number(store.batch.outlineWorkflowVersion) !==
       CURRENT_OUTLINE_WORKFLOW_VERSION
@@ -296,20 +305,40 @@ export function MultiChapterBatchScreen(): React.ReactElement {
       );
       return;
     }
+    resumeGuardRef.current = true;
+    setResumeSubmitting(true);
     const proceed = await new Promise<boolean>(resolve => {
+      let decisionMade = false;
+      const decide = (value: boolean) => {
+        if (decisionMade) return;
+        decisionMade = true;
+        resolve(value);
+      };
       Alert.alert(
         '确认后继续批次',
         '当前章节会按 checkpoint 精确恢复：已成功的阶段直接复用，失败或尚未成功的阶段可能重新调用模型并产生 API 费用；结果未知时可能产生重复费用。是否继续？',
         [
-          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
-          { text: '确认继续', onPress: () => resolve(true) },
+          { text: '取消', style: 'cancel', onPress: () => decide(false) },
+          { text: '确认继续', onPress: () => decide(true) },
         ],
+        { onDismiss: () => decide(false) },
       );
     });
-    if (!proceed) return;
+    if (!proceed) {
+      resumeGuardRef.current = false;
+      setResumeSubmitting(false);
+      return;
+    }
+    // Return immediately to the one-tap N-chapter progress page. Resume and
+    // reconciliation are intentionally asynchronous and may take minutes.
+    setView('running');
     try {
       await store.resume(store.batch.id);
+      resumeGuardRef.current = false;
+      setResumeSubmitting(false);
     } catch (error: any) {
+      resumeGuardRef.current = false;
+      setResumeSubmitting(false);
       Alert.alert('恢复失败', String(error?.message || '请稍后重试'));
     }
   };
@@ -541,6 +570,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
             store={store}
             isContinuation={isContinuation}
             onResume={handleResume}
+            resumeBusy={resumeSubmitting}
             onRestartLegacy={handleRestartLegacyBatch}
             onCancel={handleCancel}
             onViewTask={() => {
@@ -746,6 +776,7 @@ function PausedView(props: {
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
   isContinuation?: boolean;
   onResume: () => void;
+  resumeBusy?: boolean;
   onRestartLegacy: () => void;
   onCancel: () => void;
   onViewTask?: () => void;
@@ -774,21 +805,30 @@ function PausedView(props: {
   const legacyWorkflow =
     !isContinuation &&
     Number(batch.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION;
-  const actions: Array<[string, () => void]> = [];
+  const actions: Array<[string, () => void, boolean?]> = [];
+  const resumeLabel = props.resumeBusy ? '正在恢复…' : '确认后继续';
   if (legacyWorkflow) {
     actions.push(['按新版继续剩余章节', props.onRestartLegacy]);
   } else if (isContinuation) {
     if (!continuationDrift) {
-      actions.push(['确认后继续', props.onResume]);
+      actions.push([resumeLabel, props.onResume, props.resumeBusy]);
     }
   } else if (batch.status !== 'paused_project_changed') {
-    actions.push(['确认后继续', props.onResume]);
+    actions.push([resumeLabel, props.onResume, props.resumeBusy]);
   }
   if (!legacyWorkflow && !isContinuation && batch.status === 'paused_account_quota') {
-    actions.push(['更换模型后继续', props.onResume]);
+    actions.push([
+      props.resumeBusy ? '正在恢复…' : '更换模型后继续',
+      props.onResume,
+      props.resumeBusy,
+    ]);
   }
   if (!legacyWorkflow && !isContinuation && batch.status === 'paused_context_budget') {
-    actions.push(['重新编译后继续', props.onResume]);
+    actions.push([
+      props.resumeBusy ? '正在恢复…' : '重新编译后继续',
+      props.onResume,
+      props.resumeBusy,
+    ]);
   }
   // F2-07: 结果未知（network_error 等）时提供直达当前章流水线结果页的
   // 入口，用户可先查看失败详情/已成功阶段，再决定继续方式。
@@ -844,9 +884,9 @@ function PausedView(props: {
         </Card>
       </Section>
       <View style={styles.column}>
-        {actions.map(([label, fn]) => (
+        {actions.map(([label, fn, disabled]) => (
           <View key={label} style={{ marginBottom: spacing.sm }}>
-            <Button label={label} onPress={fn} />
+            <Button label={label} onPress={fn} disabled={disabled} />
           </View>
         ))}
       </View>

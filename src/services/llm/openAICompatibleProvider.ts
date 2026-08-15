@@ -384,6 +384,11 @@ export const openAICompatibleProvider: LLMProvider = {
             onProgress: options.onProgress,
           });
           try {
+            // Defense-in-depth: per-call options.thinking is authoritative;
+            // a thinking field attached to the requestConfig (a historical
+            // misplacement) is honored as a fallback so the caller's intent
+            // still reaches the wire instead of being silently dropped.
+            const effectiveThinking = options.thinking ?? config.thinking;
             const requestBody: Record<string, unknown> = {
               model: config.model_name,
               messages,
@@ -395,11 +400,11 @@ export const openAICompatibleProvider: LLMProvider = {
             if (options.responseFormat === 'json_object') {
               requestBody.response_format = { type: 'json_object' };
             }
-            if (options.thinking) {
-              requestBody.thinking = options.thinking;
+            if (effectiveThinking) {
+              requestBody.thinking = effectiveThinking;
             }
             if (
-              options.thinking?.type === 'enabled' &&
+              effectiveThinking?.type === 'enabled' &&
               isValidReasoningEffort(options.reasoningEffort) &&
               supportsReasoningEffort({
                 providerType: config.provider_type,
@@ -471,7 +476,7 @@ export const openAICompatibleProvider: LLMProvider = {
                   text,
                 );
               const disabledThinkingUnsupported =
-                options.thinking?.type === 'disabled' &&
+                effectiveThinking?.type === 'disabled' &&
                 response.status === 400 &&
                 /(thinking|reasoning(?:[_ ]?content|[_ ]?effort)?)/i.test(
                   text,

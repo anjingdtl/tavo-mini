@@ -51,6 +51,7 @@ import { VoiceSettingsScreen } from '../screens/VoiceSettingsScreen';
 import { ContextAutoConfigScreen } from '../screens/ContextAutoConfigScreen';
 import { StoryMemoryScreen } from '../screens/StoryMemoryScreen';
 import { ContinuationGenerationConfigScreen } from '../screens/continuation/ContinuationGenerationConfigScreen';
+import { ContinuationPipelineTaskScreen } from '../screens/continuation/ContinuationPipelineTaskScreen';
 import { StyleProfileDetailScreen } from '../screens/continuation/StyleProfileDetailScreen';
 
 export type EditorStackParamList = {
@@ -94,6 +95,7 @@ export type SettingsStackParamList = {
     | { llmConfigId?: number; referenceContextWindow?: number }
     | undefined;
   ContinuationGenerationConfig: undefined;
+  ContinuationPipelineTask: undefined;
 };
 
 /**
@@ -314,6 +316,10 @@ const SettingsStackScreen = () => (
     <SettingsStack.Screen
       name="ContinuationGenerationConfig"
       component={ContinuationGenerationConfigScreen}
+    />
+    <SettingsStack.Screen
+      name="ContinuationPipelineTask"
+      component={ContinuationPipelineTaskScreen}
     />
   </SettingsStack.Navigator>
 );

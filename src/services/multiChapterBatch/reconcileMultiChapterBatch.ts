@@ -53,6 +53,7 @@ import {
   shouldIncludeBriefCheckpoint,
 } from '../pipeline/outlineWorkflowVersion';
 import { executeContinuationBatchStep } from './continuationBatchAdapter';
+import { setBatchUsageFromContinuationRuns } from './continuationBatchUsage';
 
 export interface BatchProgressInfo {
   batchId: string;
@@ -245,16 +246,34 @@ export async function reconcileMultiChapterBatch(
       // dedicated Continuation V5 adapter; the outline branch below stays
       // exactly as before (never runChapterPipeline for continuation).
       if (batch.writingMode === 'continuation') {
-        const handled = await executeContinuationBatchStep({
-          batchId,
-          batch,
-          items,
-          options: {
-            owner: options.owner,
-            leaseMs: options.leaseMs,
-            onProgress: options.onProgress,
-          },
-        });
+        let handled: 'continue' | 'break' | 'stop';
+        try {
+          handled = await executeContinuationBatchStep({
+            batchId,
+            batch,
+            items,
+            options: {
+              owner: options.owner,
+              leaseMs: options.leaseMs,
+              onProgress: options.onProgress,
+            },
+          });
+        } finally {
+          // Continuation V5 owns its request ledger, so refresh the batch
+          // counters after every adapter step, including thrown errors,
+          // failed runs and state-gate pauses. Waiting until item success made
+          // a retryable failure look like 0 spend and allowed the next
+          // explicit retry to escape the elastic batch budget.
+          try {
+            await setBatchUsageFromContinuationRuns(
+              batchId,
+              await getBatchItems(batchId),
+            );
+          } catch {
+            // Preserve the adapter's original failure. The next foreground
+            // refresh/reconcile will retry this durable telemetry fold.
+          }
+        }
         if (handled === 'stop') return;
         if (handled === 'break') break;
         continue;

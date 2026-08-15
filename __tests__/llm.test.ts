@@ -685,3 +685,100 @@ test('marks a no-choices 200 response (without error body) as emptyReason=no_cho
   expect(result.text).toBeNull();
   expect(result.emptyReason).toBe('no_choices');
 });
+
+describe('requestConfig.thinking fallback (defense-in-depth)', () => {
+  test('honors a thinking field attached to the requestConfig when the per-call option is absent', async () => {
+    const fetchMock = jest.fn(async (..._args: any[]) => ({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: '{"ok":true}' }, finish_reason: 'stop' },
+        ],
+      }),
+    }));
+    globalThis.fetch = fetchMock as any;
+
+    await openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'test-model',
+          url: 'https://api.example.com/v1/chat/completions',
+          thinking: { type: 'disabled' },
+        },
+      },
+    );
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(request.thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('per-call options.thinking stays authoritative over requestConfig.thinking', async () => {
+    const fetchMock = jest.fn(async (..._args: any[]) => ({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: '{"ok":true}' }, finish_reason: 'stop' },
+        ],
+      }),
+    }));
+    globalThis.fetch = fetchMock as any;
+
+    await openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        thinking: { type: 'enabled' },
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'test-model',
+          url: 'https://api.example.com/v1/chat/completions',
+          thinking: { type: 'disabled' },
+        },
+      },
+    );
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(request.thinking).toEqual({ type: 'enabled' });
+  });
+
+  test('requestConfig.thinking=disabled also qualifies for the gateway rejection fallback', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => 'thinking parameter unsupported',
+        headers: { get: () => null },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: '{"ok":true}' }, finish_reason: 'stop' },
+          ],
+        }),
+      });
+    globalThis.fetch = fetchMock as any;
+
+    const result = await openAICompatibleProvider.generate(
+      [{ role: 'user', content: 'Return JSON.' }],
+      {
+        requestConfig: {
+          provider_type: 'openai_compatible',
+          api_key: 'test-key',
+          model_name: 'gateway-model',
+          url: 'https://api.example.com/v1/chat/completions',
+          thinking: { type: 'disabled' },
+        },
+      },
+    );
+
+    expect(result.text).toBe('{"ok":true}');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryRequest = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
+    expect(retryRequest).not.toHaveProperty('thinking');
+  });
+});

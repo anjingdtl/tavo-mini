@@ -3,10 +3,15 @@
  * LLM calls happen OUTSIDE SQLite transactions (Spec §11, §4.14).
  */
 import { openDatabase } from '../../../data/connection/openDatabase';
-import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
+import {
+  callLLMResult,
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../../llm';
 import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from './continuationPromptCompiler';
+import { planStageCapacity } from './continuationContextBudget';
 import {
   casOutboxState,
   contentRevisionHash,
@@ -20,22 +25,85 @@ import {
 import type { ProposalType } from './types';
 
 /**
- * DeepSeek V4 models enable thinking by default. Background continuation
- * extraction has a JSON-only contract and a deliberately bounded completion
- * budget, so leaving thinking enabled can consume the whole budget without a
- * JSON body. Keep this scoped to the continuation outbox; freeform pipelines
- * retain their existing provider semantics.
+ * DeepSeek enables thinking by default (deepseek-chat and the V4 families per
+ * the official Thinking Mode guide). Background continuation extraction has a
+ * JSON-only contract and a deliberately bounded completion budget, so leaving
+ * thinking enabled can consume the whole budget without a JSON body.
+ *
+ * The option MUST be returned at the CALL level (the second `callLLMResult`
+ * argument): `callLLMResult` only forwards `config.thinking` from the per-call
+ * options. A `thinking` field attached to the requestConfig object used to be
+ * silently dropped — that misplacement is exactly how extraction ended up
+ * reasoning-only with finish_reason=length.
  */
-function withContinuationJsonThinkingDisabled(
-  config: Awaited<ReturnType<typeof resolveLLMRequestConfigById>>,
-) {
-  if (!config || !/^deepseek-v4-(flash|pro)$/i.test(config.model_name)) {
-    return config;
+function thinkingDisabledForModel(
+  config: { model_name?: string | null } | null | undefined,
+): { type: 'disabled' } | undefined {
+  if (
+    !config ||
+    !/^deepseek-(chat|v4-(flash|pro))$/i.test(String(config.model_name ?? ''))
+  ) {
+    return undefined;
   }
-  return {
-    ...config,
-    thinking: { type: 'disabled' as const },
-  };
+  return { type: 'disabled' };
+}
+
+/**
+ * Completion budget for the extraction call. The extraction envelope is
+ * typically well under 1k tokens; 4096 leaves headroom for models/gateways
+ * that still emit a short reasoning prefix (or whose thinking-disable goes
+ * through the provider's protocol fallback) without inviting runaway output.
+ */
+export const CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS = 4096;
+
+type StateExtractionRequestConfig = {
+  id?: number;
+  model_name?: string | null;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+};
+
+/**
+ * Resolve the state-extraction envelope from the selected model's real
+ * capability. The 4096 value is an extraction-specific safety ceiling, not a
+ * replacement for the continuation elastic stage pool: smaller models still
+ * get the lower of their declared output and the 20% continuation reserve.
+ * When an old/manual outbox has no capability metadata, retain the historical
+ * safe fallback rather than turning the request into an unusably tiny call.
+ */
+export function resolveContinuationStateExtractionMaxOutputTokens(
+  config?: StateExtractionRequestConfig | null,
+): number {
+  const contextWindow = Number(config?.context_window);
+  const configuredMaxOutputTokens = Number(config?.max_output_tokens);
+
+  if (contextWindow > 0) {
+    const capacity = planStageCapacity({
+      llmConfigId: Number(config?.id) || 0,
+      contextWindow,
+      maxOutputTokens:
+        configuredMaxOutputTokens > 0 ? configuredMaxOutputTokens : undefined,
+    });
+    return Math.max(
+      1,
+      Math.min(
+        CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS,
+        capacity.maxOutputTokens,
+      ),
+    );
+  }
+
+  if (configuredMaxOutputTokens > 0) {
+    return Math.max(
+      1,
+      Math.min(
+        CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS,
+        Math.floor(configuredMaxOutputTokens),
+      ),
+    );
+  }
+
+  return CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS;
 }
 
 export async function coldStartNormalizeContinuation(): Promise<number> {
@@ -182,8 +250,8 @@ async function handleExtractState(
 
   const messages = compileStateExtractionMessages(content, '[]');
   let raw: string;
-  let finishReason: string | null | undefined = undefined;
-  let emptyReason: string | undefined = undefined;
+  let finishReason: string | null | undefined;
+  let emptyReason: string | undefined;
   if (callExtract) {
     const out = await callExtract(messages);
     if (typeof out === 'string') {
@@ -195,23 +263,29 @@ async function handleExtractState(
     }
   } else {
     const settings = await ensureGenerationSettings(payload.projectId);
-    const configId =
-      payload.llmConfigId ?? settings.stateExtractionLlmConfigId;
-    const requestConfig = configId
-      ? await resolveLLMRequestConfigById(configId)
-      : undefined;
-    const continuationRequestConfig = requestConfig
-      ? withContinuationJsonThinkingDisabled(requestConfig)
-      : requestConfig;
-    const result = await callLLMResult(messages, 2048, {
-      queueClass: 'background',
-      queuePriority: 'background',
-      projectId: payload.projectId,
-      taskId: `extract_${payload.chapterId}`,
-      scenario: 'continuation_state_extraction',
-      responseFormat: 'json_object',
-      requestConfig: continuationRequestConfig,
-    });
+    const configId = payload.llmConfigId ?? settings.stateExtractionLlmConfigId;
+    // Finalize normally persists the frozen state-extraction config id. Old
+    // outbox rows and manual finalization may not have one, so resolve the
+    // active config explicitly instead of letting callLLMResult resolve it
+    // after the thinking/budget policy has already been decided.
+    const requestConfig =
+      configId != null
+        ? await resolveLLMRequestConfigById(configId)
+        : await resolveLLMRequestConfig();
+    const result = await callLLMResult(
+      messages,
+      resolveContinuationStateExtractionMaxOutputTokens(requestConfig),
+      {
+        queueClass: 'background',
+        queuePriority: 'background',
+        projectId: payload.projectId,
+        taskId: `extract_${payload.chapterId}`,
+        scenario: 'continuation_state_extraction',
+        responseFormat: 'json_object',
+        thinking: thinkingDisabledForModel(requestConfig),
+        requestConfig,
+      },
+    );
     raw = result.text ?? '';
     finishReason = result.finishReason;
     emptyReason = result.emptyReason;

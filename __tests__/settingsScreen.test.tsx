@@ -1,8 +1,11 @@
 import React from 'react';
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 
 const mockLoadFromDB = jest.fn();
 const mockNavigate = jest.fn();
+const mockListRunsForProject = jest.fn();
+let mockWorkspaceMode: 'outline' | 'continuation' = 'outline';
+let mockCurrentProject: any = null;
 
 jest.mock('../src/store/pipelineTaskStore', () => ({
   usePipelineTaskStore: (selector: any) =>
@@ -10,6 +13,17 @@ jest.mock('../src/store/pipelineTaskStore', () => ({
       getUnresolvedCount: () => 0,
       loadFromDB: mockLoadFromDB,
     }),
+}));
+
+jest.mock('../src/store/projectStore', () => ({
+  useProjectStore: () => ({
+    workspaceMode: mockWorkspaceMode,
+    currentProject: mockCurrentProject,
+  }),
+}));
+
+jest.mock('../src/services/continuation/generation', () => ({
+  listRunsForProject: (...args: any[]) => mockListRunsForProject(...args),
 }));
 
 jest.mock('@react-navigation/native', () => ({
@@ -24,6 +38,9 @@ import appVersionJson from '../src/constants/version.json';
 describe('SettingsScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockWorkspaceMode = 'outline';
+    mockCurrentProject = null;
+    mockListRunsForProject.mockResolvedValue([]);
   });
 
   it('shows the developer signature in About', () => {
@@ -54,5 +71,21 @@ describe('SettingsScreen', () => {
 
     expect(queryByText('后台写作')).toBeNull();
     expect(queryByText('保持后台运行')).toBeNull();
+  });
+
+  it('exposes unfinished continuation runs from Settings', async () => {
+    mockWorkspaceMode = 'continuation';
+    mockCurrentProject = { id: 3, mode: 'continuation' };
+    mockListRunsForProject.mockResolvedValue([
+      { state: 'running' },
+      { state: 'awaiting_user' },
+      { state: 'completed' },
+    ]);
+
+    const { findByText, getByTestId } = render(<SettingsScreen />);
+
+    await expect(findByText('执行情况 (2)')).resolves.toBeTruthy();
+    fireEvent.press(getByTestId('settings-continuation-pipeline-tasks'));
+    expect(mockNavigate).toHaveBeenCalledWith('ContinuationPipelineTask');
   });
 });

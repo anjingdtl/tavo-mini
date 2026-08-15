@@ -1,8 +1,13 @@
 import React from 'react';
-import { render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 const mockEnsureGenerationSettings = jest.fn();
 const mockUpdateGenerationSettings = jest.fn();
+const mockNavigate = jest.fn();
+
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
 
 jest.mock('../src/services/database', () => ({
   getLLMConfigs: jest.fn(() => Promise.resolve([])),
@@ -79,6 +84,8 @@ describe('ContinuationGenerationConfigScreen', () => {
     expect(queryByText('文风约束')).toBeNull();
     expect(getByText('校验严格度方案')).toBeTruthy();
     expect(queryByText('初稿作者')).toBeNull();
+    fireEvent.press(getByText('查看流水线执行情况'));
+    expect(mockNavigate).toHaveBeenCalledWith('ContinuationPipelineTask');
   });
 
   it('explains when no continuation project is selected', () => {

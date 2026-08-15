@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -32,6 +32,8 @@ import {
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
+import { listRunsForProject } from '../services/continuation/generation';
+import { isUnfinishedContinuationRun } from '../services/continuation/generation/runStatus';
 import type { ThemeMode } from '../types/theme';
 import appVersionJson from '../constants/version.json';
 
@@ -44,13 +46,39 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
 export const SettingsScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { theme, mode, setMode } = useThemeStore();
-  const { workspaceMode } = useProjectStore();
+  const { workspaceMode, currentProject } = useProjectStore();
   const unresolvedCount = usePipelineTaskStore(s => s.getUnresolvedCount());
   const loadFromDB = usePipelineTaskStore(s => s.loadFromDB);
+  const [continuationUnfinishedCount, setContinuationUnfinishedCount] =
+    useState(0);
 
   useEffect(() => {
     loadFromDB();
   }, [loadFromDB]);
+
+  useEffect(() => {
+    let alive = true;
+    if (workspaceMode !== 'continuation' || !currentProject) {
+      setContinuationUnfinishedCount(0);
+      return () => {
+        alive = false;
+      };
+    }
+    listRunsForProject(currentProject.id, 100)
+      .then(runs => {
+        if (alive) {
+          setContinuationUnfinishedCount(
+            runs.filter(isUnfinishedContinuationRun).length,
+          );
+        }
+      })
+      .catch(() => {
+        if (alive) setContinuationUnfinishedCount(0);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [currentProject, workspaceMode]);
 
   const changeTheme = async (next: ThemeMode) => {
     setMode(next);
@@ -120,6 +148,19 @@ export const SettingsScreen: React.FC = () => {
                 onPress={() => navigation.navigate('PipelineTask')}
               />
             )}
+            {workspaceMode === 'continuation' ? (
+              <Button
+                testID="settings-continuation-pipeline-tasks"
+                label={`执行情况${
+                  continuationUnfinishedCount > 0
+                    ? ` (${continuationUnfinishedCount})`
+                    : ''
+                }`}
+                icon={ListChecks}
+                variant="secondary"
+                onPress={() => navigation.navigate('ContinuationPipelineTask')}
+              />
+            ) : null}
           </Card>
           <Card>
             <Text

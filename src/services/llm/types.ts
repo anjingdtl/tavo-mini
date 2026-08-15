@@ -137,4 +137,11 @@ export interface LLMRequestConfig {
   context_window?: number;
   max_output_tokens?: number;
   allow_insecure_lan_http?: boolean;
+  /**
+   * Fallback thinking control honored by the OpenAI-compatible provider when
+   * the per-call options.thinking is absent. Defense-in-depth so a caller
+   * that attaches thinking to the request config still has the intent reach
+   * the wire; the per-call option remains the authoritative path.
+   */
+  thinking?: { type: 'enabled' | 'disabled' };
 }

@@ -17,8 +17,14 @@
 import {
   parseExtraction,
   processContinuationOutbox,
+  resolveContinuationStateExtractionMaxOutputTokens,
 } from '../src/services/continuation/generation/continuationStateOutboxWorker';
 import { contentRevisionHash } from '../src/services/continuation/generation/generationRepository';
+import {
+  callLLMResult,
+  resolveLLMRequestConfig,
+  resolveLLMRequestConfigById,
+} from '../src/services/llm';
 
 // ---- parseExtraction unit tests (no DB, no LLM) ----
 
@@ -342,6 +348,7 @@ jest.mock('../src/data/connection/openDatabase', () => ({
 // callExtract is injected.
 jest.mock('../src/services/llm', () => ({
   callLLMResult: jest.fn(),
+  resolveLLMRequestConfig: jest.fn(),
   resolveLLMRequestConfigById: jest.fn(),
 }));
 
@@ -525,5 +532,169 @@ describe('processContinuationOutbox: malformed LLM output', () => {
     });
     expect(result.failed).toBe(1);
     expect(mockStore.outbox[0].last_error).toMatch(/hash 不一致/);
+  });
+});
+
+describe('processContinuationOutbox: real-path thinking placement (regression)', () => {
+  // Regression for the reasoning-only extraction failure: the thinking
+  // control must ride on the CALL config (callLLMResult arg 3), not on the
+  // requestConfig — callLLMResult only forwards config.thinking from the
+  // per-call options, so a requestConfig-level field used to be silently
+  // dropped and DeepSeek (thinking enabled by default) burned the whole
+  // completion budget on chain-of-thought.
+  const callLLMMock = callLLMResult as jest.Mock;
+  const resolveActiveConfigMock = resolveLLMRequestConfig as jest.Mock;
+  const resolveConfigMock = resolveLLMRequestConfigById as jest.Mock;
+
+  function seedForExtraction(withExplicitConfig = true) {
+    const content = '主角走在路上，推开密室石门。';
+    mockStore.chapters = [
+      {
+        id: 10,
+        project_id: 1,
+        position: 21,
+        content,
+        title: '续写一',
+        status: 'finalized',
+        updated_at: 't0',
+      },
+    ];
+    const hash = contentRevisionHash(content);
+    const payload: Record<string, unknown> = {
+      projectId: 1,
+      chapterId: 10,
+      chapterRevisionHash: hash,
+    };
+    if (withExplicitConfig) payload.llmConfigId = 7;
+    mockStore.outbox = [
+      {
+        id: 'co_test',
+        project_id: 1,
+        chapter_id: 10,
+        operation: 'extract_state',
+        payload_json: JSON.stringify(payload),
+        dedupe_key: `extract_state:10:${hash}`,
+        state: 'pending',
+        attempt_count: 0,
+        last_error: null,
+        created_at: 't1',
+        updated_at: 't1',
+        completed_at: null,
+      },
+    ];
+    return content;
+  }
+
+  afterEach(() => {
+    callLLMMock.mockReset();
+    resolveActiveConfigMock.mockReset();
+    resolveConfigMock.mockReset();
+  });
+
+  test('deepseek-v4-flash: thinking disabled at CALL level, 4096 budget, raw requestConfig', async () => {
+    seedForExtraction();
+    resolveConfigMock.mockResolvedValue({
+      id: 7,
+      provider_type: 'openai_compatible',
+      api_key: 'k',
+      model_name: 'deepseek-v4-flash',
+      url: 'https://api.deepseek.com/chat/completions',
+      context_window: 1000000,
+      max_output_tokens: 200000,
+    });
+    callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
+
+    const result = await processContinuationOutbox({ limit: 5 });
+    expect(result.processed).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(callLLMResult).toHaveBeenCalledTimes(1);
+    const [messages, maxTokens, callConfig] = callLLMMock.mock.calls[0];
+    expect(maxTokens).toBe(4096);
+    expect(Array.isArray(messages)).toBe(true);
+    // THE regression assertion: thinking lives on the call config itself.
+    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+    // The requestConfig passes through untouched (no historical mutation).
+    expect(callConfig.requestConfig.model_name).toBe('deepseek-v4-flash');
+    expect(callConfig.requestConfig.thinking).toBeUndefined();
+  });
+
+  test('caps a smaller continuation model at its elastic 20% output reserve', async () => {
+    seedForExtraction();
+    resolveConfigMock.mockResolvedValue({
+      id: 7,
+      provider_type: 'openai_compatible',
+      api_key: 'k',
+      model_name: 'deepseek-v4-flash',
+      url: 'https://api.deepseek.com/chat/completions',
+      context_window: 8192,
+      max_output_tokens: 200000,
+    });
+    callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
+
+    await processContinuationOutbox({ limit: 5 });
+    const [, maxTokens, callConfig] = callLLMMock.mock.calls[0];
+    expect(maxTokens).toBe(1638);
+    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('deepseek-chat also disables thinking (DeepSeek default is enabled)', async () => {
+    seedForExtraction();
+    resolveConfigMock.mockResolvedValue({
+      id: 7,
+      provider_type: 'openai_compatible',
+      api_key: 'k',
+      model_name: 'deepseek-chat',
+      url: 'https://api.deepseek.com/chat/completions',
+    });
+    callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
+
+    await processContinuationOutbox({ limit: 5 });
+    const [, , callConfig] = callLLMMock.mock.calls[0];
+    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('non-DeepSeek models keep provider defaults (no thinking field)', async () => {
+    seedForExtraction();
+    resolveConfigMock.mockResolvedValue({
+      id: 7,
+      provider_type: 'openai_compatible',
+      api_key: 'k',
+      model_name: 'qwen-max',
+      url: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+    });
+    callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
+
+    await processContinuationOutbox({ limit: 5 });
+    const [, , callConfig] = callLLMMock.mock.calls[0];
+    expect(callConfig.thinking).toBeUndefined();
+  });
+
+  test('resolves the active model for legacy outbox rows without a frozen id', async () => {
+    seedForExtraction(false);
+    resolveActiveConfigMock.mockResolvedValue({
+      id: 7,
+      provider_type: 'openai_compatible',
+      api_key: 'k',
+      model_name: 'deepseek-v4-flash',
+      url: 'https://api.deepseek.com/chat/completions',
+      context_window: 1000000,
+      max_output_tokens: 200000,
+    });
+    callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
+
+    await processContinuationOutbox({ limit: 5 });
+    expect(resolveActiveConfigMock).toHaveBeenCalledTimes(1);
+    const [, maxTokens, callConfig] = callLLMMock.mock.calls[0];
+    expect(maxTokens).toBe(4096);
+    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+  });
+
+  test('uses the safe fallback when capability metadata is unavailable', () => {
+    expect(resolveContinuationStateExtractionMaxOutputTokens()).toBe(4096);
+    expect(
+      resolveContinuationStateExtractionMaxOutputTokens({
+        max_output_tokens: 2048,
+      }),
+    ).toBe(2048);
   });
 });

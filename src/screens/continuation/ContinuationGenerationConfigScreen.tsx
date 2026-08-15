@@ -6,7 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Save } from 'lucide-react-native';
+import { ListChecks, Save } from 'lucide-react-native';
 import {
   Button,
   Card,
@@ -20,6 +20,7 @@ import {
 } from '../../components/ui';
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
+import { useNavigation } from '@react-navigation/native';
 import * as db from '../../services/database';
 import {
   ensureGenerationSettings,
@@ -114,6 +115,7 @@ const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
 export const ContinuationGenerationConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const navigation = useNavigation<any>();
   const [settings, setSettings] =
     useState<ContinuationGenerationSettings | null>(null);
   const [models, setModels] = useState<any[]>([]);
@@ -325,6 +327,13 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
           ))}
         </Card>
 
+        <Button
+          testID="continuation-pipeline-tasks"
+          label="查看流水线执行情况"
+          icon={ListChecks}
+          variant="secondary"
+          onPress={() => navigation.navigate('ContinuationPipelineTask')}
+        />
         <Button
           label={saving ? '保存中...' : '保存续写配置'}
           icon={Save}
