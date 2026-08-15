@@ -108,9 +108,11 @@ import {
   computeGenerationFingerprint,
   buildGenerationFingerprintInput,
 } from '../src/services/pipeline/frozenGenerationContext';
+import { buildGenerationTraceSummary } from '../src/services/pipeline/generationTrace';
 import { compileDraftFromFrozenRequest } from '../src/services/pipeline/compileStageRequest';
 import type { Outline } from '../src/types/outline';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
+import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { FrozenWriterStyleV1 } from '../src/services/writerStyle/types';
 
 const PROJECT = 7;
@@ -254,6 +256,38 @@ function fingerprintOf(result: Awaited<ReturnType<typeof buildContext>>, exec?: 
   );
 }
 
+function assertTraceV2Snapshot(draftContext: PipelineContextSnapshot, traceId: string) {
+  const serialized = serializePipelineTaskContext({
+    draftContext,
+    execution: execution(),
+    trace: {
+      version: 1,
+      generationTraceId: traceId,
+      createdAt: 1700000000000,
+    },
+  });
+  const parsed = parsePersistedPipelineTaskContext(serialized);
+  const summary = buildGenerationTraceSummary({
+    pipelineTaskId: `task-${traceId}`,
+    parsed,
+    attempts: [],
+  });
+  expect(summary.version).toBe(2);
+  if (summary.version !== 2) return;
+  expect(summary.generationTraceId).toBe(traceId);
+  expect(summary.selectedCount).not.toBeNull();
+  expect(summary.candidates).toHaveLength(summary.candidateSummary.total);
+  expect(summary.candidates.every(candidate => candidate.reason.length > 0)).toBe(true);
+  expect(
+    summary.modules.every(module => Number.isFinite(module.allocatedTokens)),
+  ).toBe(true);
+  expect(
+    summary.candidates
+      .filter(candidate => candidate.clipped)
+      .every(candidate => Boolean(candidate.clippingReason)),
+  ).toBe(true);
+}
+
 function resetFixtures() {
   mockChapters = [];
   mockCharacters = [];
@@ -282,6 +316,7 @@ describe('Golden Journeys — 大纲与资料 (GJ-01..04)', () => {
     expect(result.pipelineContext.outlineText).toContain('主角踏上旅程');
     expect(result.pipelineContext.outlineFingerprint).toBeTruthy();
     expect(result.pipelineContext.outlineComplete).toBe(true);
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj01-00000001');
   });
 
   test('GJ-02 大纲+人物+世界观：资料进入快照', async () => {
@@ -311,6 +346,7 @@ describe('Golden Journeys — 大纲与资料 (GJ-01..04)', () => {
     });
     expect(result.pipelineContext.characterText).toContain('林晚');
     expect(result.pipelineContext.worldbookText).toContain('雨夜杀人狂');
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj02-00000002');
   });
 
   test('GJ-03 大纲+笔记：笔记内容进入快照', async () => {
@@ -324,6 +360,7 @@ describe('Golden Journeys — 大纲与资料 (GJ-01..04)', () => {
       contextBudgetVersion: 1,
     });
     expect(result.pipelineContext.noteText).toContain('反派动机');
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj03-00000003');
   });
 
   test('GJ-04 Note=none → note 内容为 0', async () => {
@@ -338,6 +375,7 @@ describe('Golden Journeys — 大纲与资料 (GJ-01..04)', () => {
     });
     expect(result.pipelineContext.noteText).toBe('');
     expect(result.pipelineContext.noteText).not.toContain('不应出现');
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj04-00000004');
   });
 });
 
@@ -355,6 +393,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
       contextBudgetVersion: 1,
     });
     expect(result.pipelineContext.storyMemoryText.length).toBeGreaterThan(0);
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj05-00000005');
   });
 
   test('GJ-06 Story Memory dirty → 不注入脏检查点', async () => {
@@ -372,6 +411,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
       contextBudgetVersion: 1,
     });
     expect(result.pipelineContext.storyMemoryText).toBe('');
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj06-00000006');
   });
 
   test('GJ-07 Writer Style enabled → snapshot 冻结且参与指纹', async () => {
@@ -453,6 +493,7 @@ describe('Golden Journeys — Story Memory / Writer Style / Preset (GJ-05..08)',
     });
     expect(a.pipelineContext!.presetText).toContain('严肃文学作家');
     expect(b.pipelineContext!.presetText).toContain('网文作家');
+    assertTraceV2Snapshot(a.pipelineContext!, 'gt-gj08-00000008');
     expect(
       serializePipelineTaskContext({
         draftContext: a.pipelineContext!,
@@ -501,6 +542,7 @@ describe('Golden Journeys — Context 策略与窗口 (GJ-09..13)', () => {
     expect(
       result.pipelineContext.contextBudgetV3Summary!.contextAutomationPolicyHash,
     ).toBeTruthy();
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj09-00000009');
   });
 
   test('GJ-10 手动 Context（无策略注入）→ 快照确定且可重放', async () => {
@@ -509,6 +551,7 @@ describe('Golden Journeys — Context 策略与窗口 (GJ-09..13)', () => {
     const frozen = freeze(result);
     const parsed = parsePersistedPipelineTaskContext(frozen);
     expect(parsed.draftContext.presetText).toBe(result.pipelineContext.presetText);
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj10-00000010');
   });
 
   test('GJ-11 64K 窗口 → 硬限内完成渲染', async () => {
@@ -517,6 +560,7 @@ describe('Golden Journeys — Context 策略与窗口 (GJ-09..13)', () => {
     expect(result.estimatedInputTokens).toBeLessThanOrEqual(
       65536 - 4000,
     );
+    assertTraceV2Snapshot(result.pipelineContext, 'gt-gj11-00000011');
   });
 
   test('GJ-12 128K 窗口 → 硬限内完成渲染', async () => {

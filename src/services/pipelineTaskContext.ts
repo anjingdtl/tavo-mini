@@ -787,6 +787,7 @@ export function parsePipelineContextSnapshotStrict(
       : {}),
     // Stability Phase 5 — tolerant passthrough of structured diagnostics.
     stabilityDiagnostics: parseStabilityDiagnostics(raw.stabilityDiagnostics),
+    stageTimings: parseStageTimings(raw.stageTimings),
     ...(generationContract ? { generationContract } : {}),
     ...(Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
       ? {
@@ -1715,6 +1716,24 @@ export function serializePipelineTaskContext(params: {
     generationFingerprint: envelope.generationFingerprint,
     generationFingerprintVersion: envelope.generationFingerprintVersion,
   };
+}
+
+function parseStageTimings(
+  raw: unknown,
+): PipelineContextSnapshot['stageTimings'] {
+  if (!Array.isArray(raw)) return undefined;
+  const timings: NonNullable<PipelineContextSnapshot['stageTimings']> = [];
+  for (const item of raw) {
+    if (!isPlainObject(item) || typeof item.stage !== 'string') continue;
+    const durationMs = Number(item.durationMs);
+    if (!Number.isFinite(durationMs) || durationMs < 0) continue;
+    timings.push({
+      stage: item.stage as NonNullable<PipelineContextSnapshot['stageTimings']>[number]['stage'],
+      durationMs,
+      ...(typeof item.note === 'string' ? { note: item.note } : {}),
+    });
+  }
+  return timings.length > 0 ? timings : undefined;
 }
 
 /** Prefer audit context for full-mode review stages; else draft. */

@@ -13,6 +13,7 @@
  * message builders, not silently dropped here.
  */
 import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
+import type { GenerationStageTimings } from '../services/context/generationStageContracts';
 
 /** Historical V3 snapshot written by Context Budget V6 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
@@ -195,6 +196,8 @@ export interface PipelineContextSnapshot {
    * degraded. Absent on historical snapshots.
    */
   stabilityDiagnostics?: import('./generationTrace').GenerationDiagnostic[];
+  /** Phase II stage spans consumed by Generation Trace V2. */
+  stageTimings?: GenerationStageTimings;
   /** Phase II decision-level Candidate/Allocation/Render contract. */
   generationContract?: import('../services/context/generation/generationContracts').FrozenGenerationContextContractV2;
 }

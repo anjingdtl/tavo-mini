@@ -1571,6 +1571,7 @@ export async function buildContext(
     rendered: renderedContext,
     diagnostics: diagnostics.list(),
   });
+  stageWatch.close('freeze', 'freeze');
   const immediatePreviousChapter = chapters
     .filter(chapter => chapter.position < currentChapter.position && chapter.content)
     .sort((a, b) => b.position - a.position)[0];
@@ -1608,6 +1609,7 @@ export async function buildContext(
     // Stability Phase 5 — semantic degradations frozen with the snapshot.
     stabilityDiagnostics:
       diagnostics.list().length > 0 ? diagnostics.list() : undefined,
+    stageTimings: stageWatch.result(),
     contextBudgetV3Summary:
       hierarchicalBudgetTrace && useV3Hierarchical
         ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
@@ -1655,8 +1657,6 @@ export async function buildContext(
         }
       : {}),
   };
-
-  stageWatch.close('freeze', 'freeze');
 
   return {
     messages,

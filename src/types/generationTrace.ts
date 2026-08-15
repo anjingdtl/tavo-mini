@@ -117,3 +117,110 @@ export interface GenerationTraceSummaryV1 {
   overallStatus: GenerationOverallStatus;
   diagnostics: GenerationDiagnostic[];
 }
+
+/** Decision-level failure localization for a frozen candidate. */
+export type GenerationTraceCandidateFailureReason =
+  | 'not_collected'
+  | 'not_activated'
+  | 'not_selected'
+  | 'budget_zero'
+  | 'render_zero'
+  | 'snapshot_missing'
+  | 'pipeline_consume_error';
+
+export interface GenerationTraceCandidateV2 {
+  candidateId: string;
+  sourceType: string;
+  selected: boolean;
+  reason: string;
+  failureReason: GenerationTraceCandidateFailureReason | null;
+  demandTokens: number;
+  allocatedTokens: number;
+  actualTokens: number;
+  included: boolean;
+  clipped: boolean;
+  clippingReason: string | null;
+  allocationReason: string | null;
+}
+
+export interface GenerationTraceCandidateSummaryV2 {
+  total: number;
+  selected: number;
+  rejected: number;
+  included: number;
+  clipped: number;
+}
+
+export interface GenerationTraceBudgetSummaryV2
+  extends GenerationTraceBudgetSummary {
+  totalDemandTokens: number;
+  totalAllocatedTokens: number;
+  totalActualTokens: number;
+  budgetClippedCount: number;
+}
+
+export interface GenerationTraceModuleV2 {
+  module: string;
+  sourceType: string;
+  candidateCount: number;
+  selectedCount: number;
+  demandTokens: number;
+  allocatedTokens: number;
+  actualTokens: number;
+  includedCount: number;
+  clippedCount: number;
+}
+
+export interface GenerationTraceStageTimingV2 {
+  stage: string;
+  durationMs: number;
+  note?: string;
+}
+
+/**
+ * Persisted-state-derived decision trace. V1 remains the compatibility view
+ * for historical snapshots; current frozen Candidate contracts produce V2.
+ */
+export interface GenerationTraceSummaryV2 {
+  version: 2;
+  generationTraceId: string | null;
+  pipelineTaskId: string;
+  identity: {
+    projectId: number | null;
+    chapterId: number | null;
+    writingMode: string | null;
+    outlineWorkflowVersion: number | null;
+    contextBudgetVersion: number | null;
+  };
+  /** Flat aliases keep existing trace consumers source-compatible. */
+  projectId: number | null;
+  chapterId: number | null;
+  writingMode: string | null;
+  outlineWorkflowVersion: number | null;
+  contextBudgetVersion: number | null;
+  modelId: string | null;
+  contextWindow: number | null;
+  reservedOutputTokens: number | null;
+  safetyMargin: number | null;
+  settings: {
+    modelId: string | null;
+    contextWindow: number | null;
+    reservedOutputTokens: number | null;
+    safetyMargin: number | null;
+  };
+  candidateCount: number;
+  selectedCount: number;
+  candidateSummary: GenerationTraceCandidateSummaryV2;
+  budget: GenerationTraceBudgetSummaryV2;
+  budgetSummary: GenerationTraceBudgetSummaryV2;
+  candidates: GenerationTraceCandidateV2[];
+  modules: GenerationTraceModuleV2[];
+  diagnostics: GenerationDiagnostic[];
+  stageTimings: GenerationTraceStageTimingV2[];
+  attemptCount: number;
+  overallStatus: GenerationOverallStatus;
+}
+
+export type GenerationTraceSummary =
+  | GenerationTraceSummaryV1
+  | GenerationTraceSummaryV2;

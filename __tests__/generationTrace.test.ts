@@ -19,6 +19,8 @@ import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import type { PipelineStageAttemptRow } from '../src/data/repositories/pipelineStageAttemptRepository';
 import type { GenerationDiagnostic } from '../src/types/generationTrace';
+import type { FrozenGenerationContextContractV2 } from '../src/services/context/generation/generationContracts';
+import { computeGenerationContractFingerprint } from '../src/services/context/generation/generationContractValidation';
 
 function context(): PipelineContextSnapshot {
   return {
@@ -144,6 +146,142 @@ function draftAttemptRow(
     promptCacheHitTokens: null,
     promptCacheMissTokens: null,
     ...overrides,
+  };
+}
+
+function traceContract(): FrozenGenerationContextContractV2 {
+  const payload = {
+    version: 2 as const,
+    projectId: 7,
+    chapterId: 23,
+    currentPosition: 3,
+    candidates: [
+      {
+        candidateId: 'character:1',
+        sourceType: 'character' as const,
+        sourceId: 1,
+        sourceRevision: null,
+        contentHash: 'a'.repeat(64),
+        activation: 'automatic' as const,
+        selected: true,
+        selectedReason: 'project_character',
+        rejectedReason: null,
+        requirement: 'preferred' as const,
+        relevance: 0.9,
+        priority: 7,
+        selectionBoost: 1,
+        demandTokens: 12,
+      },
+      {
+        candidateId: 'note:2',
+        sourceType: 'note' as const,
+        sourceId: 2,
+        sourceRevision: null,
+        contentHash: 'b'.repeat(64),
+        activation: 'automatic' as const,
+        selected: false,
+        selectedReason: null,
+        rejectedReason: 'not_activated',
+        requirement: 'optional' as const,
+        relevance: 0.2,
+        priority: 2,
+        selectionBoost: 1,
+        demandTokens: 8,
+      },
+      {
+        candidateId: 'worldbook:3',
+        sourceType: 'worldbook' as const,
+        sourceId: 3,
+        sourceRevision: null,
+        contentHash: 'c'.repeat(64),
+        activation: 'automatic' as const,
+        selected: true,
+        selectedReason: 'keyword_match',
+        rejectedReason: null,
+        requirement: 'preferred' as const,
+        relevance: 0.5,
+        priority: 4,
+        selectionBoost: 1,
+        demandTokens: 10,
+      },
+    ],
+    budget: [
+      {
+        candidateId: 'character:1',
+        demandTokens: 12,
+        requestedTokens: 12,
+        minTokens: 0,
+        targetTokens: 12,
+        maxTokens: 12,
+        allocatedTokens: 10,
+        allocationReason: 'preferred',
+        waterLevel: 'soft' as const,
+        budgetClipped: true,
+        clippedByBudget: true,
+      },
+      {
+        candidateId: 'note:2',
+        demandTokens: 8,
+        requestedTokens: 8,
+        minTokens: 0,
+        targetTokens: 8,
+        maxTokens: 8,
+        allocatedTokens: 0,
+        allocationReason: 'not_activated',
+        waterLevel: 'none' as const,
+        budgetClipped: true,
+        clippedByBudget: true,
+      },
+      {
+        candidateId: 'worldbook:3',
+        demandTokens: 10,
+        requestedTokens: 10,
+        minTokens: 0,
+        targetTokens: 10,
+        maxTokens: 10,
+        allocatedTokens: 0,
+        allocationReason: 'budget_zero',
+        waterLevel: 'none' as const,
+        budgetClipped: true,
+        clippedByBudget: true,
+      },
+    ],
+    rendered: [
+      {
+        candidateId: 'character:1',
+        allocatedTokens: 10,
+        actualTokens: 8,
+        included: true,
+        clipped: true,
+        clippingReason: 'allocation_limit',
+        renderedHash: 'd'.repeat(64),
+      },
+      {
+        candidateId: 'note:2',
+        allocatedTokens: 0,
+        actualTokens: 0,
+        included: false,
+        clipped: false,
+        clippingReason: 'source_empty',
+        renderedHash: 'e'.repeat(64),
+      },
+      {
+        candidateId: 'worldbook:3',
+        allocatedTokens: 0,
+        actualTokens: 0,
+        included: false,
+        clipped: true,
+        clippingReason: 'budget_zero',
+        renderedHash: 'f'.repeat(64),
+      },
+    ],
+    messages: [{ role: 'system' as const, content: 'trace' }],
+    diagnostics: [],
+  };
+  const contract = { ...payload, fingerprint: '' } as FrozenGenerationContextContractV2;
+  return {
+    ...contract,
+    fingerprint: computeGenerationContractFingerprint(contract),
   };
 }
 
@@ -322,5 +460,79 @@ describe('buildGenerationTraceSummary', () => {
     });
     expect(summary.budget.hardInputLimit).toBe(53536);
     expect(summary.attemptCount).toBe(2);
+  });
+
+  test('derives decision-level Trace V2 from the frozen candidate contract', () => {
+    const serialized = serializePipelineTaskContext({
+      draftContext: {
+        ...context(),
+        generationContract: traceContract(),
+        stageTimings: [
+          { stage: 'collect', durationMs: 3, note: 'repository capture' },
+          { stage: 'freeze', durationMs: 1 },
+        ],
+      },
+      execution: execution(),
+      frozenDraftRequest: {
+        messages: [{ role: 'system', content: 'trace' }],
+        estimatedInputTokens: 20,
+        reservedOutputTokens: 4000,
+        safetyMargin: 2000,
+        contextWindow: 128000,
+        allocations: [],
+        requestFingerprint: 'trace-request',
+        chapterTitle: '第23章',
+        prevEnding: '',
+        userPrompt: '',
+      },
+    });
+    const parsed = parsePersistedPipelineTaskContext(serialized);
+    const summary = buildGenerationTraceSummary({
+      pipelineTaskId: 'task-v2',
+      parsed,
+      attempts: [draftAttemptRow()],
+    }) as any;
+    expect(summary.version).toBe(2);
+    expect(summary.candidateSummary).toEqual(
+      expect.objectContaining({
+        total: 3,
+        selected: 2,
+        rejected: 1,
+        included: 1,
+        clipped: 3,
+      }),
+    );
+    expect(summary.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          candidateId: 'character:1',
+          selected: true,
+          demandTokens: 12,
+          allocatedTokens: 10,
+          actualTokens: 8,
+          reason: 'included',
+        }),
+        expect.objectContaining({
+          candidateId: 'note:2',
+          selected: false,
+          reason: 'not_activated',
+        }),
+        expect.objectContaining({
+          candidateId: 'worldbook:3',
+          selected: true,
+          reason: 'budget_zero',
+        }),
+      ]),
+    );
+    expect(summary.modules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ module: 'character', allocatedTokens: 10 }),
+        expect.objectContaining({ module: 'worldbook', allocatedTokens: 0 }),
+      ]),
+    );
+    expect(summary.stageTimings).toEqual([
+      { stage: 'collect', durationMs: 3, note: 'repository capture' },
+      { stage: 'freeze', durationMs: 1 },
+    ]);
   });
 });
