@@ -28,7 +28,10 @@ import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { useSettingsStore } from '../store/settingsStore';
 import appVersionJson from '../constants/version.json';
-import { resumePipeline } from '../services/pipelineRunner';
+import {
+  createOutlineResumeWritingKernelExecution,
+  runWritingKernel,
+} from '../services/writing';
 import { resetFailedStageCheckpointsForResume } from '../data/repositories/pipelineStageCheckpointRepository';
 import {
   progressFor,
@@ -117,7 +120,12 @@ export const App: React.FC = () => {
           resolvedAction: null,
         });
         Toast.show({ type: 'info', text1: '正在从失败节点重试' });
-        resumePipeline(task.id, chapter).catch((error: any) => {
+        runWritingKernel(
+          createOutlineResumeWritingKernelExecution({
+            taskId: task.id,
+            chapter,
+          }),
+        ).catch((error: any) => {
           const already =
             error?.code === 'TASK_ALREADY_RUNNING' ||
             /已在运行/.test(String(error?.message || ''));

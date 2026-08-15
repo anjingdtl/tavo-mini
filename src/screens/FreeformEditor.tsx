@@ -14,7 +14,10 @@ import { Bot, GitBranch, History, Plus, Trash2 } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import Toast from 'react-native-toast-message';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
-import { runFreeformPipeline } from '../services/pipelineRunner';
+import {
+  createFreeformWritingKernelExecution,
+  runWritingKernel,
+} from '../services/writing';
 import {
   Button,
   Card,
@@ -240,11 +243,13 @@ export const FreeformEditor: React.FC = () => {
       return;
     }
     try {
-      await runFreeformPipeline(
-        taskId,
-        currentProject.id,
-        documentText,
-        steerText,
+      await runWritingKernel(
+        createFreeformWritingKernelExecution({
+          taskId,
+          projectId: currentProject.id,
+          documentText,
+          steerText,
+        }),
       );
       // Result handling is done by the root pipeline subscription in
       // src/main/index.tsx. That path works regardless of which screen the

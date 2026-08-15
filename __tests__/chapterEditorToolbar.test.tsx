@@ -340,6 +340,7 @@ describe('ChapterEditor toolbar', () => {
       'task-1',
       expect.objectContaining({ id: 1 }),
       expect.any(Function),
+      expect.objectContaining({ generationTraceId: expect.any(String) }),
     );
   });
 

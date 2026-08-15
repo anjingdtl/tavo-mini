@@ -6,10 +6,14 @@ import type { EditorStackParamList } from '../../../navigation/TabNavigator';
 import * as db from '../../../services/database';
 import {
   cancelPipeline,
-  resumePipeline,
-  runChapterPipeline,
-  type StageInfo,
 } from '../../../services/pipelineRunner';
+import {
+  createContinuationWritingKernelExecution,
+  createOutlineResumeWritingKernelExecution,
+  createOutlineWritingKernelExecution,
+  runWritingKernel,
+  type StageInfo,
+} from '../../../services/writing';
 import { suppressGlobalPipelinePrompt } from '../../../navigation/pipelinePromptSuppression';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
@@ -19,10 +23,7 @@ import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
 } from '../../../services/pipeline/outlineWorkflowVersion';
-import {
-  cancelContinuationRun,
-  startContinuationRun,
-} from '../../../services/continuation/generation';
+import { cancelContinuationRun } from '../../../services/continuation/generation';
 import { getContinuationChapterNumbering } from '../../../services/continuation/chapterNumbering/continuationChapterNumbering';
 import { prepareStoryMemoryForGeneration } from '../../../services/storyMemory/storyMemoryPrepare';
 import { enqueueStoryMemoryMaintenance } from '../../../services/storyMemory/storyMemoryService';
@@ -335,17 +336,18 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         })
         .catch(() => undefined);
       try {
-        await runChapterPipeline(
+        const kernelExecution = createOutlineWritingKernelExecution({
           taskId,
           chapter,
-          (info: StageInfo | string) => {
+          onStageUpdate: (info: StageInfo | string) => {
             if (typeof info === 'object') {
               setPreparing(info.stage === 'idle');
               setCurrentStage(info.stage);
               setProgressStartedAt(info.startedAt);
             }
           },
-        );
+        });
+        await runWritingKernel(kernelExecution);
         setProgressVisible(false);
         setQueued(false);
         setPreparing(false);
@@ -421,13 +423,18 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
             bumpAttempt: false,
           });
         }
-        await resumePipeline(taskId, chapter, (info: StageInfo | string) => {
-          if (typeof info === 'object') {
-            setPreparing(info.stage === 'idle');
-            setCurrentStage(info.stage);
-            setProgressStartedAt(info.startedAt);
-          }
+        const kernelExecution = createOutlineResumeWritingKernelExecution({
+          taskId,
+          chapter,
+          onStageUpdate: (info: StageInfo | string) => {
+            if (typeof info === 'object') {
+              setPreparing(info.stage === 'idle');
+              setCurrentStage(info.stage);
+              setProgressStartedAt(info.startedAt);
+            }
+          },
         });
+        await runWritingKernel(kernelExecution);
         setProgressVisible(false);
         setQueued(false);
         const finishedTask = usePipelineTaskStore
@@ -488,13 +495,14 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         `续写${numbering.getDefaultTitle(
           chapter.position as any,
         )}，保持与前文一致。`;
-      const run = await startContinuationRun({
+      const kernelExecution = createContinuationWritingKernelExecution({
         projectId: project.id,
         chapterId: chapter.id,
         targetPosition: chapter.position,
         userInstruction: instruction,
         currentChapterContent: chapter.content ?? '',
       });
+      const { result: run } = await runWritingKernel(kernelExecution);
       continuationRunIdRef.current = run.id;
       const updateContinuationStage = (stage: string | null | undefined) => {
         const next = continuationStageFromRunStage(stage);

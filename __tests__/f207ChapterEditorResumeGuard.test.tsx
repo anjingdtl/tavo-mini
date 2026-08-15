@@ -167,8 +167,13 @@ describe('F2-07: 章节编辑页重复触发防护', () => {
     expect(mockUpsertCheckpoint).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: 't_failed_1', stage: 'proof', status: 'pending' }),
     );
-    // resumePipeline 用旧任务，不新建任务。
-    expect(mockResumePipeline).toHaveBeenCalledWith('t_failed_1', expect.anything(), expect.anything());
+    // Resume 仍使用旧任务的持久化数据，但通过 Kernel 冻结新的 Trace 身份。
+    expect(mockResumePipeline).toHaveBeenCalledWith(
+      't_failed_1',
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ generationTraceId: expect.any(String) }),
+    );
     expect(mockRunChapterPipeline).not.toHaveBeenCalled();
   });
 

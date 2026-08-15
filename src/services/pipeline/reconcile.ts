@@ -195,6 +195,8 @@ import { buildAuditFormatterPrompt } from './auditFormatter';
 import { buildBriefContractFormatterPrompt } from './briefFormatter';
 import { executeClaimedStage } from './executeClaimedStage';
 import { adaptOutlineWritingSources } from '../writing/scenario/outlineWritingAdapter';
+import { buildWritingKernelFreezeTrace } from '../writing/unifiedWritingKernel';
+import type { WritingRequest } from '../writing/contracts/writingSource';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
@@ -2320,6 +2322,37 @@ async function actionPersistInitialSnapshot(
       },
     });
     pipelineContext.writingSourceTrace = sourceInput.trace;
+    const kernelRequest: WritingRequest = {
+      writingRunId: `wr_${taskId}`,
+      generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
+      projectId: chapter.project_id,
+      chapterId: chapter.id,
+      scenario: 'outline',
+      instruction: {
+        title: chapter.title || '',
+        synopsis: chapter.synopsis || '',
+        userInstruction: chapter.synopsis || chapter.title || '完成本章写作。',
+        currentContent: chapter.content || '',
+        targetPosition: chapter.position,
+      },
+      sourceBundle: sourceInput.bundle,
+      model: {
+        configId: runtime.requestConfig.id ?? null,
+        provider: runtime.requestConfig.provider_type,
+        modelName: runtime.requestConfig.model_name,
+        contextWindow: Math.max(1024, Number(runtime.requestConfig.context_window) || 8192),
+        maxOutputTokens: Math.max(256, Number(runtime.requestConfig.max_output_tokens) || 1024),
+      },
+      policy: {
+        version: 1,
+        reviewMode: execution.pipelineMode,
+        strictness: 'fail-closed',
+        values: { contextBudgetVersion: execution.contextBudgetVersion },
+      },
+    };
+    pipelineContext.writingKernelTrace = buildWritingKernelFreezeTrace({
+      request: kernelRequest,
+    }).trace;
   }
 
   // Freeze full-mode audit candidate pool at the same moment as draft context.

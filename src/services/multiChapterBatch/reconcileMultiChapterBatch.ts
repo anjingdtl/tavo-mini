@@ -40,8 +40,11 @@ import { adoptPipelineTaskResultAtomic } from './batchAdoption';
 import { BatchLeaseSession } from './leaseSession';
 import { MultiChapterBatchError } from './errors';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
-import { runChapterPipeline, resumePipeline } from '../pipelineRunner';
-import type { StageInfo as PipelineStageInfo } from '../pipelineRunner';
+import {
+  runOutlineWritingKernel,
+  resumeOutlineWritingKernel,
+} from '../writing/productionWritingEntry';
+import type { StageInfo as PipelineStageInfo } from '../writing/productionWritingEntry';
 import { BatchBudgetExceededError } from '../pipeline/reconcile';
 import type { PipelineCheckpointStage } from '../pipeline/types';
 import type { PipelineMode } from '../../types/pipeline';
@@ -74,8 +77,8 @@ export interface ReconcileMultiChapterBatchOptions {
   leaseMs?: number;
   onProgress?: (info: BatchProgressInfo) => void;
   /** Injectable pipeline runners (tests replace these). */
-  runPipeline?: typeof runChapterPipeline;
-  resumePipeline?: typeof resumePipeline;
+  runPipeline?: typeof runOutlineWritingKernel;
+  resumePipeline?: typeof resumeOutlineWritingKernel;
   maxSteps?: number;
 }
 
@@ -199,8 +202,8 @@ export async function reconcileMultiChapterBatch(
   options: ReconcileMultiChapterBatchOptions,
 ): Promise<void> {
   const owner = options.owner;
-  const runPipelineImpl = options.runPipeline ?? runChapterPipeline;
-  const resumePipelineImpl = options.resumePipeline ?? resumePipeline;
+  const runPipelineImpl = options.runPipeline ?? runOutlineWritingKernel;
+  const resumePipelineImpl = options.resumePipeline ?? resumeOutlineWritingKernel;
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
 
   const initial = await getBatchById(batchId);
@@ -341,8 +344,8 @@ async function executeBatchAction(params: {
   currentItem: MultiChapterBatchItemRow | undefined;
   action: MultiChapterBatchAction;
   options: ReconcileMultiChapterBatchOptions;
-  runPipelineImpl: typeof runChapterPipeline;
-  resumePipelineImpl: typeof resumePipeline;
+  runPipelineImpl: typeof runOutlineWritingKernel;
+  resumePipelineImpl: typeof resumeOutlineWritingKernel;
 }): Promise<'continue' | 'break' | 'stop'> {
   const { batchId, batch, currentItem, action, options } = params;
   const notify = (message: string) => {

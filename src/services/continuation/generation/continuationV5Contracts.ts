@@ -19,7 +19,10 @@ import type {
 } from './types';
 
 /** Temporary global soft-gate switch for V5 technical gates. */
-export const CONTINUATION_V5_SOFT_GATES = true;
+/** Phase II production contract: malformed/degraded stages are not eligible
+ * for delivery. Tests and historical parsers may still inspect warnings, but
+ * no production V5 run may promote a fallback through this gate. */
+export const CONTINUATION_V5_SOFT_GATES = false;
 
 export const CONTINUATION_V5_LENGTH_POLICY: ContinuationV5LengthPolicy = {
   preferredMinRatio: 0.9,
@@ -968,6 +971,15 @@ export function parseContinuationV5FinalEnvelope(
     ),
     declaredNewCoreFacts: asStringArray(parsed.declaredNewCoreFacts),
     unappliedItems: asStringArray(parsed.unappliedItems),
+    validNoOpRequirementIds: asStringArray(parsed.validNoOpRequirementIds),
+    validNoOpReasons:
+      parsed.validNoOpReasons && typeof parsed.validNoOpReasons === 'object'
+        ? Object.fromEntries(
+            Object.entries(parsed.validNoOpReasons as Record<string, unknown>)
+              .map(([key, value]) => [key, asString(value)])
+              .filter(([, value]) => value),
+          )
+        : {},
   };
 }
 

@@ -7,6 +7,7 @@ import {
   CONTINUATION_V5_ROUNDS,
 } from '../src/services/continuation/generation/types';
 import {
+  CONTINUATION_V5_SOFT_GATES,
   hashArchitectureEnvelope,
   hashAuditEnvelope,
   buildFallbackArchitecture,
@@ -34,22 +35,21 @@ describe('Continuation V5 workflow structure', () => {
     expect(new Set(physical).size).toBe(5);
   });
 
-  test('V1/V2 intermediate; only V3 can be eligible (soft may still mark final eligible)', () => {
+  test('V1/V2 intermediate; only strict V3 validation can be eligible', () => {
     const intermediateStages: string[] = ['draft', 'revision_1'];
     const deliverable = 'final';
     expect(intermediateStages.every(s => s !== deliverable)).toBe(true);
-    // Eligibility contract: intermediate never adoptable; final is the only stage
-    // that may become eligible (soft gates may promote V2 body into a final row).
+    // Eligibility contract: intermediate never adoptable; production runs are
+    // fail-closed and do not promote a V2 body into a final row.
+    expect(CONTINUATION_V5_SOFT_GATES).toBe(false);
     const eligibility = {
       draft: 'intermediate',
       revision_1: 'intermediate',
       final_ok: 'eligible',
-      final_soft_promoted: 'eligible',
     };
     expect(eligibility.draft).toBe('intermediate');
     expect(eligibility.revision_1).toBe('intermediate');
     expect(eligibility.final_ok).toBe('eligible');
-    expect(eligibility.final_soft_promoted).toBe('eligible');
   });
 
   test('successful path request accounting never exceeds 5', () => {
@@ -68,18 +68,21 @@ describe('Continuation V5 workflow structure', () => {
     expect(physical).toBeLessThanOrEqual(CONTINUATION_V5_MAX_PHYSICAL_REQUESTS);
   });
 
-  test('soft gates may soft-promote V2 body into final, never mark V1/V2 eligible', () => {
-    // Soft-gate mode still never marks draft/revision_1 as eligible for adopt.
-    // Instead it materializes a final row (possibly copied from V2) that can be eligible.
+  test('strict gates never soft-promote V2 body into final', () => {
+    expect(CONTINUATION_V5_SOFT_GATES).toBe(false);
     const artifacts = [
       { stage: 'draft', eligibilityStatus: 'intermediate' },
       { stage: 'revision_1', eligibilityStatus: 'intermediate' },
-      { stage: 'final', eligibilityStatus: 'eligible', softPromotedFrom: 'revision_1' },
+      {
+        stage: 'final',
+        eligibilityStatus: 'rejected',
+        rejectionCode: 'final_reviser_not_generated',
+      },
     ];
     const adoptable = artifacts.filter(
       a => a.stage === 'final' && a.eligibilityStatus === 'eligible',
     );
-    expect(adoptable).toHaveLength(1);
+    expect(adoptable).toHaveLength(0);
     expect(
       artifacts.some(
         a =>

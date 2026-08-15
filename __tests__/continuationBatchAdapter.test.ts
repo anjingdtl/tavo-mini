@@ -1051,7 +1051,7 @@ describe('continuation batch adapter', () => {
       expect(batch?.status).toBe('completed');
     });
 
-    it('case D: interrupted run resumes the SAME run (no second V5)', async () => {
+    it('case D: interrupted run restarts through a new Kernel run', async () => {
       const batchId = await seedBatch(1);
       const now = new Date().toISOString();
       await sql(
@@ -1084,10 +1084,10 @@ describe('continuation batch adapter', () => {
         activeContinuationRunId: 'ct_interrupted_1',
       });
       await drive(batchId);
-      expect(mockWorld.resumeCalls).toContain('ct_interrupted_1');
-      // The resumed run was adopted; no NEW run started.
-      expect(mockWorld.startCalls).toHaveLength(0);
-      expect(mockWorld.adoptCalls).toContain('ct_interrupted_1');
+      expect(mockWorld.resumeCalls).not.toContain('ct_interrupted_1');
+      expect(mockWorld.startCalls).toHaveLength(1);
+      expect(mockWorld.cancelCalls.length).toBeGreaterThan(0);
+      expect(mockWorld.adoptCalls).toContain('ct_test_2');
     });
 
     it('case H/I: cancelled run pauses; explicit user resume rearms a new run', async () => {

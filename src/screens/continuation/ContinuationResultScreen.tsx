@@ -35,13 +35,17 @@ import {
   listStageResults,
   listChecksForArtifact,
   repairContinuationArtifactOnce,
-  resumeInterruptedRun,
   type ContinuationArtifact,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
   type ContinuationGenerationStageResult,
   type ContinuationPlan,
 } from '../../services/continuation/generation';
+import { getChapterById } from '../../services/database';
+import {
+  createContinuationWritingKernelExecution,
+  runWritingKernel,
+} from '../../services/writing';
 import {
   ContinuationConflictError,
   ContinuationOutdatedError,
@@ -336,9 +340,24 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const doResume = async () => {
     setBusy(true);
     try {
-      await resumeInterruptedRun(runId);
-      Toast.show({ type: 'success', text1: '已从上次中断处继续' });
-      await reload();
+      if (!run) throw new Error('找不到待重启的续写任务');
+      const chapter = await getChapterById(run.chapterId);
+      if (!chapter) throw new Error('章节不存在，无法重启续写');
+      const { result: restarted } = await runWritingKernel(
+        createContinuationWritingKernelExecution({
+          projectId: run.projectId,
+          chapterId: run.chapterId,
+          targetPosition: Number(run.targetPosition),
+          userInstruction: run.userInstruction,
+          currentChapterContent: chapter.content || '',
+        }),
+      );
+      Toast.show({
+        type: 'success',
+        text1: '已按新版 Writing Kernel 重启',
+        text2: `新任务 ${restarted.id.slice(0, 12)} 已开始`,
+      });
+      onClose();
     } catch (e: any) {
       Toast.show({ type: 'error', text1: '恢复失败', text2: e?.message });
     } finally {
@@ -802,7 +821,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             {run.errorMessage || `当前阶段：${stageLabel(run.stage)}。已 reservation 的节点不会自动重发。`}
           </Text>
           <View style={styles.actions}>
-            <Button label={busy ? '处理中…' : '从已持久化阶段继续'} onPress={doResume} disabled={busy} />
+            <Button label={busy ? '处理中…' : '按新版 Kernel 重启'} onPress={doResume} disabled={busy} />
             <Button label="放弃" variant="secondary" onPress={doAbandon} disabled={busy} />
           </View>
         </Card>
@@ -987,7 +1006,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           )}
           {run.errorCode === 'cold_start' ? (
             <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-              应用重启中断了生成，可从此前阶段恢复。
+              应用重启中断了生成；旧执行态不继续复用，将按新版 Kernel 重新开始。
             </Text>
           ) : (
             <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>

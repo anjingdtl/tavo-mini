@@ -22,6 +22,7 @@ import type {
   ContinuationV5AuditEnvelope,
   ContinuationV5FinalEnvelope,
 } from './types';
+import { checkSemanticRequirementApplication } from '../../writing/stages/semanticApply';
 
 export type FinalArtifactValidationCode =
   | 'final_output_truncated'
@@ -42,6 +43,7 @@ export type FinalArtifactValidationCode =
   | 'final_rejected_architect_scene_used'
   | 'final_declared_new_core_fact'
   | 'final_unapplied_items'
+  | 'final_semantic_apply_failed'
   | 'final_severe_under_target';
 
 export interface FinalArtifactValidationResult {
@@ -138,6 +140,8 @@ export function validateFinalArtifact(input: {
   audit: ContinuationV5AuditEnvelope;
   auditContractHash: string;
   revisionArtifactHash: string;
+  /** Exact V2 body reviewed before Final Reviser. Supplied by production. */
+  revisionContent?: string;
   parseErrorCode?: FinalArtifactValidationCode | null;
 }): FinalArtifactValidationResult {
   const codes: FinalArtifactValidationCode[] = [];
@@ -244,6 +248,24 @@ export function validateFinalArtifact(input: {
     details.push(`missing obligations: ${missingObl.slice(0, 8).join(',')}`);
   }
 
+  if (input.revisionContent != null) {
+    const semanticApply = checkSemanticRequirementApplication({
+      beforeRevisionBody: input.revisionContent,
+      finalBody: content,
+      appliedRequirementIds: [
+        ...envelope.appliedObligationIds,
+        ...envelope.appliedCanonRequirementIds,
+        ...envelope.appliedStyleRequirementIds,
+      ],
+      validNoOpRequirementIds: envelope.validNoOpRequirementIds,
+      validNoOpReasons: envelope.validNoOpReasons,
+    });
+    details.push(...semanticApply.details);
+    if (!semanticApply.ok) {
+      codes.push('final_semantic_apply_failed');
+    }
+  }
+
   if (envelope.unappliedItems.length > 0) {
     codes.push('final_unapplied_items');
   }
@@ -292,8 +314,13 @@ export function validateFinalArtifact(input: {
   const softBlockingOnly: FinalArtifactValidationCode[] = uniqueCodes.filter(
     code => code === 'final_empty_content',
   );
+  // Semantic Apply is always a hard gate. Soft gates must never turn a
+  // declared-but-unchanged revision into a deliverable false green.
+  const semanticBlocking = uniqueCodes.filter(
+    code => code === 'final_semantic_apply_failed',
+  );
   const blockingCodes: FinalArtifactValidationCode[] = CONTINUATION_V5_SOFT_GATES
-    ? softBlockingOnly
+    ? Array.from(new Set([...softBlockingOnly, ...semanticBlocking]))
     : hardBlocking;
   const blockingSet = new Set(blockingCodes);
 

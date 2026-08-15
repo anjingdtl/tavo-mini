@@ -293,6 +293,7 @@ describe('章节编辑页进度条：failed → 同任务自动重试 → comple
         taskId,
         chapter,
         expect.any(Function),
+        expect.objectContaining({ generationTraceId: expect.any(String) }),
       ),
     );
   });

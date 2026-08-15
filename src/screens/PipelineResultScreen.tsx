@@ -14,7 +14,11 @@ import {
 import * as db from '../services/database';
 import { computeInputFingerprint } from '../services/outlineContextBuilder';
 import { adoptPipelineTaskResult } from '../services/multiChapterBatch/batchAdoption';
-import { resumePipeline, runChapterPipeline } from '../services/pipelineRunner';
+import {
+  createOutlineResumeWritingKernelExecution,
+  createOutlineWritingKernelExecution,
+  runWritingKernel,
+} from '../services/writing';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
@@ -535,7 +539,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           resolvedAt: null,
           resolvedAction: null,
         });
-      await resumePipeline(task.id, chapter);
+      await runWritingKernel(
+        createOutlineResumeWritingKernelExecution({
+          taskId: task.id,
+          chapter,
+        }),
+      );
       Alert.alert('已重试', '流水线已从失败节点继续，可在任务中心查看进度。');
       handleClose();
     } catch (error: any) {
@@ -570,7 +579,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         },
       );
       Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');
-      runChapterPipeline(newTaskId, chapter).catch(error => {
+      runWritingKernel(
+        createOutlineWritingKernelExecution({
+          taskId: newTaskId,
+          chapter,
+        }),
+      ).catch(error => {
         console.warn('[pipeline] current restart failed:', error);
       });
       handleClose();
@@ -610,7 +624,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       setRewriteVisible(false);
       setRewriteInstruction('');
       setAdopting(false);
-      resumePipeline(derived.id, chapter).catch(error => {
+      runWritingKernel(
+        createOutlineResumeWritingKernelExecution({
+          taskId: derived.id,
+          chapter,
+        }),
+      ).catch(error => {
         console.warn('[pipeline] derived Final rewrite failed:', error);
       });
       Alert.alert('已创建派生任务', '仅重写终稿已开始，可在任务中心查看新结果。');

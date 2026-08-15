@@ -6,11 +6,12 @@ import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
 import type { PipelineTask } from '../types/pipeline';
+import { cancelPipeline } from '../services/pipelineRunner';
 import {
-  cancelPipeline,
-  resumePipeline,
-  runChapterPipeline,
-} from '../services/pipelineRunner';
+  createOutlineResumeWritingKernelExecution,
+  createOutlineWritingKernelExecution,
+  runWritingKernel,
+} from '../services/writing';
 import { isReconcileActive } from '../services/pipeline';
 import * as db from '../services/database';
 import {
@@ -211,7 +212,12 @@ export const PipelineTaskScreen: React.FC = () => {
       Toast.show({ type: 'info', text1: '正在继续任务…' });
       // @ts-ignore
       navigation.navigate('PipelineResult', { taskId: task.id });
-      resumePipeline(task.id, chapter).catch((error: any) => {
+      runWritingKernel(
+        createOutlineResumeWritingKernelExecution({
+          taskId: task.id,
+          chapter,
+        }),
+      ).catch((error: any) => {
         const already =
           error?.code === 'TASK_ALREADY_RUNNING' ||
           /已在运行/.test(String(error?.message || ''));
@@ -267,7 +273,12 @@ export const PipelineTaskScreen: React.FC = () => {
       Toast.show({ type: 'info', text1: '新版任务已创建', text2: '正在执行完整流水线' });
       // @ts-ignore
       navigation.navigate('PipelineResult', { taskId: newTaskId });
-      runChapterPipeline(newTaskId, chapter).catch(error => {
+      runWritingKernel(
+        createOutlineWritingKernelExecution({
+          taskId: newTaskId,
+          chapter,
+        }),
+      ).catch(error => {
         Toast.show({ type: 'error', text1: '新版任务失败', text2: error?.message || '请查看任务详情' });
       });
     } catch (error: any) {

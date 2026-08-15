@@ -104,6 +104,8 @@ import type {
 import { activeContinuationControllers } from './continuationRunControllers';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
 import { adaptContinuationWritingSources } from '../../writing/scenario/continuationWritingAdapter';
+import { buildWritingKernelFreezeTrace } from '../../writing/unifiedWritingKernel';
+import type { WritingRequest } from '../../writing/contracts/writingSource';
 
 interface V5PipelineOptions {
   callStage?: StageLlmCaller;
@@ -584,6 +586,12 @@ async function runRound1(
     existingArch?.requestReserved &&
     existingArch.requestCount === 1
   ) {
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      throw Object.assign(
+        new Error('Architect 已 reservation 但缺少 A1，不能复用 fallback。'),
+        { code: 'narrative_architect_reserved_without_artifact' },
+      );
+    }
     architecture = buildFallbackArchitecture({
       userInstruction: snapshot.bundles.userInstruction,
       lockedRules: snapshot.bundles.lockedRules,
@@ -808,6 +816,9 @@ async function runRound1(
           architectureDegraded = false;
         } catch (error: any) {
           if (options.signal.aborted) throw error;
+          if (!CONTINUATION_V5_SOFT_GATES) {
+            throw error;
+          }
           // Fallback A1 — allow Round 2.
           const fallback = buildFallbackArchitecture({
             userInstruction: snapshot.bundles.userInstruction,
@@ -857,6 +868,9 @@ async function runRound1(
     throw new Error('Round 1 缺少 V1 初稿');
   }
   if (!architecture) {
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      throw new Error('Round 1 缺少 A1 架构合同。');
+    }
     architecture = buildFallbackArchitecture({
       userInstruction: snapshot.bundles.userInstruction,
       lockedRules: snapshot.bundles.lockedRules,
@@ -1184,6 +1198,12 @@ async function runRound2(
     existingAuditStage?.requestReserved &&
     existingAuditStage.requestCount === 1
   ) {
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      throw Object.assign(
+        new Error('Auditor 已 reservation 但缺少 C2，不能复用 fallback。'),
+        { code: 'adversarial_auditor_reserved_without_artifact' },
+      );
+    }
     audit = buildFallbackAuditContract({
       draftArtifactHash: draftArtifact.contentHash,
       revisionArtifactHash: revisionArtifact.contentHash,
@@ -1294,6 +1314,9 @@ async function runRound2(
       auditorDegraded = softBinding || softWarnings.length > 0;
     } catch (error: any) {
       if (options.signal.aborted) throw error;
+      if (!CONTINUATION_V5_SOFT_GATES) {
+        throw error;
+      }
       const fallback = buildFallbackAuditContract({
         draftArtifactHash: draftArtifact.contentHash,
         revisionArtifactHash: revisionArtifact.contentHash,
@@ -1336,6 +1359,9 @@ async function runRound2(
   }
 
   if (!audit) {
+    if (!CONTINUATION_V5_SOFT_GATES) {
+      throw new Error('Round 2 缺少 C2 审计合同。');
+    }
     audit = buildFallbackAuditContract({
       draftArtifactHash: draftArtifact.contentHash,
       revisionArtifactHash: revisionArtifact.contentHash,
@@ -1432,9 +1458,12 @@ async function softDeliverRevisionAsFinal(input: {
       audit: input.audit,
       auditContractHash: input.auditContractHash,
       revisionArtifactHash: input.revisionArtifact.contentHash,
+      revisionContent: input.revisionArtifact.content,
     });
     const deliverable =
-      CONTINUATION_V5_SOFT_GATES && Boolean(envelope.content.trim());
+      CONTINUATION_V5_SOFT_GATES &&
+      Boolean(envelope.content.trim()) &&
+      validation.blockingCodes.length === 0;
     const passed = deliverable ? true : validation.passed;
     softWarnings.push(...(validation.warnings || []));
     if (passed && !validation.passed) {
@@ -1699,6 +1728,7 @@ async function runRound3AndValidate(
       audit,
       auditContractHash,
       revisionArtifactHash: revisionArtifact.contentHash,
+      revisionContent: revisionArtifact.content,
     });
     const tokenUsageJson = await buildTelemetry(run.id, snapshot, {
       architectureDegraded,
@@ -2080,6 +2110,7 @@ async function runRound3AndValidate(
     audit,
     auditContractHash,
     revisionArtifactHash: revisionArtifact.contentHash,
+    revisionContent: revisionArtifact.content,
   });
 
   const tokenUsageJson = await buildTelemetry(run.id, snapshot, {
@@ -2309,6 +2340,50 @@ export async function startContinuationV5Run(
   });
   snapshot.writingSourceTrace = sourceAdapter.trace;
   trace.writingSourceTrace = sourceAdapter.trace;
+  const frozenModel =
+    snapshot.settingsSnapshot.frozenModelConfigs?.finalReviser ||
+    snapshot.settingsSnapshot.frozenModelConfigs?.writer ||
+    snapshot.settingsSnapshot.frozenModelConfigs?.draftWriter ||
+    null;
+  const kernelRequest: WritingRequest = {
+    writingRunId: `wr_${snapshot.projectId}_${snapshot.targetChapterId}_${snapshot.inputRevisionHash.slice(0, 12)}`,
+    generationTraceId:
+      snapshot.generationTraceId ||
+      `gt_${snapshot.inputRevisionHash.slice(0, 24)}`,
+    projectId: snapshot.projectId,
+    chapterId: snapshot.targetChapterId,
+    scenario: 'continuation',
+    instruction: {
+      title: `Continuation chapter ${snapshot.targetPosition}`,
+      synopsis: snapshot.bundles.userInstruction,
+      userInstruction: snapshot.bundles.userInstruction,
+      currentContent: snapshot.bundles.seam.excerpt,
+      targetPosition: Number(snapshot.targetPosition),
+    },
+    sourceBundle: sourceAdapter.bundle,
+    model: {
+      configId: frozenModel?.configId ?? null,
+      provider: frozenModel?.providerType || 'openai_compatible',
+      modelName: frozenModel?.modelName || 'runtime-selected',
+      contextWindow: Math.max(
+        1024,
+        Number(frozenModel?.contextWindow || snapshot.contextBudget?.modelContextLimit || 8192),
+      ),
+      maxOutputTokens: Math.max(
+        256,
+        Number(frozenModel?.maxOutputTokens || snapshot.contextBudget?.reservedOutputTokens || 1024),
+      ),
+    },
+    policy: {
+      version: 1,
+      reviewMode: 'continuation-v5',
+      strictness: 'fail-closed',
+      values: { workflowVersion: 5, targetPosition: snapshot.targetPosition },
+    },
+  };
+  const kernelFreeze = buildWritingKernelFreezeTrace({ request: kernelRequest });
+  snapshot.writingKernelTrace = kernelFreeze.trace;
+  trace.writingKernelTrace = kernelFreeze.trace;
   const runId = newContinuationRunId();
   const unifiedTrace = createContinuationGenerationTrace({
     snapshot,
@@ -2320,10 +2395,20 @@ export async function startContinuationV5Run(
     state: 'running',
     stage: 'round1',
   });
+  const unifiedGenerationTraceId =
+    unifiedTrace.generationTraceId ?? kernelRequest.generationTraceId;
+  const kernelFreezeWithTrace = buildWritingKernelFreezeTrace({
+    request: {
+      ...kernelRequest,
+      generationTraceId: unifiedGenerationTraceId,
+    },
+  });
   const snapshotWithTraceId: ContinuationContextSnapshotV5 = {
     ...snapshot,
-    generationTraceId: unifiedTrace.generationTraceId,
+    generationTraceId: unifiedGenerationTraceId,
+    writingKernelTrace: kernelFreezeWithTrace.trace,
   };
+  trace.writingKernelTrace = kernelFreezeWithTrace.trace;
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,

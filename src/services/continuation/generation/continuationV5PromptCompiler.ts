@@ -567,7 +567,7 @@ export function compileContinuationV5FinalReviserMessages(input: {
     `【C2 rejected scenes】\n${JSON.stringify(
       input.audit.architectureAudit.rejectedScenes,
     )}`,
-    '【输出契约】\n{"schemaVersion":1,"revisionArtifactHash":"...","architectureHash":"...","auditContractHash":"...","content":"完整V3","appliedObligationIds":[],"appliedCanonRequirementIds":[],"appliedStyleRequirementIds":[],"usedArchitectSceneIds":[],"restoredProtectedPassageIds":[],"declaredNewCoreFacts":[],"unappliedItems":[]}',
+    '【输出契约】\n{"schemaVersion":1,"revisionArtifactHash":"...","architectureHash":"...","auditContractHash":"...","content":"完整V3","appliedObligationIds":[],"appliedCanonRequirementIds":[],"appliedStyleRequirementIds":[],"usedArchitectSceneIds":[],"restoredProtectedPassageIds":[],"declaredNewCoreFacts":[],"unappliedItems":[],"validNoOpRequirementIds":[],"validNoOpReasons":{}}',
   ]
     .filter(Boolean)
     .join('\n\n');

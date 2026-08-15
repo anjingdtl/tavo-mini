@@ -15,6 +15,7 @@
 import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
 import type { GenerationStageTimings } from '../services/context/generationStageContracts';
 import type { WritingSourceTrace } from '../services/writing/contracts/writingSource';
+import type { WritingKernelTrace } from '../services/writing/contracts/frozenWritingContext';
 
 /** Historical V3 snapshot written by Context Budget V6 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
@@ -203,6 +204,7 @@ export interface PipelineContextSnapshot {
   generationContract?: import('../services/context/generation/generationContracts').FrozenGenerationContextContractV2;
   /** Phase I: normalized pre-kernel source boundary and fingerprint. */
   writingSourceTrace?: WritingSourceTrace;
+  writingKernelTrace?: WritingKernelTrace;
 }
 
 /**

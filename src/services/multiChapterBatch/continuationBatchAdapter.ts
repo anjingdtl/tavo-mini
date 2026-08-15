@@ -8,7 +8,7 @@
  *   create chapter (continuation numbering)
  *   → startContinuationRun (V5, current-chapter instruction ONLY)
  *   → atomic bind active_continuation_run_id
- *   → observe (interrupted ⇒ resumeInterruptedRun)
+ *   → observe (interrupted ⇒ restart through Writing Kernel)
  *   → eligible final ⇒ adoptArtifactAsDraft (never force / never open-checks)
  *   → finalizeContinuationChapter
  *   → state freshness gate
@@ -35,12 +35,14 @@ import {
   type MultiChapterBatchItemRow,
 } from '../../data/repositories/multiChapterBatchRepository';
 import {
-  startContinuationRun,
-  resumeInterruptedRun,
   cancelContinuationRun,
   adoptArtifactAsDraft,
   finalizeContinuationChapter,
 } from '../continuation/generation/continuationGenerationRunner';
+import {
+  createContinuationWritingKernelExecution,
+  runWritingKernel,
+} from '../writing';
 import { createContinuationBatchTraceId } from '../continuation/generation/continuationGenerationTrace';
 import type { StageLlmCaller } from '../continuation/generation/continuationGenerationRunner';
 import {
@@ -92,7 +94,7 @@ export interface ContinuationBatchStepOptions {
   owner: string;
   leaseMs?: number;
   onProgress?: ReconcileProgressSink;
-  /** Test injector forwarded to startContinuationRun/resumeInterruptedRun. */
+  /** Test injector forwarded to the Writing Kernel continuation driver. */
   callStage?: StageLlmCaller;
   /** Test injector for the bounded observe sleep. */
   sleepImpl?: (ms: number) => Promise<void>;
@@ -493,7 +495,8 @@ async function executeContinuationItemStep(params: {
         batch,
         currentItem,
       );
-      const run = await startContinuationRun({
+      const { result: run } = await runWritingKernel(
+        createContinuationWritingKernelExecution({
         projectId: batch.projectId,
         chapterId: currentItem.chapterId,
         targetPosition: Number(chapter.position),
@@ -503,7 +506,8 @@ async function executeContinuationItemStep(params: {
         batchTraceId: createContinuationBatchTraceId(batchId),
         chapterOrdinal: currentItem.ordinal,
         chapterCount: batch.chapterCount,
-      });
+        }),
+      );
       const bound = await bindContinuationRunForItem({
         batchId,
         ordinal: currentItem.ordinal,
@@ -681,17 +685,45 @@ async function driveRunToSettlement(params: {
       return 'continue';
     }
     case 'interrupted': {
-      // Case D: resume the SAME run — persisted stage reservations make this
-      // non-duplicating (never a second V5 for the same chapter, doc §25).
-      notify('恢复被中断的续写运行', run.stage);
+      // Execution Compatibility = NO: restart semantic input through a new
+      // Kernel run instead of resuming the old runtime state.
+      notify('按新版 Writing Kernel 重启被中断的续写', run.stage);
       try {
-        await resumeInterruptedRun(run.id, options.callStage);
+        const chapter = await db.getChapterById(run.chapterId);
+        if (!chapter) throw new Error('章节不存在');
+        const { result: restarted } = await runWritingKernel(
+          createContinuationWritingKernelExecution({
+            projectId: run.projectId,
+            chapterId: run.chapterId,
+            targetPosition: Number(run.targetPosition),
+            userInstruction:
+              run.userInstruction || chapter.synopsis || chapter.title || '按当前章节边界续写。',
+            currentChapterContent: chapter.content || '',
+            callStage: options.callStage,
+          }),
+        );
+        await cancelContinuationRun(run.id).catch(() => {});
+        await updateBatchItem(batchId, item.ordinal, {
+          activeContinuationRunId: null,
+          status: 'creating_pipeline_task',
+        });
+        const rebound = await bindContinuationRunForItem({
+          batchId,
+          ordinal: item.ordinal,
+          chapterId: item.chapterId!,
+          continuationRunId: restarted.id,
+          status: 'running_pipeline',
+        });
+        if (!rebound) {
+          await cancelContinuationRun(restarted.id).catch(() => {});
+          throw new Error('批次续写运行绑定冲突');
+        }
       } catch (error: any) {
         return pauseBatchForItem(
           batchId,
           item,
           'BATCH_CONTINUATION_RUN_FAILED',
-          `恢复续写失败：${getErrorMessage(error, '未知错误')}`,
+          `重启续写失败：${getErrorMessage(error, '未知错误')}`,
         );
       }
       return 'continue';

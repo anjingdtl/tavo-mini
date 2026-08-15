@@ -15,6 +15,7 @@ import type { ContinuationV4StageBudget } from './continuationV4Budget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
 import type { WritingSourceTrace } from '../../writing/contracts/writingSource';
+import type { WritingKernelTrace } from '../../writing/contracts/frozenWritingContext';
 
 export type ContinuationStageName =
   | 'context'
@@ -960,6 +961,9 @@ export interface ContinuationV5FinalEnvelope {
   restoredProtectedPassageIds: string[];
   declaredNewCoreFacts: string[];
   unappliedItems: string[];
+  /** Explicit proof for requirements already satisfied before V3. */
+  validNoOpRequirementIds?: string[];
+  validNoOpReasons?: Record<string, string>;
 }
 
 /** Shared frozen context slice for V5 full-text nodes. */
@@ -1189,6 +1193,7 @@ export interface ContinuationContextSnapshot {
   createdAt: string;
   /** Phase I: unified pre-kernel source trace. */
   writingSourceTrace?: WritingSourceTrace;
+  writingKernelTrace?: WritingKernelTrace;
 }
 
 /**
@@ -1281,6 +1286,7 @@ export interface ContinuationContextTrace {
   generationTrace?: ContinuationGenerationTraceV2;
   /** Phase I: normalized pre-kernel source boundary and fingerprint. */
   writingSourceTrace?: WritingSourceTrace;
+  writingKernelTrace?: WritingKernelTrace;
 }
 
 export interface StoryBeat {
