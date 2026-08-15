@@ -85,6 +85,81 @@ describe('MultiChapterBatchScreen (default capability)', () => {
     expect(mockLoadActive).toHaveBeenCalledWith(1);
   });
 
+  it('冷启动预览从 plannerOutputJson 重建计划（items 仍是占位行时不丢失）', async () => {
+    mockStoreState.batch = {
+      id: 'batch-cold',
+      projectId: 1,
+      status: 'planning',
+      sourcePrompt: '剧情摘要',
+      chapterCount: 2,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+      writingMode: 'outline',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
+      currentOrdinal: 1,
+      completedCount: 0,
+      activeItemOrdinal: null,
+      maxLlmCalls: null,
+      maxInputTokens: null,
+      maxOutputTokens: null,
+      usedLlmCalls: 0,
+      usedInputTokens: 0,
+      usedOutputTokens: 0,
+      pauseReason: null,
+      errorCode: null,
+      errorMessage: null,
+      reasoningEffort: null,
+      updatedAt: Date.now(),
+      // planner 产物在用户确认前只落在这里；items 仍是占位行。
+      plannerOutputJson: JSON.stringify({
+        chapters: [
+          {
+            ordinal: 1,
+            title: '灯塔之外',
+            synopsis: '三人抵达灯塔外墙开始搜寻。',
+            keyBeats: ['抵达灯塔'],
+            carryIn: '',
+            carryOut: '',
+            targetWords: 3000,
+          },
+          {
+            ordinal: 2,
+            title: '北塔之门',
+            synopsis: '北塔大门紧闭，约定再访。',
+            keyBeats: ['确认封闭'],
+            carryIn: '',
+            carryOut: '',
+            targetWords: 3000,
+          },
+        ],
+      }),
+    };
+    mockStoreState.items = [1, 2].map(i => ({
+      batchId: 'batch-cold',
+      ordinal: i,
+      title: `第 ${i} 章`,
+      synopsis: '',
+      keyBeatsJson: '[]',
+      carryIn: null,
+      carryOut: null,
+      targetWords: 3000,
+      status: 'pending',
+      chapterId: null,
+      activePipelineTaskId: null,
+      errorCode: null,
+      errorMessage: null,
+      nextRetryAt: null,
+      updatedAt: Date.now(),
+    }));
+    const { findByDisplayValue } = render(<MultiChapterBatchScreen />);
+    await expect(findByDisplayValue('灯塔之外')).resolves.toBeTruthy();
+    await expect(
+      findByDisplayValue('三人抵达灯塔外墙开始搜寻。'),
+    ).resolves.toBeTruthy();
+    await expect(findByDisplayValue('北塔之门')).resolves.toBeTruthy();
+  });
+
   it('renders the create form directly for outline projects (no flag gate)', async () => {
     const { findByText, queryByText } = render(<MultiChapterBatchScreen />);
     await expect(findByText('剧情摘要')).resolves.toBeTruthy();
@@ -110,8 +185,70 @@ describe('MultiChapterBatchScreen (default capability)', () => {
     expect(mockLoadActive).toHaveBeenCalledTimes(1);
   });
 
-  it('never references the removed feature flag', () => {
-    // Guard against accidentally re-adding a flag read in the screen.
+  it('批次完成后点击「返回章节列表」直接离开批次页，而不是留在创建表单', async () => {
+    mockLoadActive.mockResolvedValue(undefined);
+    mockStoreState.batch = {
+      id: 'batch-done',
+      projectId: 1,
+      status: 'completed',
+      sourcePrompt: '续写目标',
+      chapterCount: 3,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+      writingMode: 'continuation',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
+      currentOrdinal: 3,
+      completedCount: 3,
+      activeItemOrdinal: null,
+      maxLlmCalls: null,
+      maxInputTokens: null,
+      maxOutputTokens: null,
+      usedLlmCalls: 12,
+      usedInputTokens: 30000,
+      usedOutputTokens: 9000,
+      pauseReason: null,
+      errorCode: null,
+      errorMessage: null,
+      reasoningEffort: null,
+      updatedAt: Date.now(),
+    };
+    mockStoreState.items = [1, 2, 3].map(i => ({
+      batchId: 'batch-done',
+      ordinal: i,
+      title: `第 ${i} 章`,
+      synopsis: '',
+      keyBeatsJson: '[]',
+      carryIn: null,
+      carryOut: null,
+      targetWords: 3000,
+      status: 'succeeded',
+      chapterId: i,
+      activePipelineTaskId: null,
+      activeContinuationRunId: null,
+      activeRunNo: 0,
+      completionQuality: 'full_pipeline',
+      retryCount: 0,
+      errorCode: null,
+      errorMessage: null,
+      nextRetryAt: null,
+      updatedAt: Date.now(),
+    }));
+
+    const { findByText, getByText, queryByText } = render(
+      <MultiChapterBatchScreen />,
+    );
+    await expect(findByText('批次完成')).resolves.toBeTruthy();
+
+    fireEvent.press(getByText('返回章节列表'));
+
+    // 确认后必须离开批次页回到章节工作台；不能退回一键写 N 章的创建表单。
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(queryByText('本批续写目标')).toBeNull();
+    expect(queryByText('剧情摘要')).toBeNull();
+  });
+
+  it('never references the removed feature flag', () => {    // Guard against accidentally re-adding a flag read in the screen.
     const source = require('fs').readFileSync(
       require('path').resolve(
         __dirname,

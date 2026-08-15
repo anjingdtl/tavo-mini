@@ -221,10 +221,38 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     }
   }, [batchStatus, store.reconciling, store.items, resumeSubmitting]);
 
-  // 冷启动恢复：编辑计划从已持久化的批次条目重建（本地 edited state 是
-  // 易失的，新进程后为空）。
+  // 冷启动恢复：编辑计划从持久化数据重建（本地 edited state 是易失的，
+  // 新进程后为空）。planner 的产物在用户确认前只落在批次行的
+  // plannerOutputJson（items 仍是占位行），必须优先从它重建——否则重启
+  // 后预览退化为空占位，确认时还会因 synopsis 为空被校验卡死。
   useEffect(() => {
     if (view === 'preview' && edited.length === 0 && store.items.length > 0) {
+      const fromPlanner = (() => {
+        const raw = store.batch?.plannerOutputJson;
+        if (!raw) return null;
+        try {
+          const parsed = JSON.parse(raw);
+          const chapters = Array.isArray(parsed?.chapters) ? parsed.chapters : null;
+          if (!chapters || chapters.length === 0) return null;
+          return chapters.map((c: Record<string, unknown>) => ({
+            ordinal: Number(c.ordinal),
+            title: String(c.title ?? ''),
+            synopsis: String(c.synopsis ?? ''),
+            keyBeats: Array.isArray(c.keyBeats)
+              ? c.keyBeats.map(String)
+              : [],
+            carryIn: String(c.carryIn ?? ''),
+            carryOut: String(c.carryOut ?? ''),
+            targetWords: Number(c.targetWords) || BATCH_DEFAULT_TARGET_WORDS,
+          }));
+        } catch {
+          return null;
+        }
+      })();
+      if (fromPlanner) {
+        setEdited(fromPlanner);
+        return;
+      }
       setEdited(
         store.items.map(item => ({
           ordinal: item.ordinal,
@@ -244,7 +272,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         })),
       );
     }
-  }, [view, edited.length, store.items]);
+  }, [view, edited.length, store.items, store.batch]);
 
   const handleCreate = async () => {
     const count = Number(form.chapterCount);
@@ -586,10 +614,17 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         )}
 
         {view === 'report' && store.batch && (
-          <ReportView theme={theme} store={store} onStartNew={() => {
-            store.loadActiveBatchForProject(currentProject?.id ?? 0).catch(() => {});
-            setView('create');
-          }} />
+          <ReportView
+            theme={theme}
+            store={store}
+            onLeave={() => {
+              // 完成确认后直接离开批次页，回到章节工作台（EditorMain：续写
+              // 项目是续写工作台，大纲项目是章节列表）。不能 setView('create')
+              // 留在批次页——那会把用户带回一键写 N 章表单，体验割裂。
+              // 已完成批次不是 active，重进批次页会自然回到创建页。
+              navigation.goBack();
+            }}
+          />
         )}
 
         {store.error ? (
@@ -897,7 +932,7 @@ function PausedView(props: {
 function ReportView(props: {
   theme: any;
   store: ReturnType<typeof useMultiChapterBatchStore.getState>;
-  onStartNew: () => void;
+  onLeave: () => void;
 }) {
   const { theme, store } = props;
   const batch = store.batch!;
@@ -935,7 +970,7 @@ function ReportView(props: {
         </Card>
         {batch.status === 'completed' ? (
           <View style={{ marginTop: spacing.md }}>
-            <Button label="返回章节列表" onPress={props.onStartNew} />
+            <Button label="返回章节列表" onPress={props.onLeave} />
           </View>
         ) : null}
       </Section>
