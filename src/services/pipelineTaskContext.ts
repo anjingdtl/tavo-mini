@@ -32,6 +32,10 @@ import {
 } from './pipeline/reasoningPolicy';
 import type { ChatMessage } from './llm';
 import type { GenerationTraceRecordV1 } from '../types/generationTrace';
+import {
+  buildGenerationFingerprintInput,
+  computeGenerationFingerprint,
+} from './pipeline/frozenGenerationContext';
 import { OutlineContextError } from './outlineContextBuilder';
 import { isCurrentOutlinePipelineContextBudgetVersion } from './pipeline/outlineWorkflowVersion';
 import { sha256Hex } from './continuation/hashUtils';
@@ -62,6 +66,12 @@ export interface PersistedPipelineTaskContextV2 {
    * historical tasks (tolerated, never blocks generation).
    */
   trace?: GenerationTraceRecordV1;
+  /**
+   * Stability Phase 2 — semantic generation fingerprint (Plan §12). Computed
+   * deterministically from the frozen semantic content at serialize time and
+   * re-verified at parse time. Absent on historical tasks (tolerated).
+   */
+  generationFingerprint?: string;
   createdAt: number;
   draftCompletedAt?: number;
   auditContextCreatedAt?: number;
@@ -88,6 +98,8 @@ export interface ParsedPipelineTaskContext {
   frozenAuditCandidates: FrozenAuditCandidates | null;
   /** Stability Phase 1 trace identity; null on pre-trace historical tasks. */
   trace: GenerationTraceRecordV1 | null;
+  /** Stability Phase 2 semantic fingerprint; null on historical envelopes. */
+  generationFingerprint: string | null;
   createdAt: number;
   auditFellBack?: boolean;
 }
@@ -1300,6 +1312,7 @@ export function parsePipelineTaskContextV1(
     frozenDraftRequest: null,
     frozenAuditCandidates: null,
     trace: null,
+    generationFingerprint: null,
     createdAt: draftContext.createdAt ?? Date.now(),
   };
 }
@@ -1341,16 +1354,42 @@ export function parsePipelineTaskContextV2(
       'restart_task',
     );
   }
+  const frozenDraftRequest = parseFrozenDraftRequest(raw.frozenDraftRequest);
+  const trace = parseTraceRecord(raw.trace);
+  // Stability Phase 2 — verify the semantic fingerprint when the envelope
+  // carries one. Mismatch means semantic content drifted from what was
+  // frozen → fail closed (Plan §12 / §14 SNAPSHOT_FINGERPRINT_MISMATCH).
+  let generationFingerprint: string | null = null;
+  if (
+    typeof raw.generationFingerprint === 'string' &&
+    raw.generationFingerprint
+  ) {
+    generationFingerprint = computeGenerationFingerprint(
+      buildGenerationFingerprintInput(
+        draftContext,
+        execution,
+        frozenDraftRequest,
+      ),
+    );
+    if (generationFingerprint !== raw.generationFingerprint) {
+      throw new OutlineContextError(
+        'SNAPSHOT_FINGERPRINT_MISMATCH',
+        '生成语义指纹校验失败（冻结内容与指纹不一致），已阻止恢复。请重新开始生成。',
+        'restart_task',
+      );
+    }
+  }
   return {
     version: 2,
     draftContext,
     auditContext,
     execution,
-    frozenDraftRequest: parseFrozenDraftRequest(raw.frozenDraftRequest),
+    frozenDraftRequest,
     frozenAuditCandidates: parseFrozenAuditCandidates(
       raw.frozenAuditCandidates,
     ),
-    trace: parseTraceRecord(raw.trace),
+    trace,
+    generationFingerprint,
     createdAt,
     auditFellBack: Boolean(raw.auditFellBack),
   };
@@ -1537,6 +1576,16 @@ export function serializePipelineTaskContext(params: {
   if (params.trace) {
     envelope.trace = params.trace;
   }
+  // Stability Phase 2 — deterministic semantic fingerprint, embedded once.
+  // Re-serialization (draft completion adds auditContext) recomputes the
+  // identical value because the fingerprint covers semantic content only.
+  envelope.generationFingerprint = computeGenerationFingerprint(
+    buildGenerationFingerprintInput(
+      draftContext,
+      params.execution,
+      params.frozenDraftRequest ?? null,
+    ),
+  );
   if (params.draftCompletedAt != null) {
     envelope.draftCompletedAt = params.draftCompletedAt;
   }

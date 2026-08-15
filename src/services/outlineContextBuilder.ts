@@ -128,7 +128,10 @@ export type OutlineContextErrorCode =
   | 'OUTLINE_SNAPSHOT_PERSIST_FAILED'
   | 'OUTLINE_EXECUTION_CONFIG_INVALID'
   | 'ACTIVE_WRITER_STYLE_MISSING'
-  | 'WRITER_STYLE_OVER_BUDGET';
+  | 'WRITER_STYLE_OVER_BUDGET'
+  // Stability Plan §14 — snapshot domain error codes.
+  | 'SNAPSHOT_FINGERPRINT_MISMATCH'
+  | 'SNAPSHOT_PARSE_FAILED';
 
 export class OutlineContextError extends Error {
   readonly code: OutlineContextErrorCode;
