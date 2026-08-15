@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.11.53] - 2026-08-15
+
+### Stability — 写作链路稳定性治理（Trace / Freeze / 诊断 / 可重放）
+
+- 每次生成拥有贯穿的 `generationTraceId`，冻结于任务信封，Resume 复用同一标识。
+- 新增 `FrozenGenerationContextV1` 语义指纹（`generationFingerprint`）：序列化时嵌入、解析时校验，篡改或语义漂移即 fail-closed（`SNAPSHOT_FINGERPRINT_MISMATCH`）。
+- 修复：冻结信封损坏时不再静默回退实时数据重冻结，改为显式失败（`SNAPSHOT_PARSE_FAILED`），彻底封堵 Freeze 契约击穿通道（REG-001）。
+- 修复：V5 作家风格快照此前未参与语义指纹（Golden Journey GJ-07 抓获），现已纳入。
+- Context Builder 落地六阶段契约第一层：命名阶段边界、阶段计时遥测、freeze 前"未来章节泄漏=0"硬断言。
+- 影响生成语义的静默降级（资料收集/需求探测/笔记检索/风格画像/候选池捕获）全部结构化诊断化，随快照冻结（`stabilityDiagnostics` / `captureWarnings`）。
+- 新增 Generation Replay Harness（同输入 ×10 指纹一致）、Regression Corpus（qa/generation-regressions/）、Golden Journey 20 条关键旅程。
+- 遗留 live-DB post-draft 路径移至 `pipeline/legacy/`，历史版本猜测收口单一适配器。
+
+### Validation
+
+- `npm run verify` 全绿（lint 0 errors / typecheck / 428 套件 test:ci）；Golden Journey 20/20。
+- 模拟器真实 LLM 穿测：完整单章五阶段生成、Kill→Cold Start→Resume 全程指纹逐字节不变、logcat 零 fatal 零降级码（docs/stability/phase-9-through-test.md）。
+
 ## [2.11.52] - 2026-08-14
 
 ### Fixed — 大纲模式架构精准修复
