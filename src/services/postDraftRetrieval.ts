@@ -72,10 +72,15 @@ export async function captureFrozenAuditCandidates(
   contextConfig: ContextConfig,
   options: { contextBudgetVersion?: number } = {},
 ): Promise<FrozenAuditCandidates> {
+  // Stability Phase 5 — empty pools must carry an observable reason (plan §9).
+  const captureWarnings: string[] = [];
   let chapters: Chapter[] = [];
   try {
     chapters = await db.getChaptersByProject(projectId);
-  } catch {
+  } catch (error) {
+    captureWarnings.push(
+      `章节读取失败，情节记忆候选池为空：${(error as Error)?.message || error}`,
+    );
     chapters = [];
   }
 
@@ -100,7 +105,10 @@ export async function captureFrozenAuditCandidates(
         storyStateText = '';
       }
     }
-  } catch {
+  } catch (error) {
+    captureWarnings.push(
+      `故事记忆预检失败，原始章节排除表为空：${(error as Error)?.message || error}`,
+    );
     rawChapterIds = [];
   }
 
@@ -143,8 +151,10 @@ export async function captureFrozenAuditCandidates(
         cardText: text,
       });
     }
-  } catch {
-    /* empty pool */
+  } catch (error) {
+    captureWarnings.push(
+      `角色候选池捕获失败，审核将缺少角色对照：${(error as Error)?.message || error}`,
+    );
   }
 
   const worldbookCandidates: FrozenWorldbookCandidate[] = [];
@@ -172,8 +182,10 @@ export async function captureFrozenAuditCandidates(
         position: Number(entry.position || 0),
       });
     }
-  } catch {
-    /* empty pool */
+  } catch (error) {
+    captureWarnings.push(
+      `世界书候选池捕获失败，审核将缺少世界书对照：${(error as Error)?.message || error}`,
+    );
   }
 
   return {
@@ -198,6 +210,7 @@ export async function captureFrozenAuditCandidates(
     chapterSynopsis: chapter.synopsis || '',
     rawChapterIds,
     storyStateText,
+    captureWarnings: captureWarnings.length > 0 ? captureWarnings : undefined,
     createdAt: Date.now(),
   };
 }

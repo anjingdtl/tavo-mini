@@ -6117,8 +6117,15 @@ async function saveDraftBody(
       source: 'pipeline',
       pipelineTaskId: taskId,
     });
-  } catch {
-    /* best-effort */
+  } catch (error) {
+    // Stability Phase 5: draft-history persistence is best-effort, but the
+    // loss must be observable (plan §9) — a silent catch here hides data
+    // loss from the user's generation history.
+    console.warn(
+      '[pipeline] PIPELINE_DRAFT_SAVE_FAILED:',
+      taskId,
+      (error as Error)?.message || error,
+    );
   }
   try {
     const task = usePipelineTaskStore

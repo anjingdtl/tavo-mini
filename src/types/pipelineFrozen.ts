@@ -84,5 +84,7 @@ export interface FrozenAuditCandidates {
   rawChapterIds: number[];
   /** Story-state text used for entity/term boosts at freeze time. */
   storyStateText: string;
+  /** Stability Phase 5 — observable reasons for empty/partial pools (plan §9). */
+  captureWarnings?: string[];
   createdAt: number;
 }

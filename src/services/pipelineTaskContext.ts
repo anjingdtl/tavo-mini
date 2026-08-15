@@ -311,6 +311,10 @@ function parseFrozenAuditCandidates(
       ? raw.rawChapterIds.map((n: unknown) => Number(n) || 0)
       : [],
     storyStateText: String(raw.storyStateText || ''),
+    // Stability Phase 5 — tolerant passthrough of pool-capture warnings.
+    captureWarnings: Array.isArray(raw.captureWarnings)
+      ? raw.captureWarnings.map(String).filter(Boolean)
+      : undefined,
     createdAt: Number(raw.createdAt) || Date.now(),
   };
 }
@@ -754,6 +758,8 @@ export function parsePipelineContextSnapshotStrict(
             raw.contextBudgetV7Summary as unknown as PipelineContextSnapshot['contextBudgetV7Summary'],
         }
       : {}),
+    // Stability Phase 5 — tolerant passthrough of structured diagnostics.
+    stabilityDiagnostics: parseStabilityDiagnostics(raw.stabilityDiagnostics),
     ...(Number(raw.snapshotVersion) === PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5
       ? {
           writerStyleSnapshot: parseFrozenWriterStyle(
@@ -766,6 +772,38 @@ export function parsePipelineContextSnapshotStrict(
 
   assertOwnership(snap, ownership);
   return snap;
+}
+
+function parseStabilityDiagnostics(
+  raw: unknown,
+): PipelineContextSnapshot['stabilityDiagnostics'] {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<PipelineContextSnapshot['stabilityDiagnostics']> = [];
+  for (const item of raw) {
+    if (!isPlainObject(item)) continue;
+    const severity = String(item.severity);
+    if (
+      severity !== 'info' &&
+      severity !== 'warning' &&
+      severity !== 'error' &&
+      severity !== 'blocking'
+    ) {
+      continue;
+    }
+    const code = String(item.code ?? '');
+    if (!code) continue;
+    out.push({
+      code,
+      severity,
+      message: String(item.message ?? ''),
+      stage: item.stage != null ? String(item.stage) : undefined,
+      source: item.source != null ? String(item.source) : undefined,
+      detail: isPlainObject(item.detail)
+        ? (item.detail as Record<string, unknown>)
+        : undefined,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function parseFrozenPreset(raw: unknown): FrozenPresetSnapshot | null {

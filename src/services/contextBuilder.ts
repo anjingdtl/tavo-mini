@@ -43,6 +43,11 @@ import {
   GenerationStageStopwatch,
   assertNoFutureSourceLeakage,
 } from './context/generationStageContracts';
+import {
+  createGenerationDiagnosticCollector,
+  type DiagnosticSink,
+} from './context/generationDiagnostics';
+import type { GenerationDiagnostic } from '../types/generationTrace';
 import type { ContextTraceItem } from '../types/contextTrace';
 import type { PipelineContextSnapshot } from '../types/pipelineContext';
 import {
@@ -126,6 +131,8 @@ export interface BuildContextResult {
   stageTimings?: import('./context/generationStageContracts').GenerationStageTimings;
   /** Stability Phase 4 — observational collect-stage summary (plan §4.1). */
   collectedMaterials?: import('./context/generationStageContracts').CollectedGenerationMaterialsSummary;
+  /** Stability Phase 5 — semantic degradations from this build (plan §9). */
+  stabilityDiagnostics?: GenerationDiagnostic[];
 }
 
 export interface BuildContextOptions {
@@ -178,6 +185,7 @@ async function measureV3EpisodicDemand(input: {
   candidates: Chapter[];
   currentChapter: Chapter;
   retrievalOptions: MemoryRetrievalOptions;
+  onDiagnostic?: DiagnosticSink;
 }): Promise<{ demandTokens: number; text: string }> {
   if (input.candidates.length === 0) {
     return { demandTokens: 0, text: '' };
@@ -202,7 +210,15 @@ async function measureV3EpisodicDemand(input: {
       input.retrievalOptions,
     );
     return { demandTokens: estimateTokens(text), text };
-  } catch {
+  } catch (error) {
+    input.onDiagnostic?.({
+      code: 'EPISODIC_MEMORY_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: '情节记忆需求探测失败，按 0 需求参与预算竞争',
+      stage: 'collect',
+      source: 'contextBuilder.measureV3EpisodicDemand',
+      detail: { reason: String((error as Error)?.message || error) },
+    });
     return { demandTokens: 0, text: '' };
   }
 }
@@ -424,6 +440,11 @@ export async function buildContext(
   // Observation only — no budget/render logic moves in this layer.
   const stageWatch = new GenerationStageStopwatch();
   stageWatch.mark('collect');
+  // Stability Phase 5: semantic degradations stay non-blocking but every one
+  // leaves a structured diagnostic frozen into the snapshot (plan §9).
+  const diagnostics = createGenerationDiagnosticCollector();
+  const pushDiagnostic: DiagnosticSink = (diagnostic: GenerationDiagnostic) =>
+    diagnostics.push(diagnostic);
   const trace: ContextTraceItem[] = [];
   let chapters = await db.getChaptersByProject(projectId);
   const budgetVersion = Number(options.contextBudgetVersion) || 0;
@@ -622,7 +643,17 @@ export async function buildContext(
           );
           storyStateDemand =
             probe.traceItems[0]?.estimatedTokens || estimateTokens(probe.text);
-        } catch {
+        } catch (error) {
+          // Semantic degradation: real story-state demand is UNKNOWN here,
+          // not zero. Keep the degraded behavior but make it observable.
+          pushDiagnostic({
+            code: 'STORY_MEMORY_RENDER_FAILED',
+            severity: 'warning',
+            message: '故事状态需求探测失败，按 0 需求参与预算竞争',
+            stage: 'collect',
+            source: 'contextBuilder.storyStateDemand',
+            detail: { reason: String((error as Error)?.message || error) },
+          });
           storyStateDemand = 0;
         }
       }
@@ -637,6 +668,7 @@ export async function buildContext(
         candidates: episodicCandidates,
         currentChapter,
         retrievalOptions,
+        onDiagnostic: pushDiagnostic,
       });
       const episodicDemand = episodicProbe.demandTokens;
       const v3ScanMemoryText = episodicProbe.text;
@@ -736,8 +768,17 @@ export async function buildContext(
           );
           v3ResourceCandidates = collected.candidates;
           resourcesActualDemand = collected.totalActualTokens;
-        } catch {
-          // V6: Resource collection failure must never block generation.
+        } catch (error) {
+          // V6: Resource collection failure must never block generation —
+          // but the loss must be observable, never silent (plan §9).
+          pushDiagnostic({
+            code: 'RESOURCE_RETRIEVAL_FAILED',
+            severity: 'warning',
+            message: '资料候选收集失败，角色/世界书/笔记按空参与本次生成',
+            stage: 'collect',
+            source: 'contextBuilder.v3ResourceCandidates',
+            detail: { reason: String((error as Error)?.message || error) },
+          });
           v3ResourceCandidates = [];
           resourcesActualDemand = 0;
         }
@@ -1007,6 +1048,7 @@ export async function buildContext(
         candidates: episodicCandidates,
         currentChapter,
         retrievalOptions,
+        onDiagnostic: pushDiagnostic,
       });
       const preliminaryEpisodicDemand =
         v3HierarchicalInput.boards.episodic.actualDemandTokens;
@@ -1530,6 +1572,9 @@ export async function buildContext(
     outlineBlockingReason: outlineContext.blockingReason,
     outlineEstimatedTokens: outlineContext.estimatedTokens,
     sourceFingerprint: `proj=${projectId}|chapter=${currentChapter.id ?? currentChapter.position}`,
+    // Stability Phase 5 — semantic degradations frozen with the snapshot.
+    stabilityDiagnostics:
+      diagnostics.list().length > 0 ? diagnostics.list() : undefined,
     contextBudgetV3Summary:
       hierarchicalBudgetTrace && useV3Hierarchical
         ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
@@ -1590,6 +1635,7 @@ export async function buildContext(
     elasticBudgetTrace,
     hierarchicalBudgetTrace,
     stageTimings: stageWatch.result(),
+    stabilityDiagnostics: diagnostics.list(),
     collectedMaterials: {
       chapterCount: chapters.length,
       previousChapterCount: previousChapters.length,
@@ -1988,11 +2034,20 @@ async function buildNoteContext(
   chapterTitle = '',
   chapterSynopsis = '',
   userPrompt = '',
+  onDiagnostic?: DiagnosticSink,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   let config;
   try {
     config = await db.getProjectNoteConfig(projectId);
-  } catch {
+  } catch (error) {
+    onDiagnostic?.({
+      code: 'NOTE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: '笔记模式配置读取失败，按默认模式处理',
+      stage: 'collect',
+      source: 'contextBuilder.buildNoteContext',
+      detail: { reason: String((error as Error)?.message || error) },
+    });
     config = null;
   }
   const mode = config?.mode;
@@ -2001,7 +2056,7 @@ async function buildNoteContext(
     return { text: '', items: [] };
   }
   if (mode === 'style') {
-    return buildStyleContext(projectId, budget, config);
+    return buildStyleContext(projectId, budget, config, onDiagnostic);
   }
   if (mode === 'retrieval') {
     return buildRetrievedNoteContext(
@@ -2012,6 +2067,7 @@ async function buildNoteContext(
       chapterTitle,
       chapterSynopsis,
       userPrompt,
+      onDiagnostic,
     );
   }
   return buildNoteContextOriginal(projectId, budget);
@@ -2022,6 +2078,7 @@ async function buildStyleContext(
   projectId: number,
   budget: number,
   config: any,
+  onDiagnostic?: DiagnosticSink,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
     // project_note_config 中可能残留已被当前项目关闭的笔记 ID。
@@ -2123,8 +2180,16 @@ async function buildStyleContext(
         },
       ],
     };
-  } catch {
-    // 风格分析失败，回退到原始全量注入
+  } catch (error) {
+    // 风格分析失败，回退到原始全量注入（语义降级必须可观测）
+    onDiagnostic?.({
+      code: 'NOTE_STYLE_ANALYSIS_FAILED',
+      severity: 'warning',
+      message: '风格画像构建失败，回退为笔记全量注入',
+      stage: 'render',
+      source: 'contextBuilder.buildStyleContext',
+      detail: { reason: String((error as Error)?.message || error) },
+    });
     return buildNoteContextOriginal(projectId, budget);
   }
 }
@@ -2138,6 +2203,7 @@ async function buildRetrievedNoteContext(
   chapterTitle = '',
   chapterSynopsis = '',
   userPrompt = '',
+  onDiagnostic?: DiagnosticSink,
 ): Promise<{ text: string; items: ContextTraceItem[] }> {
   try {
     const topK = config?.retrievalTopK ?? 5;
@@ -2185,7 +2251,15 @@ async function buildRetrievedNoteContext(
         preview: f.fragment.slice(0, 500),
       })),
     };
-  } catch {
+  } catch (error) {
+    onDiagnostic?.({
+      code: 'NOTE_RETRIEVAL_FAILED',
+      severity: 'warning',
+      message: '资料库笔记检索失败，笔记内容未进入本次生成',
+      stage: 'render',
+      source: 'contextBuilder.buildRetrievedNoteContext',
+      detail: { reason: String((error as Error)?.message || error) },
+    });
     return { text: '', items: [] };
   }
 }

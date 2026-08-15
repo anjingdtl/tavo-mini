@@ -188,6 +188,13 @@ export interface PipelineContextSnapshot {
    * stages use this to render the same allocation view in their prompts.
    */
   contextBudgetV3Summary?: ContextBudgetV3Summary;
+  /**
+   * Stability Phase 5 — structured diagnostics for semantic degradations
+   * that occurred while building this context (plan §9). Frozen with the
+   * snapshot so resume / replay / preview can explain WHY something was
+   * degraded. Absent on historical snapshots.
+   */
+  stabilityDiagnostics?: import('./generationTrace').GenerationDiagnostic[];
 }
 
 /**
