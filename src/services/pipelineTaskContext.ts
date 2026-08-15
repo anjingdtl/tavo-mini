@@ -1554,6 +1554,8 @@ export function serializePipelineTaskContext(params: {
   pipelineContextJson: string;
   pipelineContextVersion: number;
   pipelineContextHash: string;
+  /** Stability Phase 2 — semantic fingerprint embedded in the envelope. */
+  generationFingerprint: string;
 } {
   const createdAt = params.createdAt ?? Date.now();
   // Context builders now know about V3 fields, but a frozen V1/V2 execution
@@ -1639,6 +1641,7 @@ export function serializePipelineTaskContext(params: {
     pipelineContextVersion:
       isV33 || isV32 ? 4 : isV3 ? 3 : PIPELINE_TASK_CONTEXT_VERSION,
     pipelineContextHash: sha256Hex(pipelineContextJson).slice(0, 32),
+    generationFingerprint: envelope.generationFingerprint,
   };
 }
 
@@ -1647,6 +1650,23 @@ export function resolveAuditContext(
   parsed: ParsedPipelineTaskContext,
 ): PipelineContextSnapshot {
   return parsed.auditContext || parsed.draftContext;
+}
+
+/**
+ * Stability Phase 8 — the single sanctioned place where historical snapshot
+ * shape is guessed from field presence (V5 writer-style projection). All
+ * callers must use this adapter instead of re-deriving the guess inline, so
+ * the legacy boundary stays at one edge (plan §10/§11).
+ */
+export function hasFrozenWriterStyleProjection(
+  snapshot: PipelineContextSnapshot | null | undefined,
+): snapshot is PipelineContextSnapshot {
+  return Boolean(
+    snapshot &&
+      (snapshot.snapshotVersion ===
+        (PIPELINE_CONTEXT_SNAPSHOT_VERSION_V5 as number) ||
+        snapshot.writerStyleSnapshot != null),
+  );
 }
 
 /**

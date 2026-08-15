@@ -129,9 +129,17 @@ export function buildGenerationFingerprintInput(
             ? hashText(draftContext.immediatePreviousChapterText)
             : null,
       },
-      writerStyle: execution.writerStyle
-        ? hashJson(execution.writerStyle)
-        : null,
+      // Writer Style must be covered by the fingerprint wherever it is
+      // frozen: on the execution snapshot (V2 path) or on the rendered
+      // context snapshot (V5 writerStyleSnapshot path). Golden Journey GJ-07
+      // caught the V5 gap — both sources now contribute.
+      writerStyle:
+        execution.writerStyle != null || draftContext.writerStyleSnapshot != null
+          ? hashJson({
+              executionStyle: execution.writerStyle ?? null,
+              snapshotStyle: draftContext.writerStyleSnapshot ?? null,
+            })
+          : null,
     },
     settings: {
       modelId: String(execution.model?.modelName ?? ''),
