@@ -372,6 +372,7 @@ export function compileContinuationV5RevisionWriterMessages(input: {
     `V1 当前为 ${input.draftHan} 个汉字。若 V1 偏短，你必须用有效情节（行动、阻力、人物选择、信息/关系变化、后果）把 V2 扩到至少 ${view.preferredMinHan} 个汉字。`,
     `未达到 ${view.preferredMinHan} 个汉字视为 V2 未完成，不得提前收束。`,
     '禁止用重复句、空转对白、堆叠环境或总结解释凑字；必须靠尚未充分展开的核心场景推进叙事。',
+    '【绑定协议】draftArtifactHash 与 architectureHash 是客户端提供的权威值，必须从用户消息中逐字符原样复制；禁止重新计算、缩写、改写、填占位符或使用旧值。',
     '只输出完整章节 JSON envelope，禁止 Patch。',
   ].join('\n');
   const user = [
@@ -384,7 +385,8 @@ export function compileContinuationV5RevisionWriterMessages(input: {
     `【完整 V1】\n${input.draftContent}`,
     `【A1 叙事架构】\n${JSON.stringify(input.architecture)}`,
     `【篇幅自检】输出前确认 content 汉字数 ≥ ${view.preferredMinHan} 且 ≤ ${view.preferredMaxHan}。目标 ${view.targetChapterChars}。`,
-    '【输出契约】\n{"schemaVersion":1,"draftArtifactHash":"...","architectureHash":"...","content":"完整V2正文","usedArchitectSceneIds":[],"omittedArchitectSceneIds":[],"declaredNewCoreFacts":[]}',
+    `【绑定字段最终自检】输出 JSON 中 draftArtifactHash 必须严格等于 ${input.draftArtifactHash}；architectureHash 必须严格等于 ${input.architectureHash}。这两个值不是示例、不是“...”占位符，也不得重新计算。`,
+    `【输出契约（两个 hash 必须原样复制上方完整值）】\n{"schemaVersion":1,"draftArtifactHash":"${input.draftArtifactHash}","architectureHash":"${input.architectureHash}","content":"完整V2正文","usedArchitectSceneIds":[],"omittedArchitectSceneIds":[],"declaredNewCoreFacts":[]}`,
   ].join('\n\n');
   const messages: ChatMessage[] = [
     { role: 'system', content: system },
@@ -515,6 +517,9 @@ export function compileContinuationV5FinalReviserMessages(input: {
     input.revisionHan <= view.preferredMaxHan;
   const editWorkPacket = buildContinuationV5EditWorkPacket(input.audit);
   const editWorkPacketBlock = formatContinuationV5EditWorkPacket(editWorkPacket);
+  const finalObligationIds = blockingObligations.map(item => item.obligationId);
+  const canonRequirementIds = canonCorrections.map(item => item.requirementId);
+  const styleRequirementIds = styleCorrections.map(item => item.requirementId);
   const system = [
     '你是 Continuation V5 Final Reviser。',
     '你要生成本次唯一的完整最终稿 V3。',
@@ -531,6 +536,8 @@ export function compileContinuationV5FinalReviserMessages(input: {
     '不得自行创造新的核心人物、能力、组织、关系状态、世界规则或后续剧情事实。',
     '保留 V2 中已经成立的行动、转折、人物选择和后果。',
     '如果 V2 磨掉了 C2 标记的 V1 优质对白、动作或留白，可以恢复或重构。',
+    '【义务结算协议】必须逐条处理 C2 finalObligations。正文真实执行的义务写入 appliedObligationIds；没有执行或无法执行的义务写入 unappliedItems。只要存在义务，appliedObligationIds 与 unappliedItems 不得同时为空，禁止用空数组伪装完成。',
+    '【声明协议】appliedObligationIds、appliedCanonRequirementIds、appliedStyleRequirementIds 只能填写正文确实执行的精确 ID；不得为了通过校验虚报。若声明已执行但正文没有对应语义变化，本地 Final Validate 会阻断。',
     `V2 当前为 ${input.revisionHan} 个汉字；本章目标 ${view.targetChapterChars}（首选 ${view.preferredMinHan}–${view.preferredMaxHan}）。`,
     v2InBand
       ? `V2 已在目标区间内：V3 保持同量级篇幅（相对 V2 约 ±10%），以润色、履约、去泄漏为主，禁止为凑字注水。`
@@ -567,7 +574,9 @@ export function compileContinuationV5FinalReviserMessages(input: {
     `【C2 rejected scenes】\n${JSON.stringify(
       input.audit.architectureAudit.rejectedScenes,
     )}`,
-    '【输出契约】\n{"schemaVersion":1,"revisionArtifactHash":"...","architectureHash":"...","auditContractHash":"...","content":"完整V3","appliedObligationIds":[],"appliedCanonRequirementIds":[],"appliedStyleRequirementIds":[],"usedArchitectSceneIds":[],"restoredProtectedPassageIds":[],"declaredNewCoreFacts":[],"unappliedItems":[],"validNoOpRequirementIds":[],"validNoOpReasons":{}}',
+    `【义务 ID 清单】finalObligations=${finalObligationIds.join(', ') || '（无）'}；canon requiredCorrections=${canonRequirementIds.join(', ') || '（无）'}；style requiredCorrections=${styleRequirementIds.join(', ') || '（无）'}。请在完成正文后逐项结算，不能遗漏。`,
+    `【绑定字段最终自检】revisionArtifactHash 必须严格等于 ${input.revisionArtifactHash}；architectureHash 必须严格等于 ${input.architectureHash}；auditContractHash 必须严格等于 ${input.auditContractHash}。三个值必须逐字符复制，不得使用“...”占位符或旧值。`,
+    `【输出契约（hash 原样复制；数组只能填写实际执行结果）】\n{"schemaVersion":1,"revisionArtifactHash":"${input.revisionArtifactHash}","architectureHash":"${input.architectureHash}","auditContractHash":"${input.auditContractHash}","content":"完整V3","appliedObligationIds":[],"appliedCanonRequirementIds":[],"appliedStyleRequirementIds":[],"usedArchitectSceneIds":[],"restoredProtectedPassageIds":[],"declaredNewCoreFacts":[],"unappliedItems":[],"validNoOpRequirementIds":[],"validNoOpReasons":{}}`,
   ]
     .filter(Boolean)
     .join('\n\n');

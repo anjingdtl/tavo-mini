@@ -205,6 +205,46 @@ describe('V5 prompt roles: V2 expands length, V3 polishes', () => {
     expect(system).toMatch(/±10%/);
   });
 
+  test('Final Reviser must settle every obligation and preserve client hashes', () => {
+    const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
+    const architectureHash = hashArchitectureEnvelope(architecture);
+    const audit = buildFallbackAuditContract({
+      draftArtifactHash: 'd'.repeat(64),
+      revisionArtifactHash: 'r'.repeat(64),
+      architectureHash,
+      canonSnapshotId: 'cs',
+      canonRevision: 1,
+      inputRevisionHash: 'ir',
+      styleProfileHash: null,
+      styleRendererVersion: null,
+      lockedRules: ['不得越界'],
+      hardCanonFacts: [],
+    });
+    const compiled = compileContinuationV5FinalReviserMessages({
+      view: {
+        ...baseView({ stage: 'final_reviser' }),
+        budget: {
+          ...baseView().budget,
+          stage: 'final_reviser' as const,
+        },
+      } as any,
+      revisionContent: '完整 V2。'.repeat(100),
+      revisionHan: 5000,
+      revisionArtifactHash: 'r'.repeat(64),
+      architecture,
+      architectureHash,
+      audit,
+      auditContractHash: hashAuditEnvelope(audit),
+    });
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
+    const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    expect(system).toMatch(/appliedObligationIds 与 unappliedItems 不得同时为空/);
+    expect(user).toContain('fallback_user_rule_1');
+    expect(user).toContain('revisionArtifactHash":"' + 'r'.repeat(64));
+    expect(user).toMatch(/数组只能填写实际执行结果/);
+  });
+
   test('Final Reviser allows length fallback only when V2 is still short', () => {
     const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
     const architectureHash = hashArchitectureEnvelope(architecture);
@@ -469,6 +509,7 @@ describe('V5 chapter linkage: previous-chapter seam is injected into every stage
     const architecture = buildFallbackArchitecture({ userInstruction: '推进' });
     const architectureHash = hashArchitectureEnvelope(architecture);
     const seamText = `续写章节「第二章」\n${PREV_CHAPTER_TAIL}`;
+    const draftHash = 'a'.repeat(64);
     const compiled = compileContinuationV5RevisionWriterMessages({
       view: {
         ...baseView({ stage: 'revision_writer' }),
@@ -476,13 +517,19 @@ describe('V5 chapter linkage: previous-chapter seam is injected into every stage
       } as any,
       draftContent: '初稿正文。',
       draftHan: 1800,
-      draftArtifactHash: 'a'.repeat(64),
+      draftArtifactHash: draftHash,
       architecture,
       architectureHash,
     });
     const user = compiled.messages.find(m => m.role === 'user')?.content ?? '';
+    const system =
+      compiled.messages.find(m => m.role === 'system')?.content ?? '';
     expect(user).toContain(PREV_CHAPTER_TAIL);
     expect(user).toMatch(/上一章正文接缝/);
+    expect(system).toMatch(/逐字符原样复制/);
+    expect(user).toContain(`draftArtifactHash":"${draftHash}"`);
+    expect(user).toContain(`architectureHash":"${architectureHash}"`);
+    expect(user).toMatch(/不是示例、不是“\.\.\.”占位符/);
   });
 
   test('Auditor receives the seam and a linkage-check mandate', () => {
