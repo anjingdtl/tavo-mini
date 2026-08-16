@@ -10,7 +10,7 @@ import type {
   HistoricalDigest,
 } from '../canon/types';
 import type { ContinuationSourceSnapshot } from '../types';
-import type { ContinuationStageBudgets } from './continuationContextBudget';
+import type { ContinuationStageBudgets } from '../../writing/scenario/continuationStageCapacity';
 import type { ContinuationV4StageBudget } from './continuationV4Budget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';

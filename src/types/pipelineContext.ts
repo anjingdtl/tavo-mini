@@ -205,6 +205,10 @@ export interface PipelineContextSnapshot {
   /** Phase I: normalized pre-kernel source boundary and fingerprint. */
   writingSourceTrace?: WritingSourceTrace;
   writingKernelTrace?: WritingKernelTrace;
+  /** Kernel Final Closure: the authoritative frozen context object bound to
+   * writingKernelTrace. Loaded by the Writing Kernel engine on resume; never
+   * rebuilt from live data once present. */
+  frozenWritingContext?: import('../services/writing/contracts/frozenWritingContext').FrozenWritingContext;
 }
 
 /**

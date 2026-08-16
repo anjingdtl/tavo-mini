@@ -6,32 +6,32 @@
  * Writer -> (Checker || Control) -> Repair -> Local Final Gate. The four
  * physical request reservations are the authority for retry/resume safety.
  */
-import type { ChatMessage, LLMRequestConfig } from '../../llm/types';
+import type { ChatMessage, LLMRequestConfig } from '../../../llm/types';
 import {
   callLLMResult,
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
-} from '../../llm';
-import { ensureContextAutomationPolicy } from '../../contextAutoAllocator';
-import { stripModelJson } from '../canon/canonJsonValidators';
+} from '../../../llm';
+import { ensureContextAutomationPolicy } from '../../../contextAutoAllocator';
+import { stripModelJson } from '../../canon/canonJsonValidators';
 import {
   bindIssuesToArtifact,
   filterBySettings,
   isRepairableCheckerIssue,
   parseCheckerLlmEnvelope,
   runDeterministicChecks,
-} from './continuationChecker';
-import type { RawCheckIssue } from './continuationChecker';
+} from '../continuationChecker';
+import type { RawCheckIssue } from '../continuationChecker';
 import {
   buildContinuationV4StageViews,
   hashContinuationV4StageView,
-} from './continuationV4ContextViews';
+} from '../continuationV4ContextViews';
 import {
   buildContinuationControlFallback,
   buildContinuationControlMetrics,
   getRepairReadyStyleFindings,
   resolveContinuationControlReport,
-} from './continuationControl';
+} from '../continuationControl';
 import {
   compileContinuationV4CheckerMessages,
   compileContinuationV4ControlMessages,
@@ -40,26 +40,26 @@ import {
   continuationV4ProtocolSkeletonTokens,
   REPAIR_ANCHOR_MARKER_PATTERN,
   stripRepairAnchors,
-} from './continuationV4PromptCompiler';
+} from '../continuationV4PromptCompiler';
 import {
   evaluateRepairCompleteness,
   type TargetedRepairSpan,
-} from './repairCompletenessPolicy';
+} from '../repairCompletenessPolicy';
 import {
   buildContinuationV4Context,
-} from './continuationContextBuilder';
+} from '../continuationContextBuilder';
 import {
   appendContinuationGenerationTraceEvent,
   createContinuationGenerationTrace,
   ensureContinuationGenerationTrace,
-} from './continuationGenerationTrace';
+} from '../continuationGenerationTrace';
 import {
   resolveContinuationV4BudgetPreview,
-} from './continuationV4Budget';
+} from '../continuationV4Budget';
 import {
   countHanCharacters,
   resolveContinuationV4ReferenceLengthBand,
-} from './continuationLengthContract';
+} from '../continuationLengthContract';
 import {
   casUpdateRunState,
   contentRevisionHash,
@@ -81,7 +81,7 @@ import {
   reserveContinuationStage,
   savePlan,
   updateStageResult,
-} from './generationRepository';
+} from '../generationRepository';
 import type {
   ContinuationArtifact,
   ContinuationCheckResult,
@@ -98,19 +98,19 @@ import type {
   ContinuationV4StageName,
   ContinuationV4WriterEnvelope,
   FrozenContinuationModelConfig,
-} from './types';
+} from '../types';
 import {
   ContinuationCapabilityBlockedError,
   ContinuationStageOutputTruncatedError,
   ContinuationOutdatedError,
-} from './types';
+} from '../types';
 import type {
   StageLlmCallResult,
   StageLlmCaller,
   StartContinuationRunInput,
 } from './continuationGenerationRunner';
-import { activeContinuationControllers } from './continuationRunControllers';
-import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
+import { activeContinuationControllers } from '../continuationRunControllers';
+import { estimateMessagesTokens, estimateTokens } from '../../../../utils/tokenEstimator';
 
 type V4PhysicalStage = Exclude<ContinuationV4StageName, 'local_verify'>;
 
@@ -215,7 +215,7 @@ async function resolveV4StageModels(
 ): Promise<{
   stageModels: V4StageModels;
   frozenModelConfigs: NonNullable<
-    import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
+    import('../types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
   >;
   activeConfigId: number;
 }> {
@@ -238,7 +238,7 @@ async function resolveV4StageModels(
     stateExtraction: null,
     control: freezeV4ModelConfig(control),
   } satisfies NonNullable<
-    import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
+    import('../types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
   >;
   return {
     activeConfigId,
@@ -1149,7 +1149,7 @@ export function runContinuationV4LocalFinalGate(input: {
   const base = filterBySettings(
     runDeterministicChecks(
       input.candidateText,
-      input.snapshot as unknown as import('./types').ContinuationContextSnapshot,
+      input.snapshot as unknown as import('../types').ContinuationContextSnapshot,
       {
         lengthContract: resolveContinuationV4ReferenceLengthBand(
           input.snapshot.settingsSnapshot.values.targetChapterChars,
@@ -1574,7 +1574,7 @@ async function ensureWriterLocalChecks(
   const raw = filterBySettings(
     runDeterministicChecks(
       artifact.content,
-      snapshot as unknown as import('./types').ContinuationContextSnapshot,
+      snapshot as unknown as import('../types').ContinuationContextSnapshot,
       {
         lengthContract: resolveContinuationV4ReferenceLengthBand(
           snapshot.settingsSnapshot.values.targetChapterChars,

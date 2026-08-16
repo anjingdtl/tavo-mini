@@ -580,8 +580,19 @@ describe('F3-01: batch resume 保留 frozen context（proof failed → 继续）
     // finalize 会按生产语义重算 fingerprint（saveDraftBody），因此这里断言
     // resume 本身不得把它清空（修复前为 null）。
     expect(a.input_fingerprint).not.toBeNull();
-    expect(a.pipeline_context_json).toBe(frozen.pipelineContextJson);
-    expect(a.pipeline_context_hash).toBe(frozen.pipelineContextHash);
+    // Kernel Final Closure：resume 会对 pre-closure 冻结的信封做一次性
+    // Kernel Trace 回填（只增不改）。剥离附加字段后必须与原冻结完全一致。
+    const envelopeAfter = JSON.parse(a.pipeline_context_json);
+    const frozenDraftContext = { ...envelopeAfter.draftContext };
+    delete frozenDraftContext.writingSourceTrace;
+    delete frozenDraftContext.writingKernelTrace;
+    delete frozenDraftContext.frozenWritingContext;
+    expect(JSON.stringify({ ...envelopeAfter, draftContext: frozenDraftContext })).toBe(
+      frozen.pipelineContextJson,
+    );
+    expect(envelopeAfter.draftContext.writingKernelTrace?.freezeFingerprint).toMatch(
+      /^[a-f0-9]{64}$/,
+    );
     expect(Number(a.pipeline_context_version)).toBe(
       frozen.pipelineContextVersion,
     );

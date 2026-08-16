@@ -621,7 +621,7 @@ function llmConfigIdOf(requestConfig: any): number | null {
  * request (never recompiled). Returns 'continue' (retry scheduled/executed)
  * or 'stop' (still waiting — hand back to UI/batch resume).
  */
-async function maybeAutoRetryStage(params: {
+export async function maybeAutoRetryStage(params: {
   taskId: string;
   stages: ReturnType<typeof resolveStageCheckpoints>;
   action: PipelineAction;
@@ -1493,7 +1493,7 @@ async function refreshBatchUsage(
   }
 }
 
-function cancelled(taskId: string, options: ReconcileOptions): boolean {
+export function cancelled(taskId: string, options: ReconcileOptions): boolean {
   if (options.abortSignal?.aborted) return true;
   if (options.isCancelled?.(taskId)) {
     usePipelineTaskStore.getState().cancelTask(taskId);
@@ -1509,7 +1509,7 @@ function cancelled(taskId: string, options: ReconcileOptions): boolean {
  *   running checkpoint is already `interrupted`, resume reuses succeeded
  *   stages and re-fetches from the frozen request.
  */
-async function settleInterruptedTask(
+export async function settleInterruptedTask(
   taskId: string,
   options: ReconcileOptions,
 ): Promise<void> {
@@ -1572,6 +1572,18 @@ async function persistStage(
 /**
  * Main loop. Safe for first-run and resume.
  */
+/** Kernel Final Closure: shared single-flight lock. The Writing Kernel's
+ * outline stage driver acquires the same lock the legacy loop used. */
+export function acquireReconcileLock(taskId: string): boolean {
+  if (reconciling.has(taskId)) return false;
+  reconciling.add(taskId);
+  return true;
+}
+
+export function releaseReconcileLock(taskId: string): void {
+  reconciling.delete(taskId);
+}
+
 export async function reconcilePipelineTask(
   taskId: string,
   chapter: Chapter,
@@ -1776,7 +1788,7 @@ export async function reconcilePipelineTask(
  *                   instead of the generic STAGE_FAILED text.
  *   - fail        → no retry; STAGE_FAILED proceeds as before.
  */
-async function consumeFailedStageRetryDisposition(params: {
+export async function consumeFailedStageRetryDisposition(params: {
   taskId: string;
   stage?: string;
   options: ReconcileOptions;
@@ -1823,7 +1835,7 @@ async function consumeFailedStageRetryDisposition(params: {
   return { outcome: 'retried' };
 }
 
-async function handleBlocked(
+export async function handleBlocked(
   taskId: string,
   chapter: Chapter,
   action: Extract<PipelineAction, { type: 'blocked' }>,
@@ -1875,7 +1887,7 @@ async function handleBlocked(
   void stages;
 }
 
-async function executeAction(params: {
+export async function executeAction(params: {
   taskId: string;
   chapter: Chapter;
   action: PipelineAction;
@@ -2362,9 +2374,11 @@ async function actionPersistInitialSnapshot(
       values: { contextBudgetVersion: execution.contextBudgetVersion },
     },
   };
-  pipelineContext.writingKernelTrace = buildWritingKernelFreezeTrace({
+  const kernelFreeze = buildWritingKernelFreezeTrace({
     request: kernelRequest,
-  }).trace;
+  });
+  pipelineContext.writingKernelTrace = kernelFreeze.trace;
+  pipelineContext.frozenWritingContext = kernelFreeze.frozenContext;
 
   // Freeze full-mode audit candidate pool at the same moment as draft context.
   let frozenAuditCandidates = runtime.parsed?.frozenAuditCandidates || null;

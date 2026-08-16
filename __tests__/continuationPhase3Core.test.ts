@@ -16,12 +16,12 @@ import {
   proposalFingerprint,
 } from '../src/services/continuation/generation/generationRepository';
 import { deterministicExtractFromText } from '../src/services/continuation/generation/continuationStateOutboxWorker';
-import { isContinuationRunId } from '../src/services/continuation/generation/continuationGenerationRunner';
+import { isContinuationRunId } from '../src/services/continuation/generation/legacy/continuationGenerationRunner';
 import { summarizeTrace } from '../src/services/continuation/generation/continuationContextTrace';
 import {
   compilePlannerMessages,
   compileWriterMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import type {
   ContinuationCheckResult,
   ContinuationContextSnapshot,

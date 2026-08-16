@@ -35,16 +35,15 @@ import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../services/llm';
-import {
-  buildContinuationV4Context,
-  compileContinuationV4WriterMessages,
-  ensureGenerationSettings,
-} from '../services/continuation/generation';
-import {
-  type ContinuationV4BudgetPreview,
-  type ContinuationV4StageBudget,
-  type FrozenContinuationStageModel,
-} from '../services/continuation/generation/continuationV4Budget';
+import { ensureGenerationSettings } from '../services/continuation/generation';
+import { buildContinuationV5Context } from '../services/writing/scenario/continuationSourceCollection';
+import type {
+  ContinuationContextSnapshotV5,
+  ContinuationV5PhysicalNode,
+  ContinuationV5StageBudget,
+  ContinuationV5StageBudgets,
+  FrozenContinuationModelConfig,
+} from '../services/continuation/generation/types';
 import { ensureContextAutomationPolicy } from '../services/contextAutoAllocator';
 import { resolveActiveWriterStyle } from '../services/writerStyle/activeStyleResolver';
 import { getContinuationChapterNumbering } from '../services/continuation/chapterNumbering/continuationChapterNumbering';
@@ -107,6 +106,80 @@ const V3_BOARD_ORDER: Array<{
   { key: 'slidingWindow', label: 'Sliding Window' },
   { key: 'episodic', label: 'Episodic Memory' },
 ];
+
+/** V5 冻结 stage view 节点 → 预览页短标签（五节点物理管线）。 */
+const V5_STAGE_LABELS: Record<ContinuationV5PhysicalNode, string> = {
+  draft_writer: 'V1 写手',
+  narrative_architect: 'A1 架构',
+  revision_writer: 'V2 修订',
+  adversarial_auditor: 'C2 审计',
+  final_reviser: 'V3 终审',
+};
+
+/**
+ * Frozen V5 draft-writer stage view → preview pseudo-messages. The preview
+ * renders the frozen content blocks of the draft_writer view (locked rules,
+ * canon guard, effective state, seam, style, supplements); the real V5 prompt
+ * is compiled from the same frozen view at send time.
+ */
+function renderV5StageViewMessages(
+  view: ContinuationContextSnapshotV5['stageViews']['draft_writer'],
+): ChatMessage[] {
+  const evidence = (ids: number[]) =>
+    ids.length ? `（证据:${ids.join(',')}）` : '';
+  const canonLines = [
+    ...view.canon.hardFacts.map(f => `- ${f.text}${evidence(f.evidenceIds)}`),
+    ...view.canon.softFacts.map(f => `- ${f.text}${evidence(f.evidenceIds)}`),
+  ];
+  const state = view.effectiveState;
+  const stateLines = [
+    ...state.characterStates.map(
+      c => `- ${JSON.stringify(c.ref)}: ${c.summary}`,
+    ),
+    ...(state.relationships ?? []).map(
+      r => `- ${JSON.stringify(r.source)} → ${JSON.stringify(r.target)}: ${r.summary}`,
+    ),
+    ...state.plotThreads.map(
+      p => `- ${p.title} (${p.status}): ${p.summary}`,
+    ),
+    ...(state.knowledge ?? []).map(
+      k => `- ${JSON.stringify(k.ref)} ${k.factKey}: ${k.factSummary}（${k.knowledgeState}）`,
+    ),
+    ...(state.experiences ?? []).map(
+      e => `- ${JSON.stringify(e.ref)}: ${e.title}；${e.summary}`,
+    ),
+  ];
+  return [
+    {
+      role: 'system',
+      content: [
+        '【V5 冻结 stage view：draft_writer】',
+        `目标章节 ${view.targetChapterChars} 字（${view.preferredMinHan}–${view.preferredMaxHan} 汉字）。`,
+        `【用户锁定/硬规则】\n${view.lockedRules.join('\n') || '（无）'}`,
+        `【原著事实复核依据】\n${canonLines.join('\n') || '（当前快照未检索到与本章相关的原著事实）'}`,
+      ].join('\n'),
+    },
+    {
+      role: 'system',
+      content: [
+        `【已确认续写增量状态】\n${stateLines.join('\n') || '（无新增）'}`,
+        `【接缝】\n${view.primaryAnchorSeamText || '（无）'}`,
+        `【最近续写】\n${view.recentBridgeSummary || '（无）'}`,
+      ].join('\n'),
+    },
+    {
+      role: 'system',
+      content: [
+        `【文风】\n${view.style.text}`,
+        `【原著之外的外部补充资料】\n${view.supplements.text || '（无）'}`,
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: `用户要求：\n${view.userInstruction}`,
+    },
+  ];
+}
 
 const STYLE_OMIT_REASON_LABELS: Record<string, string> = {
   style_level_off: '文风约束已关闭',
@@ -215,7 +288,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
   const [continuationBudgetSummary, setContinuationBudgetSummary] =
     useState('');
   const [continuationStageBudgets, setContinuationStageBudgets] =
-    useState<ContinuationV4BudgetPreview | null>(null);
+    useState<ContinuationV5StageBudgets | null>(null);
   const [continuationFreezeSummary, setContinuationFreezeSummary] = useState<{
     policyHash: string;
     canonSnapshotId: string;
@@ -224,8 +297,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
     supplementHashes: string[];
   } | null>(null);
   const [selectedContinuationStage, setSelectedContinuationStage] = useState<
-    'writer' | 'checker' | 'control' | 'repair'
-  >('writer');
+    ContinuationV5PhysicalNode
+  >('draft_writer');
   /** Context Budget V3 hierarchical trace for the read-only preview. */
   const [hierarchicalBudgetTrace, setHierarchicalBudgetTrace] = useState<
     import('../services/context/hierarchicalContextAllocator').HierarchicalBudgetResult | null
@@ -272,30 +345,57 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           `续写${continuationNumbering.getDefaultTitle(
             chapter.position as any,
           )}，保持与前文一致。`;
-        const stageConfig = async (
-          id: number | null,
-          fallback: typeof writerConfig,
-        ): Promise<FrozenContinuationStageModel> => {
+        const freezeModel = (
+          config: typeof writerConfig,
+        ): FrozenContinuationModelConfig => ({
+          configId: Number(config.id || 0),
+          name: String(config.name || `LLM 配置 #${config.id}`),
+          providerType: config.provider_type,
+          url: config.url,
+          modelName: config.model_name,
+          contextWindow: Number(config.context_window),
+          maxOutputTokens: Number(config.max_output_tokens),
+        });
+        const stageConfig = async (id: number | null) => {
           const config = await resolveStage(id);
           const contextWindow = Number(config.context_window);
           const maxOutputTokens = Number(config.max_output_tokens);
           if (!(contextWindow > 0) || !(maxOutputTokens > 0)) {
             throw new Error(
-              'V4 阶段模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
+              'V5 阶段模型缺少有效的 context_window 或 max_output_tokens，请先完善 LLM 配置。',
             );
           }
-          return {
-            configId: Number(config.id || fallback.id || 0),
-            contextWindow,
-            maxOutputTokens,
-          };
+          return config;
         };
-        const [checkerModel, controlModel, repairModel] = await Promise.all([
-          stageConfig(settings.checkerLlmConfigId, writerConfig),
-          stageConfig(settings.controlLlmConfigId ?? settings.checkerLlmConfigId, writerConfig),
-          stageConfig(settings.repairLlmConfigId, writerConfig),
-        ]);
-        const result = await buildContinuationV4Context({
+        const [plannerCfg, checkerCfg, controlCfg, repairCfg] =
+          await Promise.all([
+            stageConfig(settings.plannerLlmConfigId),
+            stageConfig(settings.checkerLlmConfigId),
+            stageConfig(
+              settings.controlLlmConfigId ?? settings.checkerLlmConfigId,
+            ),
+            stageConfig(settings.repairLlmConfigId),
+          ]);
+        // V5 auditor pick: prefer larger context, then max output, then a
+        // stable config id (same rule as the production stage model resolver).
+        const score = (config: typeof writerConfig) =>
+          (Number(config.context_window) || 0) * 1_000_000 +
+          (Number(config.max_output_tokens) || 0) * 100 +
+          (Number(config.id) || 0);
+        const auditorCfg =
+          score(controlCfg) > score(checkerCfg) ? controlCfg : checkerCfg;
+        const writerFrozen = freezeModel(writerConfig);
+        const plannerFrozen = freezeModel(plannerCfg);
+        const checkerFrozen = freezeModel(checkerCfg);
+        const controlFrozen = freezeModel(controlCfg);
+        const repairFrozen = freezeModel(repairCfg);
+        const auditorFrozen = freezeModel(auditorCfg);
+        const stageModelOf = (frozen: FrozenContinuationModelConfig) => ({
+          configId: frozen.configId,
+          contextWindow: frozen.contextWindow,
+          maxOutputTokens: frozen.maxOutputTokens,
+        });
+        const result = await buildContinuationV5Context({
           projectId: chapter.project_id,
           targetChapterId: chapter.id,
           targetPosition: chapter.position as any,
@@ -304,20 +404,27 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           activeLlmConfigId: requestConfig.id || 1,
           policy,
           stageModels: {
-            writer: {
-              configId: Number(writerConfig.id || 0),
-              contextWindow: writerWindow,
-              maxOutputTokens: writerMaxOutputTokens,
-            },
-            checker: checkerModel,
-            control: controlModel,
-            repair: repairModel,
+            draft_writer: stageModelOf(writerFrozen),
+            narrative_architect: stageModelOf(plannerFrozen),
+            revision_writer: stageModelOf(repairFrozen),
+            adversarial_auditor: stageModelOf(auditorFrozen),
+            final_reviser: stageModelOf(repairFrozen),
+          },
+          frozenModelConfigs: {
+            planner: plannerFrozen,
+            writer: writerFrozen,
+            checker: checkerFrozen,
+            repair: repairFrozen,
+            stateExtraction: null,
+            control: controlFrozen,
+            draftWriter: writerFrozen,
+            narrativeArchitect: plannerFrozen,
+            revisionWriter: repairFrozen,
+            adversarialAuditor: auditorFrozen,
+            finalReviser: repairFrozen,
           },
         });
-        const writerMessages = compileContinuationV4WriterMessages(
-          result.snapshot.stageViews.writer,
-        );
-        setContinuationStageBudgets({ stages: result.snapshot.stageBudgets });
+        setContinuationStageBudgets(result.snapshot.stageBudgets);
         setContinuationFreezeSummary({
           policyHash: result.snapshot.budgetPolicy.policyHash,
           canonSnapshotId: result.snapshot.canon.snapshotId,
@@ -325,8 +432,8 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           styleProfileHash: result.snapshot.style?.profileHash ?? null,
           supplementHashes: Array.from(
             new Set(
-              Object.values(result.snapshot.stageViews).flatMap(view =>
-                'supplements' in view ? view.supplements.contentHashes : [],
+              Object.values(result.snapshot.stageViews).flatMap(
+                view => view.supplements.contentHashes,
               ),
             ),
           ),
@@ -377,18 +484,13 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           }),
         );
         setEstimatedInputTokens(result.trace.totalInputTokens);
-        const writerBudget = result.snapshot.stageBudgets.writer;
+        const draftBudget = result.snapshot.stageBudgets.draft_writer;
         setContinuationBudgetSummary(
-          `V4 policy ${policy.allocatorVersion} · Writer 有效窗口 ${
-            writerBudget.effectiveWindow
-          } · Writer 动态输出 min/max ${writerBudget.minimumOutputTokens}/${writerBudget.maximumOutputTokens}`,
+          `V5 policy ${policy.allocatorVersion} · draft_writer 有效窗口 ${
+            draftBudget.effectiveWindow
+          } · draft_writer 动态输出 min/max ${draftBudget.minimumOutputTokens}/${draftBudget.maximumOutputTokens}`,
         );
-        setMessages(
-          writerMessages.map(m => ({
-            ...m,
-            content: `【Writer：同次返回 plan + content】\n${m.content}`,
-          })),
-        );
+        setMessages(renderV5StageViewMessages(result.snapshot.stageViews.draft_writer));
         return;
       }
       setContinuationPreview(false);
@@ -664,9 +766,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
     );
   };
 
-  const selectedBudget: ContinuationV4StageBudget | null =
+  const selectedBudget: ContinuationV5StageBudget | null =
     continuationStageBudgets
-      ? continuationStageBudgets.stages[selectedContinuationStage]
+      ? continuationStageBudgets[selectedContinuationStage]
       : null;
 
   return (
@@ -676,7 +778,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
         title="上下文预览"
         subtitle={`${
           continuationPreview
-            ? `续写 Writer（plan + content）· ${continuationBudgetSummary} · `
+            ? `续写 draft_writer（V5 冻结视图）· ${continuationBudgetSummary} · `
             : ''
         }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
         action={
@@ -898,10 +1000,10 @@ export const ContextPreviewScreen: React.FC<Props> = ({
               { color: theme.colors.textPrimary },
             ]}
           >
-            V4 四节点预算（模拟 / 实际 Writer 已测）
+            V5 五节点预算（冻结 stage views）
           </Text>
           <View style={styles.stageTabRow}>
-            {(['writer', 'checker', 'control', 'repair'] as const).map(
+            {(Object.keys(V5_STAGE_LABELS) as ContinuationV5PhysicalNode[]).map(
               stage => (
                 <TouchableOpacity
                   key={stage}
@@ -931,7 +1033,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
                       },
                     ]}
                   >
-                    {stage.toUpperCase()}
+                    {V5_STAGE_LABELS[stage]}
                   </Text>
                 </TouchableOpacity>
               ),

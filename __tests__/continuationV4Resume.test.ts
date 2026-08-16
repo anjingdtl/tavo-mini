@@ -65,11 +65,11 @@ jest.mock('../src/services/continuation/generation/generationRepository', () => 
 
 import { buildContinuationV4Context } from '../src/services/continuation/generation/continuationContextBuilder';
 import * as repository from '../src/services/continuation/generation/generationRepository';
-import { cancelContinuationRun } from '../src/services/continuation/generation/continuationGenerationRunner';
+import { cancelContinuationRun } from '../src/services/continuation/generation/legacy/continuationGenerationRunner';
 import {
   resumeContinuationV4Run,
   startContinuationV4Run,
-} from '../src/services/continuation/generation/continuationV4Runner';
+} from '../src/services/continuation/generation/legacy/continuationV4Runner';
 
 const mockBuildContext = buildContinuationV4Context as jest.Mock;
 const mockRepository = repository as jest.Mocked<typeof repository>;

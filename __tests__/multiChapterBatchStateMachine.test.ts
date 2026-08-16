@@ -802,7 +802,7 @@ describe('reconcileMultiChapterBatch — frozen policy + 3-child resume closure'
     await reconcileMultiChapterBatch('policy-resume', {
       owner: 'closure-owner-1',
       runPipeline: runPipeline as any,
-      resumePipeline: resumePipeline as any,
+      resumeWritingTask: resumePipeline as any,
       maxSteps: 12,
     });
 
@@ -819,7 +819,7 @@ describe('reconcileMultiChapterBatch — frozen policy + 3-child resume closure'
     await reconcileMultiChapterBatch('policy-resume', {
       owner: 'closure-owner-2',
       runPipeline: runPipeline as any,
-      resumePipeline: resumePipeline as any,
+      resumeWritingTask: resumePipeline as any,
     });
 
     const finalBatch = await getBatchById('policy-resume');

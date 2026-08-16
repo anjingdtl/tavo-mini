@@ -8,7 +8,7 @@ import {
   cancelPipeline,
 } from '../../../services/pipelineRunner';
 import {
-  createContinuationWritingKernelExecution,
+  runContinuationWritingKernel,
   createOutlineResumeWritingKernelExecution,
   createOutlineWritingKernelExecution,
   runWritingKernel,
@@ -23,7 +23,7 @@ import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   resolveNewChapterContextBudgetVersion,
 } from '../../../services/pipeline/outlineWorkflowVersion';
-import { cancelContinuationRun } from '../../../services/continuation/generation';
+import { cancelContinuationRun } from '../../../services/writing/persist/continuationAdoption';
 import { getContinuationChapterNumbering } from '../../../services/continuation/chapterNumbering/continuationChapterNumbering';
 import { prepareStoryMemoryForGeneration } from '../../../services/storyMemory/storyMemoryPrepare';
 import { enqueueStoryMemoryMaintenance } from '../../../services/storyMemory/storyMemoryService';
@@ -496,14 +496,13 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
         `续写${numbering.getDefaultTitle(
           chapter.position as any,
         )}，保持与前文一致。`;
-      const kernelExecution = createContinuationWritingKernelExecution({
+      const run = await runContinuationWritingKernel({
         projectId: project.id,
         chapterId: chapter.id,
         targetPosition: chapter.position,
         userInstruction: instruction,
         currentChapterContent: chapter.content ?? '',
       });
-      const { result: run } = await runWritingKernel(kernelExecution);
       continuationRunIdRef.current = run.id;
       const updateContinuationStage = (stage: string | null | undefined) => {
         const next = continuationStageFromRunStage(stage);

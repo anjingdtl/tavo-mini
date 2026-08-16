@@ -393,7 +393,7 @@ describe('RB-10 crash recovery vs tail-drift false positive', () => {
     await reconcileMultiChapterBatch('b10', {
       owner: 'test-owner',
       runPipeline: runner.run as any,
-      resumePipeline: (async () => {}) as any,
+      resumeWritingTask: (async () => {}) as any,
     });
 
     const batch = await getBatchById('b10');
@@ -445,7 +445,7 @@ describe('RB-7 lease renewal on each reconcile step', () => {
       owner: 'test-owner',
       leaseMs: 60_000,
       runPipeline: runner.run as any,
-      resumePipeline: (async () => {}) as any,
+      resumeWritingTask: (async () => {}) as any,
     });
 
     // Every observed mid-run lease belongs to our coordinator.

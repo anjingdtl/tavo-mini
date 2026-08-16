@@ -3,22 +3,22 @@
  * Never rebuilds live Canon/Story Memory — only uses frozen snapshot.
  * Style text is rendered from snapshot.style (frozen V2); never re-reads DB.
  */
-import type { ChatMessage } from '../../llm/types';
+import type { ChatMessage } from '../../../llm/types';
 import type {
   ContinuationContextSnapshot,
   ContinuationPlan,
   ContinuationCheckResult,
-} from './types';
-import { makeContinuationChapterNumbering } from '../chapterNumbering/continuationChapterNumbering';
+} from '../types';
+import { makeContinuationChapterNumbering } from '../../chapterNumbering/continuationChapterNumbering';
 import {
   renderStyleProfile,
   type StyleRenderLevel,
-} from '../styleProfile/styleProfileRenderer';
+} from '../../styleProfile/styleProfileRenderer';
 import {
   countHanCharacters,
   isContinuationLengthIssueSubtype,
   resolveContinuationLengthContract,
-} from './continuationLengthContract';
+} from '../continuationLengthContract';
 
 /**
  * User-visible chapter title for the frozen target position (Spec §11.3).
@@ -657,4 +657,4 @@ export {
   compileContinuationV4ControlMessages,
   compileContinuationV4RepairMessages,
   continuationV4ProtocolSkeletonTokens,
-} from './continuationV4PromptCompiler';
+} from '../continuationV4PromptCompiler';

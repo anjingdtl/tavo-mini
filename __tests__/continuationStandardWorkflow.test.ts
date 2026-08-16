@@ -107,7 +107,7 @@ import {
   repairContinuationArtifactOnce,
   resumeInterruptedRun,
   isWriterTransientRequestError,
-} from '../src/services/continuation/generation/continuationGenerationRunner';
+} from '../src/services/continuation/generation/legacy/continuationGenerationRunner';
 
 function snapshot(workflowVersion?: 2, targetChapterChars = 100): any {
   const settings = {

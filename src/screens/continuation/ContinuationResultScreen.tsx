@@ -26,6 +26,9 @@ import {
   abandonRun,
   adoptArtifactAsDraft,
   confirmPlanAndContinue,
+  repairContinuationArtifactOnce,
+} from '../../services/writing/persist/continuationAdoption';
+import {
   getArtifactForRun,
   getLatestArtifact,
   getLatestArtifactForStage,
@@ -34,7 +37,6 @@ import {
   getRunById,
   listStageResults,
   listChecksForArtifact,
-  repairContinuationArtifactOnce,
   type ContinuationArtifact,
   type ContinuationCheckResult,
   type ContinuationGenerationRun,
@@ -42,10 +44,7 @@ import {
   type ContinuationPlan,
 } from '../../services/continuation/generation';
 import { getChapterById } from '../../services/database';
-import {
-  createContinuationWritingKernelExecution,
-  runWritingKernel,
-} from '../../services/writing';
+import { runContinuationWritingKernel } from '../../services/writing';
 import {
   ContinuationConflictError,
   ContinuationOutdatedError,
@@ -343,15 +342,13 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       if (!run) throw new Error('找不到待重启的续写任务');
       const chapter = await getChapterById(run.chapterId);
       if (!chapter) throw new Error('章节不存在，无法重启续写');
-      const { result: restarted } = await runWritingKernel(
-        createContinuationWritingKernelExecution({
-          projectId: run.projectId,
-          chapterId: run.chapterId,
-          targetPosition: Number(run.targetPosition),
-          userInstruction: run.userInstruction,
-          currentChapterContent: chapter.content || '',
-        }),
-      );
+      const restarted = await runContinuationWritingKernel({
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        targetPosition: Number(run.targetPosition),
+        userInstruction: run.userInstruction,
+        currentChapterContent: chapter.content || '',
+      });
       Toast.show({
         type: 'success',
         text1: '已按新版 Writing Kernel 重启',

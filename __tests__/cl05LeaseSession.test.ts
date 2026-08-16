@@ -322,7 +322,7 @@ describe('集成：batch run_pipeline 长请求期间 lease 心跳（CL-05）', 
     const reconcilePromise = reconcileMultiChapterBatch('b1', {
       owner: 'o1',
       runPipeline: runner.run as any,
-      resumePipeline: runner.run as any,
+      resumeWritingTask: runner.run as any,
       maxSteps: 8,
     });
 

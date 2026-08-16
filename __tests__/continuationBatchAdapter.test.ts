@@ -29,10 +29,10 @@ jest.mock('../src/services/continuation/generation/generationRepository', () => 
 });
 
 jest.mock(
-  '../src/services/continuation/generation/continuationGenerationRunner',
+  '../src/services/continuation/generation/legacy/continuationGenerationRunner',
   () => {
     const actual = jest.requireActual(
-      '../src/services/continuation/generation/continuationGenerationRunner',
+      '../src/services/continuation/generation/legacy/continuationGenerationRunner',
     );
     return {
       ...actual,
@@ -49,6 +49,40 @@ jest.mock(
     };
   },
 );
+
+jest.mock(
+  '../src/services/writing/execution/continuationStageDriver',
+  () => ({
+    createContinuationStageDriver: async (input: any) => {
+      const run = await mockRunner.startContinuationRun(input);
+      return {
+        durableBinding: 'continuation-generation-ledger' as const,
+        handoff: Promise.resolve(run),
+        step: async () => ({
+          kind: 'terminal' as const,
+          reason: 'completed' as const,
+          result: run,
+        }),
+        finalize: async () => {},
+      };
+    },
+  }),
+);
+
+jest.mock('../src/services/writing/persist/continuationAdoption', () => {
+  const actual = jest.requireActual(
+    '../src/services/writing/persist/continuationAdoption',
+  );
+  return {
+    ...actual,
+    adoptArtifactAsDraft: (...args: any[]) =>
+      (mockRunner.adoptArtifactAsDraft as any)(...args),
+    finalizeContinuationChapter: (...args: any[]) =>
+      (mockRunner.finalizeContinuationChapter as any)(...args),
+    cancelContinuationRun: (...args: any[]) =>
+      (mockRunner.cancelContinuationRun as any)(...args),
+  };
+});
 
 jest.mock('../src/services/continuation/continuationSourceReader', () => ({
   continuationSourceReader: {
@@ -528,7 +562,7 @@ async function drive(batchId: string): Promise<void> {
   await reconcileMultiChapterBatch(batchId, {
     owner: 'adapter-test',
     runPipeline: jest.fn(),
-    resumePipeline: jest.fn(),
+    resumeWritingTask: jest.fn(),
   });
 }
 
@@ -649,7 +683,7 @@ describe('continuation batch adapter', () => {
       await reconcileMultiChapterBatch(batchId, {
         owner: 'adapter-test',
         runPipeline,
-        resumePipeline: jest.fn(),
+        resumeWritingTask: jest.fn(),
       });
       expect(runPipeline).not.toHaveBeenCalled();
     });

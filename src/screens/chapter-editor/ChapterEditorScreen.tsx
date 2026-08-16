@@ -8,10 +8,8 @@ import { Button, Header, Screen, spacing } from '../../components/ui';
 import * as db from '../../services/database';
 import { createRevision } from '../../services/revisionService';
 import { finalizeChapterMemory } from '../../services/storyMemory/storyMemoryService';
-import {
-  finalizeContinuationChapter,
-  findLatestPendingReviewRunForChapter,
-} from '../../services/continuation/generation';
+import { findLatestPendingReviewRunForChapter } from '../../services/continuation/generation';
+import { finalizeContinuationChapter } from '../../services/writing/persist/continuationAdoption';
 import { findOrCreateNextChapter } from '../../services/chapterNavigation';
 import { estimateTokens } from '../../utils/tokenEstimator';
 import type { EditorStackParamList } from '../../navigation/TabNavigator';

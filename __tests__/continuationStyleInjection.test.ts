@@ -13,7 +13,7 @@ import {
   compileWriterMessages,
   compileCheckerMessages,
   compileRepairMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import { buildContinuationV4Context } from '../src/services/continuation/generation/continuationContextBuilder';
 import { cloneDefaultContextAutomationPolicy } from '../src/services/contextAutomationPolicy';
 import type {

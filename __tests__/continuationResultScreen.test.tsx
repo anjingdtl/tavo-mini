@@ -18,9 +18,6 @@ jest.mock('../src/store/themeStore', () => ({
 }));
 
 jest.mock('../src/services/continuation/generation', () => ({
-  abandonRun: jest.fn(async () => undefined),
-  adoptArtifactAsDraft: jest.fn(async () => ({ contentHash: 'hash' })),
-  confirmPlanAndContinue: jest.fn(),
   getArtifactForRun: jest.fn(async () => null),
   getLatestArtifact: jest.fn(async () => ({ id: 'artifact-1', content: '续写正文' })),
   getLatestArtifactForStage: jest.fn(async () => null),
@@ -41,14 +38,19 @@ jest.mock('../src/services/continuation/generation', () => ({
   })),
   listChecksForArtifact: jest.fn(async () => [] as any[]),
   listStageResults: jest.fn(async () => [] as any[]),
-  repairContinuationArtifactOnce: jest.fn(async () => undefined),
   resumeInterruptedRun: jest.fn(),
   summarizeTrace: jest.fn(),
 }));
 
+jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
+  abandonRun: jest.fn(async () => undefined),
+  adoptArtifactAsDraft: jest.fn(async () => ({ contentHash: 'hash' })),
+  confirmPlanAndContinue: jest.fn(),
+  repairContinuationArtifactOnce: jest.fn(async () => undefined),
+}));
+
 import { ContinuationResultScreen } from '../src/screens/continuation/ContinuationResultScreen';
 import {
-  adoptArtifactAsDraft,
   getArtifactForRun,
   getLatestArtifact,
   getLatestArtifactForStage,
@@ -56,8 +58,11 @@ import {
   getRunById,
   listChecksForArtifact,
   listStageResults,
-  repairContinuationArtifactOnce,
 } from '../src/services/continuation/generation';
+import {
+  adoptArtifactAsDraft,
+  repairContinuationArtifactOnce,
+} from '../src/services/writing/persist/continuationAdoption';
 
 const mockListChecksForArtifact = listChecksForArtifact as jest.Mock;
 const mockGetLatestArtifact = getLatestArtifact as jest.Mock;

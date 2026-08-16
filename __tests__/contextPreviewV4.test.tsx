@@ -1,14 +1,21 @@
 import fs from 'fs';
 import path from 'path';
 
-describe('Context Preview V4 UI contract', () => {
+describe('Context Preview V5 UI contract', () => {
   test('预览显示四节点预算和冻结追溯信息，不在界面写死 token fallback', () => {
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/screens/ContextPreviewScreen.tsx'),
       'utf8',
     );
-    for (const stage of ['writer', 'checker', 'control', 'repair']) {
-      expect(source).toContain(`'${stage}'`);
+    // Kernel Final Closure：预览统一走 V5 五节点冻结视图。
+    for (const stage of [
+      'draft_writer',
+      'narrative_architect',
+      'revision_writer',
+      'adversarial_auditor',
+      'final_reviser',
+    ]) {
+      expect(source).toContain(stage);
     }
     expect(source).toContain('policyHash');
     expect(source).toContain('canonSnapshotId');

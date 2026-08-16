@@ -10,8 +10,8 @@ import {
 } from '../../llm';
 import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { modelJsonCandidates } from '../canon/canonJsonValidators';
-import { compileStateExtractionMessages } from './continuationPromptCompiler';
-import { planStageCapacity } from './continuationContextBudget';
+import { compileStateExtractionMessages } from '../../writing/postWritingUpdate/stateExtractionPrompt';
+import { planStageCapacity } from '../../writing/scenario/continuationStageCapacity';
 import {
   casOutboxState,
   contentRevisionHash,

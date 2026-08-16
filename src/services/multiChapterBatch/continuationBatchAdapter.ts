@@ -38,13 +38,10 @@ import {
   cancelContinuationRun,
   adoptArtifactAsDraft,
   finalizeContinuationChapter,
-} from '../continuation/generation/continuationGenerationRunner';
-import {
-  createContinuationWritingKernelExecution,
-  runWritingKernel,
-} from '../writing';
+} from '../writing/persist/continuationAdoption';
+import { runContinuationWritingKernel } from '../writing';
 import { createContinuationBatchTraceId } from '../continuation/generation/continuationGenerationTrace';
-import type { StageLlmCaller } from '../continuation/generation/continuationGenerationRunner';
+import type { StageLlmCaller } from '../writing/scenario/continuationWritingTypes';
 import {
   getRunById,
   listRunsForProject,
@@ -495,8 +492,7 @@ async function executeContinuationItemStep(params: {
         batch,
         currentItem,
       );
-      const { result: run } = await runWritingKernel(
-        createContinuationWritingKernelExecution({
+      const run = await runContinuationWritingKernel({
         projectId: batch.projectId,
         chapterId: currentItem.chapterId,
         targetPosition: Number(chapter.position),
@@ -506,8 +502,7 @@ async function executeContinuationItemStep(params: {
         batchTraceId: createContinuationBatchTraceId(batchId),
         chapterOrdinal: currentItem.ordinal,
         chapterCount: batch.chapterCount,
-        }),
-      );
+      });
       const bound = await bindContinuationRunForItem({
         batchId,
         ordinal: currentItem.ordinal,
@@ -691,17 +686,15 @@ async function driveRunToSettlement(params: {
       try {
         const chapter = await db.getChapterById(run.chapterId);
         if (!chapter) throw new Error('章节不存在');
-        const { result: restarted } = await runWritingKernel(
-          createContinuationWritingKernelExecution({
-            projectId: run.projectId,
-            chapterId: run.chapterId,
-            targetPosition: Number(run.targetPosition),
-            userInstruction:
-              run.userInstruction || chapter.synopsis || chapter.title || '按当前章节边界续写。',
-            currentChapterContent: chapter.content || '',
-            callStage: options.callStage,
-          }),
-        );
+        const restarted = await runContinuationWritingKernel({
+          projectId: run.projectId,
+          chapterId: run.chapterId,
+          targetPosition: Number(run.targetPosition),
+          userInstruction:
+            run.userInstruction || chapter.synopsis || chapter.title || '按当前章节边界续写。',
+          currentChapterContent: chapter.content || '',
+          callStage: options.callStage,
+        });
         await cancelContinuationRun(run.id).catch(() => {});
         await updateBatchItem(batchId, item.ordinal, {
           activeContinuationRunId: null,

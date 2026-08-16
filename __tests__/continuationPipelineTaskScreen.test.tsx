@@ -49,6 +49,9 @@ jest.mock('../src/services/database', () => ({
 
 jest.mock('../src/services/continuation/generation', () => ({
   listRunsForProject: (...args: any[]) => mockListRunsForProject(...args),
+}));
+
+jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
   cancelContinuationRun: (...args: any[]) => mockCancelContinuationRun(...args),
 }));
 

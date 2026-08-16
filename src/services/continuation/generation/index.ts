@@ -50,16 +50,6 @@ export {
   newContinuationRunId,
 } from './generationRepository';
 export {
-  buildContinuationContext,
-  buildContinuationV4Context,
-  buildContinuationV5Context,
-} from './continuationContextBuilder';
-export type {
-  BuildContinuationContextInput,
-  BuildContinuationV4ContextInput,
-  BuildContinuationV5ContextInput,
-} from './continuationContextBuilder';
-export {
   assertContinuationStageBudget,
   preflightContinuationStageBudget,
   resolveContinuationStageBudget,
@@ -112,18 +102,6 @@ export {
   type ContinuationSourceSeam,
 } from './continuationAnchor';
 export {
-  compilePlannerMessages,
-  compileWriterMessages,
-  compileCheckerMessages,
-  compileRepairMessages,
-  compileStateExtractionMessages,
-  compileContinuationV4WriterMessages,
-  compileContinuationV4CheckerMessages,
-  compileContinuationV4ControlMessages,
-  compileContinuationV4RepairMessages,
-  continuationV4ProtocolSkeletonTokens,
-} from './continuationPromptCompiler';
-export {
   buildRepairUnifiedTasks,
   injectRepairAnchors,
   stripRepairAnchors,
@@ -175,42 +153,25 @@ export {
   coldStartNormalizeContinuation,
   deterministicExtractFromText,
 } from './continuationStateOutboxWorker';
+// Adoption / finalization / cancel domain operations moved to the unified
+// Writing persist layer (Kernel Final Closure). The barrel re-exports them
+// from the production module; the legacy runner is no longer a barrel
+// dependency.
 export {
-  startContinuationRun,
   repairContinuationArtifactOnce,
   confirmPlanAndContinue,
   cancelContinuationRun,
   adoptArtifactAsDraft,
   abandonRun,
   finalizeContinuationChapter,
-  resumeInterruptedRun,
   isContinuationRunId,
   outdatedRunsOnSourceOrCanonChange,
-  parseWriterResult,
-} from './continuationGenerationRunner';
-export type { StartContinuationRunInput, StageLlmCaller } from './continuationGenerationRunner';
+} from '../../writing/persist/continuationAdoption';
+export type {
+  StartContinuationRunInput,
+  StageLlmCaller,
+} from '../../writing/scenario/continuationWritingTypes';
 export type { ContinuationV4LocalGateInput } from './generationRepository';
-export {
-  startContinuationV4Run,
-  resumeContinuationV4Run,
-  markContinuationV4StagesCancelled,
-  runContinuationV4LocalFinalGate,
-  validateContinuationV4RepairCompliance,
-  parseContinuationV4WriterEnvelope,
-  parseContinuationV4RepairEnvelope,
-} from './continuationV4Runner';
-export {
-  startContinuationV5Run,
-  resumeContinuationV5Run,
-  markContinuationV5StagesCancelled,
-  parseContinuationV5DraftEnvelope,
-  parseContinuationV5ArchitectureEnvelope,
-  parseContinuationV5RevisionEnvelope,
-  parseContinuationV5AuditEnvelope,
-  parseContinuationV5FinalEnvelope,
-  hashArchitectureEnvelope,
-  hashAuditEnvelope,
-} from './continuationV5Runner';
 export {
   validateFinalArtifact,
 } from './finalArtifactValidator';

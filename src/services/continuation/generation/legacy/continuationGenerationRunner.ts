@@ -2,26 +2,24 @@
  * Independent continuation generation runner (Spec §5, §9).
  * Does not reuse freeform PipelineStageName or pipeline_tasks as authority.
  */
-import type { ChatMessage, LLMRequestConfig } from '../../llm/types';
+import type { ChatMessage, LLMRequestConfig } from '../../../llm/types';
 import {
   callLLMResult,
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
-} from '../../llm';
-import { stripModelJson } from '../canon/canonJsonValidators';
-import { buildContinuationContext } from './continuationContextBuilder';
+} from '../../../llm';
+import { stripModelJson } from '../../canon/canonJsonValidators';
+import { buildContinuationContext } from '../continuationContextBuilder';
 import {
-  appendContinuationGenerationTraceEvent,
   createContinuationGenerationTrace,
-  ensureContinuationGenerationTrace,
-} from './continuationGenerationTrace';
+} from '../continuationGenerationTrace';
 import {
   bindIssuesToArtifact,
   filterBySettings,
   parseCheckerLlmJson,
   runDeterministicChecks,
-} from './continuationChecker';
-import type { RawCheckIssue } from './continuationChecker';
+} from '../continuationChecker';
+import type { RawCheckIssue } from '../continuationChecker';
 import {
   compileCheckerMessages,
   compilePlannerMessages,
@@ -32,30 +30,22 @@ import {
   shouldRunRepair,
   tryDeterministicRepair,
   tryDeterministicRepairWithReport,
-} from './continuationRepairService';
+} from '../continuationRepairService';
 import {
-  buildAcceptOpenChecksStatement,
-  buildOutboxInsertStatement,
   casUpdateRunState,
-  contentRevisionHash,
-  getEligibleArtifactForRun,
-  getArtifactForRun,
   getLatestArtifact,
-  getLatestEligibleArtifact,
   getPlan,
   getRunById,
-  findLatestAdoptedRunForChapter,
   insertArtifact,
   insertCheckResults,
   insertRun,
   listChecksForArtifact,
   markChecksAutoRepaired,
   markChecksObsolete,
-  markRunsOutdatedForProject,
   newContinuationRunId,
   savePlan,
   ensureGenerationSettings,
-} from './generationRepository';
+} from '../generationRepository';
 import type {
   ContinuationArtifact,
   ContinuationCheckResult,
@@ -65,144 +55,69 @@ import type {
   ContinuationPlan,
   ContinuationRunState,
   FrozenContinuationModelConfig,
-} from './types';
+} from '../types';
 import {
   ContinuationCapabilityBlockedError,
-  ContinuationConflictError,
   ContinuationOutdatedError,
-} from './types';
-import { openDatabase } from '../../../data/connection/openDatabase';
-import { executeTransaction } from '../../database/transaction';
-import { v4 } from '../../uuidBridge';
-import { processContinuationOutbox } from './continuationStateOutboxWorker';
-import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
-import { activeContinuationControllers as activeControllers } from './continuationRunControllers';
+} from '../types';
+import { estimateMessagesTokens } from '../../../../utils/tokenEstimator';
+import { activeContinuationControllers as activeControllers } from '../continuationRunControllers';
 import {
-  markContinuationV4StagesCancelled,
   resumeContinuationV4Run,
   startContinuationV4Run,
 } from './continuationV4Runner';
 import {
-  markContinuationV5StagesCancelled,
   resumeContinuationV5Run,
   startContinuationV5Run,
-} from './continuationV5Runner';
-import { CanonQueryService } from '../canon/canonQueryService';
-import { continuationSourceReader } from '../continuationSourceReader';
+} from '../continuationV5Runner';
 import {
   CONTINUATION_BUDGET_POLICY,
   planStageCapacity,
   resolveContinuationWriterOutputBudget,
   type ResolvedStageCapacity,
-} from './continuationContextBudget';
-import { type ContinuationStageBudgets } from './continuationContextBudget';
+} from '../continuationContextBudget';
+import { type ContinuationStageBudgets } from '../continuationContextBudget';
 import {
   evaluateContinuationLength,
   isContinuationLengthIssueSubtype,
   resolveContinuationLengthContract,
-} from './continuationLengthContract';
+} from '../continuationLengthContract';
 import {
   applyParsedRepairPatches,
   isRepairCandidateUsable,
   parseRepairPatches,
   validateRepairPatchCoverage,
   validateRepairPatches,
-} from './continuationRepairPatch';
+} from '../continuationRepairPatch';
 export {
   applyRepairPatches,
   isRepairCandidateUsable,
-} from './continuationRepairPatch';
+} from '../continuationRepairPatch';
 
-export interface StageLlmCallResult {
-  text: string;
-  usage?: { prompt?: number; completion?: number };
-  finishReason?: string | null;
-  emptyReason?:
-    | 'length'
-    | 'content_filter'
-    | 'reasoning_only'
-    | 'no_choices'
-    | 'empty';
-}
+export type {
+  StageLlmCallResult,
+  StageLlmCaller,
+  StartContinuationRunInput,
+} from '../../../writing/scenario/continuationWritingTypes';
+import type {
+  StageLlmCallResult,
+  StageLlmCaller,
+  StartContinuationRunInput,
+} from '../../../writing/scenario/continuationWritingTypes';
 
-export type StageLlmCaller = (input: {
-  stage: string;
-  messages: ChatMessage[];
-  maxTokens: number;
-  configId: number | null;
-  responseFormat?: 'json_object' | 'text';
-}) => Promise<StageLlmCallResult>;
-
-export interface StartContinuationRunInput {
-  projectId: number;
-  chapterId: number;
-  targetPosition: number;
-  userInstruction: string;
-  currentChapterContent: string;
-  modelContextLimit?: number;
-  maxOutputTokens?: number;
-  /** Test injector — skips real LLM. */
-  callStage?: StageLlmCaller;
-  /** Skip checker LLM (deterministic only). */
-  deterministicOnly?: boolean;
-  /** Test/compatibility escape hatch for historical V2 fixtures. */
-  workflowVersion?: 2 | 4 | 5;
-  /** Optional batch lineage metadata; observability only. */
-  batchTraceId?: string | null;
-  chapterOrdinal?: number | null;
-  chapterCount?: number | null;
-}
-
-function traceJsonForRunState(input: {
-  run: ContinuationGenerationRun;
-  event: Parameters<typeof appendContinuationGenerationTraceEvent>[1]['event'];
-  state: ContinuationRunState;
-  stage?: import('./types').ContinuationStageName | null;
-  reason?: string | null;
-  adoption?: Partial<
-    NonNullable<ContinuationContextTrace['generationTrace']>['adoption']
-  >;
-  finalization?: Partial<
-    NonNullable<ContinuationContextTrace['generationTrace']>['finalization']
-  >;
-}): string | null {
-  if (!input.run.contextSnapshotJson) return null;
-  try {
-    const snapshot = JSON.parse(input.run.contextSnapshotJson) as ContinuationContextSnapshot;
-    const trace = input.run.contextTraceJson
-      ? (JSON.parse(input.run.contextTraceJson) as ContinuationContextTrace)
-      : ({
-          sourceId: snapshot.source.sourceId,
-          canonSnapshotId: snapshot.canon.snapshotId,
-          canonRevision: snapshot.canon.revision,
-          targetPosition: snapshot.targetPosition,
-          entityRefs: [],
-          storyMemoryFingerprint: snapshot.storyMemory.stateFingerprint,
-          freshness: snapshot.bundles.effectiveState.freshness,
-          categories: [],
-          totalInputTokens: 0,
-          reservedOutputTokens: 0,
-          omittedCapabilities: [],
-        } satisfies ContinuationContextTrace);
-    const unified = ensureContinuationGenerationTrace(trace, snapshot, {
-      runId: input.run.id,
-      state: input.run.state,
-      stage: input.run.stage,
-    });
-    return JSON.stringify(
-      appendContinuationGenerationTraceEvent(unified, {
-        event: input.event,
-        state: input.state,
-        stage: input.stage ?? null,
-        reason: input.reason ?? null,
-        adoption: input.adoption,
-        finalization: input.finalization,
-      }),
-    );
-  } catch {
-    return null;
-  }
-}
+// Legacy re-export shims: the adoption / finalization / cancel domain
+// operations moved to the production writing persist module. Only legacy
+// runners and tests may import them through this module.
+export {
+  adoptArtifactAsDraft,
+  finalizeContinuationChapter,
+  cancelContinuationRun,
+  abandonRun,
+  repairContinuationArtifactOnce,
+  confirmPlanAndContinue,
+  isContinuationRunId,
+  outdatedRunsOnSourceOrCanonChange,
+} from '../../../writing/persist/continuationAdoption';
 
 function defaultPlan(instruction: string): ContinuationPlan {
   return {
@@ -572,7 +487,7 @@ async function startContinuationRunLegacy(
       stateExtractionCfg ?? activeCfg,
     ),
   } satisfies NonNullable<
-    import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
+    import('../types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs']
   >;
 
   // Per-stage capacity from each stage's real window. input.modelContextLimit
@@ -1502,290 +1417,6 @@ async function runStandardStages(
 }
 
 /**
- * User-confirmed last-resort repair for a standard run whose Repair artifact
- * still has an open local error/blocking check. The normal path remains
- * Writer → Checker → Repair (at most three calls). This action is deliberately
- * explicit, is available once, never calls Checker again, and keeps the prior
- * artifact if the extra request fails.
- */
-export async function repairContinuationArtifactOnce(
-  runId: string,
-  callStage?: StageLlmCaller,
-): Promise<void> {
-  const run = await getRunById(runId);
-  if (!run) throw new Error('run 不存在');
-  if (run.workflowVersion !== 2) {
-    throw new Error('历史续写不支持额外修正，请继续使用历史恢复流程');
-  }
-  if (run.state !== 'awaiting_user' || run.stage !== 'awaiting_user') {
-    throw new Error('当前续写不在等待用户决策状态');
-  }
-
-  const snapshot = JSON.parse(
-    run.contextSnapshotJson ?? '{}',
-  ) as ContinuationContextSnapshot;
-  const artifact = await getLatestArtifact(runId);
-  if (!artifact) throw new Error('没有可修正的正文候选');
-  const checks = await listChecksForArtifact(runId, artifact.id);
-  const severeChecks = checks.filter(
-    c =>
-      c.resolutionStatus === 'open' &&
-      (c.severity === 'error' || c.severity === 'blocking'),
-  );
-  if (severeChecks.length === 0) {
-    throw new Error('当前候选没有待修复的 error / blocking 问题');
-  }
-
-  let saved: { stages?: Record<string, any> } = {};
-  try {
-    saved = JSON.parse(run.tokenUsageJson || '{}');
-  } catch {
-    saved = {};
-  }
-  const tokenUsage: Record<string, any> = { ...(saved.stages ?? {}) };
-  const priorCalls = previousStandardCallCount(tokenUsage);
-  if (
-    priorCalls >= 4 ||
-    Number(tokenUsage.repair?.additionalRequestCount ?? 0) > 0
-  ) {
-    throw new Error('额外修正已经使用过，本次不再重复调用');
-  }
-  const firstRepairAttempted = Number(tokenUsage.repair?.requestCount ?? 0) > 0;
-  if (artifact.stage !== 'repair' && !firstRepairAttempted) {
-    throw new Error(
-      '只有第一次 Repair 已尝试且本地复核仍失败时，才能请求额外修正',
-    );
-  }
-
-  const repairCapacity = capacityForStage(snapshot, 'repair');
-  if (!repairCapacity) throw new Error('缺少 Repair 冻结配置，无法安全请求');
-  const messages = compileRepairMessages(
-    snapshot,
-    artifact.content,
-    severeChecks,
-    'patch',
-  );
-  const preflight = preflightStandardStage({
-    snapshot,
-    stage: 'repair',
-    messages,
-    maxTokens: repairCapacity.maxOutputTokens,
-  });
-  const controller = new AbortController();
-  activeControllers.set(runId, controller);
-  const startedAt = new Date();
-  tokenUsage.repair = {
-    ...(tokenUsage.repair ?? {}),
-    requestCount: Number(tokenUsage.repair?.requestCount ?? 0) + 1,
-    additionalRequestCount: 1,
-    additionalReason: 'user_confirmed_after_local_verification_failure',
-    startedAt: startedAt.toISOString(),
-    estimatedPromptTokens: preflight.promptTokens,
-    requestedMaxTokens: preflight.requestedMaxTokens,
-    effectiveWindow: preflight.effectiveWindow,
-  };
-
-  try {
-    const claimed = await casUpdateRunState(runId, ['awaiting_user'], {
-      state: 'running',
-      stage: 'repair',
-      tokenUsageJson: JSON.stringify({
-        workflowVersion: 2,
-        stages: tokenUsage,
-      }),
-    });
-    if (!claimed) throw new Error('续写状态已变更，无法请求额外修正');
-
-    const result = callStage
-      ? await callStage({
-          stage: 'repair',
-          messages,
-          maxTokens: preflight.requestedMaxTokens,
-          configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-          responseFormat: 'json_object',
-        })
-      : await defaultStageCaller({
-          stage: 'repair',
-          messages,
-          maxTokens: preflight.requestedMaxTokens,
-          configId: snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
-          responseFormat: 'json_object',
-          signal: controller.signal,
-          projectId: run.projectId,
-          runId,
-          frozenModelConfig: frozenModelConfigForStage(snapshot, 'repair'),
-        });
-    const finishedAt = new Date();
-    const previousRepair = tokenUsage.repair ?? {};
-    const previousPromptTotal = Number(
-      previousRepair.promptTotal ?? previousRepair.prompt ?? 0,
-    );
-    const previousCompletionTotal = Number(
-      previousRepair.completionTotal ?? previousRepair.completion ?? 0,
-    );
-    const previousDurationTotal = Number(
-      previousRepair.totalDurationMs ?? previousRepair.durationMs ?? 0,
-    );
-    tokenUsage.repair = {
-      ...tokenUsage.repair,
-      finishedAt: finishedAt.toISOString(),
-      durationMs: finishedAt.getTime() - startedAt.getTime(),
-      totalDurationMs:
-        previousDurationTotal + finishedAt.getTime() - startedAt.getTime(),
-      prompt: result.usage?.prompt,
-      completion: result.usage?.completion,
-      promptTotal: previousPromptTotal + Number(result.usage?.prompt ?? 0),
-      completionTotal:
-        previousCompletionTotal + Number(result.usage?.completion ?? 0),
-      finishReason: result.finishReason ?? null,
-      emptyReason: result.emptyReason ?? null,
-    };
-    if (
-      typeof result.usage?.prompt === 'number' &&
-      typeof result.usage?.completion === 'number' &&
-      result.usage.prompt + result.usage.completion > preflight.effectiveWindow
-    ) {
-      throw new ContinuationCapabilityBlockedError(
-        `额外 Repair 实际 usage 超过有效窗口 ${preflight.effectiveWindow}，候选正文保持不变。`,
-      );
-    }
-    const patches = parseRepairPatches(result.text);
-    if (!patches || !validateRepairPatches(artifact.content, patches)) {
-      throw new Error(
-        '额外 Repair 未返回通过 JSON、offset 和插入边界校验的补丁，候选正文保持不变',
-      );
-    }
-    const coverage = validateRepairPatchCoverage({
-      patches,
-      issues: severeChecks,
-    });
-    const repaired = applyParsedRepairPatches(artifact.content, patches);
-    if (repaired === artifact.content) {
-      throw new Error('额外 Repair 未改变正文，候选正文保持不变');
-    }
-    const repairedLocalIssues = filterBySettings(
-      bindIssuesToArtifact(
-        runDeterministicChecks(repaired, snapshot),
-        repaired,
-        new Set(snapshot.bundles.canon.evidenceRefs),
-      ),
-      snapshot.settingsSnapshot.values,
-    );
-    const repairedLength = evaluateContinuationLength(
-      repaired,
-      snapshot.settingsSnapshot.values.targetChapterChars,
-    );
-    const lengthResolved =
-      coverage.chapterLengthIssues.length > 0 &&
-      repairedLength.status === 'within';
-    const hasCoveredOrdinaryIssue = coverage.coveredIssues.length > 0;
-    const hasLengthIssue = coverage.chapterLengthIssues.length > 0;
-    const candidateUsable = isRepairCandidateUsable(
-      artifact.content,
-      repaired,
-      snapshot.settingsSnapshot.values.targetChapterChars,
-      'additional',
-    );
-    const lengthSafelyImproved =
-      hasLengthIssue && repairedLength.status !== 'within' && candidateUsable;
-    const hasRepairProgress =
-      hasCoveredOrdinaryIssue || lengthResolved || lengthSafelyImproved;
-    if (!hasRepairProgress) {
-      throw new Error(
-        '额外 Repair 补丁没有覆盖任何待修复的普通严重问题，候选正文保持不变',
-      );
-    }
-    if (!candidateUsable) {
-      throw new Error(
-        '额外 Repair 候选破坏动态长度契约、过度缩短或明显远离目标，已保留原候选；本次不再重试，也不会调用 LLM Checker。',
-      );
-    }
-
-    const checksToMark = new Set<number>();
-    for (const issue of coverage.coveredIssues) {
-      if (issue.id <= 0) continue;
-      if (isLocalDeterministicSubtype(issue.subtype)) {
-        const remains = repairedLocalIssues.some(
-          localIssue =>
-            localIssue.subtype === issue.subtype &&
-            (issue.generatedStart == null ||
-              localIssue.generatedStart === issue.generatedStart) &&
-            (issue.generatedEnd == null ||
-              localIssue.generatedEnd === issue.generatedEnd),
-        );
-        if (remains) continue;
-      }
-      checksToMark.add(issue.id);
-    }
-    if (lengthResolved) {
-      for (const issue of coverage.chapterLengthIssues) {
-        if (issue.id > 0) checksToMark.add(issue.id);
-      }
-    }
-    if (checksToMark.size > 0) {
-      await markChecksAutoRepaired(
-        runId,
-        artifact.id,
-        Array.from(checksToMark),
-      );
-    }
-    const repairedArtifact = await insertArtifact({
-      runId,
-      stage: 'repair',
-      content: repaired,
-      repairRound: artifact.repairRound + 1,
-      parentArtifactId: artifact.id,
-    });
-    const unresolvedCheckerIssues = severeChecks
-      .filter(check => !isLocalDeterministicSubtype(check.subtype))
-      .filter(check => !checksToMark.has(check.id))
-      .map(check => rebindCheckToContent(check, repairedArtifact.content));
-    await insertCheckResults(
-      [...repairedLocalIssues, ...unresolvedCheckerIssues].map(i => ({
-        ...i,
-        runId,
-        chapterId: snapshot.targetChapterId,
-        artifactId: repairedArtifact.id,
-        artifactHash: repairedArtifact.contentHash,
-      })),
-    );
-    tokenUsage.localVerify = {
-      requestCount: 0,
-      status: 'completed',
-      note: '额外 Repair 后本地复核，未进行第二次 LLM Checker',
-    };
-    await casUpdateRunState(runId, ['running'], {
-      state: 'awaiting_user',
-      stage: 'awaiting_user',
-      tokenUsageJson: JSON.stringify({
-        workflowVersion: 2,
-        stages: tokenUsage,
-      }),
-    });
-  } catch (error) {
-    const finishedAt = new Date();
-    tokenUsage.repair = {
-      ...tokenUsage.repair,
-      finishedAt: finishedAt.toISOString(),
-      durationMs: finishedAt.getTime() - startedAt.getTime(),
-      warning: 'additional_repair_failed_writer_or_repair_artifact_retained',
-      warningMessage: error instanceof Error ? error.message : String(error),
-    };
-    await casUpdateRunState(runId, ['running'], {
-      state: 'awaiting_user',
-      stage: 'awaiting_user',
-      tokenUsageJson: JSON.stringify({
-        workflowVersion: 2,
-        stages: tokenUsage,
-      }),
-    }).catch(() => {});
-    throw error;
-  } finally {
-    activeControllers.delete(runId);
-  }
-}
-
-/**
  * Only transport/server-busy failures are safe to retry automatically for a
  * new standard-workflow Writer request. Output-contract failures (reasoning
  * only, empty, length, malformed JSON) and configuration/auth failures must
@@ -2004,7 +1635,7 @@ function buildStageCaller(
   projectId: number,
   runId: string,
   tokenUsage: Record<string, any>,
-  frozenModelConfigs?: import('./types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs'],
+  frozenModelConfigs?: import('../types').ContinuationGenerationSettingsSnapshot['frozenModelConfigs'],
 ) {
   return async (
     stage: string,
@@ -2084,67 +1715,6 @@ async function finalizeRunOnError(
   } catch {
     // best-effort; the run may already be in a terminal state from a parallel
     // cancel/abandon. Never throw out of error finalization.
-  }
-}
-
-export async function confirmPlanAndContinue(
-  runId: string,
-  callStage?: StageLlmCaller,
-  deterministicOnly?: boolean,
-): Promise<void> {
-  const run = await getRunById(runId);
-  if (!run) throw new Error('run 不存在');
-  if (run.workflowVersion === 4) {
-    throw new Error('V4 不使用 Planner 确认步骤。');
-  }
-  if (run.state === 'outdated') throw new ContinuationOutdatedError();
-  if (run.state !== 'awaiting_user' || run.stage !== 'awaiting_user') {
-    throw new Error('当前不在等待 Planner 确认状态');
-  }
-  const planRow = await getPlan(runId);
-  if (!planRow) throw new Error('缺少 plan');
-  await savePlan(runId, planRow.plan, 'confirmed');
-  const snapshot = JSON.parse(
-    run.contextSnapshotJson!,
-  ) as ContinuationContextSnapshot;
-  const controller = new AbortController();
-  activeControllers.set(runId, controller);
-  await casUpdateRunState(runId, ['awaiting_user'], {
-    state: 'running',
-    stage: 'writer',
-  });
-
-  const tokenUsage: Record<string, any> = {};
-  const call = buildStageCaller(
-    callStage,
-    controller,
-    run.projectId,
-    runId,
-    tokenUsage,
-  );
-
-  // Fix-plan §5.2: wrap the stage execution in the same try/catch/finally as
-  // startContinuationRun so an exception cannot leave the controller dangling
-  // or the run stuck in `running`. Cancellation → cancelled; other errors →
-  // failed. The run must always reach a terminal/recoverable state.
-  try {
-    await continueFromWriter(runId, snapshot, planRow.plan, {
-      call,
-      persistUsage: async stage => {
-        await casUpdateRunState(runId, ['running'], {
-          stage: stage as any,
-          tokenUsageJson: JSON.stringify({ stages: tokenUsage }),
-        });
-      },
-      tokenUsage,
-      deterministicOnly,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    await finalizeRunOnError(runId, controller, err);
-    throw err;
-  } finally {
-    activeControllers.delete(runId);
   }
 }
 
@@ -2341,645 +1911,6 @@ async function continueFromWriter(
     tokenUsageJson: JSON.stringify({ stages: opts.tokenUsage }),
   });
   activeControllers.delete(runId);
-}
-
-/**
- * User-initiated cancel. Must never throw into the UI thread: abort, DB
- * finalization and V4 stage cleanup are all best-effort. Concurrent cancel
- * taps and in-flight stage writers are tolerated.
- */
-export async function cancelContinuationRun(runId: string): Promise<void> {
-  try {
-    // 1) Abort first so in-flight fetch stops. AbortController.abort is
-    // idempotent; still wrap in case a host polyfill misbehaves.
-    const controller = activeControllers.get(runId);
-    try {
-      controller?.abort();
-    } catch {
-      // ignore
-    }
-    activeControllers.delete(runId);
-
-    // 2) Load run for workflowVersion; tolerate missing/deleted rows.
-    const run = await getRunById(runId).catch(() => null);
-    if (
-      run &&
-      (run.state === 'cancelled' ||
-        run.state === 'completed' ||
-        run.state === 'outdated')
-    ) {
-      // Already terminal; still try to settle any V4 stage rows left mid-flight.
-      if (run.workflowVersion === 4) {
-        await markContinuationV4StagesCancelled(runId).catch(() => {});
-      } else if (run.workflowVersion === 5) {
-        await markContinuationV5StagesCancelled(runId).catch(() => {});
-      }
-      return;
-    }
-
-    // 3) Mark run cancelled. Include interrupted so a half-settled cancel can
-    // still be forced to the cancelled terminal (user intent wins).
-    await casUpdateRunState(
-      runId,
-      [
-        'queued',
-        'running',
-        'awaiting_user',
-        'awaiting_regeneration',
-        'interrupted',
-      ],
-      {
-        state: 'cancelled',
-        errorCode: 'cancelled',
-        errorMessage: '用户取消',
-        completedAt: new Date().toISOString(),
-      },
-    ).catch(() => false);
-
-    // 4) V4/V5 stage rows: never let a single stage update take down the app.
-    if (run?.workflowVersion === 4 || run == null) {
-      await markContinuationV4StagesCancelled(runId).catch(() => {});
-    }
-    if (run?.workflowVersion === 5 || run == null) {
-      await markContinuationV5StagesCancelled(runId).catch(() => {});
-    }
-  } catch (error) {
-    // Absolute last resort: cancel is a user safety action and must not crash.
-    console.warn('[continuation] cancelContinuationRun failed:', error);
-  }
-}
-
-/**
- * Verify the run's frozen Source/Canon snapshot still matches the project's
- * current active Source/Canon (fix-plan §6.1). If they diverge, atomically mark
- * the run `outdated` and throw so adoption is refused — defense-in-depth on top
- * of the change-time invalidation calls (which can race). The run's sourceId /
- * canonSnapshotId / canonRevision were captured at creation; we compare them
- * against the live continuation_settings + active Canon snapshot.
- */
-async function assertContextFreshOrMarkOutdated(
-  run: ContinuationGenerationRun,
-): Promise<void> {
-  // Only runs that captured a Source/Canon snapshot need a freshness check.
-  // A run with neither was created outside the full continuation flow (e.g. a
-  // test fixture) and should not be blocked here.
-  if (run.sourceId == null && !run.canonSnapshotId) return;
-
-  // Historical V2 fixtures/runs retain their original freshness reader for
-  // backward compatibility. New V4 runs take the CanonQueryService branch
-  // below; no V4 caller can reach this legacy SQL path.
-  // V2 freshness path. V4/V5 use CanonQueryService branch below.
-  if (run.workflowVersion !== 4 && run.workflowVersion !== 5) {
-    const db = await openDatabase();
-    const [settingsRes] = await db.executeSql(
-      'SELECT active_source_id, active_canon_snapshot_id FROM continuation_settings WHERE project_id = ?',
-      [run.projectId],
-    );
-    if (settingsRes.rows.length === 0) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'source_missing',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-    const settings = settingsRes.rows.item(0);
-    if (run.sourceId != null && Number(settings.active_source_id) !== Number(run.sourceId)) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'source_changed',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-    const activeCanonId = settings.active_canon_snapshot_id;
-    if (run.canonSnapshotId || activeCanonId) {
-      if (
-        !activeCanonId ||
-        !run.canonSnapshotId ||
-        String(activeCanonId) !== String(run.canonSnapshotId)
-      ) {
-        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-          state: 'outdated',
-          errorCode: 'outdated',
-          errorMessage: 'canon_snapshot_changed',
-          completedAt: new Date().toISOString(),
-        });
-        throw new ContinuationOutdatedError();
-      }
-      const [snapRes] = await db.executeSql(
-        'SELECT revision FROM continuation_canon_snapshots WHERE id = ?',
-        [activeCanonId],
-      );
-      if (snapRes.rows.length === 0) {
-        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-          state: 'outdated',
-          errorCode: 'outdated',
-          errorMessage: 'canon_snapshot_deleted',
-          completedAt: new Date().toISOString(),
-        });
-        throw new ContinuationOutdatedError();
-      }
-      if (Number(snapRes.rows.item(0).revision) !== Number(run.canonRevision)) {
-        await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-          state: 'outdated',
-          errorCode: 'outdated',
-          errorMessage: 'canon_revision_changed',
-          completedAt: new Date().toISOString(),
-        });
-        throw new ContinuationOutdatedError();
-      }
-    }
-    return;
-  }
-
-  let activeSource: Awaited<
-    ReturnType<typeof continuationSourceReader.getSnapshot>
-  >;
-  try {
-    activeSource = await continuationSourceReader.getSnapshot(run.projectId);
-  } catch {
-    // A missing active Source is observable through the bounded reader; V4
-    // adoption must not bypass CanonQueryService/reader boundaries with SQL.
-    await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-      state: 'outdated',
-      errorCode: 'outdated',
-      errorMessage: 'source_missing',
-      completedAt: new Date().toISOString(),
-    });
-    throw new ContinuationOutdatedError();
-  }
-  // Source mismatch (run frozen a source that is no longer active).
-  if (run.sourceId != null && Number(activeSource.sourceId) !== Number(run.sourceId)) {
-    await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-      state: 'outdated',
-      errorCode: 'outdated',
-      errorMessage: 'source_changed',
-      completedAt: new Date().toISOString(),
-    });
-    throw new ContinuationOutdatedError();
-  }
-  // Canon snapshot mismatch: compare active snapshot id + revision.
-  let activeCanon: Awaited<ReturnType<typeof CanonQueryService.getActiveSnapshot>>;
-  try {
-    activeCanon = await CanonQueryService.getActiveSnapshot(run.projectId);
-  } catch {
-    await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-      state: 'outdated',
-      errorCode: 'outdated',
-      errorMessage: 'canon_snapshot_deleted',
-      completedAt: new Date().toISOString(),
-    });
-    throw new ContinuationOutdatedError();
-  }
-  const activeCanonId = activeCanon.id;
-  if (run.canonSnapshotId || activeCanonId) {
-    if (
-      !activeCanonId ||
-      !run.canonSnapshotId ||
-      String(activeCanonId) !== String(run.canonSnapshotId)
-    ) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'canon_snapshot_changed',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-    // CanonQueryService returns the active revision; no V4 caller is allowed
-    // to inspect continuation_canon_snapshots directly.
-    if (Number(activeCanon.revision) !== Number(run.canonRevision)) {
-      await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
-        state: 'outdated',
-        errorCode: 'outdated',
-        errorMessage: 'canon_revision_changed',
-        completedAt: new Date().toISOString(),
-      });
-      throw new ContinuationOutdatedError();
-    }
-  }
-}
-
-/**
- * Adopt selected artifact as chapter draft only.
- * No proposal/event/Story Memory LLM (Spec §10.3).
- */
-export async function adoptArtifactAsDraft(input: {
-  runId: string;
-  artifactId?: string;
-  /** Force overwrite when chapter content hash differs from input_revision_hash. */
-  forceOverwrite?: boolean;
-  /** Explicit user opt-in to adopt an artifact with open severe local checks. */
-  allowOpenChecks?: boolean;
-}): Promise<{ contentHash: string }> {
-  const run = await getRunById(input.runId);
-  if (!run) throw new Error('run 不存在');
-  if (run.state === 'outdated') throw new ContinuationOutdatedError();
-  if (run.state === 'awaiting_regeneration') {
-    throw new Error('最终稿未形成可交付结果，请重新生成或放弃');
-  }
-  if (run.state !== 'awaiting_user' && run.state !== 'interrupted') {
-    throw new Error(`run 状态 ${run.state} 不可采纳`);
-  }
-
-  // Fix-plan §6.1: re-check that the active Source and Canon snapshot still
-  // match the run's frozen snapshot before adopting. If Source/Canon changed
-  // since this run was created, atomically mark the run outdated and refuse
-  // adoption — the user must re-launch against the latest context. This is a
-  // defense-in-depth check on top of the invalidation calls fired at change
-  // time (which are best-effort and can race).
-  await assertContextFreshOrMarkOutdated(run);
-
-  // Fix-plan §7.1: when an explicit artifactId is given, the artifact MUST
-  // belong to this run. getArtifactForRun matches both id AND run_id, so a
-  // swapped or foreign artifact id is rejected at the data layer. Ownership is
-  // never relaxed by forceOverwrite.
-  const useEligibleOnly =
-    run.workflowVersion === 4 || run.workflowVersion === 5;
-  const artifact =
-    (input.artifactId
-      ? useEligibleOnly
-        ? await getEligibleArtifactForRun(run.id, input.artifactId)
-        : await getArtifactForRun(run.id, input.artifactId)
-      : useEligibleOnly
-        ? await getLatestEligibleArtifact(run.id)
-        : await getLatestArtifact(run.id)) ?? null;
-  if (!artifact) {
-    throw new Error(
-      input.artifactId
-        ? '指定的正文不属于本次续写，无法采纳'
-        : '没有可采纳的正文',
-    );
-  }
-
-  const db = await openDatabase();
-  // Read content + updated_at for optimistic concurrency (fix-plan §7.3). The
-  // chapter UPDATE below re-checks updated_at in its WHERE clause so a
-  // concurrent edit between this read and the transaction is detected and the
-  // whole adopt is refused rather than silently overwriting the user's edit.
-  const [ch] = await db.executeSql(
-    'SELECT content, title, status, updated_at FROM chapters WHERE id = ?',
-    [run.chapterId],
-  );
-  if (ch.rows.length === 0) throw new Error('章节不存在');
-  const chapter = ch.rows.item(0);
-  const currentContent = String(chapter.content ?? '');
-  const currentUpdatedAt = String(chapter.updated_at ?? '');
-  const currentHash = contentRevisionHash(currentContent);
-  if (
-    currentContent.trim().length > 0 &&
-    currentHash !== run.inputRevisionHash &&
-    !input.forceOverwrite
-  ) {
-    throw new ContinuationConflictError(
-      '章节在生成期间已被编辑，请确认覆盖后再采纳',
-    );
-  }
-
-  const adoptedHash = artifact.contentHash;
-  const ts = new Date().toISOString();
-
-  // Fix-plan §7.2: claim the run first via CAS. If the run was concurrently
-  // cancelled/abandoned/outdated (no longer awaiting_user/interrupted), the CAS
-  // fails and we refuse to write the chapter — the adopt cannot succeed against
-  // a run that is no longer adoptable.
-  // V5: only stage=final + eligible may be adopted.
-  if (
-    run.workflowVersion === 5 &&
-    artifact.stage !== 'final'
-  ) {
-    throw new Error('只有最终稿 V3 可被采纳');
-  }
-  if (
-    (run.workflowVersion === 4 || run.workflowVersion === 5) &&
-    artifact.eligibilityStatus !== 'eligible'
-  ) {
-    throw new Error('当前正文不可采纳');
-  }
-
-  const claimed = await casUpdateRunState(
-    run.id,
-    ['awaiting_user', 'interrupted'],
-    {
-      state: 'completed',
-      completionReason: 'adopted',
-      adoptedRevisionHash: adoptedHash,
-      completedAt: ts,
-      contextTraceJson: traceJsonForRunState({
-        run,
-        event: 'completed',
-        state: 'completed',
-        stage: 'awaiting_user',
-        adoption: {
-          status: 'adopted',
-          adoptedRevisionHash: adoptedHash,
-        },
-        finalization: {
-          status: 'pending',
-          finalizedRevisionHash: null,
-          completionReason: 'adopted',
-        },
-      }) ?? undefined,
-    },
-  );
-  if (!claimed) {
-    // Re-read to give a precise error; the run may now be outdated/completed.
-    const fresh = await getRunById(run.id);
-    if (fresh?.state === 'outdated') throw new ContinuationOutdatedError();
-    throw new ContinuationConflictError('续写状态已变更，无法采纳');
-  }
-
-  // Single local transaction: revision snapshot + write draft content with
-  // optimistic concurrency. Never call LLM here. If the chapter was edited
-  // concurrently (updated_at changed), the UPDATE affects 0 rows and we surface
-  // a conflict. The provisional run claim is reverted below so the user can
-  // retry instead of being stranded behind a false adopted state.
-  let chapterRowsAffected = 0;
-  const statements: Array<{ sql: string; params?: any[] }> = [
-    {
-      sql: `INSERT INTO content_revisions (
-        project_id, target_type, target_id, title, content, source, source_ref, created_at
-      ) VALUES (?, 'chapter', ?, ?, ?, 'before_pipeline_accept', ?, ?)`,
-      params: [
-        run.projectId,
-        run.chapterId,
-        String(chapter.title ?? ''),
-        currentContent,
-        run.id,
-        ts,
-      ],
-    },
-    {
-      sql: `UPDATE chapters SET content = ?, status = CASE WHEN status = 'finalized' THEN status ELSE 'draft' END, updated_at = ?
-        WHERE id = ? AND updated_at = ?`,
-      params: [artifact.content, ts, run.chapterId, currentUpdatedAt],
-    },
-  ];
-  if (input.allowOpenChecks) {
-    const acceptChecks = buildAcceptOpenChecksStatement({
-      runId: run.id,
-      artifactId: artifact.id,
-      ts,
-    });
-    statements.push({
-      sql: acceptChecks.sql,
-      params: acceptChecks.params as any[],
-    });
-  }
-  await executeTransaction(db, statements, {
-    onStatementComplete: (idx, rowsAffected) => {
-      // Statement 2 (1-based) is the chapter UPDATE with the optimistic lock.
-      if (idx === 2) chapterRowsAffected = rowsAffected;
-    },
-  });
-
-  if (chapterRowsAffected === 0) {
-    // The chapter changed under us. Restore an adoptable state only if this
-    // invocation still owns the provisional adoption.
-    await casUpdateRunState(run.id, ['completed'], {
-      state: 'awaiting_user',
-      completionReason: null,
-      adoptedRevisionHash: null,
-      completedAt: null,
-      errorCode: 'adoption_conflict',
-      errorMessage: '章节在采纳期间被并发编辑，请重试',
-    });
-    throw new ContinuationConflictError(
-      '章节在采纳期间被并发编辑，正文未覆盖，请重试',
-    );
-  }
-
-  return { contentHash: adoptedHash };
-}
-
-export async function abandonRun(runId: string): Promise<void> {
-  const run = await getRunById(runId);
-  const ok = await casUpdateRunState(
-    runId,
-    [
-      'awaiting_user',
-      'awaiting_regeneration',
-      'interrupted',
-      'running',
-      'queued',
-      // The result screen renders 放弃 for failed runs too; without this
-      // source state the CAS matches nothing and the user can never clear
-      // a failed result (放弃失败：无法放弃该 run).
-      'failed',
-    ],
-    {
-      state: 'completed',
-      completionReason: 'abandoned',
-      completedAt: new Date().toISOString(),
-      contextTraceJson: run
-        ? traceJsonForRunState({
-            run,
-            event: 'completed',
-            state: 'completed',
-            stage: 'awaiting_user',
-            adoption: { status: 'abandoned', adoptedRevisionHash: null },
-            finalization: {
-              status: 'not_started',
-              finalizedRevisionHash: null,
-              completionReason: 'abandoned',
-            },
-          }) ?? undefined
-        : undefined,
-    },
-  );
-  if (!ok) {
-    const freshRun = await getRunById(runId);
-    if (freshRun?.state === 'completed') return;
-    throw new Error('无法放弃该 run');
-  }
-  activeControllers.get(runId)?.abort();
-  activeControllers.delete(runId);
-}
-
-/**
- * Finalize chapter: mark finalized, dirty SM, link source run and enqueue
- * extract_state outbox — all in ONE local transaction (Spec §11.1, fix-plan §2).
- *
- * Previously the outbox INSERT and the run linkage update ran after the
- * chapters/story-memory transaction committed. If the app was killed in that
- * window the chapter was finalized but no state-extraction task was ever
- * enqueued, silently dropping Story Memory rebuild. They now share a single
- * atomic commit so the chapter cannot reach `finalized` without its
- * extraction task. The post-commit `processContinuationOutbox({ limit: 1 })`
- * call is best-effort acceleration only; reliable delivery is the outbox +
- * cold-start path, never this fire-and-forget trigger.
- *
- * Does NOT call LLM in the transaction.
- */
-export async function finalizeContinuationChapter(input: {
-  projectId: number;
-  chapterId: number;
-  content: string;
-  sourceRunId?: string | null;
-}): Promise<{ revisionHash: string; outboxDedupeKey: string }> {
-  const revisionHash = contentRevisionHash(input.content);
-  const db = await openDatabase();
-  const [ch] = await db.executeSql(
-    'SELECT position FROM chapters WHERE id = ?',
-    [input.chapterId],
-  );
-  if (ch.rows.length === 0) throw new Error('章节不存在');
-  const position = ch.rows.item(0).position as number;
-  const ts = new Date().toISOString();
-
-  // Spec §5.1 / fix-plan §5.1: the authoritative frozen field is
-  // `resolvedModelConfigIds` (built by continuationContextBuilder). The legacy
-  // `resolvedLlmConfigIds` key was never written, so it silently read as null
-  // and State Extraction fell back to the live active config on every run.
-  let resolvedSourceRunId: string | null = input.sourceRunId ?? null;
-  let sourceRun: ContinuationGenerationRun | null = null;
-  if (input.sourceRunId) {
-    sourceRun = await getRunById(input.sourceRunId);
-    if (
-      !sourceRun ||
-      sourceRun.projectId !== input.projectId ||
-      sourceRun.chapterId !== input.chapterId
-    ) {
-      throw new Error('sourceRunId 不属于当前项目或章节，无法定稿');
-    }
-  } else {
-    sourceRun = await findLatestAdoptedRunForChapter(
-      input.projectId,
-      input.chapterId,
-    );
-    resolvedSourceRunId = sourceRun?.id ?? null;
-  }
-
-  let frozenStateExtractionConfigId: number | null = null;
-  let missingFrozenConfigReason: string | null = null;
-  if (sourceRun) {
-    try {
-      const snapshot = JSON.parse(sourceRun.settingsSnapshotJson);
-      const resolved = snapshot?.resolvedModelConfigIds?.stateExtraction;
-      if (typeof resolved === 'number') {
-        frozenStateExtractionConfigId = resolved;
-      } else {
-        // Old / corrupt snapshot: stay safe (null) but record the reason in
-        // the outbox payload so the worker and UI can surface it without
-        // logging the prompt or chapter body.
-        missingFrozenConfigReason =
-          snapshot?.resolvedModelConfigIds == null
-            ? 'snapshot_missing_resolved_model_config_ids'
-            : 'snapshot_state_extraction_not_number';
-      }
-    } catch {
-      frozenStateExtractionConfigId = null;
-      missingFrozenConfigReason = 'settings_snapshot_json_unparseable';
-    }
-  } else {
-    missingFrozenConfigReason = 'manual_or_unknown_source_run';
-  }
-
-  const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
-  const rebuildDedupeKey = `rebuild_story_memory:auto:${input.projectId}:${position}:${revisionHash}`;
-  const outboxId = `co_${v4().replace(/-/g, '')}`;
-  const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
-  const finalizedTraceJson = sourceRun
-    ? traceJsonForRunState({
-        run: sourceRun,
-        event: 'completed',
-        state: 'completed',
-        stage: 'awaiting_user',
-        finalization: {
-          status: 'finalized',
-          finalizedRevisionHash: revisionHash,
-          completionReason: sourceRun.completionReason,
-        },
-      })
-    : null;
-
-  const statements: Array<{ sql: string; params?: any[] }> = [
-    {
-      sql: 'INSERT OR IGNORE INTO project_story_memory (project_id, updated_at) VALUES (?, ?)',
-      params: [input.projectId, ts],
-    },
-    {
-      sql: `UPDATE chapters SET content = ?, status = 'finalized',
-        finalized_at = ?, updated_at = ? WHERE id = ?`,
-      params: [input.content, ts, ts, input.chapterId],
-    },
-    {
-      sql: `UPDATE project_story_memory SET status = 'dirty',
-        dirty_from_position = CASE
-          WHEN dirty_from_position IS NULL THEN ?
-          WHEN dirty_from_position > ? THEN ?
-          ELSE dirty_from_position
-        END,
-        updated_at = ?
-      WHERE project_id = ?`,
-      params: [position, position, position, ts, input.projectId],
-    },
-  ];
-
-  // Link the finalized hash onto the source run inside the same tx so the
-  // chapter and its run linkage commit or roll back together.
-  if (resolvedSourceRunId) {
-    statements.push({
-      sql: `UPDATE continuation_generation_runs
-        SET finalized_revision_hash = ?,
-            context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
-        WHERE id = ? AND state IN ('completed', 'awaiting_user', 'interrupted')`,
-      params: [revisionHash, finalizedTraceJson, ts, resolvedSourceRunId],
-    });
-  }
-
-  // INSERT OR IGNORE: re-tapping finalize for an unchanged chapter never
-  // duplicates the extract_state task (UNIQUE(dedupe_key)).
-  statements.push(
-    buildOutboxInsertStatement({
-      id: outboxId,
-      projectId: input.projectId,
-      chapterId: input.chapterId,
-      operation: 'extract_state',
-      payload: {
-        projectId: input.projectId,
-        chapterId: input.chapterId,
-        chapterRevisionHash: revisionHash,
-        sourceRunId: resolvedSourceRunId,
-        llmConfigId: frozenStateExtractionConfigId,
-        // Visible audit hint only — never the prompt or chapter body.
-        configNote: missingFrozenConfigReason,
-      },
-      dedupeKey,
-      ts,
-    }),
-    // Chapter summaries and Story Memory describe finalized text, not proposal
-    // decisions. Queue their rebuild now, but make it depend on durable state
-    // extraction so a crash/retry cannot run the two jobs out of order.
-    buildOutboxInsertStatement({
-      id: rebuildOutboxId,
-      projectId: input.projectId,
-      chapterId: input.chapterId,
-      operation: 'rebuild_story_memory',
-      payload: {
-        fromPosition: position,
-        reason: 'finalized_chapter_memory',
-        dependsOnDedupeKey: dedupeKey,
-      },
-      dedupeKey: rebuildDedupeKey,
-      ts,
-    }),
-  );
-
-  await executeTransaction(db, statements);
-
-  // Best-effort acceleration only. Reliable delivery is the outbox + cold
-  // start path (markRunsInterruptedOnColdStart + processContinuationOutbox),
-  // never this fire-and-forget trigger.
-  // The dependent Story Memory rebuild is inserted beside the extraction
-  // event. Process both in creation order when the app remains alive; cold
-  // start processing still makes the chain recoverable after interruption.
-  processContinuationOutbox({ limit: 2 }).catch(() => {});
-
-  return { revisionHash, outboxDedupeKey: dedupeKey };
 }
 
 /**
@@ -3201,17 +2132,6 @@ export async function resumeInterruptedRun(
   } finally {
     activeControllers.delete(runId);
   }
-}
-
-export function isContinuationRunId(id: string): boolean {
-  return id.startsWith('ct_');
-}
-
-export async function outdatedRunsOnSourceOrCanonChange(
-  projectId: number,
-  reason: string,
-): Promise<void> {
-  await markRunsOutdatedForProject(projectId, reason);
 }
 
 export type { ContinuationRunState };

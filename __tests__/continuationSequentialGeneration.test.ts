@@ -2,7 +2,7 @@ import { selectContinuationAnchor } from '../src/services/continuation/generatio
 import {
   compilePlannerMessages,
   compileWriterMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import type { ContinuationContextTrace } from '../src/services/continuation/generation/types';
 
 const original = '【ORIGINAL_FINAL_TAIL】原著末章唯一锚点，不应进入后续续写正文接缝，也不得在后续 Prompt 中重复出现。';

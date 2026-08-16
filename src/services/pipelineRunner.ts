@@ -118,6 +118,13 @@ export function isPipelineCancelled(taskId: string): boolean {
   return cancelledTasks.has(taskId);
 }
 
+/** Kernel Final Closure: the Writing Kernel driver clears the shared
+ * cancellation marker when its run settles (same semantics the legacy
+ * public entries applied in their finally blocks). */
+export function forgetCancelledTask(taskId: string): void {
+  cancelledTasks.delete(taskId);
+}
+
 /**
  * Pause interrupt (batch pause): abort the in-flight LLM request WITHOUT
  * terminating the task. The stage checkpoint is released as `interrupted` by
@@ -134,13 +141,13 @@ export function interruptPipelineTask(taskId: string): void {
   }
 }
 
-function registerTaskAbort(taskId: string): AbortSignal {
+export function registerTaskAbort(taskId: string): AbortSignal {
   const controller = new AbortController();
   taskAbortControllers.set(taskId, controller);
   return controller.signal;
 }
 
-function releaseTaskAbort(taskId: string): void {
+export function releaseTaskAbort(taskId: string): void {
   taskAbortControllers.delete(taskId);
 }
 

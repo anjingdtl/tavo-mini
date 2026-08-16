@@ -1,0 +1,97 @@
+/**
+ * Unified post-Freeze stage contract (Kernel Final Closure §6 / §10).
+ *
+ * Every production writing run — outline and continuation alike — is driven
+ * by the SAME kernel stage loop. The loop consumes the single authoritative
+ * `FrozenWritingContext` and advances one durable step at a time through a
+ * `WritingStageDriver`. Scenario differences are bound BEFORE Freeze (source
+ * adapters pick the durable substrate); the engine below never inspects the
+ * scenario to choose writers, reviewers, budgets, prompts or finalizers.
+ */
+import type {
+  FrozenWritingContext,
+  WritingKernelStage,
+  WritingKernelTrace,
+} from './frozenWritingContext';
+
+/** Durable substrate hosting checkpoints/artifacts for a run. Bound
+ * pre-Freeze by the scenario adapter and frozen into the run contract. */
+export type WritingDurableBinding =
+  | 'outline-pipeline-tasks'
+  | 'continuation-generation-ledger';
+
+/** Stage-level notification surfaced by a driver after each durable step. */
+export interface WritingStageNotification {
+  stage: WritingKernelStage;
+  /** Durable action that produced this notification (trace metadata only). */
+  action: string;
+  status: 'started' | 'completed' | 'blocked';
+  detail?: string;
+}
+
+/** The authoritative Freeze snapshot handed to the engine exactly once.
+ * The durable trace is the authority; `frozenContext` may be null only for
+ * envelopes frozen by builds older than the Kernel Final Closure (their
+ * trace still pins every fingerprint). */
+export interface WritingFreezeBinding {
+  frozenContext: FrozenWritingContext | null;
+  trace: WritingKernelTrace;
+}
+
+export type WritingStepOutcome =
+  | ({ kind: 'freeze' } & WritingFreezeBinding)
+  | ({ kind: 'stage' } & WritingStageNotification)
+  | { kind: 'progress'; detail: string }
+  | {
+      kind: 'terminal';
+      reason:
+        | 'completed'
+        | 'failed'
+        | 'cancelled'
+        | 'blocked'
+        | 'waiting'
+        | 'budget-paused';
+      result?: unknown;
+      error?: unknown;
+    }
+  /** Driver asked the engine to stop looping without a terminal state
+   * (e.g. persisted wait_retry handed back to a watchdog). */
+  | { kind: 'stop' };
+
+/**
+ * Advances ONE durable stage step per call. Implementations must:
+ *  - read planning state from the durable substrate (never live sources);
+ *  - re-use the already-frozen request/plan (no context rebuild);
+ *  - surface the authoritative freeze exactly once via a `freeze` outcome.
+ */
+export interface WritingStageDriver {
+  readonly durableBinding: WritingDurableBinding;
+  step(): Promise<WritingStepOutcome>;
+  /** Release locks / foreground ownership. Always invoked by the engine. */
+  finalize(): Promise<void>;
+}
+
+export interface WritingStageExecutionInput {
+  frozenContext: FrozenWritingContext;
+  emitStage: (
+    stage: WritingKernelStage,
+    status: 'started' | 'completed' | 'blocked',
+    detail?: string,
+  ) => void;
+}
+
+/** Post-writing domain updates run as plugins after Persist (plan §11.2). */
+export interface PersistedWritingRunResult {
+  writingRunId: string;
+  generationTraceId: string;
+  projectId: number;
+  chapterId: number;
+  durableBinding: WritingDurableBinding;
+}
+
+export interface PostWritingUpdatePlugin {
+  name: string;
+  /** Plugins may select on frozen contract facts (e.g. source kinds). */
+  appliesTo(frozen: FrozenWritingContext): boolean;
+  execute(result: PersistedWritingRunResult): Promise<void>;
+}

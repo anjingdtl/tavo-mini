@@ -175,7 +175,7 @@ describe('RB-1 unified batch pipeline reaches execution', () => {
     await reconcileMultiChapterBatch('rb1', {
       owner: 'test-owner',
       runPipeline: runner.run as any,
-      resumePipeline: (async () => {}) as any,
+      resumeWritingTask: (async () => {}) as any,
     });
 
     expect(runner.calls.length).toBe(1);
@@ -262,7 +262,7 @@ describe('RB-2 adoption crash window', () => {
     await reconcileMultiChapterBatch('rb2', {
       owner: 'test-owner',
       runPipeline: (async () => {}) as any,
-      resumePipeline: (async () => {}) as any,
+      resumeWritingTask: (async () => {}) as any,
     });
 
     const chapter = await getChapterById(chapterId);
@@ -416,7 +416,7 @@ describe('RB-4 batch usage from pipeline_stage_attempts', () => {
     await reconcileMultiChapterBatch('rb4', {
       owner: 'test-owner',
       runPipeline: (async () => {}) as any,
-      resumePipeline: (async () => {}) as any,
+      resumeWritingTask: (async () => {}) as any,
     });
 
     const batch = await getBatchById('rb4');

@@ -3,7 +3,7 @@ import {
   parseContinuationV4WriterEnvelope,
   runContinuationV4LocalFinalGate,
   validateContinuationV4RepairCompliance,
-} from '../src/services/continuation/generation';
+} from '../src/services/continuation/generation/legacy/continuationV4Runner';
 import type {
   ContinuationContextSnapshotV3,
   ContinuationV4RepairEnvelope,

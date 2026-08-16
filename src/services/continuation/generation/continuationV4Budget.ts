@@ -3,7 +3,7 @@ import type {
   ContinuationV4Stage,
   RatioCurve,
 } from '../../contextAutomationPolicy';
-import type { ContinuationContextBudgetPlan } from './continuationContextBudget';
+import type { ContinuationContextBudgetPlan } from '../../writing/scenario/continuationStageCapacity';
 
 export type { ContinuationV4Stage } from '../../contextAutomationPolicy';
 

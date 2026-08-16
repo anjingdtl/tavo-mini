@@ -3,7 +3,7 @@ import {
   compilePlannerMessages,
   compileRepairMessages,
   compileWriterMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 
 describe('续写原著事实复核提示词', () => {
   it('将五类原著事实和其可追溯证据一并交给复核器', () => {

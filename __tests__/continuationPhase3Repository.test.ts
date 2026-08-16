@@ -938,7 +938,7 @@ import {
   compileCheckerMessages,
   compileRepairMessages,
   compileStateExtractionMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import {
   adoptArtifactAsDraft,
   abandonRun,
@@ -947,7 +947,7 @@ import {
   cancelContinuationRun,
   resumeInterruptedRun,
   confirmPlanAndContinue,
-} from '../src/services/continuation/generation/continuationGenerationRunner';
+} from '../src/services/continuation/generation/legacy/continuationGenerationRunner';
 import { ContinuationOutdatedError } from '../src/services/continuation/generation/types';
 import {
   processContinuationOutbox,

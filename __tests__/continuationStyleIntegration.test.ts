@@ -7,7 +7,7 @@ import {
   STYLE_RENDERER_VERSION,
   renderStyleProfile,
 } from '../src/services/continuation/styleProfile/styleProfileRenderer';
-import { compileWriterMessages } from '../src/services/continuation/generation/continuationPromptCompiler';
+import { compileWriterMessages } from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import type { ContinuationPlan } from '../src/services/continuation/generation/types';
 import { ContinuationCapabilityBlockedError } from '../src/services/continuation/generation/types';
 import { makeContinuationChapterNumbering } from '../src/services/continuation/chapterNumbering/continuationChapterNumbering';

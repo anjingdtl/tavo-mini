@@ -4,7 +4,7 @@ import {
 import {
   compilePlannerMessages,
   compileWriterMessages,
-} from '../src/services/continuation/generation/continuationPromptCompiler';
+} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import { runDeterministicChecks } from '../src/services/continuation/generation/continuationChecker';
 import { summarizeTrace } from '../src/services/continuation/generation/continuationContextTrace';
 

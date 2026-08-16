@@ -78,7 +78,7 @@ export interface ReconcileMultiChapterBatchOptions {
   onProgress?: (info: BatchProgressInfo) => void;
   /** Injectable pipeline runners (tests replace these). */
   runPipeline?: typeof runOutlineWritingKernel;
-  resumePipeline?: typeof resumeOutlineWritingKernel;
+  resumeWritingTask?: typeof resumeOutlineWritingKernel;
   maxSteps?: number;
 }
 
@@ -203,7 +203,7 @@ export async function reconcileMultiChapterBatch(
 ): Promise<void> {
   const owner = options.owner;
   const runPipelineImpl = options.runPipeline ?? runOutlineWritingKernel;
-  const resumePipelineImpl = options.resumePipeline ?? resumeOutlineWritingKernel;
+  const resumePipelineImpl = options.resumeWritingTask ?? resumeOutlineWritingKernel;
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
 
   const initial = await getBatchById(batchId);

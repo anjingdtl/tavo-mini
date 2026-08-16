@@ -52,6 +52,34 @@ jest.mock('../src/services/pipelineRunner', () => ({
   runChapterPipeline: (...args: any[]) => mockRunChapterPipeline(...args),
   cancelPipeline: (...args: any[]) => mockCancelPipeline(...args),
 }));
+jest.mock('../src/services/writing/execution/outlineStageDriver', () => ({
+  createOutlineStageDriver: jest.fn(async (input: any) => {
+    const pr = require('../src/services/pipelineRunner');
+    let executed = false;
+    return {
+      durableBinding: 'outline-pipeline-tasks',
+      async step() {
+        if (!executed) {
+          executed = true;
+          const impl =
+            input.mode === 'resume' ? pr.resumePipeline : pr.runChapterPipeline;
+          if (impl) {
+            await impl(input.taskId, input.chapter, input.onStageUpdate, {
+              ...(input.options || {}),
+              generationTraceId:
+                input.options?.generationTraceId ||
+                'gt_kernel_test_driver',
+            });
+          }
+          return { kind: 'terminal', reason: 'completed' };
+        }
+        return { kind: 'stop' };
+      },
+      async finalize() {},
+    };
+  }),
+}));
+
 
 jest.mock('../src/services/revisionService', () => ({
   createRevision: jest.fn(async () => undefined),

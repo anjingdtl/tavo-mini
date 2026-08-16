@@ -5,7 +5,10 @@ import {
 import {
   replayWritingDecisionsX10,
 } from '../src/services/writing/replay/writingReplay';
-import { runWritingKernel } from '../src/services/writing/unifiedWritingKernel';
+import {
+  buildWritingKernelFreezeTrace,
+  runWritingKernel,
+} from '../src/services/writing/unifiedWritingKernel';
 import type { WritingRequest } from '../src/services/writing/contracts/writingSource';
 
 function requestForFixture(fixture: WritingGoldenFixture): WritingRequest {
@@ -54,32 +57,49 @@ describe('Writing Kernel Reconstruction — Context / Replay / Golden', () => {
     }
   });
 
-  test('runWritingKernel records one pre-freeze chain and delegates a frozen contract', async () => {
+  test('runWritingKernel drives the unified stage loop from one freeze binding', async () => {
     const request = requestForFixture(WRITING_GOLDEN_FIXTURES[0]);
     let persistedStages: string[] | null = null;
+    const executed: string[] = [];
     const result = await runWritingKernel({
-      request,
-      execution: {
-        execute: async ({ frozenContext, emitStage }) => {
-          expect(frozenContext.freezeFingerprint).toMatch(/^[a-f0-9]{64}$/);
-          expect(frozenContext.rendered.text).toContain('【');
-          emitStage('draft', 'started');
-          emitStage('draft', 'completed');
-          emitStage('review', 'completed');
-          emitStage('audit', 'completed');
-          emitStage('revision', 'completed');
-          emitStage('finalValidate', 'completed');
-          emitStage('persist', 'completed');
-          emitStage('postWritingUpdate', 'completed');
-          return 'persisted';
-        },
-        persistTrace: async trace => {
-          persistedStages = trace.events.map(event => event.stage);
-        },
+      createDriver: async () => {
+        const frozen = buildWritingKernelFreezeTrace({ request });
+        const stages = [
+          'draft',
+          'review',
+          'audit',
+          'revision',
+          'finalValidate',
+          'persist',
+          'postWritingUpdate',
+        ] as const;
+        let i = 0;
+        return {
+          durableBinding: 'outline-pipeline-tasks' as const,
+          async step() {
+            if (i === 0) {
+              i += 1;
+              return { kind: 'freeze', ...frozen };
+            }
+            const idx = i - 1;
+            i += 1;
+            const stage = stages[Math.floor(idx / 2)];
+            if (!stage) {
+              return { kind: 'terminal' as const, reason: 'completed' as const, result: 'persisted' };
+            }
+            const status = idx % 2 === 0 ? ('started' as const) : ('completed' as const);
+            executed.push(`${stage}:${status}`);
+            return { kind: 'stage' as const, stage, action: 'test', status };
+          },
+          async finalize() {},
+        };
+      },
+      persistTrace: async trace => {
+        persistedStages = trace.events.map(event => event.stage);
       },
     });
     expect(result.result).toBe('persisted');
-    expect(result.trace.events.map(event => event.stage).slice(0, 6)).toEqual([
+    expect(result.trace!.events.map(event => event.stage).slice(0, 6)).toEqual([
       'collect',
       'normalize',
       'plan',
@@ -87,9 +107,44 @@ describe('Writing Kernel Reconstruction — Context / Replay / Golden', () => {
       'render',
       'freeze',
     ]);
-    expect(result.trace.silentContextLossCount).toBe(0);
-    expect(result.trace.unexpectedLiveReadCount).toBe(0);
-    expect(persistedStages).toEqual(result.trace.events.map(event => event.stage));
+    expect(result.trace!.silentContextLossCount).toBe(0);
+    expect(result.trace!.unexpectedLiveReadCount).toBe(0);
+    expect(persistedStages).toEqual(result.trace!.events.map(event => event.stage));
     expect(persistedStages).toContain('postWritingUpdate');
+    expect(executed[0]).toBe('draft:started');
+    expect(executed[executed.length - 1]).toBe('postWritingUpdate:completed');
+  });
+
+  test('runWritingKernel fail-closes on a second authoritative freeze', async () => {
+    const request = requestForFixture(WRITING_GOLDEN_FIXTURES[0]);
+    const frozen = buildWritingKernelFreezeTrace({ request });
+    let freezes = 0;
+    await expect(
+      runWritingKernel({
+        createDriver: async () => ({
+          durableBinding: 'outline-pipeline-tasks' as const,
+          async step() {
+            freezes += 1;
+            if (freezes <= 2) return { kind: 'freeze' as const, ...frozen };
+            return { kind: 'terminal' as const, reason: 'completed' as const };
+          },
+          async finalize() {},
+        }),
+      }),
+    ).rejects.toThrow(/second authoritative Freeze/);
+  });
+
+  test('runWritingKernel fail-closes on pre-freeze stage execution', async () => {
+    await expect(
+      runWritingKernel({
+        createDriver: async () => ({
+          durableBinding: 'outline-pipeline-tasks' as const,
+          async step() {
+            return { kind: 'stage' as const, stage: 'draft' as const, action: 'test', status: 'started' as const };
+          },
+          async finalize() {},
+        }),
+      }),
+    ).rejects.toThrow(/before the authoritative Freeze/);
   });
 });

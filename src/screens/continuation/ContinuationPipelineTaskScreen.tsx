@@ -20,8 +20,8 @@ import {
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
 import * as db from '../../services/database';
+import { cancelContinuationRun } from '../../services/writing/persist/continuationAdoption';
 import {
-  cancelContinuationRun,
   listRunsForProject,
   type ContinuationGenerationRun,
 } from '../../services/continuation/generation';
