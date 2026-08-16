@@ -7,6 +7,8 @@ import type {
   RenderedWritingContext,
   WritingMaterialCandidate,
 } from '../contracts/frozenWritingContext';
+import type { WritingRequirements } from '../contracts/writingRequirement';
+import type { WritingStagePolicy } from '../contracts/writingPolicy';
 import { fingerprintWritingSourceBundle } from '../contracts/writingFingerprint';
 
 export function freezeWritingContext(input: {
@@ -15,6 +17,8 @@ export function freezeWritingContext(input: {
   plan: WritingContextPlan;
   allocation: WritingBudgetAllocation;
   rendered: RenderedWritingContext;
+  requirements: WritingRequirements;
+  stagePolicy: WritingStagePolicy;
 }): FrozenWritingContext {
   const sourceFingerprint = fingerprintWritingSourceBundle(input.request.sourceBundle);
   const freezeFingerprint = sha256Hex(
@@ -30,6 +34,8 @@ export function freezeWritingContext(input: {
       rendered: input.rendered.fingerprint,
       model: input.request.model,
       policy: input.request.policy,
+      requirements: input.requirements.fingerprint,
+      stagePolicy: input.stagePolicy,
     }),
   );
   return {
@@ -46,6 +52,18 @@ export function freezeWritingContext(input: {
     },
     model: { ...input.request.model },
     policy: { ...input.request.policy, values: { ...input.request.policy.values } },
+    requirements: {
+      ...input.requirements,
+      items: input.requirements.items.map(item => ({
+        ...item,
+        metadata: item.metadata ? { ...item.metadata } : undefined,
+      })),
+    },
+    stagePolicy: {
+      ...input.stagePolicy,
+      stageOrder: [...input.stagePolicy.stageOrder],
+      values: { ...input.stagePolicy.values },
+    },
     materials: input.candidates.map(candidate => ({
       source: { ...candidate.source },
       sourceOrder: candidate.sourceOrder,

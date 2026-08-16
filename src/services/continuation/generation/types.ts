@@ -15,7 +15,10 @@ import type { ContinuationV4StageBudget } from './continuationV4Budget';
 import type { StyleRenderLevel } from '../styleProfile/styleProfileRenderer';
 import type { OriginalStyleProfileV2 } from '../styleProfile/styleProfileV2Schema';
 import type { WritingSourceTrace } from '../../writing/contracts/writingSource';
-import type { WritingKernelTrace } from '../../writing/contracts/frozenWritingContext';
+import type {
+  FrozenWritingContext,
+  WritingKernelTrace,
+} from '../../writing/contracts/frozenWritingContext';
 
 export type ContinuationStageName =
   | 'context'
@@ -1194,6 +1197,8 @@ export interface ContinuationContextSnapshot {
   /** Phase I: unified pre-kernel source trace. */
   writingSourceTrace?: WritingSourceTrace;
   writingKernelTrace?: WritingKernelTrace;
+  /** Kernel Final Closure: the immutable post-Freeze input contract. */
+  frozenWritingContext?: FrozenWritingContext;
 }
 
 /**

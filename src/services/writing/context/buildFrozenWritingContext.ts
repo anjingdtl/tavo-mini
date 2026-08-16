@@ -6,6 +6,8 @@ import { buildWritingContextPlan } from './buildWritingContextPlan';
 import { allocateWritingContextBudget } from './allocateWritingContextBudget';
 import { renderWritingContext } from './renderWritingContext';
 import { freezeWritingContext } from './freezeWritingContext';
+import { buildWritingRequirements } from '../contracts/writingRequirement';
+import { buildWritingStagePolicy } from '../contracts/writingPolicy';
 
 /** Thin orchestration only: each context responsibility lives in one stage. */
 export function buildFrozenWritingContext(
@@ -22,11 +24,15 @@ export function buildFrozenWritingContext(
     candidates: normalized.candidates,
     allocation,
   });
+  const requirements = buildWritingRequirements(request);
+  const stagePolicy = buildWritingStagePolicy(request, requirements);
   return freezeWritingContext({
     request,
     candidates: normalized.candidates,
     plan,
     allocation,
     rendered,
+    requirements,
+    stagePolicy,
   });
 }

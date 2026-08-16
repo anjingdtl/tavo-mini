@@ -22,6 +22,10 @@ export function createWritingKernelTrace(input: {
     allocationFingerprint: input.frozenContext.allocation.fingerprint,
     renderFingerprint: input.frozenContext.rendered.fingerprint,
     freezeFingerprint: input.frozenContext.freezeFingerprint,
+    requirementsFingerprint: input.frozenContext.requirements.fingerprint,
+    stagePolicyFingerprint: sha256Hex(
+      JSON.stringify(input.frozenContext.stagePolicy),
+    ),
     events: [...(input.events || [])],
     silentContextLossCount: input.frozenContext.allocation.items.filter(
       item => item.clipped && item.allocationReason === 'mandatory_budget_clipped_and_traced',

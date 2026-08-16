@@ -69,7 +69,7 @@ import {
 import {
   resumeContinuationV5Run,
   startContinuationV5Run,
-} from '../continuationV5Runner';
+} from './continuationV5Runner';
 import {
   CONTINUATION_BUDGET_POLICY,
   planStageCapacity,

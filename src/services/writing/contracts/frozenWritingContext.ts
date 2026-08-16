@@ -5,6 +5,8 @@ import type {
   WritingRequest,
   WritingSource,
 } from './writingSource';
+import type { WritingRequirements } from './writingRequirement';
+import type { WritingStagePolicy } from './writingPolicy';
 
 export interface WritingMaterialCandidate {
   source: WritingSource;
@@ -77,6 +79,8 @@ export interface FrozenWritingContext {
   };
   model: FrozenModelConfig;
   policy: WritingPolicySnapshot;
+  requirements: WritingRequirements;
+  stagePolicy: WritingStagePolicy;
   materials: WritingMaterialCandidate[];
   plan: WritingContextPlan;
   allocation: WritingBudgetAllocation;
@@ -118,6 +122,8 @@ export interface WritingKernelTrace {
   allocationFingerprint: string;
   renderFingerprint: string;
   freezeFingerprint: string;
+  requirementsFingerprint?: string;
+  stagePolicyFingerprint?: string;
   events: WritingKernelStageEvent[];
   silentContextLossCount: number;
   unexpectedLiveReadCount: number;

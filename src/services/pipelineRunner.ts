@@ -1,8 +1,9 @@
 /**
  * Freeform / chapter pipeline public API.
  *
- * Execution lives in `pipeline/reconcile.ts` (single durable state machine).
- * This module keeps cancel/abort plumbing and stable entry points used by UI.
+ * Production chapter/freeform execution enters the unified Writing Kernel.
+ * This module keeps cancellation/abort plumbing and stable compatibility
+ * entry points used by UI and tests.
  */
 import {
   PIPELINE_CONTEXT_SNAPSHOT_VERSION,
@@ -11,24 +12,16 @@ import {
 import type { PipelineExecutionSnapshot } from '../types/pipelineExecution';
 import type { Chapter } from '../types/novel';
 import { sha256Hex } from './continuation/hashUtils';
-import {
-  clearLLMTaskQueueDefaults,
-  setLLMTaskQueueDefaults,
-} from './llm/requestScheduler';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import {
   parsePersistedPipelineTaskContext,
   serializePipelineTaskContext,
 } from './pipelineTaskContext';
-import {
-  reconcilePipelineTask,
-  type StageInfo as ReconcileStageInfo,
-} from './pipeline/reconcile';
-import { createGenerationTraceId } from './pipeline/generationTrace';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import type {
   PipelineMode,
   PipelineReasoningEffort,
+  PipelineStageName,
   PipelineTask,
 } from '../types/pipeline';
 import type { ContextAutomationPolicyV3 } from './contextAutomationPolicy';
@@ -39,6 +32,10 @@ import {
   PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from './pipeline/outlineWorkflowVersion';
+import {
+  runOutlineWritingKernel,
+  resumeOutlineWritingKernel,
+} from './writing/productionWritingEntry';
 
 /**
  * Resume compatibility check (Plan §12 / §23 GO Gate #12 / #13).
@@ -57,7 +54,11 @@ function isTaskContextBudgetVersionResumable(version: unknown): boolean {
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
 
-export type StageInfo = ReconcileStageInfo;
+export type StageInfo = {
+  stage: PipelineStageName | 'idle';
+  label: string;
+  startedAt: number;
+};
 
 export interface PipelineRunOptions {
   queueClass?: 'pipeline' | 'background';
@@ -213,62 +214,10 @@ export async function runChapterPipeline(
   onStageUpdate?: (info: StageInfo | string) => void,
   options: PipelineRunOptions = {},
 ): Promise<void> {
-  setLLMTaskQueueDefaults(taskId, {
-    queueClass: options.queueClass || 'pipeline',
-    queuePriority: options.queuePriority || 'manual',
+  await runOutlineWritingKernel(taskId, chapter, onStageUpdate, {
+    ...options,
+    foregroundOwner: options.foregroundOwner,
   });
-  const abortSignal = registerTaskAbort(taskId);
-  const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
-  // A first-run task can spend time compiling/freezing its context before
-  // the Draft checkpoint is claimed. Persist an explicit active status now so
-  // the UI, cold-start recovery, and task center do not mistake that window
-  // for an untouched `idle` task.
-  try {
-    await usePipelineTaskStore.getState().persistTaskStatus?.(taskId, 'queued');
-  } catch (error) {
-    console.warn('[pipeline] failed to mark task queued:', taskId, error);
-  }
-  onStageUpdate?.({
-    stage: 'idle',
-    label: '正在整理上下文（不等待长期记忆）',
-    startedAt: Date.now(),
-  });
-  // 必须在用户仍处于前台、且任何数据库/网络 await 之前启动服务。若等到配置读取
-  // 完成后用户已经切到后台，Android 12+ 会拒绝 startForegroundService，原先错误被
-  // 静默降级后就表现为“流水线一切后台必失败”。
-  if (ownsForeground) {
-    PipelineForeground.start(
-      taskId,
-      chapter.title || '流水线',
-      '正在准备写作',
-      0,
-    ).catch(error => {
-      console.warn(
-        '[pipeline] early foreground start failed (non-fatal):',
-        error,
-      );
-    });
-  }
-  try {
-    await reconcilePipelineTask(taskId, chapter, {
-      onStageUpdate,
-      abortSignal,
-      isCancelled: isPipelineCancelled,
-      pipelineModeOverride: options.pipelineModeOverride,
-      pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
-      contextAutomationPolicyV3: options.contextAutomationPolicyV3,
-      batchBudgetGate: options.batchBudgetGate,
-      // CL-10: call-level foreground ownership (never module-global).
-      foregroundOwner: options.foregroundOwner,
-      // Stability Phase 1 — trace identity for a run that has not frozen
-      // yet. Post-freeze runs keep the id stored inside the envelope.
-      generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
-    });
-  } finally {
-    releaseTaskAbort(taskId);
-    clearLLMTaskQueueDefaults(taskId);
-    cancelledTasks.delete(taskId);
-  }
 }
 
 export async function runFreeformPipeline(
@@ -357,54 +306,30 @@ export async function resumePipeline(
     );
     throw error;
   }
-  setLLMTaskQueueDefaults(taskId, {
-    queueClass: options.queueClass || 'pipeline',
-    queuePriority: options.queuePriority || 'manual',
+  // Resume must validate the persisted envelope before the Kernel is allowed
+  // to backfill or execute anything. A corrupt/forged hash is a fail-closed
+  // task failure, never a reason to rebuild Freeze from live context.
+  if (persistedTask?.pipelineContextJson) {
+    try {
+      parsePersistedPipelineTaskContext(persistedTask, {
+        expectedProjectId: chapter.project_id,
+        expectedChapterId: chapter.id,
+        expectedTaskId: taskId,
+      });
+    } catch (error: any) {
+      const message = `冻结上下文解析失败：${
+        error?.message ? String(error.message) : '冻结快照无效'
+      }`;
+      if (usePipelineTaskStore.getState().persistFailTask) {
+        await usePipelineTaskStore.getState().persistFailTask(taskId, message);
+      } else {
+        usePipelineTaskStore.getState().failTask(taskId, message);
+      }
+      return;
+    }
+  }
+  await resumeOutlineWritingKernel(taskId, chapter, onStageUpdate, {
+    ...options,
+    foregroundOwner: options.foregroundOwner,
   });
-  const abortSignal = registerTaskAbort(taskId);
-  const ownsForeground = (options.foregroundOwner ?? 'task') === 'task';
-  try {
-    await usePipelineTaskStore.getState().persistTaskStatus?.(taskId, 'queued');
-  } catch (error) {
-    console.warn(
-      '[pipeline] failed to mark resumed task queued:',
-      taskId,
-      error,
-    );
-  }
-  onStageUpdate?.({
-    stage: 'idle',
-    label: '正在恢复任务上下文',
-    startedAt: Date.now(),
-  });
-  if (ownsForeground) {
-    PipelineForeground.start(
-      taskId,
-      chapter.title || '流水线',
-      '正在恢复任务',
-      0,
-    ).catch(() => {});
-  }
-  try {
-    await reconcilePipelineTask(taskId, chapter, {
-      onStageUpdate,
-      abortSignal,
-      isCancelled: isPipelineCancelled,
-      pipelineModeOverride: options.pipelineModeOverride,
-      pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
-      contextAutomationPolicyV3: options.contextAutomationPolicyV3,
-      batchBudgetGate: options.batchBudgetGate,
-      // CL-10: call-level foreground ownership (never module-global).
-      foregroundOwner: options.foregroundOwner,
-      // Stability Phase 1 — trace identity for a run that has not frozen
-      // yet. Post-freeze runs keep the id stored inside the envelope.
-      generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
-    });
-  } finally {
-    releaseTaskAbort(taskId);
-    clearLLMTaskQueueDefaults(taskId);
-    cancelledTasks.delete(taskId);
-  }
 }
-
-export { reconcilePipelineTask };

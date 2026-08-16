@@ -1,6 +1,10 @@
 /**
- * Continuation V5 stage machine (Writing Kernel execution layer): four
- * rounds, three drafts, five physical calls.
+ * Continuation capability providers for the shared Writing Stage Set.
+ *
+ * This module contains only the mature Continuation validators, prompt
+ * compilers, durable ledger operations and scenario capability callbacks.
+ * The production sequencing/contract boundary is `runWritingStages`; there
+ * is no Continuation-owned Writer Core or stage machine in the call graph.
  *
  * Round 1: Draft Writer || Narrative Architect
  * Round 2: Revision Writer
@@ -16,12 +20,12 @@
  * (Revision may fall back to V1 body; Final may promote V2) so a full run
  * can finish for user review. Re-harden gates gradually later.
  *
- * The kernel continuation driver (continuationStageDriver) drives the rounds
- * through this machine; legacy run-entry wrappers stay behind in the
- * continuation generation directory (test/compat only).
+ * The kernel continuation driver invokes these callbacks through the shared
+ * stage runner; legacy run-entry wrappers remain compatibility-only.
  */
 import type { ChatMessage, LLMRequestConfig } from '../../llm/types';
-import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
+import { resolveLLMRequestConfigById } from '../../llm';
+import { callWritingStageLLM } from './stageLlmCall';
 import { countHanCharacters } from '../../continuation/generation/continuationLengthContract';
 import {
   appendContinuationGenerationTraceEvent,
@@ -128,7 +132,7 @@ async function defaultV5StageCaller(input: {
       `阶段 ${input.stage} 的冻结 prompt 与输出预算超出模型 context window。`,
     );
   }
-  const result = await callLLMResult(
+  const result = await callWritingStageLLM(
     input.messages,
     input.maxTokens,
     {
@@ -346,7 +350,7 @@ async function callNode(input: {
   return { reserved: claim.result, result, newlyReserved: true };
 }
 
-export async function runRound1(
+export async function runContinuationDraftCapability(
   run: ContinuationGenerationRun,
   snapshot: ContinuationContextSnapshotV5,
   options: V5PipelineOptions,
@@ -755,7 +759,7 @@ export async function runRound1(
   };
 }
 
-export async function runRound2(
+export async function runContinuationRevisionAndAuditCapability(
   run: ContinuationGenerationRun,
   snapshot: ContinuationContextSnapshotV5,
   options: V5PipelineOptions,
@@ -1495,7 +1499,7 @@ async function softDeliverRevisionAsFinal(input: {
   }
 }
 
-export async function runRound3AndValidate(
+export async function runContinuationProofCapability(
   run: ContinuationGenerationRun,
   snapshot: ContinuationContextSnapshotV5,
   trace: ContinuationContextTrace,
@@ -2015,7 +2019,7 @@ export async function runRound3AndValidate(
 
 /** Kernel Final Closure: durable stage-ledger provisioning as an exported
  * single step (the kernel continuation driver owns the loop now). */
-export async function ensureV5StageLedger(
+export async function ensureContinuationStageLedger(
   snapshot: ContinuationContextSnapshotV5,
   runId: string,
 ): Promise<void> {
@@ -2071,42 +2075,7 @@ export async function ensureV5StageLedger(
   });
 }
 
-export async function runV5Pipeline(
-  run: ContinuationGenerationRun,
-  snapshot: ContinuationContextSnapshotV5,
-  trace: ContinuationContextTrace,
-  options: V5PipelineOptions,
-): Promise<void> {
-  assertNotAborted(options.signal);
-  await ensureV5StageLedger(snapshot, run.id);
-
-  const round1 = await runRound1(run, snapshot, options);
-  assertNotAborted(options.signal);
-  const round2 = await runRound2(
-    run,
-    snapshot,
-    options,
-    round1.draftArtifact,
-    round1.architecture,
-    round1.architectureHash,
-  );
-  assertNotAborted(options.signal);
-  await runRound3AndValidate(
-    run,
-    snapshot,
-    trace,
-    options,
-    round2.revisionArtifact,
-    round1.architecture,
-    round1.architectureHash,
-    round2.audit,
-    round2.auditContractHash,
-    round1.architectureDegraded,
-    round2.auditorDegraded,
-  );
-}
-
-export async function finalizeV5OnError(
+export async function finalizeContinuationCapabilityError(
   runId: string,
   error: unknown,
   trace?: ContinuationContextTrace,

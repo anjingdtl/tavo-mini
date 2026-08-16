@@ -110,11 +110,24 @@ export async function prepareContinuationRun(
       version: 1,
       reviewMode: 'continuation-v5',
       strictness: 'fail-closed',
-      values: { workflowVersion: 5, targetPosition: snapshot.targetPosition },
+      values: {
+        workflowVersion: 5,
+        targetPosition: snapshot.targetPosition,
+        requirements: (snapshot.bundles.lockedRules || []).map(
+          (text, index) => ({
+            id: `obligation:locked-rule:${index + 1}`,
+            kind: 'obligation',
+            severity: 'blocking',
+            validation: 'semantic',
+            text,
+          }),
+        ),
+      },
     },
   };
   const kernelFreeze = buildWritingKernelFreezeTrace({ request: kernelRequest });
   snapshot.writingKernelTrace = kernelFreeze.trace;
+  snapshot.frozenWritingContext = kernelFreeze.frozenContext;
   trace.writingKernelTrace = kernelFreeze.trace;
   return {
     snapshot,
@@ -165,6 +178,7 @@ export function bindPreparedRunTrace(
     ...prepared.snapshot,
     generationTraceId: unifiedGenerationTraceId,
     writingKernelTrace: kernelFreeze.trace,
+    frozenWritingContext: kernelFreeze.frozenContext,
   };
   prepared.trace.writingKernelTrace = kernelFreeze.trace;
   return { snapshotWithTraceId, unifiedTrace, kernelFreeze };

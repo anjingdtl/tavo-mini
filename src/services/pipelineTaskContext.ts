@@ -46,7 +46,10 @@ import {
   type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
 import { parseFrozenGenerationContextContract } from './context/generation/generationContractValidation';
-import type { WritingKernelTrace } from './writing/contracts/frozenWritingContext';
+import type {
+  FrozenWritingContext,
+  WritingKernelTrace,
+} from './writing/contracts/frozenWritingContext';
 import type {
   WritingScenario,
   WritingSourceTrace,
@@ -563,6 +566,12 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
     allocationFingerprint,
     renderFingerprint,
     freezeFingerprint,
+    ...(typeof raw.requirementsFingerprint === 'string'
+      ? { requirementsFingerprint: raw.requirementsFingerprint }
+      : {}),
+    ...(typeof raw.stagePolicyFingerprint === 'string'
+      ? { stagePolicyFingerprint: raw.stagePolicyFingerprint }
+      : {}),
     events,
     silentContextLossCount: parseTraceCounter(
       raw.silentContextLossCount,
@@ -578,6 +587,72 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
       'falseAppliedRequirementCount',
     ),
   };
+}
+
+/**
+ * The kernel freeze is part of the durable source boundary, not telemetry.
+ * Keep it when parsing the snapshot so later audit/finalize serializations
+ * cannot silently erase the immutable requirements and stage policy.
+ */
+function parseFrozenWritingContext(
+  raw: unknown,
+): FrozenWritingContext | undefined {
+  if (raw == null) return undefined;
+  if (!isPlainObject(raw) || Number(raw.version) !== 1) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Frozen Writing Context 结构或版本无效，已阻止恢复。',
+      'restart_task',
+    );
+  }
+  const requiredStrings = [
+    'writingRunId',
+    'generationTraceId',
+    'sourceFingerprint',
+    'freezeFingerprint',
+  ] as const;
+  for (const field of requiredStrings) {
+    if (typeof raw[field] !== 'string' || !raw[field].trim()) {
+      throw new OutlineContextError(
+        'OUTLINE_SNAPSHOT_INVALID',
+        `Frozen Writing Context 字段 ${field} 无效，已阻止恢复。`,
+        'restart_task',
+      );
+    }
+  }
+  if (
+    !isPlainObject(raw.instruction) ||
+    !isPlainObject(raw.sourceBundle) ||
+    !isPlainObject(raw.model) ||
+    !isPlainObject(raw.policy) ||
+    !isPlainObject(raw.requirements) ||
+    !isPlainObject(raw.stagePolicy) ||
+    !isPlainObject(raw.plan) ||
+    !isPlainObject(raw.allocation) ||
+    !isPlainObject(raw.rendered) ||
+    !Array.isArray(raw.materials)
+  ) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Frozen Writing Context 缺少完整的冻结输入，已阻止恢复。',
+      'restart_task',
+    );
+  }
+  if (
+    Number(raw.requirements.version) !== 1 ||
+    typeof raw.requirements.fingerprint !== 'string' ||
+    !raw.requirements.fingerprint.trim() ||
+    Number(raw.stagePolicy.version) !== 1 ||
+    typeof raw.stagePolicy.requirementsFingerprint !== 'string' ||
+    !raw.stagePolicy.requirementsFingerprint.trim()
+  ) {
+    throw new OutlineContextError(
+      'OUTLINE_SNAPSHOT_INVALID',
+      'Frozen Writing Context 的 Requirement/Policy 指纹无效，已阻止恢复。',
+      'restart_task',
+    );
+  }
+  return raw as unknown as FrozenWritingContext;
 }
 
 function parseFrozenWriterStyle(
@@ -1023,6 +1098,13 @@ export function parsePipelineContextSnapshotStrict(
       : {}),
     ...(raw.writingKernelTrace != null
       ? { writingKernelTrace: parseWritingKernelTrace(raw.writingKernelTrace) }
+      : {}),
+    ...(raw.frozenWritingContext != null
+      ? {
+          frozenWritingContext: parseFrozenWritingContext(
+            raw.frozenWritingContext,
+          ),
+        }
       : {}),
   };
 

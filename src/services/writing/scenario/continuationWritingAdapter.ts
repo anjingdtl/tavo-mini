@@ -147,6 +147,18 @@ export function buildContinuationWritingSourceBundle(input: {
         activation: 'automatic',
         metadata: { anchorKind: anchor.kind, position: anchor.position },
       }),
+      source({
+        candidateId: `anchor:${anchor.chapterId ?? sourceSnapshot.boundary.chapterId}`,
+        kind: 'primary_anchor',
+        sourceId: anchor.chapterId ?? sourceSnapshot.boundary.chapterId,
+        revision: snapshot.inputRevisionHash,
+        content: [anchor.summary, `position=${anchor.position ?? ''}`]
+          .filter(Boolean)
+          .join('\n'),
+        requirement: 'mandatory',
+        activation: 'automatic',
+        metadata: { anchorKind: anchor.kind, position: anchor.position },
+      }),
     ],
     preferred: [],
     optional: [],

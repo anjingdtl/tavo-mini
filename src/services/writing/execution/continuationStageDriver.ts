@@ -6,8 +6,8 @@
  * collection, freezes the authoritative kernel context and persists the
  * continuation run row (the durable substrate for adoption/state review).
  *
- * Phase 2 (steps, POST-FREEZE): the kernel engine drives the V5 stage
- * machine one round at a time — Stage ledger → Draft(V1∥A1) →
+ * Phase 2 (steps, POST-FREEZE): the kernel engine drives the continuation
+ * capabilities through the shared stage set — Stage ledger → Draft(V1∥A1) →
  * Revision(V2)+Audit(C2) → Proof/Final Reviser(V3)+Final Validate →
  * settlement. Every round consumes the frozen snapshot; no live source
  * reads occur after Freeze.
@@ -16,6 +16,8 @@ import {
   getRunById,
   insertRun,
   newContinuationRunId,
+  getLatestArtifactForStage,
+  getStageResult,
 } from '../../continuation/generation/generationRepository';
 import {
   bindPreparedRunTrace,
@@ -23,13 +25,13 @@ import {
 } from '../scenario/continuationRunPreparation';
 import type { StartContinuationRunInput } from '../scenario/continuationWritingTypes';
 import {
-  ensureV5StageLedger,
-  finalizeV5OnError,
-  runRound1,
-  runRound2,
-  runRound3AndValidate,
+  ensureContinuationStageLedger,
+  finalizeContinuationCapabilityError,
+  runContinuationDraftCapability,
+  runContinuationRevisionAndAuditCapability,
+  runContinuationProofCapability,
   type V5PipelineOptions,
-} from './continuationV5StageMachine';
+} from '../stages/continuationStageCapabilities';
 import { activeContinuationControllers } from '../../continuation/generation/continuationRunControllers';
 import type {
   ContinuationContextTrace,
@@ -40,6 +42,7 @@ import type {
   WritingStageDriver,
   WritingStepOutcome,
 } from '../contracts/writingStage';
+import { runWritingStages } from '../stages/writingStageRunner';
 
 export interface ContinuationStageDriver extends WritingStageDriver {
   /** Resolves once the durable run row exists (entry handoff point). */
@@ -122,8 +125,8 @@ export async function createContinuationStageDriver(
     frozenContext: kernelFreeze.frozenContext,
   };
 
-  type Round1Result = Awaited<ReturnType<typeof runRound1>>;
-  type Round2Result = Awaited<ReturnType<typeof runRound2>>;
+  type Round1Result = Awaited<ReturnType<typeof runContinuationDraftCapability>>;
+  type Round2Result = Awaited<ReturnType<typeof runContinuationRevisionAndAuditCapability>>;
 
   let round: RoundName = 'ledger';
   let armed: RoundName | null = null;
@@ -145,15 +148,15 @@ export async function createContinuationStageDriver(
     durableBinding: 'continuation-generation-ledger',
     handoff,
     async step(): Promise<WritingStepOutcome> {
-      if (done) {
-        return terminal ?? { kind: 'stop' };
-      }
       if (!freezeEmitted) {
         freezeEmitted = true;
         return { kind: 'freeze', ...freezeBinding };
       }
       if (pendingOutcomes.length > 0) {
         return pendingOutcomes.shift()!;
+      }
+      if (done) {
+        return terminal ?? { kind: 'stop' };
       }
       try {
         if (controller.signal.aborted) {
@@ -165,9 +168,26 @@ export async function createContinuationStageDriver(
         // next step executes the durable round and queues completions.
         if (armed === 'round1') {
           armed = null;
-          round1 = await runRound1(run, snapshotWithTraceId, options);
+          if (!kernelFreeze.frozenContext) {
+            throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
+          }
+          round1 = (await runWritingStages({
+            frozenContext: kernelFreeze.frozenContext,
+            trace: kernelFreeze.trace,
+            stages: [
+              {
+                stage: 'draft',
+                execute: () =>
+                  runContinuationDraftCapability(run, snapshotWithTraceId, options),
+              },
+              { stage: 'review', execute: async () => undefined },
+            ],
+          }))[0].artifact as Round1Result;
           round = 'round2';
-          pendingOutcomes = [stageOutcome('draft', 'completed', 'round1')];
+          pendingOutcomes = [
+            stageOutcome('draft', 'completed', 'round1'),
+            stageOutcome('review', 'completed', 'round1'),
+          ];
           return pendingOutcomes.shift()!;
         }
         if (armed === 'round2') {
@@ -175,18 +195,40 @@ export async function createContinuationStageDriver(
           if (!round1) {
             throw new Error('round2 requires round1 artifacts');
           }
-          round2 = await runRound2(
-            run,
-            snapshotWithTraceId,
-            options,
-            round1.draftArtifact,
-            round1.architecture,
-            round1.architectureHash,
-          );
+          if (!kernelFreeze.frozenContext) {
+            throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
+          }
+          round2 = (await runWritingStages({
+            frozenContext: kernelFreeze.frozenContext,
+            trace: kernelFreeze.trace,
+            stages: [
+              {
+                stage: 'revision',
+                execute: () =>
+                  runContinuationRevisionAndAuditCapability(
+                    run,
+                    snapshotWithTraceId,
+                    options,
+                    round1!.draftArtifact,
+                    round1!.architecture,
+                    round1!.architectureHash,
+                  ),
+              },
+              {
+                stage: 'audit',
+                execute: async () => undefined,
+              },
+              {
+                stage: 'factCheck',
+                execute: async () => undefined,
+              },
+            ],
+          }))[0].artifact as Round2Result;
           round = 'round3';
           pendingOutcomes = [
             stageOutcome('revision', 'completed', 'round2'),
             stageOutcome('audit', 'completed', 'round2'),
+            stageOutcome('factCheck', 'completed', 'round2'),
           ];
           return pendingOutcomes.shift()!;
         }
@@ -195,19 +237,75 @@ export async function createContinuationStageDriver(
           if (!round1 || !round2) {
             throw new Error('round3 requires round1/round2 artifacts');
           }
-          await runRound3AndValidate(
-            run,
-            snapshotWithTraceId,
-            unifiedTrace as ContinuationContextTrace,
-            options,
-            round2.revisionArtifact,
-            round1.architecture,
-            round1.architectureHash,
-            round2.audit,
-            round2.auditContractHash,
-            round1.architectureDegraded,
-            round2.auditorDegraded,
-          );
+          if (!kernelFreeze.frozenContext) {
+            throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
+          }
+          await runWritingStages({
+            frozenContext: kernelFreeze.frozenContext,
+            trace: kernelFreeze.trace,
+            stages: [
+              {
+                stage: 'proof',
+                execute: () =>
+                  runContinuationProofCapability(
+                    run,
+                    snapshotWithTraceId,
+                    unifiedTrace as ContinuationContextTrace,
+                    options,
+                    round2!.revisionArtifact,
+                    round1!.architecture,
+                    round1!.architectureHash,
+                    round2!.audit,
+                    round2!.auditContractHash,
+                    round1!.architectureDegraded,
+                    round2!.auditorDegraded,
+                  ),
+              },
+              {
+                stage: 'finalValidate',
+                execute: async () => undefined,
+                semanticApply: async () => {
+                  const finalArtifact = await getLatestArtifactForStage(
+                    run.id,
+                    'final',
+                  );
+                  const finalReviser = await getStageResult(
+                    run.id,
+                    'final_reviser',
+                  );
+                  let appliedRequirementIds: string[] = [];
+                  let validNoOpRequirementIds: string[] = [];
+                  let validNoOpReasons: Record<string, string> = {};
+                  try {
+                    const output = finalReviser?.outputJson
+                      ? JSON.parse(finalReviser.outputJson)
+                      : null;
+                    const envelope = output?.envelope || {};
+                    appliedRequirementIds = [
+                      ...(envelope.appliedObligationIds || []),
+                      ...(envelope.appliedCanonRequirementIds || []),
+                      ...(envelope.appliedStyleRequirementIds || []),
+                    ];
+                    validNoOpRequirementIds = envelope.validNoOpRequirementIds || [];
+                    validNoOpReasons = envelope.validNoOpReasons || {};
+                  } catch {
+                    // An absent/invalid envelope is represented by an empty
+                    // applied set here; the capability's own validator still
+                    // owns the structured envelope failure. The shared gate
+                    // remains responsible for the body/application relation.
+                  }
+                  return {
+                    beforeRevisionBody: round2!.revisionArtifact.content,
+                    finalBody: finalArtifact?.content || '',
+                    appliedRequirementIds,
+                    validNoOpRequirementIds,
+                    validNoOpReasons,
+                  };
+                },
+              },
+              { stage: 'persist', execute: async () => undefined },
+            ],
+          });
           round = 'settle';
           pendingOutcomes = [
             stageOutcome('proof', 'completed', 'round3'),
@@ -226,7 +324,7 @@ export async function createContinuationStageDriver(
         }
         switch (round) {
           case 'ledger': {
-            await ensureV5StageLedger(snapshotWithTraceId, runId);
+            await ensureContinuationStageLedger(snapshotWithTraceId, runId);
             round = 'round1';
             return { kind: 'progress', detail: 'stage-ledger' };
           }
@@ -256,7 +354,7 @@ export async function createContinuationStageDriver(
           }
         }
       } catch (error) {
-        await finalizeV5OnError(
+        await finalizeContinuationCapabilityError(
           runId,
           error,
           unifiedTrace as ContinuationContextTrace,

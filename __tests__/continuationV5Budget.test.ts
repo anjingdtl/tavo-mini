@@ -53,6 +53,31 @@ describe('Continuation V5 budget', () => {
     expect(ok.ok).toBe(true);
   });
 
+  test('full-text nodes retain enough adaptive headroom for a complete JSON draft', () => {
+    const budget = resolveContinuationV5StageBudget({
+      stage: 'draft_writer',
+      frozenModelConfig: {
+        configId: 1,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 200_000,
+      },
+      frozenPolicy: {
+        ...policy,
+        continuation: {
+          ...policy.continuation,
+          hanDemand: {
+            estimatedTokensPerHan: 3,
+            minimumCompletionCoverageRatio: 0.72,
+          },
+        },
+      },
+      compiledPromptTokens: 10_000,
+      protocolSkeletonTokens: 280,
+      targetChapterChars: 3_000,
+    });
+    expect(budget.maximumOutputTokens).toBeGreaterThan(14_000);
+  });
+
   test('prompt budget exceeded fails preflight without sending', () => {
     const tiny = {
       configId: 2,

@@ -1,6 +1,9 @@
 export * from './contracts/writingSource';
 export * from './contracts/writingFingerprint';
 export * from './contracts/writingSourceValidation';
+export * from './contracts/writingRequirement';
+export * from './contracts/writingPolicy';
+export * from './contracts/writingStage';
 export * from './trace/writingSourceTrace';
 export {
   adaptOutlineWritingSources,
@@ -24,3 +27,4 @@ export * from './trace/writingTrace';
 export * from './unifiedWritingKernel';
 export * from './replay/writingReplay';
 export * from './productionWritingEntry';
+export * from './stages';

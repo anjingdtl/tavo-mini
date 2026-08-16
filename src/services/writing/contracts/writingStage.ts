@@ -13,6 +13,16 @@ import type {
   WritingKernelStage,
   WritingKernelTrace,
 } from './frozenWritingContext';
+import type {
+  WritingRequirementResult,
+  WritingRequirements,
+} from './writingRequirement';
+import type {
+  FrozenStageModelConfig,
+  WritingStagePolicy,
+  SharedWritingStageName,
+} from './writingPolicy';
+import type { SemanticApplyCheckInput } from '../stages/semanticApply';
 
 /** Durable substrate hosting checkpoints/artifacts for a run. Bound
  * pre-Freeze by the scenario adapter and frozen into the run contract. */
@@ -78,6 +88,33 @@ export interface WritingStageExecutionInput {
     status: 'started' | 'completed' | 'blocked',
     detail?: string,
   ) => void;
+}
+
+export type SharedWritingStage = SharedWritingStageName;
+
+export type WritingStageArtifacts = Record<string, unknown>;
+
+export interface SharedWritingStageInput<TArtifacts extends WritingStageArtifacts = WritingStageArtifacts> {
+  frozenContext: FrozenWritingContext;
+  artifacts: TArtifacts;
+  requirements: WritingRequirements;
+  stagePolicy: WritingStagePolicy;
+  modelConfig: FrozenStageModelConfig;
+  trace: WritingKernelTrace;
+  semanticApply?:
+    | SemanticApplyCheckInput
+    | (() => Promise<SemanticApplyCheckInput>);
+  /** Durable substrate operation supplied by orchestration only. */
+  execute: () => Promise<unknown>;
+}
+
+export interface SharedWritingStageResult<T = unknown> {
+  stage: SharedWritingStage;
+  status: 'completed' | 'blocked' | 'failed';
+  artifact?: T;
+  diagnostics: string[];
+  error?: unknown;
+  requirementResult: WritingRequirementResult;
 }
 
 /** Post-writing domain updates run as plugins after Persist (plan §11.2). */

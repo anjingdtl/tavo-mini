@@ -58,13 +58,14 @@ import {
   acquireReconcileLock,
   cancelled as isTaskCancelled,
   consumeFailedStageRetryDisposition,
-  executeAction,
   handleBlocked,
   maybeAutoRetryStage,
   releaseReconcileLock,
   settleInterruptedTask,
   type ReconcileOptions,
-} from '../../pipeline/reconcile';
+} from '../reconcileOrchestration';
+import { runOutlineStageOperation } from '../stages/outlineStageOperation';
+import { runWritingStages } from '../stages/writingStageRunner';
 import type { PipelineAction } from '../../pipeline/types';
 import type {
   FrozenWritingContext,
@@ -118,9 +119,11 @@ function readEnvelopeKernelFreeze(task: {
     };
     const trace = envelope.draftContext?.writingKernelTrace;
     if (!trace || !trace.freezeFingerprint) return null;
+    const frozen = envelope.draftContext?.frozenWritingContext;
     return {
       trace,
-      frozenContext: envelope.draftContext?.frozenWritingContext ?? null,
+      frozenContext:
+        frozen && frozen.requirements && frozen.stagePolicy ? frozen : null,
     };
   } catch {
     return null;
@@ -137,8 +140,17 @@ async function backfillKernelFreezeFromEnvelope(input: {
   taskId: string;
   chapter: Chapter;
   generationTraceId: string;
+  persistLegacyEnvelope?: boolean;
 }): Promise<EnvelopeKernelFreeze | null> {
-  const task = await getPipelineTaskById(input.taskId).catch(() => null);
+  const projectedTask = usePipelineTaskStore
+    .getState()
+    .tasks.find(task => task.id === input.taskId);
+  const task =
+    projectedTask?.pipelineContextJson
+      ? projectedTask
+      : projectedTask
+      ? projectedTask
+      : await getPipelineTaskById(input.taskId).catch(() => null);
   if (!task?.pipelineContextJson) return null;
   let envelope: any;
   try {
@@ -149,7 +161,14 @@ async function backfillKernelFreezeFromEnvelope(input: {
   const draftContext = envelope?.draftContext;
   const execution = envelope?.execution;
   if (!draftContext || !execution?.model) return null;
-  if (draftContext.writingKernelTrace?.freezeFingerprint) {
+  const hadDurableKernelFreeze = Boolean(
+    draftContext.writingKernelTrace?.freezeFingerprint &&
+      draftContext.frozenWritingContext?.requirements &&
+      draftContext.frozenWritingContext?.stagePolicy,
+  );
+  if (
+    hadDurableKernelFreeze
+  ) {
     // Present already — reading it back keeps a single authority.
     return readEnvelopeKernelFreeze(task);
   }
@@ -210,13 +229,20 @@ async function backfillKernelFreezeFromEnvelope(input: {
   const kernelFreeze = buildWritingKernelFreezeTrace({ request: kernelRequest });
   draftContext.writingKernelTrace = kernelFreeze.trace;
   draftContext.frozenWritingContext = kernelFreeze.frozenContext;
+  // Historical V1/V2 tasks predate the Kernel trace fields. They are allowed
+  // to resume against the exact original frozen envelope; the in-memory
+  // adapter still supplies the shared Kernel with a deterministic Freeze, but
+  // migration compatibility must not rewrite the user's old context JSON.
+  if (!hadDurableKernelFreeze && !input.persistLegacyEnvelope) {
+    return { trace: kernelFreeze.trace, frozenContext: kernelFreeze.frozenContext };
+  }
   const json = JSON.stringify(envelope);
   await updatePipelineTaskContext(input.taskId, {
     json,
     version: Number(task.pipelineContextVersion || envelope.version || 4),
     hash: sha256Hex(json).slice(0, 32),
   });
-  usePipelineTaskStore.getState().syncTaskPipelineContext(input.taskId, {
+  usePipelineTaskStore.getState().syncTaskPipelineContext?.(input.taskId, {
     pipelineContextJson: json,
     pipelineContextVersion: Number(task.pipelineContextVersion || envelope.version || 4),
     pipelineContextHash: sha256Hex(json).slice(0, 32),
@@ -278,11 +304,17 @@ export async function createOutlineStageDriver(
   let done = false;
   let terminal: WritingStepOutcome | null = null;
   let pendingFreeze: EnvelopeKernelFreeze | null = null;
+  let authoritativeFreeze: EnvelopeKernelFreeze | null = null;
   let armed: { action: PipelineAction; stage: WritingKernelStage } | null = null;
   let pendingOutcomes: WritingStepOutcome[] = [];
 
   try {
-    await usePipelineTaskStore.getState().persistTaskStatus?.(taskId, 'queued');
+    // Keep the public entry responsive: the store's synchronous status setter
+    // enqueues the durable write, and stage persistence waits on that queue.
+    // Awaiting this bookkeeping write here needlessly delays the first shared
+    // Draft request and breaks the historical cancellation/foreground timing
+    // contract.
+    usePipelineTaskStore.getState().setTaskStatus(taskId, 'queued');
   } catch (error) {
     console.warn('[writing-kernel] failed to mark task queued:', taskId, error);
   }
@@ -343,8 +375,15 @@ export async function createOutlineStageDriver(
     // A resumed task already owns its authoritative Freeze: surface it before
     // any stage executes so the engine can enforce the single-freeze rule.
     const existing = readEnvelopeKernelFreeze(persistedTask);
-    if (existing) {
+    if (existing?.frozenContext) {
       pendingFreeze = existing;
+    } else {
+      pendingFreeze = await backfillKernelFreezeFromEnvelope({
+        taskId,
+        chapter,
+        generationTraceId: reconcileOptions.generationTraceId!,
+        persistLegacyEnvelope: options.foregroundOwner === 'batch',
+      });
     }
   } else {
     onStageUpdate?.({
@@ -363,14 +402,20 @@ export async function createOutlineStageDriver(
       );
     }
     // A task frozen by a pre-closure build resumes with a backfilled freeze.
-    try {
-      pendingFreeze = await backfillKernelFreezeFromEnvelope({
-        taskId,
-        chapter,
-        generationTraceId: reconcileOptions.generationTraceId!,
-      });
-    } catch (backfillError) {
-      console.warn('[writing-kernel] freeze backfill failed:', taskId, backfillError);
+    const firstRunTask = usePipelineTaskStore
+      .getState()
+      .tasks.find(task => task.id === taskId);
+    if (firstRunTask?.pipelineContextJson) {
+      try {
+        pendingFreeze = await backfillKernelFreezeFromEnvelope({
+          taskId,
+          chapter,
+          generationTraceId: reconcileOptions.generationTraceId!,
+          persistLegacyEnvelope: options.foregroundOwner === 'batch',
+        });
+      } catch (backfillError) {
+        console.warn('[writing-kernel] freeze backfill failed:', taskId, backfillError);
+      }
     }
   }
 
@@ -428,15 +473,71 @@ export async function createOutlineStageDriver(
       outlineWorkflowVersion: task.outlineWorkflowVersion,
       contextBudgetVersion: task.contextBudgetVersion,
     });
-    await executeAction({
-      taskId,
-      chapter,
-      action,
-      stages,
-      onStageUpdate,
-      abortSignal,
-      options: reconcileOptions,
-    });
+    const operation = () =>
+      runOutlineStageOperation({
+        taskId,
+        chapter,
+        action,
+        stages,
+        onStageUpdate,
+        abortSignal,
+        options: reconcileOptions,
+      });
+    const sharedStages = ACTION_STAGES[action.type] ?? [];
+    if (
+      action.type === 'persist_initial_snapshot' ||
+      action.type === 'complete' ||
+      sharedStages.length === 0
+    ) {
+      await operation();
+    } else {
+      const frozenContext = authoritativeFreeze?.frozenContext;
+      if (!frozenContext) {
+        throw new Error(
+          'WRITING_FROZEN_CONTEXT_MISSING: shared Outline stage has no frozen context',
+        );
+      }
+      await runWritingStages({
+        frozenContext,
+        trace: authoritativeFreeze!.trace,
+        stages: sharedStages.map((stage, index) => ({
+          stage: stage as Exclude<WritingKernelStage, 'collect' | 'normalize' | 'plan' | 'allocate' | 'render' | 'freeze' | 'postWritingUpdate'>,
+          execute: index === 0 ? operation : async () => undefined,
+          ...(stage === 'finalValidate'
+            ? {
+                semanticApply: async () => {
+                  const projected = usePipelineTaskStore
+                    .getState()
+                    .tasks.find(task => task.id === taskId);
+                  const persisted =
+                    projected || (await getPipelineTaskById(taskId));
+                  const chapterRow =
+                    typeof db.getChapterById === 'function'
+                      ? await db.getChapterById(chapter.id)
+                      : null;
+                  const finalBody =
+                    persisted?.finalText || chapterRow?.content || '';
+                  return {
+                    beforeRevisionBody: frozenContext.instruction.currentContent,
+                    finalBody,
+                    // Outline responses are unstructured prose, so the shared
+                    // gate binds every mandatory/blocking frozen requirement.
+                    // A declared application therefore requires a real
+                    // semantic body change; an unchanged body fails closed.
+                    appliedRequirementIds: frozenContext.requirements.items
+                      .filter(
+                        item =>
+                          item.severity === 'mandatory' ||
+                          item.severity === 'blocking',
+                      )
+                      .map(item => item.id),
+                  };
+                },
+              }
+            : {}),
+        })),
+      });
+    }
     if (action.type === 'complete') {
       return { kind: 'terminal', reason: 'completed' };
     }
@@ -452,6 +553,7 @@ export async function createOutlineStageDriver(
       if (pendingFreeze) {
         const freeze = pendingFreeze;
         pendingFreeze = null;
+        authoritativeFreeze = freeze;
         return { kind: 'freeze', ...freeze };
       }
       if (pendingOutcomes.length > 0) {
@@ -460,23 +562,32 @@ export async function createOutlineStageDriver(
       if (armed) {
         const { action, stage } = armed;
         armed = null;
-        const result = await runOneAction(action);
-        const notifications = ACTION_STAGES[action.type] ?? [];
-        pendingOutcomes = notifications.map(s => ({
-          kind: 'stage' as const,
-          stage: s,
-          action: action.type,
-          status: 'completed' as const,
-        }));
-        if (result.kind === 'terminal') {
+        try {
+          const result = await runOneAction(action);
+          const notifications = ACTION_STAGES[action.type] ?? [];
+          pendingOutcomes = notifications.map(s => ({
+            kind: 'stage' as const,
+            stage: s,
+            action: action.type,
+            status: 'completed' as const,
+          }));
+          if (result.kind === 'terminal') {
+            done = true;
+            terminal = result;
+          }
+          void stage;
+          if (pendingOutcomes.length > 0) {
+            return pendingOutcomes.shift()!;
+          }
+          return result.kind === 'terminal'
+            ? result
+            : { kind: 'progress', detail: action.type };
+        } catch (error) {
+          const outcome = await handleLoopError(error);
           done = true;
-          terminal = result;
+          terminal = outcome;
+          return outcome;
         }
-        void stage;
-        if (pendingOutcomes.length > 0) {
-          return pendingOutcomes.shift()!;
-        }
-        return result.kind === 'terminal' ? result : { kind: 'progress', detail: action.type };
       }
       if (steps >= MAX_STEPS) {
         const store = usePipelineTaskStore.getState();
@@ -587,6 +698,7 @@ export async function createOutlineStageDriver(
               'WRITING_FROZEN_CONTEXT_MISSING: no kernel freeze in the durable envelope after the initial snapshot',
             );
           }
+          authoritativeFreeze = freeze;
           return { kind: 'freeze', ...freeze };
         }
 

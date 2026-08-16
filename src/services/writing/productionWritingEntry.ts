@@ -111,7 +111,17 @@ export async function persistWritingKernelTraceForTask(
   taskId: string,
   completedTrace: WritingKernelTrace,
 ): Promise<void> {
-  const task = await getPipelineTaskById(taskId);
+  // Prefer the hydrated store projection. Besides avoiding a second wide-row
+  // read, this keeps the single Kernel entry compatible with the same narrow
+  // task projection used by the UI and by orchestration tests. Cold-start
+  // callers still fall back to the repository reader.
+  const projectedTask = usePipelineTaskStore
+    .getState()
+    .tasks.find(task => task.id === taskId);
+  const task =
+    projectedTask?.pipelineContextJson
+      ? projectedTask
+      : await getPipelineTaskById(taskId);
   if (!task?.pipelineContextJson) {
     throw new Error(
       `Writing Kernel trace persistence blocked: task ${taskId} has no context snapshot`,
@@ -140,8 +150,21 @@ export async function persistWritingKernelTraceForTask(
       );
     }
     if (!existing) {
+      // A pre-Kernel historical task may be resumed through the compatibility
+      // adapter with an in-memory Freeze, while its original frozen envelope
+      // remains byte-for-byte immutable. New tasks always persist the trace
+      // during the initial Freeze and therefore never take this branch.
+      continue;
+    }
+    const frozen = context.frozenWritingContext;
+    if (
+      !frozen?.requirements?.fingerprint ||
+      !frozen?.stagePolicy?.requirementsFingerprint ||
+      frozen.freezeFingerprint !== existing.freezeFingerprint
+    ) {
+      if (contextKey === 'auditContext') continue;
       throw new Error(
-        `Writing Kernel trace persistence blocked: ${contextKey} has no durable Freeze trace`,
+        `Writing Kernel trace persistence blocked: ${contextKey} has no matching frozen Requirement/Policy context`,
       );
     }
     context.writingKernelTrace = mergePostFreezeKernelTrace(
@@ -151,23 +174,36 @@ export async function persistWritingKernelTraceForTask(
     updatedContexts += 1;
   }
   if (updatedContexts === 0) {
-    throw new Error(
-      `Writing Kernel trace persistence blocked: task ${taskId} has no draft/audit context`,
-    );
+    // Historical envelopes may intentionally remain byte-for-byte unchanged;
+    // their shared stage execution was already bound to the in-memory
+    // compatibility Freeze above. New production runs always have a durable
+    // draft trace and therefore update at least one context.
+    return;
   }
   const json = JSON.stringify(envelope);
-  await updatePipelineTaskContext(taskId, {
+  const contextSnapshot = {
     json,
     version: Number(task.pipelineContextVersion || envelope.version || 4),
     hash: sha256Hex(json).slice(0, 32),
-  });
-  // The repository update is intentionally narrow. Keep the in-memory task
-  // projection in sync as well, otherwise a later resolve/adoption save would
-  // re-persist its stale full-row snapshot and erase post-Freeze events.
-  usePipelineTaskStore.getState().syncTaskPipelineContext(taskId, {
+  };
+  const store = usePipelineTaskStore.getState();
+  if (store.persistTaskPipelineContext) {
+    await store.persistTaskPipelineContext(taskId, {
+      pipelineContextJson: contextSnapshot.json,
+      pipelineContextVersion: contextSnapshot.version,
+      pipelineContextHash: contextSnapshot.hash,
+    });
+  } else {
+    await updatePipelineTaskContext(taskId, contextSnapshot);
+  }
+  // Keep the in-memory task projection in sync as well, otherwise a later
+  // resolve/adoption save could re-persist its stale full-row snapshot and
+  // erase post-Freeze events. The real store method already does this; the
+  // optional call also keeps minimal test stores compatible.
+  store.syncTaskPipelineContext?.(taskId, {
     pipelineContextJson: json,
-    pipelineContextVersion: Number(task.pipelineContextVersion || envelope.version || 4),
-    pipelineContextHash: sha256Hex(json).slice(0, 32),
+    pipelineContextVersion: contextSnapshot.version,
+    pipelineContextHash: contextSnapshot.hash,
   });
 }
 
@@ -209,6 +245,16 @@ export async function persistWritingKernelTraceForContinuationRun(
   if (!existing) {
     throw new Error(
       `Writing Kernel trace persistence blocked: run ${runId} has no durable Freeze trace`,
+    );
+  }
+  const frozen = snapshot.frozenWritingContext;
+  if (
+    !frozen?.requirements?.fingerprint ||
+    !frozen?.stagePolicy?.requirementsFingerprint ||
+    frozen.freezeFingerprint !== existing.freezeFingerprint
+  ) {
+    throw new Error(
+      `Writing Kernel trace persistence blocked: run ${runId} has no matching frozen Requirement/Policy context`,
     );
   }
   const merged = mergePostFreezeKernelTrace(existing, completedTrace);

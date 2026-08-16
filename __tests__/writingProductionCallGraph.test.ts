@@ -27,7 +27,10 @@ function isAllowedScope(rel: string): boolean {
     // these contain ONLY `export * from '...writing/...'` re-exports; they
     // are importable by legacy files only (enforced by the module gates).
     norm === 'src/services/continuation/generation/continuationContextBuilder.ts' ||
-    norm === 'src/services/continuation/generation/continuationContextBudget.ts'
+    norm === 'src/services/continuation/generation/continuationContextBudget.ts' ||
+    // Historical V5 import shim; the implementation is quarantined under
+    // generation/legacy and no production module may import this shim.
+    norm === 'src/services/continuation/generation/continuationV5Runner.ts'
   );
 }
 
@@ -134,6 +137,14 @@ describe('Writing Production Call Graph — hard architecture gates', () => {
         }
       }
     }
+  });
+
+  test('G3b: pipeline public entry delegates to the unified Outline Kernel', () => {
+    const runner = readIfExists(path.join(SRC, 'services', 'pipelineRunner.ts')) || '';
+    expect(runner).not.toMatch(/from ['"][^'"]*pipeline\/reconcile['"]/);
+    expect(runner).not.toMatch(/\breconcilePipelineTask\s*\(/);
+    expect(runner).toMatch(/runOutlineWritingKernel/);
+    expect(runner).toMatch(/resumeOutlineWritingKernel/);
   });
 
   test('G4: legacy continuation runner modules have ZERO production importers', () => {
