@@ -226,6 +226,8 @@ export async function confirmProposal(input: {
   proposalId: string;
   decisionNote?: string;
   autoCreateEntity?: boolean;
+  /** Bulk review defers the worker until all local decisions are committed. */
+  processOutbox?: boolean;
 }): Promise<{ eventId: string; entityId?: string }> {
   const proposal = await getProposalById(input.proposalId);
   if (!proposal) throw new Error('proposal 不存在');
@@ -292,7 +294,13 @@ export async function confirmProposal(input: {
   const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
   const applyOutboxId = `co_${v4().replace(/-/g, '')}`;
   const ts = new Date().toISOString();
-  const rebuildDedupeKey = `rebuild_story_memory:${proposal.projectId}:${chapterPosition}:${proposal.chapterRevisionHash}`;
+  // The rebuild is caused by this accepted event, not merely by the chapter
+  // revision. Reusing the chapter-level key would let a completed rebuild
+  // absorb a later accepted proposal from the same revision and leave Story
+  // Memory dirty with no pending work. Event-scoped keys retain idempotency for
+  // this decision while ensuring every durable event has a rebuild task.
+  const rebuildDedupeKey =
+    `rebuild_story_memory:${proposal.projectId}:${chapterPosition}:${proposal.chapterRevisionHash}:${eventId}`;
 
   // Proposal decision, resulting event, memory invalidation and both outbox
   // records form one durable local commit. No LLM work occurs in this tx.
@@ -389,8 +397,74 @@ export async function confirmProposal(input: {
       }),
     ],
   );
-  processContinuationOutbox({ limit: 2 }).catch(() => {});
+  if (input.processOutbox !== false) {
+    processContinuationOutbox({ limit: 2 }).catch(() => {});
+  }
   return { eventId, entityId };
+}
+
+/**
+ * Confirm a loaded set of proposals in one user action.
+ *
+ * Each proposal keeps the same durable event/entity/outbox transaction as the
+ * single-item action. The only difference is that outbox processing is
+ * deferred until every local decision has committed, preventing concurrent
+ * Story Memory rebuilds from racing one another during bulk review.
+ */
+export async function confirmAllProposals(input: {
+  projectId: number;
+  proposalIds: string[];
+  autoCreateEntity?: boolean;
+}): Promise<{
+  confirmedCount: number;
+  failedProposalIds: string[];
+  syncProcessed: number;
+  syncFailed: number;
+}> {
+  const proposalIds = [...new Set(input.proposalIds)];
+  const failedProposalIds: string[] = [];
+  let confirmedCount = 0;
+
+  for (const proposalId of proposalIds) {
+    try {
+      const proposal = await getProposalById(proposalId);
+      if (!proposal || proposal.projectId !== input.projectId) {
+        throw new Error('proposal 不存在或不属于当前项目');
+      }
+      await confirmProposal({
+        proposalId,
+        autoCreateEntity: input.autoCreateEntity,
+        processOutbox: false,
+      });
+      confirmedCount += 1;
+    } catch {
+      // Keep processing the remaining loaded proposals. The caller receives
+      // the exact failures and can retry them without hiding a partial commit.
+      failedProposalIds.push(proposalId);
+    }
+  }
+
+  if (confirmedCount === 0) {
+    return {
+      confirmedCount,
+      failedProposalIds,
+      syncProcessed: 0,
+      syncFailed: 0,
+    };
+  }
+
+  const sync = await processContinuationOutbox({
+    // A proposal creates at most one apply event and one rebuild row; allow a
+    // small margin for pre-existing durable work without imposing a hardcoded
+    // one-at-a-time UI loop.
+    limit: Math.max(10, confirmedCount * 2 + 4),
+  });
+  return {
+    confirmedCount,
+    failedProposalIds,
+    syncProcessed: sync.processed,
+    syncFailed: sync.failed,
+  };
 }
 
 export async function rejectProposal(

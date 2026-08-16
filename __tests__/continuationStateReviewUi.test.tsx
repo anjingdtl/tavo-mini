@@ -56,6 +56,10 @@ const generationState: {
 };
 
 const mockConfirmProposal = jest.fn(async (..._a: any[]) => ({ eventId: 'ce_1' }));
+const mockConfirmAllProposals = jest.fn(async (..._a: any[]) => ({
+  confirmedCount: 0,
+  failedProposalIds: [],
+}));
 const mockRejectProposal = jest.fn(async (..._a: any[]) => undefined);
 const mockListProposals = jest.fn(async (..._a: any[]) => generationState.proposals);
 const mockGetOutboxSummary = jest.fn(async (..._a: any[]) => generationState.outboxSummary);
@@ -66,6 +70,7 @@ const mockProcessContinuationOutbox = jest.fn(async (..._a: any[]) => ({ process
 
 jest.mock('../src/services/continuation/generation', () => ({
   confirmProposal: (...a: any[]) => mockConfirmProposal(...a),
+  confirmAllProposals: (...a: any[]) => mockConfirmAllProposals(...a),
   rejectProposal: (...a: any[]) => mockRejectProposal(...a),
   listProposals: (...a: any[]) => mockListProposals(...a),
   getOutboxSummary: (...a: any[]) => mockGetOutboxSummary(...a),
@@ -135,6 +140,40 @@ describe('P1-C ContinuationStateReviewScreen (fix-plan §4.2)', () => {
     await waitFor(() => expect(getByText('状态A')).toBeTruthy());
     fireEvent.press(getByText('确认'));
     await waitFor(() => expect(mockConfirmProposal).toHaveBeenCalledWith({ proposalId: 'cp_1' }));
+  });
+
+  it('batch confirm button confirms all currently loaded proposals', async () => {
+    generationState.proposals = [
+      {
+        id: 'cp_1',
+        proposalType: 'character_state',
+        subjectRefType: null,
+        subjectRefId: null,
+        payloadJson: JSON.stringify({ summary: '状态A' }),
+        evidenceStart: 0,
+        evidenceEnd: 5,
+      },
+      {
+        id: 'cp_2',
+        proposalType: 'plot_advance',
+        subjectRefType: null,
+        subjectRefId: null,
+        payloadJson: JSON.stringify({ summary: '推进B' }),
+        evidenceStart: 6,
+        evidenceEnd: 10,
+      },
+    ];
+    const { getByText } = render(
+      <ContinuationStateReviewScreen onClose={jest.fn()} />,
+    );
+    await waitFor(() => expect(getByText('全部确认（2）')).toBeTruthy());
+    fireEvent.press(getByText('全部确认（2）'));
+    await waitFor(() =>
+      expect(mockConfirmAllProposals).toHaveBeenCalledWith({
+        projectId: 1,
+        proposalIds: ['cp_1', 'cp_2'],
+      }),
+    );
   });
 
   it('reject button opens confirmation alert and rejects on confirm', async () => {

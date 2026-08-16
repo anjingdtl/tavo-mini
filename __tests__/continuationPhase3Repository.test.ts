@@ -954,6 +954,7 @@ import {
   coldStartNormalizeContinuation,
   deterministicExtractFromText,
 } from '../src/services/continuation/generation/continuationStateOutboxWorker';
+import { confirmProposal } from '../src/services/continuation/generation/continuationStateService';
 import { uncheckedCategories } from '../src/services/continuation/generation/continuationChecker';
 import { parseTraceJson } from '../src/services/continuation/generation/continuationContextTrace';
 
@@ -1227,6 +1228,56 @@ describe('continuation Phase 3 repository coverage', () => {
     });
     await invalidateEventsFromPosition(1, 21, 'edit');
     await invalidateProposalsForChapter(10, 'edit');
+  });
+
+  test('confirming a later proposal still enqueues Story Memory rebuild after an older rebuild completed', async () => {
+    const props = await insertProposals([
+      {
+        projectId: 1,
+        chapterId: 10,
+        sourceRunId: 'ct_bulk',
+        extractionContentHash: 'h',
+        chapterRevisionHash: 'h',
+        proposalType: 'character_state',
+        payloadJson: JSON.stringify({ summary: '状态一' }),
+        evidenceStart: 0,
+        evidenceEnd: 2,
+      },
+      {
+        projectId: 1,
+        chapterId: 10,
+        sourceRunId: 'ct_bulk',
+        extractionContentHash: 'h',
+        chapterRevisionHash: 'h',
+        proposalType: 'plot_advance',
+        payloadJson: JSON.stringify({ summary: '推进二' }),
+        evidenceStart: 3,
+        evidenceEnd: 5,
+      },
+    ]);
+    expect(props).toHaveLength(2);
+
+    await confirmProposal({ proposalId: props[0].id, processOutbox: false });
+    const firstRebuild = store.outbox.find(
+      o => o.operation === 'rebuild_story_memory',
+    );
+    expect(firstRebuild).toBeDefined();
+    firstRebuild!.state = 'completed';
+
+    await confirmProposal({ proposalId: props[1].id, processOutbox: false });
+
+    // A completed rebuild for the same chapter/revision must not absorb the
+    // second accepted event. Each event needs a durable rebuild task so the
+    // memory cannot remain dirty with an all-completed outbox.
+    expect(
+      store.outbox.filter(o => o.operation === 'rebuild_story_memory'),
+    ).toHaveLength(2);
+    expect(store.storyMemory[0].status).toBe('dirty');
+    expect(
+      store.outbox.filter(
+        o => o.operation === 'rebuild_story_memory' && o.state !== 'completed',
+      ),
+    ).toHaveLength(1);
   });
 
   test('adopt / abandon / finalize / cancel', async () => {

@@ -1110,6 +1110,36 @@ describe('continuation batch adapter', () => {
       expect(batch.status).toBe('completed');
     });
 
+    it('case J: rejected final run rearms a fresh run after explicit resume', async () => {
+      const batchId = await seedBatch(1);
+      mockWorld.runScript = [
+        {
+          state: 'awaiting_regeneration',
+          errorCode: 'final_semantic_apply_failed',
+          errorMessage: '最终稿未通过语义应用校验',
+        },
+      ];
+      await drive(batchId);
+      let batch = await getBatchById(batchId);
+      expect(batch?.errorCode).toBe('BATCH_CONTINUATION_FINAL_REJECTED');
+
+      // An explicit resume after a rejected final must detach the rejected
+      // run so the next drive starts a new Kernel run.
+      await rearmContinuationItemForUserResume(batchId, 1);
+      let items = await getBatchItems(batchId);
+      expect(items[0].activeContinuationRunId).toBeNull();
+      expect(items[0].status).toBe('chapter_ready');
+
+      mockWorld.runScript = [{ state: 'awaiting_user', eligibility: 'eligible' }];
+      await updateBatchStatus(batchId, 'running', {});
+      await drive(batchId);
+      expect(mockWorld.startCalls).toHaveLength(2);
+      items = await getBatchItems(batchId);
+      expect(items[0].status).toBe('succeeded');
+      batch = (await getBatchById(batchId))!;
+      expect(batch.status).toBe('completed');
+    });
+
     it('FI-09: cancel during a live run cancels the run and unstarted items', async () => {
       const batchId = await seedBatch(2);
       // Chapter 2's run is live (bound + observed running) when cancel lands.

@@ -165,6 +165,7 @@ export type {
 export {
   getEffectiveContinuationState,
   confirmProposal,
+  confirmAllProposals,
   rejectProposal,
   invalidateContinuationStateFromPosition,
   onChapterContentChanged,

@@ -24,6 +24,7 @@ import { Button, Card, EmptyState, Header, Screen, spacing } from '../../compone
 import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
 import {
+  confirmAllProposals,
   confirmProposal,
   listProposals,
   rejectProposal,
@@ -69,6 +70,7 @@ export const ContinuationStateReviewScreen: React.FC<{
   const [loading, setLoading] = useState(true);
   const [proposals, setProposals] = useState<ContinuationStateProposal[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [noteForId, setNoteForId] = useState<string | null>(null);
   const [noteText, setNoteText] = useState('');
 
@@ -109,6 +111,37 @@ export const ContinuationStateReviewScreen: React.FC<{
       Toast.show({ type: 'error', text1: '确认失败', text2: e?.message });
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const doConfirmAll = async () => {
+    if (!currentProject || proposals.length === 0 || bulkBusy || busyId) return;
+    setBulkBusy(true);
+    try {
+      const result = await confirmAllProposals({
+        projectId: currentProject.id,
+        proposalIds: proposals.map(p => p.id),
+      });
+      await reload();
+      if (result.failedProposalIds.length > 0) {
+        Toast.show({
+          type: 'error',
+          text1: `已确认 ${result.confirmedCount} 条，${result.failedProposalIds.length} 条失败`,
+          text2: result.syncFailed > 0 ? '状态同步仍有失败项，请在状态同步卡片中重试。' : undefined,
+        });
+      } else if (result.syncFailed > 0) {
+        Toast.show({
+          type: 'error',
+          text1: `已确认 ${result.confirmedCount} 条，但状态同步失败 ${result.syncFailed} 项`,
+          text2: '请在状态同步卡片中重试。',
+        });
+      } else {
+        Toast.show({ type: 'success', text1: `已全部确认 ${result.confirmedCount} 条状态变化` });
+      }
+    } catch (e: any) {
+      Toast.show({ type: 'error', text1: '批量确认失败', text2: e?.message });
+    } finally {
+      setBulkBusy(false);
     }
   };
 
@@ -162,73 +195,82 @@ export const ContinuationStateReviewScreen: React.FC<{
         ) : proposals.length === 0 ? (
           <EmptyState title="暂无待确认状态" description="定稿续写章节后，提取到的状态变化会出现在这里。" />
         ) : (
-          proposals.map(p => (
-            <Card key={p.id}>
-              <View style={styles.rowBetween}>
-                <Text style={[styles.type, { color: colors.accent }]}>
-                  {PROPOSAL_TYPE_LABELS[p.proposalType] ?? p.proposalType}
+          <>
+            <View style={styles.bulkActions}>
+              <Button
+                label={bulkBusy ? '正在全部确认…' : `全部确认（${proposals.length}）`}
+                onPress={doConfirmAll}
+                disabled={bulkBusy || !!busyId}
+              />
+            </View>
+            {proposals.map(p => (
+              <Card key={p.id}>
+                <View style={styles.rowBetween}>
+                  <Text style={[styles.type, { color: colors.accent }]}>
+                    {PROPOSAL_TYPE_LABELS[p.proposalType] ?? p.proposalType}
+                  </Text>
+                  <Text style={[styles.meta, { color: colors.textMuted }]}>
+                    位置 {p.evidenceStart}–{p.evidenceEnd}
+                  </Text>
+                </View>
+                <Text style={[styles.summary, { color: colors.textPrimary }]}>
+                  {proposalSummary(p) || '（无摘要）'}
                 </Text>
-                <Text style={[styles.meta, { color: colors.textMuted }]}>
-                  位置 {p.evidenceStart}–{p.evidenceEnd}
-                </Text>
-              </View>
-              <Text style={[styles.summary, { color: colors.textPrimary }]}>
-                {proposalSummary(p) || '（无摘要）'}
-              </Text>
-              {!!proposalSubject(p) && (
-                <Text style={[styles.meta, { color: colors.textSecondary }]}>
-                  关联：{proposalSubject(p)}
-                </Text>
-              )}
-              {noteForId === p.id && (
-                <TextInput
-                  style={[
-                    styles.note,
-                    {
-                      color: colors.textPrimary,
-                      borderColor: colors.border,
-                      backgroundColor: colors.background,
-                    },
-                  ]}
-                  placeholder="决策备注（可选）"
-                  placeholderTextColor={colors.textMuted}
-                  value={noteText}
-                  onChangeText={setNoteText}
-                  multiline
-                />
-              )}
-              <View style={styles.actions}>
-                <Button
-                  label={busyId === p.id ? '处理中…' : '确认'}
-                  onPress={() => doConfirm(p)}
-                  disabled={busyId === p.id}
-                  compact
-                />
-                <Button
-                  label="拒绝"
-                  variant="danger"
-                  onPress={() => doReject(p)}
-                  disabled={busyId === p.id}
-                  compact
-                />
-                <Button
-                  label={noteForId === p.id ? '收起备注' : '备注'}
-                  variant="ghost"
-                  onPress={() => {
-                    if (noteForId === p.id) {
-                      setNoteForId(null);
-                      setNoteText('');
-                    } else {
-                      setNoteForId(p.id);
-                      setNoteText('');
-                    }
-                  }}
-                  disabled={busyId === p.id}
-                  compact
-                />
-              </View>
-            </Card>
-          ))
+                {!!proposalSubject(p) && (
+                  <Text style={[styles.meta, { color: colors.textSecondary }]}>
+                    关联：{proposalSubject(p)}
+                  </Text>
+                )}
+                {noteForId === p.id && (
+                  <TextInput
+                    style={[
+                      styles.note,
+                      {
+                        color: colors.textPrimary,
+                        borderColor: colors.border,
+                        backgroundColor: colors.background,
+                      },
+                    ]}
+                    placeholder="决策备注（可选）"
+                    placeholderTextColor={colors.textMuted}
+                    value={noteText}
+                    onChangeText={setNoteText}
+                    multiline
+                  />
+                )}
+                <View style={styles.actions}>
+                  <Button
+                    label={busyId === p.id ? '处理中…' : '确认'}
+                    onPress={() => doConfirm(p)}
+                    disabled={bulkBusy || busyId === p.id}
+                    compact
+                  />
+                  <Button
+                    label="拒绝"
+                    variant="danger"
+                    onPress={() => doReject(p)}
+                    disabled={bulkBusy || busyId === p.id}
+                    compact
+                  />
+                  <Button
+                    label={noteForId === p.id ? '收起备注' : '备注'}
+                    variant="ghost"
+                    onPress={() => {
+                      if (noteForId === p.id) {
+                        setNoteForId(null);
+                        setNoteText('');
+                      } else {
+                        setNoteForId(p.id);
+                        setNoteText('');
+                      }
+                    }}
+                    disabled={bulkBusy || busyId === p.id}
+                    compact
+                  />
+                </View>
+              </Card>
+            ))}
+          </>
         )}
       </ScrollView>
     </Screen>
@@ -258,4 +300,5 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs, flexWrap: 'wrap' },
+  bulkActions: { marginBottom: spacing.sm },
 });

@@ -610,13 +610,13 @@ async function recoverUnboundRunForChapter(
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   if (chapterRuns.length === 0) return 'none';
   const newest = chapterRuns[0];
-  if (
+  const reusableOnThisPass =
     newest.state === 'queued' ||
     newest.state === 'running' ||
     newest.state === 'awaiting_user' ||
-    newest.state === 'awaiting_regeneration' ||
-    newest.state === 'interrupted'
-  ) {
+    newest.state === 'interrupted' ||
+    (newest.state === 'awaiting_regeneration' && mode !== 'rearm');
+  if (reusableOnThisPass) {
     const bound = await bindContinuationRunForItem({
       batchId,
       ordinal: item.ordinal,
@@ -1057,6 +1057,7 @@ export async function rearmContinuationItemForUserResume(
     run.state === 'failed' ||
     run.state === 'cancelled' ||
     run.state === 'outdated' ||
+    run.state === 'awaiting_regeneration' ||
     (run.state === 'completed' && run.completionReason !== 'adopted');
   if (runUnusable) {
     await updateBatchItem(batchId, ordinal, {
