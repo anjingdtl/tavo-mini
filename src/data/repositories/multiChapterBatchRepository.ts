@@ -1220,6 +1220,7 @@ export async function buildCommitBatchItemAdoptionStatements(
       // WHERE fingerprint guard (concurrent-writer protection).
       sql: `UPDATE multi_chapter_batch_items
             SET status = ?, completion_quality = ?, adoption_fingerprint = ?,
+                error_code = NULL, error_message = NULL, next_retry_at = NULL,
                 ${revisionColumn}, completed_at = ?, updated_at = ?
             WHERE batch_id = ? AND ordinal = ?${enforceFingerprintMatch ? ' AND adoption_fingerprint = ?' : ''}`,
       params: useLastInsertRowId

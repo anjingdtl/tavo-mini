@@ -385,6 +385,41 @@ describe('adoption commit + counter advance', () => {
     expect(batch!.status).toBe('running');
   });
 
+  it('clears transient state-sync wait markers when adoption succeeds', async () => {
+    await resetDb();
+    await seedProject(1);
+    await seedBatch('b1');
+    await createBatchChapterForItem('b1', 1, {
+      projectId: 1,
+      position: 0,
+      title: 't',
+      synopsis: 's',
+    });
+    await updateBatchItem('b1', 1, {
+      status: 'waiting_retry',
+      adoptionFingerprint: 'fp1',
+      errorCode: 'BATCH_CONTINUATION_STATE_SYNC_WAIT',
+      errorMessage: '故事记忆重建进行中（attempt 1）',
+      nextRetryAt: Date.now() + 5_000,
+      retryCount: 1,
+    });
+
+    await commitBatchItemAdoption({
+      batchId: 'b1',
+      ordinal: 1,
+      chapterCount: 3,
+      completionQuality: 'full_pipeline',
+      adoptionFingerprint: 'fp1',
+      adoptedRevisionId: null,
+    });
+
+    const item = await getBatchItem('b1', 1);
+    expect(item?.status).toBe('succeeded');
+    expect(item?.errorCode).toBeNull();
+    expect(item?.errorMessage).toBeNull();
+    expect(item?.nextRetryAt).toBeNull();
+  });
+
   it('rejects an adoption with a different fingerprint', async () => {
     await resetDb();
     await seedProject(1);
