@@ -387,6 +387,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
             deriveAutomaticBatchBudget({
               contextWindow,
               chapterCount: batch.chapterCount,
+              modelMaxOutputTokens: requestConfig?.max_output_tokens,
             }),
           );
         } catch {

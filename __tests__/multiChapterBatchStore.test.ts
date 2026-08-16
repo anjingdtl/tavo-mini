@@ -150,8 +150,8 @@ describe('multiChapterBatchStore', () => {
     expect(batch?.plannerHash).toBe('planner-hash-1');
     // 批次消耗上限由弹性预算池自动分配（用户无需感知）
     expect(batch?.maxLlmCalls).toBe(24);
-    expect(batch?.maxInputTokens).toBe(4_000_000);
-    expect(batch?.maxOutputTokens).toBe(2_000_000);
+    expect(batch?.maxInputTokens).toBe(19_200_000);
+    expect(batch?.maxOutputTokens).toBe(4_800_000);
     expect(createBatchChapterPlan).toHaveBeenCalled();
   });
 
