@@ -6,6 +6,8 @@ import type {
   SharedWritingStage,
   SharedWritingStageInput,
   SharedWritingStageResult,
+  WritingDurablePersistAdapter,
+  WritingStageArtifacts,
 } from '../contracts/writingStage';
 import { runAuditStage } from './audit';
 import { runDraftStage } from './draft';
@@ -15,15 +17,20 @@ import { runPersistStage } from './persist';
 import { runProofStage } from './proof';
 import { runRevisionStage } from './revision';
 import { runReviewStage } from './review';
+import type { SemanticApplyCheckInput } from './semanticApply';
+import type { StageLlmCaller } from '../scenario/continuationWritingTypes';
 
 export interface WritingStagesRunInput {
   frozenContext: FrozenWritingContext;
   trace: WritingKernelTrace;
-  stages: Array<{
-    stage: SharedWritingStage;
-    execute: () => Promise<unknown>;
-    semanticApply?: SharedWritingStageInput['semanticApply'];
-  }>;
+  stages: SharedWritingStage[];
+  artifacts?: WritingStageArtifacts;
+  persistAdapter?: WritingDurablePersistAdapter;
+  semanticApply?:
+    | SemanticApplyCheckInput
+    | (() => Promise<SemanticApplyCheckInput>);
+  callStage?: StageLlmCaller;
+  abortSignal?: AbortSignal;
 }
 
 /** The only stage dispatcher used after Freeze by both durable substrates. */
@@ -31,12 +38,36 @@ export async function runWritingStages(
   input: WritingStagesRunInput,
 ): Promise<SharedWritingStageResult[]> {
   const results: SharedWritingStageResult[] = [];
-  for (const requested of input.stages) {
+  const artifacts: WritingStageArtifacts = { ...(input.artifacts || {}) };
+  if (input.persistAdapter?.loadExisting) {
+    for (const stage of [
+      'draft',
+      'review',
+      'audit',
+      'factCheck',
+      'revision',
+      'proof',
+      'finalValidate',
+    ] as const) {
+      if (artifacts[stage]) continue;
+      const existing = await input.persistAdapter.loadExisting(stage);
+      if (existing?.body) artifacts[stage] = existing;
+    }
+  }
+  for (const stage of input.stages) {
     const stageInput: SharedWritingStageInput = {
       frozenContext: input.frozenContext,
-      artifacts: {},
+      artifacts,
       requirements: input.frozenContext.requirements,
-      stagePolicy: input.frozenContext.stagePolicy,
+      stagePolicy: {
+        ...input.frozenContext.stagePolicy,
+        outputContract:
+          input.frozenContext.stagePolicy.outputContract ||
+          (input.frozenContext.stagePolicy.reviewMode === 'continuation-v5'
+            ? 'json_envelope'
+            : 'prose'),
+        skipRules: input.frozenContext.stagePolicy.skipRules || {},
+      },
       modelConfig: {
         configId: input.frozenContext.model.configId,
         name: input.frozenContext.model.modelName,
@@ -47,11 +78,13 @@ export async function runWritingStages(
         maxOutputTokens: input.frozenContext.model.maxOutputTokens,
       },
       trace: input.trace,
-      semanticApply: requested.semanticApply,
-      execute: requested.execute,
+      semanticApply: input.semanticApply,
+      persistAdapter: input.persistAdapter,
+      callStage: input.callStage,
+      abortSignal: input.abortSignal,
     };
     let result: SharedWritingStageResult;
-    switch (requested.stage) {
+    switch (stage) {
       case 'draft':
         result = await runDraftStage(stageInput);
         break;
@@ -78,12 +111,23 @@ export async function runWritingStages(
         break;
     }
     results.push(result);
+    if (result.artifact) {
+      artifacts[stage] = result.artifact;
+    }
+    if (result.status === 'skipped') {
+      continue;
+    }
     if (result.status !== 'completed') {
-      if (result.error) throw result.error;
-      const error = new Error(
-        `Shared ${requested.stage} stage failed: ${result.diagnostics.join('; ')}`,
-      );
-      (error as Error & { code?: string }).code = result.diagnostics[0];
+      const error =
+        result.error instanceof Error
+          ? result.error
+          : Object.assign(
+              new Error(
+                `Shared ${stage} stage ${result.status}: ${result.diagnostics.join('; ')}`,
+              ),
+              { code: result.diagnostics[0] },
+            );
+      await input.persistAdapter?.persistStageFailure?.(stage, error);
       throw error;
     }
   }

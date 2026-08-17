@@ -64,8 +64,9 @@ import {
   settleInterruptedTask,
   type ReconcileOptions,
 } from '../reconcileOrchestration';
-import { runOutlineStageOperation } from '../stages/outlineStageOperation';
+import { runOutlineDurableOperation } from '../../pipeline/outlineStageRuntime';
 import { runWritingStages } from '../stages/writingStageRunner';
+import { createOutlineDurableAdapter } from '../persistence/outlineDurableAdapter';
 import type { PipelineAction } from '../../pipeline/types';
 import type {
   FrozenWritingContext,
@@ -473,71 +474,48 @@ export async function createOutlineStageDriver(
       outlineWorkflowVersion: task.outlineWorkflowVersion,
       contextBudgetVersion: task.contextBudgetVersion,
     });
-    const operation = () =>
-      runOutlineStageOperation({
-        taskId,
-        chapter,
-        action,
-        stages,
-        onStageUpdate,
-        abortSignal,
-        options: reconcileOptions,
-      });
-    const sharedStages = ACTION_STAGES[action.type] ?? [];
-    if (
-      action.type === 'persist_initial_snapshot' ||
-      action.type === 'complete' ||
-      sharedStages.length === 0
-    ) {
-      await operation();
-    } else {
-      const frozenContext = authoritativeFreeze?.frozenContext;
-      if (!frozenContext) {
-        throw new Error(
-          'WRITING_FROZEN_CONTEXT_MISSING: shared Outline stage has no frozen context',
-        );
-      }
+    const isFinalize =
+      action.type === 'finalize_from_draft' ||
+      action.type === 'finalize_from_proof';
+    reconcileOptions.frozenWritingContext =
+      authoritativeFreeze?.frozenContext || null;
+    reconcileOptions.writingKernelTrace = authoritativeFreeze?.trace;
+    if (isFinalize && authoritativeFreeze?.frozenContext) {
+      const frozenContext = authoritativeFreeze.frozenContext;
       await runWritingStages({
         frozenContext,
-        trace: authoritativeFreeze!.trace,
-        stages: sharedStages.map((stage, index) => ({
-          stage: stage as Exclude<WritingKernelStage, 'collect' | 'normalize' | 'plan' | 'allocate' | 'render' | 'freeze' | 'postWritingUpdate'>,
-          execute: index === 0 ? operation : async () => undefined,
-          ...(stage === 'finalValidate'
-            ? {
-                semanticApply: async () => {
-                  const projected = usePipelineTaskStore
-                    .getState()
-                    .tasks.find(task => task.id === taskId);
-                  const persisted =
-                    projected || (await getPipelineTaskById(taskId));
-                  const chapterRow =
-                    typeof db.getChapterById === 'function'
-                      ? await db.getChapterById(chapter.id)
-                      : null;
-                  const finalBody =
-                    persisted?.finalText || chapterRow?.content || '';
-                  return {
-                    beforeRevisionBody: frozenContext.instruction.currentContent,
-                    finalBody,
-                    // Outline responses are unstructured prose, so the shared
-                    // gate binds every mandatory/blocking frozen requirement.
-                    // A declared application therefore requires a real
-                    // semantic body change; an unchanged body fails closed.
-                    appliedRequirementIds: frozenContext.requirements.items
-                      .filter(
-                        item =>
-                          item.severity === 'mandatory' ||
-                          item.severity === 'blocking',
-                      )
-                      .map(item => item.id),
-                  };
-                },
-              }
-            : {}),
-        })),
+        trace: authoritativeFreeze.trace,
+        stages: ['finalValidate', 'persist'],
+        persistAdapter: createOutlineDurableAdapter({ taskId, chapter }),
+        abortSignal,
+        semanticApply: async () => {
+          const projected = usePipelineTaskStore
+            .getState()
+            .tasks.find(item => item.id === taskId);
+          const persisted = projected || (await getPipelineTaskById(taskId));
+          const chapterRow =
+            typeof db.getChapterById === 'function'
+              ? await db.getChapterById(chapter.id)
+              : null;
+          const finalBody = persisted?.finalText || chapterRow?.content || '';
+          return {
+            beforeRevisionBody:
+              frozenContext.instruction.currentContent || '',
+            finalBody,
+            appliedRequirementIds: [],
+          };
+        },
       });
     }
+    await runOutlineDurableOperation({
+      taskId,
+      chapter,
+      action,
+      stages,
+      onStageUpdate,
+      abortSignal,
+      options: reconcileOptions,
+    });
     if (action.type === 'complete') {
       return { kind: 'terminal', reason: 'completed' };
     }

@@ -10,8 +10,10 @@
  */
 import {
   finalizeContinuationCapabilityError,
-  CONTINUATION_V5_LENGTH_POLICY,
 } from '../../../writing/stages/continuationStageCapabilities';
+import {
+  CONTINUATION_V5_LENGTH_POLICY,
+} from '../continuationV5Contracts';
 import { runContinuationCapabilityChain } from './continuationV5Pipeline';
 import {
   casUpdateRunState,
@@ -296,6 +298,6 @@ export {
   hashArchitectureEnvelope,
   hashAuditEnvelope,
   CONTINUATION_V5_LENGTH_POLICY,
-  __test__,
-} from '../../../writing/stages/continuationStageCapabilities';
+} from '../continuationV5Contracts';
+export { __test__ } from './continuationV5Writers';
 export type { V5PipelineOptions } from '../../../writing/stages/continuationStageCapabilities';

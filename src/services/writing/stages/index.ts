@@ -1,5 +1,6 @@
-export { runSharedStage } from './sharedStage';
+export { preflightSharedStage } from './sharedStage';
 export { runWritingStages } from './writingStageRunner';
+export { compileSharedWritingPrompt } from '../prompt/sharedPromptCompiler';
 export { runDraftStage } from './draft';
 export { runReviewStage } from './review';
 export { runAuditStage } from './audit';

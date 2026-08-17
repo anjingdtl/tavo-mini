@@ -3,13 +3,13 @@
  * Production enters the shared Writing Stage Set directly and never imports
  * this module.
  */
+import { ensureContinuationStageLedger } from '../../../writing/stages/continuationStageCapabilities';
+import type { V5PipelineOptions } from '../../../writing/stages/continuationStageCapabilities';
 import {
-  ensureContinuationStageLedger,
   runContinuationDraftCapability,
   runContinuationProofCapability,
   runContinuationRevisionAndAuditCapability,
-} from '../../../writing/stages/continuationStageCapabilities';
-import type { V5PipelineOptions } from '../../../writing/stages/continuationStageCapabilities';
+} from './continuationV5Writers';
 import type {
   ContinuationContextSnapshotV5,
   ContinuationContextTrace,

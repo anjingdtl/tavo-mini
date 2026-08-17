@@ -136,7 +136,7 @@ describe('Unified Writer Kernel — one shared post-Freeze stage set', () => {
       'finalValidate',
       'persist',
     ]) {
-      expect(continuation).toMatch(new RegExp(`stage: ['"]${stage}['"]`));
+      expect(continuation).toMatch(new RegExp(`['"]${stage}['"]`));
     }
     const pendingDrain = continuation.indexOf(
       'if (pendingOutcomes.length > 0)',

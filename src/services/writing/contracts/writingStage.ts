@@ -91,8 +91,40 @@ export interface WritingStageExecutionInput {
 }
 
 export type SharedWritingStage = SharedWritingStageName;
+export type { SharedWritingStageName };
 
 export type WritingStageArtifacts = Record<string, unknown>;
+
+export interface SharedWritingArtifact {
+  stage: SharedWritingStageName;
+  body: string;
+  structured?: Record<string, unknown>;
+  appliedRequirementIds?: string[];
+  validNoOpRequirementIds?: string[];
+  validNoOpReasons?: Record<string, string>;
+  diagnostics?: string[];
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+}
+
+/** Durable control only. Must never compile writer prompts or call the LLM. */
+export interface WritingDurablePersistAdapter {
+  binding: WritingDurableBinding;
+  loadExisting?(stage: SharedWritingStageName): Promise<SharedWritingArtifact | null>;
+  reserve?(stage: SharedWritingStageName): Promise<void>;
+  persistStageArtifact(
+    stage: SharedWritingStageName,
+    artifact: SharedWritingArtifact,
+  ): Promise<void>;
+  persistStageFailure?(
+    stage: SharedWritingStageName,
+    error: unknown,
+  ): Promise<void>;
+  persistFinal?(artifacts: WritingStageArtifacts): Promise<void>;
+}
 
 export interface SharedWritingStageInput<TArtifacts extends WritingStageArtifacts = WritingStageArtifacts> {
   frozenContext: FrozenWritingContext;
@@ -104,16 +136,20 @@ export interface SharedWritingStageInput<TArtifacts extends WritingStageArtifact
   semanticApply?:
     | SemanticApplyCheckInput
     | (() => Promise<SemanticApplyCheckInput>);
-  /** Durable substrate operation supplied by orchestration only. */
-  execute: () => Promise<unknown>;
+  persistAdapter?: WritingDurablePersistAdapter;
+  /** Test-only LLM transport override. Not a scenario writer. */
+  callStage?: import('../scenario/continuationWritingTypes').StageLlmCaller;
+  abortSignal?: AbortSignal;
 }
 
 export interface SharedWritingStageResult<T = unknown> {
   stage: SharedWritingStage;
-  status: 'completed' | 'blocked' | 'failed';
+  status: 'completed' | 'blocked' | 'failed' | 'skipped';
   artifact?: T;
   diagnostics: string[];
   error?: unknown;
+  skipReason?: string;
+  policyRuleId?: string;
   requirementResult: WritingRequirementResult;
 }
 

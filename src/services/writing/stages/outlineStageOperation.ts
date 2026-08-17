@@ -1,7 +1,4 @@
 /**
- * Outline's durable substrate adapter. It owns checkpoint/SQLite details only;
- * the shared stage functions decide when this operation is invoked.
+ * Outline durable substrate adapter. Checkpoint / CAS / persist only.
  */
-export {
-  runOutlineWritingCapability as runOutlineStageOperation,
-} from './outlineWritingCapability';
+export { runOutlineDurableOperation as runOutlineStageOperation } from '../../pipeline/outlineStageRuntime';
