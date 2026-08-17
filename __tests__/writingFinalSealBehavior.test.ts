@@ -3,6 +3,8 @@ import { compileSharedWritingPrompt } from '../src/services/writing/prompt/share
 import { executeSharedWriterStage } from '../src/services/writing/stages/writerCore';
 import * as stageLlmCall from '../src/services/writing/stages/stageLlmCall';
 import * as llm from '../src/services/llm';
+import { freezeV5ModelConfig } from '../src/services/continuation/generation/continuationV5Models';
+import { buildContinuationKernelFrozenModel } from '../src/services/writing/scenario/continuationRunPreparation';
 
 function draftStageInput() {
   const requirements = {
@@ -196,6 +198,93 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
     } finally {
       liveRead.mockRestore();
       activeRead.mockRestore();
+      transport.mockRestore();
+    }
+  });
+
+  test('Continuation DeepSeek V4 Freeze disables thinking for the JSON draft contract', () => {
+    const frozen = freezeV5ModelConfig({
+      id: 7,
+      name: 'deepseek-live',
+      provider_type: 'openai_compatible',
+      api_key: 'sk-must-not-be-frozen',
+      url: 'https://api.deepseek.com/chat/completions',
+      model_name: 'deepseek-v4-flash',
+      context_window: 1000000,
+      max_output_tokens: 200000,
+      allow_insecure_lan_http: false,
+      thinking: { type: 'enabled' },
+    });
+    expect(frozen.thinking).toEqual({ type: 'disabled' });
+    expect(frozen).not.toHaveProperty('api_key');
+    expect(frozen.url).toBe('https://api.deepseek.com/chat/completions');
+    expect(frozen.allowInsecureLanHttp).toBe(false);
+
+    const kernelModel = buildContinuationKernelFrozenModel({
+      frozenModel: frozen,
+    });
+    expect(kernelModel.thinking).toEqual({ type: 'disabled' });
+    expect(kernelModel.url).toBe('https://api.deepseek.com/chat/completions');
+    expect(kernelModel.modelName).toBe('deepseek-v4-flash');
+    expect(kernelModel.credentialRef).toEqual({
+      kind: 'llm-config-api-key',
+      configId: 7,
+    });
+  });
+
+  test('Continuation Draft request honors frozen thinking:disabled without a live model read', async () => {
+    await setSecureLLMApiKey('sk-frozen-secret', 7);
+    const liveRead = jest
+      .spyOn(llm, 'resolveLLMRequestConfigById')
+      .mockResolvedValue({
+        id: 7,
+        name: 'LIVE-CHANGED',
+        provider_type: 'openai_compatible',
+        api_key: 'sk-live-must-not-win',
+        url: 'https://live.example/v1/chat/completions',
+        model_name: 'live-changed-model',
+        context_window: 999999,
+        max_output_tokens: 99999,
+        thinking: { type: 'enabled' },
+      });
+    const transport = jest
+      .spyOn(stageLlmCall, 'callWritingStageLLM')
+      .mockResolvedValue({
+        text: JSON.stringify({
+          content: '续写初稿正文。',
+          appliedObligationIds: ['obligation:draft-seal'],
+        }),
+        inputTokens: 10,
+        outputTokens: 20,
+        totalTokens: 30,
+      } as any);
+
+    try {
+      const stageInput = draftStageInput();
+      stageInput.stagePolicy.reviewMode = 'continuation-v5';
+      stageInput.stagePolicy.outputContract = 'json_envelope';
+      stageInput.frozenContext.stagePolicy = stageInput.stagePolicy;
+      stageInput.modelConfig.modelName = 'deepseek-v4-flash';
+      stageInput.modelConfig.url =
+        'https://api.deepseek.com/chat/completions';
+      stageInput.modelConfig.thinking = { type: 'disabled' };
+      stageInput.frozenContext.model.thinking = { type: 'disabled' };
+
+      const artifact = await executeSharedWriterStage({
+        stage: 'draft',
+        stageInput,
+      });
+      expect(artifact.body).toContain('续写初稿正文');
+      expect(liveRead).not.toHaveBeenCalled();
+      expect(transport).toHaveBeenCalledTimes(1);
+      const callConfig = transport.mock.calls[0]?.[2];
+      expect(callConfig?.thinking).toEqual({ type: 'disabled' });
+      expect(callConfig?.requestConfig?.thinking).toEqual({
+        type: 'disabled',
+      });
+      expect(callConfig?.requestConfig?.model_name).toBe('deepseek-v4-flash');
+    } finally {
+      liveRead.mockRestore();
       transport.mockRestore();
     }
   });

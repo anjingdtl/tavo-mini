@@ -115,4 +115,27 @@ describe('Writing Kernel final seal — Draft prompt + frozen model', () => {
     expect(writer!.stripped).toMatch(/\bresolveWritingCredential\b/);
     expect(writer!.stripped).toMatch(/\bcredentialRef\b/);
   });
+
+  test('Continuation Freeze persists thinking; Writer Core has no DeepSeek fallback', () => {
+    const prep = files.find(
+      item =>
+        item.name ===
+        'src/services/writing/scenario/continuationRunPreparation.ts',
+    );
+    const v5 = files.find(
+      item =>
+        item.name ===
+        'src/services/continuation/generation/continuationV5Models.ts',
+    );
+    const writer = files.find(
+      item => item.name === 'src/services/writing/stages/writerCore.ts',
+    );
+    expect(prep).toBeTruthy();
+    expect(v5).toBeTruthy();
+    expect(writer).toBeTruthy();
+    expect(prep!.stripped).toMatch(/\bthinking\s*:/);
+    expect(v5!.stripped).toMatch(/\bthinking\s*:/);
+    expect(writer!.stripped).not.toMatch(/deepseek-v4-\(flash\|pro\)/);
+    expect(writer!.stripped).not.toMatch(/\bresolveLLMRequestConfig(?:ById)?\b/);
+  });
 });

@@ -261,6 +261,9 @@ export interface FrozenContinuationModelConfig {
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;
+  allowInsecureLanHttp?: boolean;
+  thinking?: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 /**

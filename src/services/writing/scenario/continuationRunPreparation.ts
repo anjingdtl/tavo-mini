@@ -17,14 +17,21 @@ import {
   createContinuationGenerationTrace,
 } from '../../continuation/generation/continuationGenerationTrace';
 import { CONTINUATION_V5_LENGTH_POLICY } from '../../continuation/generation/continuationV5Contracts';
-import { resolveV5StageModels } from '../../continuation/generation/continuationV5Models';
+import {
+  freezeContinuationThinking,
+  resolveV5StageModels,
+} from '../../continuation/generation/continuationV5Models';
 import type {
   ContinuationContextSnapshotV5,
   ContinuationContextTrace,
+  FrozenContinuationModelConfig,
 } from '../../continuation/generation/types';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
-import type { WritingRequest } from '../contracts/writingSource';
+import type {
+  FrozenModelConfig,
+  WritingRequest,
+} from '../contracts/writingSource';
 
 export interface PreparedContinuationRun {
   snapshot: ContinuationContextSnapshotV5;
@@ -38,6 +45,30 @@ export interface PreparedContinuationRun {
     targetPosition: number;
     userInstruction: string;
   };
+}
+
+/** Freeze the Continuation kernel model, including thinking behavior. */
+export function buildContinuationKernelFrozenModel(input: {
+  frozenModel: FrozenContinuationModelConfig | null;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}): FrozenModelConfig {
+  const frozenModel = input.frozenModel;
+  return freezeWritingModelConfig({
+    configId: frozenModel?.configId ?? null,
+    provider: frozenModel?.providerType,
+    modelName: frozenModel?.modelName,
+    url: frozenModel?.url,
+    name: frozenModel?.name,
+    contextWindow: frozenModel?.contextWindow || input.contextWindow,
+    maxOutputTokens: frozenModel?.maxOutputTokens || input.maxOutputTokens,
+    allowInsecureLanHttp: frozenModel?.allowInsecureLanHttp,
+    thinking: freezeContinuationThinking(
+      frozenModel?.modelName,
+      frozenModel?.thinking,
+    ),
+    reasoningEffort: frozenModel?.reasoningEffort,
+  });
 }
 
 /** Collect + freeze. The caller inserts the durable run row from this. */
@@ -86,18 +117,10 @@ export async function prepareContinuationRun(
       targetPosition: Number(snapshot.targetPosition),
     },
     sourceBundle: sourceAdapter.bundle,
-    model: freezeWritingModelConfig({
-      configId: frozenModel?.configId ?? null,
-      provider: frozenModel?.providerType,
-      modelName: frozenModel?.modelName,
-      url: frozenModel?.url,
-      name: frozenModel?.name,
-      contextWindow:
-        frozenModel?.contextWindow ||
-        snapshot.contextBudget?.modelContextLimit,
-      maxOutputTokens:
-        frozenModel?.maxOutputTokens ||
-        snapshot.contextBudget?.reservedOutputTokens,
+    model: buildContinuationKernelFrozenModel({
+      frozenModel,
+      contextWindow: snapshot.contextBudget?.modelContextLimit,
+      maxOutputTokens: snapshot.contextBudget?.reservedOutputTokens,
     }),
     policy: {
       version: 1,

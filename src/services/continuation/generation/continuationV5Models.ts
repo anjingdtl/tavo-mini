@@ -40,7 +40,23 @@ function modelConfigId(config: LLMRequestConfig | null | undefined): number {
   return requirePositive(config?.id, 'LLM 配置 id');
 }
 
-function freezeV5ModelConfig(
+/**
+ * DeepSeek V4 defaults to thinking ON when the field is omitted. Continuation
+ * Writer stages have a JSON body contract; leaving thinking enabled burns the
+ * completion budget and yields reasoning_only. Freeze that production contract
+ * here so post-Freeze Writer Core never re-derives it from a live model read.
+ */
+export function freezeContinuationThinking(
+  modelName: string | undefined,
+  liveThinking?: { type: 'enabled' | 'disabled' },
+): { type: 'enabled' | 'disabled' } | undefined {
+  if (/^deepseek-v4-(flash|pro)$/i.test(String(modelName || '').trim())) {
+    return { type: 'disabled' };
+  }
+  return liveThinking;
+}
+
+export function freezeV5ModelConfig(
   config: LLMRequestConfig | null | undefined,
 ): FrozenContinuationModelConfig {
   if (!config) {
@@ -57,6 +73,8 @@ function freezeV5ModelConfig(
       config.max_output_tokens,
       'max_output_tokens',
     ),
+    allowInsecureLanHttp: Boolean(config.allow_insecure_lan_http),
+    thinking: freezeContinuationThinking(config.model_name, config.thinking),
   };
 }
 
