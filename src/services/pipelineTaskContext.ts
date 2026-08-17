@@ -1189,6 +1189,12 @@ function parseFrozenModel(raw: unknown): FrozenModelSnapshot {
       'restart_task',
     );
   }
+  const thinkingRaw = isPlainObject(raw.thinking) ? raw.thinking : null;
+  const thinkingType =
+    thinkingRaw &&
+    (thinkingRaw.type === 'enabled' || thinkingRaw.type === 'disabled')
+      ? thinkingRaw.type
+      : undefined;
   return {
     llmConfigId,
     name: typeof raw.name === 'string' ? raw.name : undefined,
@@ -1200,6 +1206,12 @@ function parseFrozenModel(raw: unknown): FrozenModelSnapshot {
       Number.isFinite(Number(raw.maxOutputTokens))
         ? Number(raw.maxOutputTokens)
         : undefined,
+    url: typeof raw.url === 'string' ? raw.url : undefined,
+    allowInsecureLanHttp:
+      typeof raw.allowInsecureLanHttp === 'boolean'
+        ? raw.allowInsecureLanHttp
+        : undefined,
+    thinking: thinkingType ? { type: thinkingType } : undefined,
   };
 }
 

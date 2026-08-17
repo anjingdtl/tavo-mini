@@ -31,6 +31,9 @@ export interface FrozenModelSnapshot {
   modelName: string;
   contextWindow: number;
   maxOutputTokens?: number;
+  url?: string;
+  allowInsecureLanHttp?: boolean;
+  thinking?: { type: 'enabled' | 'disabled' };
 }
 
 export interface FrozenStageReasoning {

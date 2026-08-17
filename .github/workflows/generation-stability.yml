@@ -50,3 +50,5 @@ jobs:
           __tests__/writingSingleWriterImplementation.test.ts
           __tests__/writingNoScenarioExecutor.test.ts
           __tests__/writingNoEmptyStage.test.ts
+          __tests__/writingFinalSealGates.test.ts
+          __tests__/writingFinalSealBehavior.test.ts

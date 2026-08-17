@@ -194,8 +194,13 @@ function baseExecution(
     proofPreset: null,
     model: {
       llmConfigId: 1,
+      name: 'm',
+      provider: 'openai_compatible',
       modelName: 'model-a',
+      url: 'http://127.0.0.1:9/v1/chat/completions',
       contextWindow: 32000,
+      maxOutputTokens: 4000,
+      allowInsecureLanHttp: true,
     },
     createdAt: 1000,
     ...overrides,

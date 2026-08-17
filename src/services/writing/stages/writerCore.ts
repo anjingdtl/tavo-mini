@@ -1,9 +1,9 @@
 /**
  * THE one Shared Writer Core. Every post-Freeze prose stage goes through here.
  */
-import { resolveLLMRequestConfigById } from '../../llm';
 import type { LLMRequestConfig } from '../../llm/types';
 import { compileSharedWritingPrompt } from '../prompt/sharedPromptCompiler';
+import { resolveWritingCredential } from './resolveFrozenCredential';
 import type {
   SharedWritingArtifact,
   SharedWritingStageInput,
@@ -200,6 +200,8 @@ export async function executeSharedWriterStage(input: {
   }
 
   const requestConfig = await resolveFrozenRequestConfig(stageInput);
+  const isReport =
+    stage === 'review' || stage === 'audit' || stage === 'factCheck';
   const result = await callWritingStageLLM(
     compiled.messages,
     maxTokens,
@@ -215,24 +217,17 @@ export async function executeSharedWriterStage(input: {
           ? 'pipeline_factcheck'
           : `pipeline_${stage}`,
       responseFormat:
-        compiled.responseFormat === 'json_object' ||
-        stage === 'review' ||
-        stage === 'audit' ||
-        stage === 'factCheck'
+        compiled.responseFormat === 'json_object' || isReport
           ? 'json_object'
           : undefined,
-      thinking:
-        stage === 'review' || stage === 'audit' || stage === 'factCheck'
-          ? { type: 'disabled' }
-          : undefined,
-      temperature:
-        stage === 'review' || stage === 'audit' || stage === 'factCheck'
-          ? 0.2
-          : undefined,
-      top_p:
-        stage === 'review' || stage === 'audit' || stage === 'factCheck'
-          ? 1
-          : undefined,
+      thinking: isReport
+        ? { type: 'disabled' }
+        : stageInput.modelConfig.thinking,
+      reasoningEffort: isReport
+        ? undefined
+        : stageInput.modelConfig.reasoningEffort,
+      temperature: isReport ? 0.2 : undefined,
+      top_p: isReport ? 1 : undefined,
       requestConfig,
     },
     stageInput.abortSignal,
@@ -295,27 +290,33 @@ function emptyWriterError(
 
 async function resolveFrozenRequestConfig(
   input: SharedWritingStageInput,
-): Promise<LLMRequestConfig | undefined> {
+): Promise<LLMRequestConfig> {
   const frozen = input.modelConfig;
-  if (frozen.configId == null) {
-    return undefined;
+  if (!String(frozen.url || '').trim()) {
+    throw Object.assign(
+      new Error('冻结模型缺少 endpoint，无法在 Freeze 后发起请求'),
+      { code: 'WRITING_FROZEN_MODEL_INCOMPLETE' },
+    );
   }
-  try {
-    const live = await resolveLLMRequestConfigById(frozen.configId);
-    return {
-      ...live,
-      id: frozen.configId,
-      name: frozen.name || live.name,
-      provider_type: (frozen.providerType ||
-        live.provider_type) as LLMRequestConfig['provider_type'],
-      url: frozen.url || live.url,
-      model_name: frozen.modelName || live.model_name,
-      context_window: frozen.contextWindow || live.context_window,
-      max_output_tokens: frozen.maxOutputTokens || live.max_output_tokens,
-    };
-  } catch {
-    return undefined;
-  }
+  const apiKey = await resolveWritingCredential(
+    frozen.credentialRef ??
+      (frozen.configId != null
+        ? { kind: 'llm-config-api-key', configId: frozen.configId }
+        : null),
+  );
+  return {
+    id: frozen.configId ?? undefined,
+    name: frozen.name,
+    provider_type: (frozen.providerType ||
+      'openai_compatible') as LLMRequestConfig['provider_type'],
+    api_key: apiKey,
+    model_name: frozen.modelName,
+    url: frozen.url,
+    context_window: frozen.contextWindow,
+    max_output_tokens: frozen.maxOutputTokens,
+    allow_insecure_lan_http: frozen.allowInsecureLanHttp,
+    thinking: frozen.thinking,
+  };
 }
 
 export function evaluateStageRequirements(

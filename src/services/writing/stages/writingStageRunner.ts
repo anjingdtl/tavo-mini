@@ -19,6 +19,7 @@ import { runRevisionStage } from './revision';
 import { runReviewStage } from './review';
 import type { SemanticApplyCheckInput } from './semanticApply';
 import type { StageLlmCaller } from '../scenario/continuationWritingTypes';
+import { toFrozenStageModelConfig } from '../contracts/freezeModelConfig';
 
 export interface WritingStagesRunInput {
   frozenContext: FrozenWritingContext;
@@ -68,15 +69,7 @@ export async function runWritingStages(
             : 'prose'),
         skipRules: input.frozenContext.stagePolicy.skipRules || {},
       },
-      modelConfig: {
-        configId: input.frozenContext.model.configId,
-        name: input.frozenContext.model.modelName,
-        providerType: input.frozenContext.model.provider,
-        url: '',
-        modelName: input.frozenContext.model.modelName,
-        contextWindow: input.frozenContext.model.contextWindow,
-        maxOutputTokens: input.frozenContext.model.maxOutputTokens,
-      },
+      modelConfig: toFrozenStageModelConfig(input.frozenContext.model),
       trace: input.trace,
       semanticApply: input.semanticApply,
       persistAdapter: input.persistAdapter,

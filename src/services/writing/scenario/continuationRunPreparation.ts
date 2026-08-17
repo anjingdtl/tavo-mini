@@ -23,6 +23,7 @@ import type {
   ContinuationContextTrace,
 } from '../../continuation/generation/types';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
+import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
 import type { WritingRequest } from '../contracts/writingSource';
 
 export interface PreparedContinuationRun {
@@ -85,27 +86,19 @@ export async function prepareContinuationRun(
       targetPosition: Number(snapshot.targetPosition),
     },
     sourceBundle: sourceAdapter.bundle,
-    model: {
+    model: freezeWritingModelConfig({
       configId: frozenModel?.configId ?? null,
-      provider: frozenModel?.providerType || 'openai_compatible',
-      modelName: frozenModel?.modelName || 'runtime-selected',
-      contextWindow: Math.max(
-        1024,
-        Number(
-          frozenModel?.contextWindow ||
-            snapshot.contextBudget?.modelContextLimit ||
-            8192,
-        ),
-      ),
-      maxOutputTokens: Math.max(
-        256,
-        Number(
-          frozenModel?.maxOutputTokens ||
-            snapshot.contextBudget?.reservedOutputTokens ||
-            1024,
-        ),
-      ),
-    },
+      provider: frozenModel?.providerType,
+      modelName: frozenModel?.modelName,
+      url: frozenModel?.url,
+      name: frozenModel?.name,
+      contextWindow:
+        frozenModel?.contextWindow ||
+        snapshot.contextBudget?.modelContextLimit,
+      maxOutputTokens:
+        frozenModel?.maxOutputTokens ||
+        snapshot.contextBudget?.reservedOutputTokens,
+    }),
     policy: {
       version: 1,
       reviewMode: 'continuation-v5',

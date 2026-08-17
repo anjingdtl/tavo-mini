@@ -98,15 +98,6 @@ export function compileSharedWritingPrompt(
       (input.stagePolicy.reviewMode === 'continuation-v5'
         ? 'json_envelope'
         : 'prose');
-  const frozenMessages = readFrozenMessages(input.stagePolicy, input.stage);
-  if (frozenMessages && frozenMessages.length > 0 && input.stage === 'draft') {
-    return {
-      messages: frozenMessages,
-      maxTokens: resolveMaxTokens(input.frozenContext, input.stage),
-      responseFormat: outputContract === 'json_envelope' ? 'json_object' : 'text',
-      outputContract,
-    };
-  }
 
   const requirementText = projectRequirementsForStage({
     stage: input.stage,
@@ -143,35 +134,6 @@ export function compileSharedWritingPrompt(
 
 function isStructuredReportStage(stage: SharedWritingStageName): boolean {
   return stage === 'review' || stage === 'audit' || stage === 'factCheck';
-}
-
-function readFrozenMessages(
-  policy: WritingStagePolicy,
-  stage: SharedWritingStageName,
-): ChatMessage[] | null {
-  const raw = policy.values.frozenStageMessages;
-  if (!raw || typeof raw !== 'object') return null;
-  const row = (raw as Record<string, unknown>)[stage];
-  if (!Array.isArray(row)) return null;
-  const messages = row.flatMap(item => {
-    if (!item || typeof item !== 'object') return [];
-    const message = item as Record<string, unknown>;
-    if (
-      (message.role === 'system' ||
-        message.role === 'user' ||
-        message.role === 'assistant') &&
-      typeof message.content === 'string'
-    ) {
-      return [
-        {
-          role: message.role,
-          content: message.content,
-        } as ChatMessage,
-      ];
-    }
-    return [];
-  });
-  return messages.length > 0 ? messages : null;
 }
 
 function resolveMaxTokens(

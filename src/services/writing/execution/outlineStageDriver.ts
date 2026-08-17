@@ -52,6 +52,7 @@ import {
   resolveOutlineWritingSourceContext,
 } from '../scenario/outlineWritingAdapter';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
+import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
 import type { WritingRequest } from '../contracts/writingSource';
 import {
   BatchBudgetExceededError,
@@ -213,13 +214,18 @@ async function backfillKernelFreezeFromEnvelope(input: {
       targetPosition: input.chapter.position,
     },
     sourceBundle: adapted.bundle,
-    model: {
+    model: freezeWritingModelConfig({
       configId: execution.model.llmConfigId ?? null,
-      provider: execution.model.provider || 'runtime-selected',
-      modelName: execution.model.modelName || 'runtime-selected',
-      contextWindow: Math.max(1024, Number(execution.model.contextWindow) || 8192),
-      maxOutputTokens: Math.max(256, Number(execution.model.maxOutputTokens) || 1024),
-    },
+      provider: execution.model.provider,
+      modelName: execution.model.modelName,
+      url: execution.model.url,
+      name: execution.model.name,
+      contextWindow: execution.model.contextWindow,
+      maxOutputTokens: execution.model.maxOutputTokens,
+      allowInsecureLanHttp: execution.model.allowInsecureLanHttp,
+      thinking: execution.model.thinking,
+      reasoningEffort: execution.reasoningEffort,
+    }),
     policy: {
       version: 1,
       reviewMode: execution.pipelineMode,

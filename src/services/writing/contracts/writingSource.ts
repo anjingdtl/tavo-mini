@@ -57,6 +57,12 @@ export interface WritingInstruction {
   targetPosition: number;
 }
 
+/** Immutable secret handle. Never stores the API key itself. */
+export interface WritingCredentialRef {
+  kind: 'llm-config-api-key';
+  configId: number;
+}
+
 /** Non-secret model fields frozen at the writing boundary. */
 export interface FrozenModelConfig {
   configId: number | null;
@@ -64,6 +70,12 @@ export interface FrozenModelConfig {
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;
+  url?: string;
+  name?: string;
+  allowInsecureLanHttp?: boolean;
+  thinking?: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  credentialRef?: WritingCredentialRef | null;
 }
 
 /** Runtime policy snapshot. It is intentionally opaque to Source Adapters. */

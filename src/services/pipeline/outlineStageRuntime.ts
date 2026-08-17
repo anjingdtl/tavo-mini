@@ -10,7 +10,6 @@ import * as db from '../database';
 import { one } from '../../data/connection/query';
 import {
   resolveLLMRequestConfig,
-  resolveLLMRequestConfigById,
   type LLMRequestConfig,
 } from '../llm';
 import { runSharedOutlineWriterAction } from '../writing/execution/runOutlineSharedWriterAction';
@@ -75,6 +74,8 @@ import {
   resolveOutlineWritingSourceContext,
 } from '../writing/scenario/outlineWritingAdapter';
 import { buildWritingKernelFreezeTrace } from '../writing/unifiedWritingKernel';
+import { freezeWritingModelConfig } from '../writing/contracts/freezeModelConfig';
+import { resolveWritingCredential } from '../writing/stages/resolveFrozenCredential';
 import type {
   FrozenWritingContext,
   WritingKernelTrace,
@@ -433,8 +434,11 @@ function buildExecutionSnapshot(params: {
       name: params.requestConfig.name,
       provider: params.requestConfig.provider_type,
       modelName: params.requestConfig.model_name,
+      url: params.requestConfig.url,
       contextWindow,
       maxOutputTokens: params.requestConfig.max_output_tokens,
+      allowInsecureLanHttp: params.requestConfig.allow_insecure_lan_http,
+      thinking: params.requestConfig.thinking,
     },
     createdAt: Date.now(),
   };
@@ -463,38 +467,21 @@ function configFromExecution(
 
 function requestConfigFromExecution(
   execution: PipelineExecutionSnapshot,
-  live: LLMRequestConfig,
 ): LLMRequestConfig {
-  // Identity check: config id + model name must match frozen snapshot.
-  if (Number(live.id) !== Number(execution.model.llmConfigId)) {
-    throw new OutlineContextError(
-      'OUTLINE_EXECUTION_CONFIG_INVALID',
-      `模型配置 id 已变化（冻结 ${execution.model.llmConfigId}，当前 ${live.id}）。请重新开始生成。`,
-      'open_llm_settings',
-    );
-  }
-  if (
-    execution.model.modelName &&
-    live.model_name &&
-    String(live.model_name) !== String(execution.model.modelName)
-  ) {
-    throw new OutlineContextError(
-      'OUTLINE_EXECUTION_CONFIG_INVALID',
-      `模型名已变化（冻结 ${execution.model.modelName}，当前 ${live.model_name}）。请重新开始生成。`,
-      'open_llm_settings',
-    );
-  }
+  const model = execution.model;
   return {
-    ...live,
-    id: execution.model.llmConfigId,
-    name: execution.model.name || live.name,
+    id: model.llmConfigId,
+    name: model.name,
     provider_type:
-      (execution.model.provider as LLMRequestConfig['provider_type']) ||
-      live.provider_type,
-    model_name: execution.model.modelName || live.model_name,
-    context_window: execution.model.contextWindow,
-    max_output_tokens:
-      execution.model.maxOutputTokens ?? live.max_output_tokens,
+      (model.provider as LLMRequestConfig['provider_type']) ||
+      'openai_compatible',
+    api_key: '',
+    url: model.url || '',
+    model_name: model.modelName,
+    context_window: model.contextWindow,
+    max_output_tokens: model.maxOutputTokens,
+    allow_insecure_lan_http: model.allowInsecureLanHttp,
+    thinking: model.thinking,
   };
 }
 
@@ -722,10 +709,11 @@ async function loadRuntime(
   }
 
   if (parsed?.execution) {
-    const live = await resolveLLMRequestConfigById(
-      parsed.execution.model.llmConfigId,
-    );
-    const requestConfig = requestConfigFromExecution(parsed.execution, live);
+    const requestConfig = requestConfigFromExecution(parsed.execution);
+    requestConfig.api_key = await resolveWritingCredential({
+      kind: 'llm-config-api-key',
+      configId: parsed.execution.model.llmConfigId,
+    });
     return {
       parsed,
       config: configFromExecution(parsed.execution),
@@ -1043,22 +1031,24 @@ async function actionPersistInitialSnapshot(
       targetPosition: chapter.position,
     },
     sourceBundle: sourceInput.bundle,
-    model: {
+    model: freezeWritingModelConfig({
       configId: runtime.requestConfig.id ?? null,
       provider: runtime.requestConfig.provider_type,
       modelName: runtime.requestConfig.model_name,
-      contextWindow: Math.max(1024, Number(runtime.requestConfig.context_window) || 8192),
-      maxOutputTokens: Math.max(256, Number(runtime.requestConfig.max_output_tokens) || 1024),
-    },
+      url: runtime.requestConfig.url,
+      name: runtime.requestConfig.name,
+      contextWindow: runtime.requestConfig.context_window,
+      maxOutputTokens: runtime.requestConfig.max_output_tokens,
+      allowInsecureLanHttp: runtime.requestConfig.allow_insecure_lan_http,
+      thinking: runtime.requestConfig.thinking,
+      reasoningEffort: execution.reasoningEffort,
+    }),
     policy: {
       version: 1,
       reviewMode: execution.pipelineMode,
       strictness: 'fail-closed',
       values: {
         contextBudgetVersion: execution.contextBudgetVersion,
-        frozenStageMessages: {
-          draft: frozenDraftRequest.messages,
-        },
       },
     },
   };

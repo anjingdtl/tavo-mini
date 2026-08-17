@@ -1,4 +1,7 @@
-import type { WritingRequest } from './writingSource';
+import type {
+  WritingCredentialRef,
+  WritingRequest,
+} from './writingSource';
 import type { WritingRequirements } from './writingRequirement';
 
 export type SharedWritingStageName =
@@ -20,6 +23,10 @@ export interface FrozenStageModelConfig {
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;
+  allowInsecureLanHttp?: boolean;
+  thinking?: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  credentialRef?: WritingCredentialRef | null;
 }
 
 export type WritingOutputContract = 'prose' | 'json_envelope';

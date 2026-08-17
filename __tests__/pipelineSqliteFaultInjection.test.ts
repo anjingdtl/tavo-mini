@@ -384,7 +384,7 @@ describe('SQLite fault injection (Schema 39 fail-closed)', () => {
     expect(llmCalls.filter(c => c.scenario === 'pipeline_draft').length).toBe(0);
   });
 
-  test('die after snapshot before draft → resume uses frozen messages, draft once', async () => {
+  test('die after snapshot before draft → resume uses frozen context via shared Draft compiler, draft once', async () => {
     // First run: kill after snapshot by making claim fail once then recover.
     let claimAttempts = 0;
     mockClaim.mockImplementation(async (taskId: string, stage: string) => {
@@ -433,11 +433,13 @@ describe('SQLite fault injection (Schema 39 fail-closed)', () => {
 
     await reconcilePipelineTask('fault-task', chapter);
     expect(llmCalls.filter(c => c.scenario === 'pipeline_draft').length).toBe(1);
-    // Frozen message was used.
     const draftCall = mockCallLLMResult.mock.calls.find(
       c => c[2]?.scenario === 'pipeline_draft',
     );
-    expect(draftCall?.[0]?.[0]?.content).toBe('FROZEN_MSG');
+    expect(draftCall?.[0]?.[0]?.content).toContain('Shared Draft Writer');
+    expect(draftCall?.[0]?.map((item: { content?: string }) => item.content).join('\n')).not.toContain(
+      'FROZEN_MSG',
+    );
     expect(mockStore.tasks[0].status).toBe('completed');
   });
 
