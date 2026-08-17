@@ -28,6 +28,7 @@ import type {
 } from '../../continuation/generation/types';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
+import { getStoredWritingExecutionProfile } from '../../../data/repositories/pipelineTaskRepository';
 import type {
   FrozenModelConfig,
   WritingRequest,
@@ -78,6 +79,17 @@ export async function prepareContinuationRun(
   const settings = await ensureGenerationSettings(input.projectId);
   const policy = await ensureContextAutomationPolicy();
   const resolved = await resolveV5StageModels(settings);
+  // One-Shot (极速) profile: batch-owned runs freeze the batch's profile;
+  // standalone runs fall back to the global tier setting. Read strictly
+  // PRE-FREEZE — the frozen stage policy is authoritative afterwards, and
+  // the profile never skips canon/boundary/seam/anchor collection below.
+  const executionProfile =
+    input.executionProfile === 'one_shot' ||
+    input.executionProfile === 'standard'
+      ? input.executionProfile
+      : await getStoredWritingExecutionProfile().catch(
+          () => 'standard' as const,
+        );
   const { snapshot, trace } = await buildContinuationV5Context({
     projectId: input.projectId,
     targetChapterId: input.chapterId,
@@ -129,6 +141,9 @@ export async function prepareContinuationRun(
       values: {
         workflowVersion: 5,
         targetPosition: snapshot.targetPosition,
+        ...(executionProfile === 'one_shot'
+          ? { executionProfile: 'one_shot' as const }
+          : {}),
         requirements: (snapshot.bundles.lockedRules || []).map(
           (text, index) => ({
             id: `obligation:locked-rule:${index + 1}`,

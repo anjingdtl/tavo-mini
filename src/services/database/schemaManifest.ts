@@ -1588,6 +1588,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'writing_mode',
       'continuation_anchor_json',
       'continuation_execution_policy_json',
+      'execution_profile',
       'pause_reason',
       'error_code',
       'error_message',

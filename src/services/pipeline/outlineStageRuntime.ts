@@ -81,6 +81,7 @@ import type {
   WritingKernelTrace,
 } from '../writing/contracts/frozenWritingContext';
 import type { WritingRequest } from '../writing/contracts/writingSource';
+import { isOneShotStagePolicy } from '../writing/contracts/executionProfile';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
@@ -191,6 +192,7 @@ function buildExecutionSnapshot(params: {
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
+  executionProfile?: PipelineConfig['executionProfile'];
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
   if (!(contextWindow > 0)) {
@@ -396,6 +398,12 @@ function buildExecutionSnapshot(params: {
     ...(params.reasoningEffort
       ? { reasoningEffort: params.reasoningEffort }
       : {}),
+    // One-Shot (极速) profile frozen with the task: absent = standard so
+    // historical envelope bytes stay identical. Resume never re-reads the
+    // live setting.
+    ...(params.executionProfile === 'one_shot'
+      ? { executionProfile: 'one_shot' as const }
+      : {}),
     ...(isStructured
       ? {
           reasoningProfileVersion: reasoningProfileVersion as 2 | 3 | 4 | 5,
@@ -451,6 +459,7 @@ function configFromExecution(
     pipelineMode: execution.pipelineMode,
     activeWriterStyleId: execution.writerStyle?.assetId || null,
     reasoningEffort: execution.reasoningEffort,
+    executionProfile: execution.executionProfile,
     reasoningProfileVersion: execution.reasoningProfileVersion,
     draftPresetId: execution.draftPresetId,
     reviewPresetId: execution.reviewPresetId,
@@ -831,6 +840,14 @@ async function actionPersistInitialSnapshot(
       : isStructured
       ? normalizePipelineReasoningTier(runtime.config.reasoningEffort)
       : normalizePipelineReasoningEffort(runtime.config.reasoningEffort);
+  // One-Shot (极速) profile: batch-owned first runs may freeze the batch's
+  // profile; otherwise the global setting applies. Resume keeps the frozen
+  // execution snapshot and never consults this selection again.
+  const selectedExecutionProfile =
+    options.pipelineExecutionProfileOverride !== undefined &&
+    options.pipelineExecutionProfileOverride !== null
+      ? options.pipelineExecutionProfileOverride
+      : runtime.config.executionProfile;
   const freshConfig =
     isStructured && !existingExecution && selectedReasoningEffort
       ? {
@@ -922,6 +939,8 @@ async function actionPersistInitialSnapshot(
         outlineWorkflowVersion === 2 || outlineWorkflowVersion === 3 || outlineWorkflowVersion === 4
           ? freshConfig.reasoningEffort
           : undefined,
+      executionProfile:
+        selectedExecutionProfile === 'one_shot' ? 'one_shot' : undefined,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1050,6 +1069,9 @@ async function actionPersistInitialSnapshot(
       values: {
         contextBudgetVersion: execution.contextBudgetVersion,
         outlineStageReasoning: execution.stageReasoning,
+        ...(execution.executionProfile === 'one_shot'
+          ? { executionProfile: 'one_shot' as const }
+          : {}),
       },
     },
   };
@@ -1225,8 +1247,34 @@ async function actionFinalizeFromDraft(
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const draftText = await getDraftText(taskId);
-  const mode = (await loadRuntime(taskId, chapter)).config.pipelineMode;
-  if (mode === 'noReview') {
+  const runtime = await loadRuntime(taskId, chapter);
+  const mode = runtime.config.pipelineMode;
+  // The One-Shot (极速) profile froze its stage skips at Freeze time. The
+  // outline state machine routes draft → finalize directly, so record the
+  // formal skips here with the profile rule ids (no fake completed stages).
+  const oneShot = runtime.parsed?.execution?.executionProfile === 'one_shot';
+  if (oneShot) {
+    await persistSkipped(
+      taskId,
+      'review',
+      '极速模式已跳过 AI 审阅（profile.one_shot.skip_review）',
+    );
+    await persistSkipped(
+      taskId,
+      'factCheck',
+      '极速模式已跳过 AI 事实核查（profile.one_shot.skip_factCheck）',
+    );
+    await persistSkipped(
+      taskId,
+      'brief',
+      '极速模式已跳过 Brief 修订（profile.one_shot.skip_revision）',
+    );
+    await persistSkipped(
+      taskId,
+      'proof',
+      '极速模式已跳过终审润色（profile.one_shot.skip_proof）',
+    );
+  } else if (mode === 'noReview') {
     await persistSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     await persistSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
     await persistSkipped(taskId, 'brief', '无审核模式已跳过 Brief 整理');
@@ -1396,6 +1444,39 @@ async function actionComplete(
   await PipelineForeground.stop(taskId);
 }
 
+/**
+ * One-Shot (极速) hard gate: a task frozen under the one_shot execution
+ * profile must NEVER automatically re-request a failed stage — that would
+ * be a second paid call for the same chapter. Resolution order: the
+ * authoritative in-memory frozen context, then the durable envelope.
+ */
+function isOneShotReconcileTask(
+  taskId: string,
+  options: ReconcileOptions,
+): boolean {
+  if (options.frozenWritingContext?.stagePolicy) {
+    if (isOneShotStagePolicy(options.frozenWritingContext.stagePolicy)) {
+      return true;
+    }
+  }
+  const task = usePipelineTaskStore
+    .getState()
+    .tasks.find(t => t.id === taskId);
+  if (!task?.pipelineContextJson) return false;
+  try {
+    const envelope = JSON.parse(task.pipelineContextJson);
+    if (envelope?.execution?.executionProfile === 'one_shot') return true;
+    return isOneShotStagePolicy(
+      envelope?.draftContext?.frozenWritingContext?.stagePolicy,
+    );
+  } catch {
+    return false;
+  }
+}
+
+const ONE_SHOT_NO_RETRY_MESSAGE =
+  '极速生成失败。本模式不会自动重试或调用第二次模型，可手动重新生成，或切换至低/中/高档。';
+
 export async function maybeAutoRetryStage(params: {
   taskId: string;
   stages: ReturnType<typeof resolveStageCheckpoints>;
@@ -1404,6 +1485,11 @@ export async function maybeAutoRetryStage(params: {
 }): Promise<'continue' | 'stop'> {
   const stage = ACTION_TO_STAGE[params.action.type];
   if (!stage) return 'continue';
+  // One-Shot: auto retry would issue a second paid request for this chapter.
+  // Leave the failed checkpoint in place so the state machine fails closed.
+  if (isOneShotReconcileTask(params.taskId, params.options)) {
+    return 'continue';
+  }
   const checkpoint = params.stages.find(s => s.stage === stage);
   if (!checkpoint || checkpoint.status !== 'failed') return 'continue';
   const attempts = await getStageAttempts(params.taskId, stage);
@@ -1450,6 +1536,12 @@ export interface ReconcileOptions {
     | PipelineReasoningEffort
     | PipelineReasoningTier
     | null;
+  /**
+   * Batch-owned tasks inherit the batch-frozen One-Shot (极速) execution
+   * profile on first run. Applied only before an execution snapshot exists;
+   * resume keeps the frozen value.
+   */
+  pipelineExecutionProfileOverride?: 'standard' | 'one_shot' | null;
   /** Batch-frozen V3 policy. A supplied snapshot disables live-policy reads. */
   contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   /**
@@ -1712,6 +1804,11 @@ export async function consumeFailedStageRetryDisposition(params: {
 > {
   const stage = params.stage;
   if (!stage) return { outcome: 'none' };
+  // One-Shot: consuming a retry disposition would reset the checkpoint and
+  // re-fire the stage — a second physical request. Fail closed instead.
+  if (isOneShotReconcileTask(params.taskId, params.options)) {
+    return { outcome: 'none', message: ONE_SHOT_NO_RETRY_MESSAGE };
+  }
   const attempts = await getStageAttempts(params.taskId, stage);
   const latest = attempts[attempts.length - 1];
   if (!latest) return { outcome: 'none' };

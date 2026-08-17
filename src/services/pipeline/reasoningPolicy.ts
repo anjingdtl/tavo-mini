@@ -18,20 +18,41 @@ export const PIPELINE_REASONING_EFFORT_OPTIONS: Array<{
 }> = [
   {
     value: 'low',
-    label: '快速',
+    label: '低',
     description: '所有阶段使用低思考预算；事实核查固定 low。',
   },
   {
     value: 'high',
-    label: '平衡',
+    label: '中',
     description: 'Draft/Review/Brief/Final 使用 high；FactCheck 固定 low。',
   },
   {
     value: 'max',
-    label: '质量',
+    label: '高',
     description: 'Draft/Review/Brief/Final 使用 max；FactCheck 固定 low。',
   },
 ];
+
+/**
+ * 极速 (One-Shot) thinking-tier preset. `one_shot` is an Execution Profile —
+ * NOT a reasoningEffort tier: it caps the chapter at one paid Draft call and
+ * formally skips the AI audit/revision stages. Context still follows the
+ * existing elastic budget. The preset pairs with tier `low` for the single
+ * Draft request.
+ */
+export const PIPELINE_ONE_SHOT_TIER_PRESET = {
+  value: 'one_shot' as const,
+  label: '极速',
+  description:
+    '仅调用模型一次，跳过 AI 审查和修订，速度与成本最低。适合网文日更、轻创作和快速草稿。上下文仍按当前弹性预算自动装载。',
+  subLabel: '一次生成 · 不审稿 · 不复写',
+  executionProfile: 'one_shot' as const,
+  reasoningEffort: 'low' as const,
+};
+
+export type PipelineThinkingPresetValue =
+  | typeof PIPELINE_ONE_SHOT_TIER_PRESET['value']
+  | PipelineReasoningTier;
 
 export function isPipelineReasoningTier(
   value: unknown,

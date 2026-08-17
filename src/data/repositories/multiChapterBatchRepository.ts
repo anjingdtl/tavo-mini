@@ -78,6 +78,8 @@ export interface MultiChapterBatchRow {
   continuationAnchorJson: string | null;
   /** Serialized ContinuationBatchExecutionPolicyV1 (continuation mode only). */
   continuationExecutionPolicyJson: string | null;
+  /** Frozen One-Shot (极速) execution profile (Schema 54+); NULL = standard. */
+  executionProfile?: 'standard' | 'one_shot' | null;
   pauseReason: string | null;
   errorCode: string | null;
   errorMessage: string | null;
@@ -260,6 +262,8 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     continuationAnchorJson: row.continuation_anchor_json ?? null,
     continuationExecutionPolicyJson:
       row.continuation_execution_policy_json ?? null,
+    executionProfile:
+      row.execution_profile === 'one_shot' ? 'one_shot' : 'standard',
     pauseReason: row.pause_reason ?? null,
     errorCode: row.error_code ?? null,
     errorMessage: row.error_message ?? null,
@@ -348,6 +352,8 @@ export interface CreateBatchInput {
   writingMode?: MultiChapterWritingMode;
   continuationAnchorJson?: string | null;
   continuationExecutionPolicyJson?: string | null;
+  /** Schema 54: frozen One-Shot (极速) execution profile for the batch. */
+  executionProfile?: 'standard' | 'one_shot' | null;
   createdAt?: number;
 }
 
@@ -371,9 +377,10 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
        max_llm_calls, max_input_tokens, max_output_tokens,
        outline_workflow_version, context_budget_version,
        writing_mode, continuation_anchor_json, continuation_execution_policy_json,
+       execution_profile,
        planner_request_json,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -394,6 +401,7 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.writingMode === 'continuation'
         ? (input.continuationExecutionPolicyJson ?? null)
         : null,
+      input.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
       frozenPolicy ? encodeFrozenBatchPlannerRequest(null, frozenPolicy) : null,
       now,
       now,

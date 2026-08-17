@@ -8,8 +8,10 @@ import type { Preset } from '../types/novel';
 import type { PipelineConfig } from '../types/pipeline';
 import {
   DEFAULT_PIPELINE_REASONING_EFFORT,
+  PIPELINE_ONE_SHOT_TIER_PRESET,
   PIPELINE_REASONING_EFFORT_OPTIONS,
   type PipelineReasoningTier,
+  type PipelineThinkingPresetValue,
 } from '../services/pipeline/reasoningPolicy';
 
 const DEFAULT_CONFIG: PipelineConfig = {
@@ -92,29 +94,63 @@ export const PipelineConfigScreen: React.FC = () => {
       <Header testID="pipeline-config" title="流水线配置" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>思考强度</Text>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>思考档位</Text>
           <SegmentedControl
-            value={(config.reasoningEffort === 'medium'
-              ? DEFAULT_PIPELINE_REASONING_EFFORT
-              : config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT) as PipelineReasoningTier}
-            options={PIPELINE_REASONING_EFFORT_OPTIONS.map(option => ({
-              value: option.value,
-              label: option.label,
-            }))}
-            onChange={(reasoningEffort: PipelineReasoningTier) =>
-              setConfig({ ...config, reasoningEffort })
-            }
+            value={(() => {
+              if (config.executionProfile === 'one_shot') return 'one_shot';
+              return (
+                config.reasoningEffort === 'medium'
+                  ? DEFAULT_PIPELINE_REASONING_EFFORT
+                  : config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT
+              ) as PipelineReasoningTier;
+            })() as PipelineThinkingPresetValue}
+            options={[
+              {
+                value: PIPELINE_ONE_SHOT_TIER_PRESET.value,
+                label: PIPELINE_ONE_SHOT_TIER_PRESET.label,
+              },
+              ...PIPELINE_REASONING_EFFORT_OPTIONS.map(option => ({
+                value: option.value,
+                label: option.label,
+              })),
+            ]}
+            onChange={(preset: PipelineThinkingPresetValue) => {
+              if (preset === 'one_shot') {
+                // 极速 = One-Shot Execution Profile（非 reasoningEffort），
+                // 单次 Draft 请求固定搭配 low 档思考预算。
+                setConfig({
+                  ...config,
+                  executionProfile: 'one_shot',
+                  reasoningEffort:
+                    PIPELINE_ONE_SHOT_TIER_PRESET.reasoningEffort,
+                });
+              } else {
+                setConfig({
+                  ...config,
+                  executionProfile: 'standard',
+                  reasoningEffort: preset as PipelineReasoningTier,
+                });
+              }
+            }}
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            {PIPELINE_REASONING_EFFORT_OPTIONS.find(
-              option => option.value === (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
-            )?.description}
-            {' '}Draft、Review、Brief、Final 跟随用户档位；FactCheck 固定使用 low Thinking。
+            {config.executionProfile === 'one_shot'
+              ? PIPELINE_ONE_SHOT_TIER_PRESET.description
+              : PIPELINE_REASONING_EFFORT_OPTIONS.find(
+                  option =>
+                    option.value ===
+                    (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
+                )?.description}
+            {config.executionProfile === 'one_shot'
+              ? `\n${PIPELINE_ONE_SHOT_TIER_PRESET.subLabel}`
+              : ' Draft、Review、Brief、Final 跟随用户档位；FactCheck 固定使用 low Thinking。'}
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
           >
-            新任务统一执行 Draft → Review 与 FactCheck → Brief → Final；历史已完成任务仍可查看，旧未完成任务需按新版重新生成。
+            {config.executionProfile === 'one_shot'
+              ? '极速档每章仅一次模型调用，生成失败不会自动重试，可手动重新生成或切换低/中/高档。'
+              : '新任务统一执行 Draft → Review 与 FactCheck → Brief → Final；历史已完成任务仍可查看，旧未完成任务需按新版重新生成。'}
           </Text>
         </View>
 

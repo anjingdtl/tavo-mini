@@ -80,6 +80,11 @@ export interface PipelineRunOptions {
    * only before the task has an execution snapshot; resume keeps the snapshot.
    */
   pipelineReasoningEffortOverride?: PipelineReasoningEffort | null;
+  /**
+   * Batch-owned tasks inherit the One-Shot (极速) execution profile frozen on
+   * the batch header. First-freeze only; resume keeps the frozen snapshot.
+   */
+  pipelineExecutionProfileOverride?: 'standard' | 'one_shot' | null;
   /** Batch-frozen V3 policy; resume never falls back to live settings. */
   contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   /**

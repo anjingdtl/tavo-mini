@@ -25,10 +25,21 @@ export type PipelineTaskStatus =
   /** Cold-start / process death with successful draft + valid snapshot. */
   | 'interrupted';
 
+/**
+ * One-Shot (极速) execution profile. Stored beside the reasoning tier in the
+ * pipeline settings; frozen into each task's execution snapshot at start.
+ */
+export type PipelineExecutionProfile = 'standard' | 'one_shot';
+
 export interface PipelineConfig {
   pipelineMode: PipelineMode;
   /** V2/V3 product tier; V3 settings normalize to low/high/max. */
   reasoningEffort?: PipelineReasoningEffort;
+  /**
+   * 极速 (One-Shot) execution profile. Not a reasoning tier: it changes how
+   * many stages run, never how much context the model receives.
+   */
+  executionProfile?: PipelineExecutionProfile;
   /** Product reasoning profile version; new outline tasks freeze version 5. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   /** New tasks use one project-scoped active Writer Style. */

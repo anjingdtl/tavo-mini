@@ -18,6 +18,7 @@ import {
   previousArtifactBlock,
   projectRequirementsForStage,
 } from './requirementProjection';
+import { isOneShotStagePolicy } from '../contracts/executionProfile';
 
 export interface SharedPromptCompileInput {
   stage: SharedWritingStageName;
@@ -97,6 +98,20 @@ const STRUCTURED_REPORT_CONTRACT = [
 const PROSE_CONTRACT =
   '【输出契约】直接输出本章完整正文。不要输出标题、分析、JSON 或过程说明。';
 
+/**
+ * One-Shot (极速) profile projection for the Shared Draft. This is a policy
+ * projection inside the ONE shared prompt — not a second compiler. It only
+ * instructs the model about its execution responsibilities; it never adds,
+ * removes, or truncates frozen context.
+ */
+const ONE_SHOT_DRAFT_PROJECTION = [
+  '【执行模式：极速 / One-Shot】',
+  '本次是本章唯一一次模型生成。',
+  '生成结果不会再经过 AI Review、FactCheck、Revision 或 Proof。',
+  '请直接输出可保存的完整章节正文。',
+  '必须尽最大可能同时满足：用户指令、当前章节大纲/剧情任务、已冻结 Canon / Boundary / Seam / Anchor、人物与世界设定、Story Memory、Writer Style、前文连续性、目标篇幅与自然结尾。',
+].join('\n');
+
 export function compileSharedWritingPrompt(
   input: SharedPromptCompileInput,
 ): SharedPromptCompileResult {
@@ -128,6 +143,9 @@ export function compileSharedWritingPrompt(
     instructionBlock(input.frozenContext),
     rendered ? `【冻结上下文】\n${rendered}` : '',
     requirementText,
+    input.stage === 'draft' && isOneShotStagePolicy(input.stagePolicy)
+      ? ONE_SHOT_DRAFT_PROJECTION
+      : '',
     previous,
     contract,
   ]

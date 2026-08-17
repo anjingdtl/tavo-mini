@@ -210,6 +210,15 @@ export function determineNextPipelineAction(
     });
   }
 
+  // --- One-Shot (极速) execution profile --------------------------------
+  // The frozen one_shot profile caps the chapter at ONE paid Draft call:
+  // review / factCheck / brief / proof are formally skipped during
+  // finalize_from_draft, and local FinalValidate + Persist still run. The
+  // paid audit stages must never dispatch under this profile.
+  if (task.executionProfile === 'one_shot') {
+    return decideOneShot(task);
+  }
+
   // --- Mode branches -------------------------------------------------
   if (mode === 'noReview') {
     return decideNoReview(task, proof);
@@ -257,6 +266,22 @@ function decideTerminalOrComplete(
 
 function statusIsFailedWithFinal(task: PersistedPipelineTaskView): boolean {
   return String(task.status) === 'failed' && hasUsableFinalText(task);
+}
+
+function decideOneShot(
+  task: PersistedPipelineTaskView,
+): PipelineAction {
+  // Draft already succeeded (caller checked). The single paid call is done:
+  // persist the final body through the shared local finalize path, then
+  // complete. No audit stage may run, so the audit checkpoints are never
+  // consulted here.
+  if (hasUsableFinalText(task)) {
+    if (String(task.status) === 'completed') {
+      return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+    }
+    return { type: 'complete' };
+  }
+  return { type: 'finalize_from_draft', degraded: false };
 }
 
 function decideNoReview(

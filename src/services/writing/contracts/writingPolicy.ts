@@ -4,6 +4,10 @@ import type {
 } from './writingSource';
 import type { WritingRequirements } from './writingRequirement';
 import { compileKernelStageReasoning } from './stageReasoning';
+import {
+  isOneShotValues,
+  ONE_SHOT_EXECUTION_PROFILE_POLICY,
+} from './executionProfile';
 
 export type SharedWritingStageName =
   | 'draft'
@@ -60,6 +64,36 @@ const DEFAULT_STAGE_ORDER: SharedWritingStageName[] = [
   'persist',
 ];
 
+/**
+ * One-Shot (极速) profile skips every paid AI audit/revision stage. These
+ * formal skip rules express the Execution Profile inside the ONE frozen
+ * stage policy — never a second writer, compiler, or context builder.
+ */
+function oneShotSkipRules(): WritingStagePolicy['skipRules'] {
+  return {
+    review: {
+      skipReason: 'One-Shot profile skips AI review',
+      policyRuleId: 'profile.one_shot.skip_review',
+    },
+    audit: {
+      skipReason: 'One-Shot profile skips AI audit',
+      policyRuleId: 'profile.one_shot.skip_audit',
+    },
+    factCheck: {
+      skipReason: 'One-Shot profile skips AI fact-check',
+      policyRuleId: 'profile.one_shot.skip_factCheck',
+    },
+    revision: {
+      skipReason: 'One-Shot profile skips AI revision',
+      policyRuleId: 'profile.one_shot.skip_revision',
+    },
+    proof: {
+      skipReason: 'One-Shot profile skips AI proof / final reviser',
+      policyRuleId: 'profile.one_shot.skip_proof',
+    },
+  };
+}
+
 function continuationStylePolicy(
   reviewMode: string,
   values: Record<string, unknown>,
@@ -110,6 +144,14 @@ export function buildWritingStagePolicy(
           policyRuleId: 'policy.outline.review_covers_audit',
         },
       };
+  // The Execution Profile projects on top of the scenario rules and is
+  // frozen into the same stagePolicy (values + skipRules). Standard tasks
+  // stay byte-identical so historical freeze fingerprints keep validating.
+  if (isOneShotValues(values)) {
+    values.executionProfile = 'one_shot';
+    values.executionProfilePolicy = { ...ONE_SHOT_EXECUTION_PROFILE_POLICY };
+    Object.assign(skipRules, oneShotSkipRules());
+  }
   return {
     version: 1,
     reviewMode: request.policy.reviewMode,

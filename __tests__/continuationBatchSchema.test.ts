@@ -47,7 +47,7 @@ async function tableColumnsOf(
   return columns;
 }
 
-describe('continuation batch schema 53', () => {
+describe('continuation batch schema 53/54', () => {
   let db: InMemorySqliteDb;
 
   afterAll(async () => {
@@ -55,8 +55,8 @@ describe('continuation batch schema 53', () => {
     db?.close();
   });
 
-  it('SCHEMA_VERSION is 53', () => {
-    expect(SCHEMA_VERSION).toBe(53);
+  it('SCHEMA_VERSION is 54', () => {
+    expect(SCHEMA_VERSION).toBe(54);
   });
 
   describe('fresh install', () => {
@@ -74,8 +74,28 @@ describe('continuation batch schema 53', () => {
       expect(columns.has('writing_mode')).toBe(true);
       expect(columns.has('continuation_anchor_json')).toBe(true);
       expect(columns.has('continuation_execution_policy_json')).toBe(true);
+      expect(columns.has('execution_profile')).toBe(true);
       const itemColumns = await tableColumnsOf(db, 'multi_chapter_batch_items');
       expect(itemColumns.has('active_continuation_run_id')).toBe(true);
+    });
+
+    it('Schema 54 defaults execution_profile to standard (one-shot freeze column)', async () => {
+      await createBatch({
+        id: 'b54',
+        projectId: 1,
+        sourcePrompt: '极速批次',
+        chapterCount: 1,
+        targetWordsPerChapter: 3000,
+        pipelineMode: 'full',
+        executionProfile: 'one_shot',
+      });
+      const rows = await db.executeSql(
+        `SELECT id, execution_profile FROM multi_chapter_batches
+         WHERE id IN ('b54')`,
+      );
+      expect(rows[0].rows.item(0).execution_profile).toBe('one_shot');
+      const batch = await getBatchById('b54');
+      expect(batch?.executionProfile).toBe('one_shot');
     });
 
     it('round-trips a continuation batch with anchor and policy', async () => {

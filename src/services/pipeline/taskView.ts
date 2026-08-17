@@ -107,6 +107,11 @@ export function buildPersistedTaskView(
     pipelineMode: mode,
     outlineWorkflowVersion,
     contextBudgetVersion,
+    // Frozen with the execution snapshot; resume never re-reads the setting.
+    executionProfile:
+      parsed?.execution?.executionProfile === 'one_shot'
+        ? 'one_shot'
+        : 'standard',
     hasExecutionSnapshot: Boolean(parsed?.execution),
     hasDraftContext: Boolean(parsed?.draftContext),
     hasAuditContext: Boolean(parsed?.auditContext),

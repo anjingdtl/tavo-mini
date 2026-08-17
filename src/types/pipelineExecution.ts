@@ -8,6 +8,7 @@ import type { PipelineMode, PipelineReasoningEffort, PipelineStageName } from '.
 import type { PipelineReasoningTier } from '../services/pipeline/reasoningPolicy';
 import type { ContextAutomationPolicyV3 } from '../services/contextAutomationPolicy';
 import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
+import type { WritingExecutionProfile } from '../services/writing/contracts/executionProfile';
 
 export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
@@ -104,6 +105,14 @@ export interface PipelineExecutionSnapshot {
 
   /** Frozen V2 product tier applied to Draft / Review / FactCheck / Proof. */
   reasoningEffort?: PipelineReasoningEffort;
+
+  /**
+   * One-Shot (极速) execution profile frozen at task start. undefined /
+   * 'standard' keeps the historical multi-stage pipeline; 'one_shot' caps
+   * the run at one paid Draft call and formally skips the paid audit /
+   * revision stages. Resume must never re-read the live setting.
+   */
+  executionProfile?: WritingExecutionProfile;
 
   /** V3 product profile and per-stage frozen effective tiers. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;

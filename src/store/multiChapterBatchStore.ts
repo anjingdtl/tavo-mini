@@ -332,6 +332,13 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           reasoningEffort: isPipelineReasoningTier(pipelineConfig.reasoningEffort)
             ? pipelineConfig.reasoningEffort
             : normalizePipelineReasoningTier(pipelineConfig.reasoningEffort),
+          // Schema 54: freeze the One-Shot (极速) execution profile with the
+          // batch; every chapter inherits it regardless of later setting
+          // changes. 极速 pairs with the low tier for its single Draft call.
+          executionProfile:
+            pipelineConfig.executionProfile === 'one_shot'
+              ? 'one_shot'
+              : 'standard',
           // §4.4: freeze the protocol versions ONCE at batch creation; every
           // chapter task later copies them from the row. New batches freeze
           // version 6 so every child task routes through the hierarchical
@@ -721,6 +728,10 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           targetWordsPerChapter: legacyBatch.targetWordsPerChapter,
           pipelineMode: 'full',
           reasoningEffort,
+          executionProfile:
+            pipelineConfig.executionProfile === 'one_shot'
+              ? 'one_shot'
+              : 'standard',
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion,
           contextAutomationPolicyV3,

@@ -6,6 +6,7 @@
  * runner; production code must import them from here.
  */
 import type { ChatMessage } from '../../llm/types';
+import type { WritingExecutionProfile } from '../contracts/executionProfile';
 
 export interface StageLlmCallResult {
   text: string;
@@ -45,4 +46,10 @@ export interface StartContinuationRunInput {
   batchTraceId?: string | null;
   chapterOrdinal?: number | null;
   chapterCount?: number | null;
+  /**
+   * 极速 (One-Shot) execution profile. Batch-owned runs freeze the batch's
+   * profile here; otherwise the global tier setting applies at preparation
+   * time. Frozen into the kernel stage policy — never re-read after Freeze.
+   */
+  executionProfile?: WritingExecutionProfile;
 }

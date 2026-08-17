@@ -502,6 +502,9 @@ async function executeContinuationItemStep(params: {
         batchTraceId: createContinuationBatchTraceId(batchId),
         chapterOrdinal: currentItem.ordinal,
         chapterCount: batch.chapterCount,
+        // Batch-frozen One-Shot (极速) profile (Schema 54).
+        executionProfile:
+          batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
       });
       const bound = await bindContinuationRunForItem({
         batchId,
@@ -694,6 +697,10 @@ async function driveRunToSettlement(params: {
             run.userInstruction || chapter.synopsis || chapter.title || '按当前章节边界续写。',
           currentChapterContent: chapter.content || '',
           callStage: options.callStage,
+          // Batch-frozen One-Shot (极速) profile (Schema 54); restart keeps
+          // the batch's frozen execution strategy.
+          executionProfile:
+            batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
         });
         await cancelContinuationRun(run.id).catch(() => {});
         await updateBatchItem(batchId, item.ordinal, {

@@ -82,6 +82,11 @@ export interface PersistedPipelineTaskView {
   /** Frozen protocol versions used by the state machine. */
   outlineWorkflowVersion?: number | null;
   contextBudgetVersion?: number | null;
+  /**
+   * One-Shot (极速) execution profile frozen in the execution snapshot.
+   * undefined / 'standard' keeps the full audit pipeline.
+   */
+  executionProfile?: 'standard' | 'one_shot';
   /** True when draftContext (frozen retrieval) is persisted. */
   hasDraftContext: boolean;
   /**

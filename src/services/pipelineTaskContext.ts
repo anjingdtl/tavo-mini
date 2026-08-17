@@ -1311,6 +1311,25 @@ export function parsePipelineExecutionSnapshot(
       'restart_task',
     );
   }
+  // One-Shot (极速) execution profile. Absent on historical snapshots means
+  // the standard multi-stage pipeline. Unknown values fail closed so a
+  // corrupted tier can never silently re-enable paid audit stages.
+  const executionProfileRaw = raw.executionProfile;
+  let executionProfile: 'standard' | 'one_shot' | undefined;
+  if (
+    executionProfileRaw === 'one_shot' ||
+    executionProfileRaw === 'standard'
+  ) {
+    executionProfile = executionProfileRaw;
+  } else if (executionProfileRaw != null && executionProfileRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的执行档位 ${String(
+        executionProfileRaw,
+      )}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
   const contextBudgetRaw = raw.contextBudgetVersion;
   let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | undefined;
   if (
@@ -1645,6 +1664,7 @@ export function parsePipelineExecutionSnapshot(
     contextBudgetVersion,
     finalReviserReasoningPolicyVersion,
     reasoningEffort,
+    ...(executionProfile ? { executionProfile } : {}),
     ...v3Fields,
     draftMaxTokens: requireNonNegativeFinite(
       raw.draftMaxTokens,

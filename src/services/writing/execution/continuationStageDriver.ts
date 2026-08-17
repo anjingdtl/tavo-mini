@@ -75,6 +75,11 @@ export async function createContinuationStageDriver(
   const runId = newContinuationRunId();
   const { snapshotWithTraceId, unifiedTrace, kernelFreeze } =
     bindPreparedRunTrace(prepared, input, runId);
+  // One-Shot (极速): the run's physical-request budget is the frozen
+  // profile's cap (1). Standard continuation keeps the V5 five-request cap.
+  const oneShotProfile =
+    kernelFreeze.frozenContext?.stagePolicy?.values?.executionProfile ===
+    'one_shot';
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,
@@ -96,7 +101,7 @@ export async function createContinuationStageDriver(
     contextTraceJson: JSON.stringify(unifiedTrace),
     tokenUsageJson: JSON.stringify({
       workflowVersion: 5,
-      maxPhysicalRequests: 5,
+      maxPhysicalRequests: oneShotProfile ? 1 : 5,
       physicalRequestCount: 0,
       stages: {},
     }),

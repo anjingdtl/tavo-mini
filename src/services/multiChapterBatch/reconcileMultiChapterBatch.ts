@@ -576,6 +576,8 @@ async function executeBatchAction(params: {
               foregroundOwner: 'batch',
               pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
+              pipelineExecutionProfileOverride:
+                batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
               contextAutomationPolicyV3:
                 batch.contextAutomationPolicySnapshot ?? null,
               batchBudgetGate: { batchId },
@@ -586,6 +588,8 @@ async function executeBatchAction(params: {
               foregroundOwner: 'batch',
               pipelineModeOverride: currentPipelineMode,
               pipelineReasoningEffortOverride: batch.reasoningEffort ?? null,
+              pipelineExecutionProfileOverride:
+                batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
               contextAutomationPolicyV3:
                 batch.contextAutomationPolicySnapshot ?? null,
               batchBudgetGate: { batchId },

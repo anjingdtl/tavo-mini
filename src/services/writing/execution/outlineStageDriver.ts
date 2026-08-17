@@ -304,6 +304,7 @@ export async function createOutlineStageDriver(
     isCancelled: isPipelineCancelled,
     pipelineModeOverride: options.pipelineModeOverride,
     pipelineReasoningEffortOverride: options.pipelineReasoningEffortOverride,
+    pipelineExecutionProfileOverride: options.pipelineExecutionProfileOverride,
     contextAutomationPolicyV3: options.contextAutomationPolicyV3,
     batchBudgetGate: options.batchBudgetGate,
     foregroundOwner: options.foregroundOwner,
@@ -541,6 +542,13 @@ export async function createOutlineStageDriver(
         const freeze = pendingFreeze;
         pendingFreeze = null;
         authoritativeFreeze = freeze;
+        // Surface the authoritative freeze to the reconcile options BEFORE
+        // any stage runs, so profile-scoped gates (one_shot no-retry) can
+        // consult the frozen policy from the first step of a resumed run.
+        reconcileOptions.frozenWritingContext =
+          reconcileOptions.frozenWritingContext || freeze.frozenContext;
+        reconcileOptions.writingKernelTrace =
+          reconcileOptions.writingKernelTrace || freeze.trace;
         return { kind: 'freeze', ...freeze };
       }
       if (pendingOutcomes.length > 0) {
