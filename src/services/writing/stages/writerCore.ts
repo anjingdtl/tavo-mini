@@ -11,7 +11,14 @@ import type {
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 import { resolveSharedStageSkip } from '../contracts/writingPolicy';
 import { evaluateWritingRequirements } from '../contracts/writingRequirement';
+import { resolveFrozenStageReasoning } from '../contracts/stageReasoning';
 import { callWritingStageLLM } from './stageLlmCall';
+import {
+  adoptStructuredWriterText,
+  compileSharedWriterFormatterPrompt,
+  isAdoptableStructuredReport,
+  shouldRunWriterFormatter,
+} from './writerRecovery';
 
 export function emptyRequirementResult() {
   return {
@@ -189,20 +196,23 @@ export async function executeSharedWriterStage(input: {
       configId: stageInput.modelConfig.configId,
       responseFormat: compiled.responseFormat,
     });
-    const artifact = parseSharedWriterOutput(stage, injected.text || '');
-    if (!artifact.body.trim()) {
-      throw emptyWriterError(stage, injected);
-    }
-    assertStructuredReport(stage, artifact);
+    const adopted = adoptStructuredWriterText({
+      stage,
+      outputContract: compiled.outputContract,
+      text: injected.text,
+      reasoningText: (injected as { reasoningText?: string }).reasoningText,
+    });
+    const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
     attachUsage(artifact, injected);
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
     return artifact;
   }
 
   const requestConfig = await resolveFrozenRequestConfig(stageInput);
+  const stageReasoning = resolveFrozenStageReasoning(stage, stageInput);
   const isReport =
     stage === 'review' || stage === 'audit' || stage === 'factCheck';
-  const result = await callWritingStageLLM(
+  const primary = await callWritingStageLLM(
     compiled.messages,
     maxTokens,
     {
@@ -220,25 +230,127 @@ export async function executeSharedWriterStage(input: {
         compiled.responseFormat === 'json_object' || isReport
           ? 'json_object'
           : undefined,
-      thinking: isReport
-        ? { type: 'disabled' }
-        : stageInput.modelConfig.thinking,
-      reasoningEffort: isReport
-        ? undefined
-        : stageInput.modelConfig.reasoningEffort,
+      thinking: stageReasoning.thinking,
+      reasoningEffort: stageReasoning.reasoningEffort,
       temperature: isReport ? 0.2 : undefined,
       top_p: isReport ? 1 : undefined,
       requestConfig,
     },
     stageInput.abortSignal,
   );
-  const artifact = parseSharedWriterOutput(stage, result.text || '');
+  if (primary.finishReason === 'content_filter') {
+    throw Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
+      code: 'SHARED_WRITER_CONTENT_FILTER',
+    });
+  }
+  let adopted = adoptStructuredWriterText({
+    stage,
+    outputContract: compiled.outputContract,
+    text: primary.text,
+    reasoningText: primary.reasoningText,
+  });
+  let parsed = parseSharedWriterOutput(stage, adopted.text);
+  const primaryAdoptable =
+    Boolean(adopted.text.trim()) &&
+    (compiled.outputContract !== 'json_envelope' ||
+      isAdoptableStructuredReport(stage, parsed.structured));
+  if (
+    shouldRunWriterFormatter({
+      stage,
+      outputContract: compiled.outputContract,
+      adoptedText: primaryAdoptable ? adopted.text : '',
+      hasReasoning: Boolean(String(primary.reasoningText || '').trim()),
+    })
+  ) {
+    const formatter = compileSharedWriterFormatterPrompt({
+      stage,
+      outputContract: compiled.outputContract,
+      candidate: String(primary.text || primary.reasoningText || ''),
+    });
+    const formatted = await callWritingStageLLM(
+      formatter.messages,
+      Math.min(maxTokens, 4096),
+      {
+        queueClass: 'pipeline',
+        queuePriority: 'normal',
+        projectId: stageInput.frozenContext.projectId,
+        taskId: stageInput.frozenContext.writingRunId,
+        scenario: formatter.scenario,
+        responseFormat:
+          compiled.outputContract === 'json_envelope'
+            ? 'json_object'
+            : undefined,
+        thinking: { type: 'disabled' },
+        reasoningEffort: undefined,
+        temperature: 0.2,
+        top_p: 1,
+        requestConfig,
+      },
+      stageInput.abortSignal,
+    );
+    adopted = adoptStructuredWriterText({
+      stage,
+      outputContract: compiled.outputContract,
+      text: formatted.text,
+      reasoningText: formatted.reasoningText,
+    });
+    if (!adopted.text.trim()) {
+      throw Object.assign(emptyWriterError(stage, formatted), {
+        formatterUsed: true,
+      });
+    }
+    try {
+      const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+      artifact.formatterUsed = true;
+      artifact.adoptedFrom = adopted.adoptedFrom;
+      attachUsage(artifact, formatted);
+      await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+      return artifact;
+    } catch (error) {
+      throw Object.assign(
+        error instanceof Error ? error : new Error(String(error)),
+        { formatterUsed: true },
+      );
+    }
+  }
+  const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+  artifact.adoptedFrom = adopted.adoptedFrom;
+  attachUsage(artifact, primary);
+  await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+  return artifact;
+}
+
+function finalizeWriterArtifact(
+  stage: SharedWritingStageName,
+  stageInput: SharedWritingStageInput,
+  text: string,
+): SharedWritingArtifact {
+  const artifact = parseSharedWriterOutput(stage, text);
+  if (
+    stage === 'revision' &&
+    !String(artifact.structured?.content || '').trim()
+  ) {
+    const draft = (stageInput.artifacts as { draft?: { body?: string } }).draft
+      ?.body;
+    if (String(draft || '').trim()) {
+      artifact.body = String(draft);
+    }
+  }
   if (!artifact.body.trim()) {
-    throw emptyWriterError(stage, result);
+    throw emptyWriterError(stage, { text, emptyReason: 'empty' });
+  }
+  if (
+    (stage === 'review' ||
+      stage === 'audit' ||
+      stage === 'factCheck' ||
+      stage === 'revision') &&
+    !isAdoptableStructuredReport(stage, artifact.structured)
+  ) {
+    throw Object.assign(new Error(`${stage} 返回格式无效，需要结构化报告`), {
+      code: 'SHARED_WRITER_INVALID_REPORT',
+    });
   }
   assertStructuredReport(stage, artifact);
-  attachUsage(artifact, result);
-  await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
   return artifact;
 }
 

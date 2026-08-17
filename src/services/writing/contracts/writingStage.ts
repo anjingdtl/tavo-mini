@@ -103,6 +103,8 @@ export interface SharedWritingArtifact {
   validNoOpRequirementIds?: string[];
   validNoOpReasons?: Record<string, string>;
   diagnostics?: string[];
+  formatterUsed?: boolean;
+  adoptedFrom?: 'content' | 'reasoning' | null;
   usage?: {
     inputTokens: number;
     outputTokens: number;

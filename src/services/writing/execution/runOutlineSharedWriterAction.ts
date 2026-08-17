@@ -114,6 +114,10 @@ export async function runSharedOutlineWriterAction(input: {
               id,
               status: 'succeeded',
               completedAt: Date.now(),
+              formatterUsed: Boolean(
+                (results[index]?.artifact as { formatterUsed?: boolean } | undefined)
+                  ?.formatterUsed,
+              ),
               inputTokens: Number(usage?.inputTokens || 0),
               outputTokens: Number(usage?.outputTokens || 0),
               totalTokens: Number(usage?.totalTokens || 0),
@@ -140,6 +144,9 @@ export async function runSharedOutlineWriterAction(input: {
               status,
               failureClass,
               errorMessage: message,
+              formatterUsed: Boolean(
+                (error as { formatterUsed?: boolean }).formatterUsed,
+              ),
               completedAt: Date.now(),
               inputTokens: 100,
               outputTokens: 0,

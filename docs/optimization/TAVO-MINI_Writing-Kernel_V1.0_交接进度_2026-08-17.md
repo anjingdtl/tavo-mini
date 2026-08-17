@@ -6,6 +6,8 @@
 **本轮目标：** ONE Production Writing Kernel + ONE Shared Writer Core + ONE Shared Stage Implementation  
 **封板状态：** **未封。禁止宣布 FINAL SEALED / GO。**
 
+> **2026-08-17 补记：** Kernel 收束后一次通过率明显下降。根因不是“Writer 还没统一”，而是 V3.2 双通道采用、一次 Formatter、每阶段 Freeze thinking、Brief 压缩修订被当成旧 Core 丢掉。补救必须发生在 Shared Writer 内。详见 `TAVO-MINI_Writing-Kernel_一次通过契约收回进度_20260817.md`。不要再只盯单个 `reasoning_only` / 300s 超时修补丁。
+
 ---
 
 ## 1. 下一任必须先知道的结论

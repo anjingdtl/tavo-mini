@@ -327,6 +327,12 @@ function defaultSharedStageReply(
   overrides: Record<string, unknown> = {},
 ) {
   if (overrides[scenario]) return overrides[scenario];
+  if (scenario.endsWith('_formatter')) {
+    return defaultSharedStageReply(
+      scenario.replace(/_formatter$/, ''),
+      overrides,
+    );
+  }
   switch (scenario) {
     case 'pipeline_draft':
       return { text: 'draft-body', inputTokens: 10, outputTokens: 20, totalTokens: 30 };
@@ -530,7 +536,10 @@ test('outline draft that only returns reasoning is failed instead of saved as an
   );
   expect(mockStore.persistCompleteTask).not.toHaveBeenCalled();
   expect(mockSaveDraft).not.toHaveBeenCalled();
-  expect(mockCallLLMResult).toHaveBeenCalledTimes(1);
+  expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
+  expect(mockCallLLMResult.mock.calls[1][2]?.thinking).toEqual({
+    type: 'disabled',
+  });
 });
 
 /* ============================ twoStage ============================ */
@@ -1618,6 +1627,14 @@ test('proof: empty content with reasoningText fails and falls back to draft', as
       inputTokens: 8,
       outputTokens: 30,
       totalTokens: 38,
+    })
+    .mockResolvedValueOnce({
+      text: null,
+      reasoningText: '仍然只有推理',
+      emptyReason: 'reasoning_only',
+      inputTokens: 8,
+      outputTokens: 12,
+      totalTokens: 20,
     });
 
   await runPipeline('task-proof-reasoning');
@@ -1820,11 +1837,15 @@ test('full: one side reasoning-only fails that side only', async () => {
         totalTokens: 30,
       };
     }
-    if (cfg.scenario === 'pipeline_review') {
+    if (
+      cfg.scenario === 'pipeline_review' ||
+      cfg.scenario === 'pipeline_review_formatter'
+    ) {
       return {
         text: null,
         reasoningText: '只推理不输出 JSON',
         finishReason: 'length',
+        emptyReason: 'reasoning_only',
         inputTokens: 5,
         outputTokens: 20,
         totalTokens: 25,
@@ -1856,6 +1877,11 @@ test('full: one side reasoning-only fails that side only', async () => {
   );
   expect(reviewCalls.length).toBe(1);
   expect(
+    mockCallLLMResult.mock.calls.filter(
+      (c: any[]) => c[2]?.scenario === 'pipeline_review_formatter',
+    ),
+  ).toHaveLength(1);
+  expect(
     callForScenario(mockCallLLMResult.mock.calls, 'pipeline_proof'),
   ).toBeUndefined();
   expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
@@ -1869,7 +1895,7 @@ test('full: one side reasoning-only fails that side only', async () => {
   expect(mockStore.persistCompleteTask).not.toHaveBeenCalled();
 });
 
-test('review reasoning-only is failed after one Shared Writer call', async () => {
+test('review reasoning-only is failed after one Shared Writer Formatter', async () => {
   mockCallLLMResult.mockImplementation(async (_m: any[], _t: any, cfg: any) => {
     if (cfg.scenario === 'pipeline_draft') {
       return {
@@ -1879,7 +1905,10 @@ test('review reasoning-only is failed after one Shared Writer call', async () =>
         totalTokens: 30,
       };
     }
-    if (cfg.scenario === 'pipeline_review') {
+    if (
+      cfg.scenario === 'pipeline_review' ||
+      cfg.scenario === 'pipeline_review_formatter'
+    ) {
       return {
         text: null,
         reasoningText: '我先评估情节与人物弧光……'.repeat(40),
@@ -1899,6 +1928,11 @@ test('review reasoning-only is failed after one Shared Writer call', async () =>
     (c: any[]) => c[2]?.scenario === 'pipeline_review',
   );
   expect(reviewCalls.length).toBe(1);
+  expect(
+    mockCallLLMResult.mock.calls.filter(
+      (c: any[]) => c[2]?.scenario === 'pipeline_review_formatter',
+    ),
+  ).toHaveLength(1);
   expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
     'task-review-reasoning-retry',
     expect.objectContaining({
@@ -1910,7 +1944,7 @@ test('review reasoning-only is failed after one Shared Writer call', async () =>
   expect(mockStore.persistCompleteTask).not.toHaveBeenCalled();
 });
 
-test('factCheck reasoning-only is failed after one Shared Writer call', async () => {
+test('factCheck reasoning-only is failed after one Shared Writer Formatter', async () => {
   mockGetPipelineConfig.mockResolvedValue(baseConfig({ pipelineMode: 'full' }));
   mockCallLLMResult.mockImplementation(async (_m: any[], _t: any, cfg: any) => {
     if (cfg.scenario === 'pipeline_draft') {
@@ -1929,7 +1963,10 @@ test('factCheck reasoning-only is failed after one Shared Writer call', async ()
         totalTokens: 45,
       };
     }
-    if (cfg.scenario === 'pipeline_factcheck') {
+    if (
+      cfg.scenario === 'pipeline_factcheck' ||
+      cfg.scenario === 'pipeline_factcheck_formatter'
+    ) {
       return {
         text: null,
         reasoningText: '核验时间线与设定……'.repeat(40),
@@ -1949,6 +1986,11 @@ test('factCheck reasoning-only is failed after one Shared Writer call', async ()
     (c: any[]) => c[2]?.scenario === 'pipeline_factcheck',
   );
   expect(fcCalls.length).toBe(1);
+  expect(
+    mockCallLLMResult.mock.calls.filter(
+      (c: any[]) => c[2]?.scenario === 'pipeline_factcheck_formatter',
+    ),
+  ).toHaveLength(1);
   expect(mockStore.persistTaskStage).toHaveBeenCalledWith(
     'task-fc-reasoning-retry',
     expect.objectContaining({

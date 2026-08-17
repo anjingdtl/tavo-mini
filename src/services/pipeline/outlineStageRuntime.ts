@@ -1049,6 +1049,7 @@ async function actionPersistInitialSnapshot(
       strictness: 'fail-closed',
       values: {
         contextBudgetVersion: execution.contextBudgetVersion,
+        outlineStageReasoning: execution.stageReasoning,
       },
     },
   };

@@ -230,7 +230,10 @@ async function backfillKernelFreezeFromEnvelope(input: {
       version: 1,
       reviewMode: execution.pipelineMode,
       strictness: 'fail-closed',
-      values: { contextBudgetVersion: execution.contextBudgetVersion },
+      values: {
+        contextBudgetVersion: execution.contextBudgetVersion,
+        outlineStageReasoning: execution.stageReasoning,
+      },
     },
   };
   const kernelFreeze = buildWritingKernelFreezeTrace({ request: kernelRequest });

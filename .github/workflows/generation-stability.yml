@@ -52,3 +52,4 @@ jobs:
           __tests__/writingNoEmptyStage.test.ts
           __tests__/writingFinalSealGates.test.ts
           __tests__/writingFinalSealBehavior.test.ts
+          __tests__/writingFirstPassContracts.test.ts

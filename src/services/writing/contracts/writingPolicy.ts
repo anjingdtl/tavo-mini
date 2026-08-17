@@ -3,6 +3,7 @@ import type {
   WritingRequest,
 } from './writingSource';
 import type { WritingRequirements } from './writingRequirement';
+import { compileKernelStageReasoning } from './stageReasoning';
 
 export type SharedWritingStageName =
   | 'draft'
@@ -80,6 +81,22 @@ export function buildWritingStagePolicy(
     request.policy.reviewMode,
     values,
   );
+  values.stageReasoning = compileKernelStageReasoning({
+    scenario: continuation ? 'continuation' : 'outline',
+    modelName: request.model.modelName,
+    requestedEffort: request.model.reasoningEffort,
+    continuationThinking: request.model.thinking,
+    outlineStageReasoning: values.outlineStageReasoning as
+      | Record<
+          string,
+          {
+            thinking?: 'enabled' | 'disabled' | { type: 'enabled' | 'disabled' };
+            effort?: 'low' | 'medium' | 'high' | 'max' | null;
+            effectiveTier?: 'low' | 'medium' | 'high' | 'max' | null;
+          }
+        >
+      | undefined,
+  });
   const skipRules: WritingStagePolicy['skipRules'] = continuation
     ? {
         factCheck: {

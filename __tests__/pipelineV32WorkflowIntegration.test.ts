@@ -308,10 +308,11 @@ describe('V3.2 production structured-stage recovery', () => {
     }
     for (const stage of ['review', 'factCheck', 'brief']) {
       expect(configs[stage]).toHaveLength(1);
+      expect(configs[stage][0]).toMatchObject({
+        thinking: { type: 'enabled' },
+        reasoningEffort: 'low',
+      });
     }
-    expect(configs.review[0]).toMatchObject({
-      thinking: { type: 'disabled' },
-    });
     expect(await checkpointStatus(taskId, 'brief')).toBe('succeeded');
   });
 
@@ -360,15 +361,20 @@ describe('V3.2 production structured-stage recovery', () => {
 
     expect(await taskStatus(taskId)).toBe('completed');
     const reviewCallsSeen = calls.filter(call => call.stage === 'review');
-    expect(reviewCallsSeen.length).toBeGreaterThanOrEqual(1);
-    expect(reviewCallsSeen[0].config).toMatchObject({
+    expect(reviewCallsSeen).toHaveLength(2);
+    expect(reviewCallsSeen.filter(call => call.formatter)).toHaveLength(1);
+    expect(reviewCallsSeen[1].config).toMatchObject({
       thinking: { type: 'disabled' },
     });
     const attempts = await attemptsFor(taskId);
-    expect(attempts.filter(row => row.stage === 'review').length).toBeGreaterThanOrEqual(1);
+    expect(
+      attempts.filter(
+        row => row.stage === 'review' && Number(row.formatter_used) === 1,
+      ),
+    ).toHaveLength(1);
   });
 
-  test('reasoning-only candidate fails closed without primary replay or Formatter', async () => {
+  test('complete reasoning-only candidate is adopted locally without primary replay or Formatter', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v32-reasoning-only';
@@ -398,15 +404,14 @@ describe('V3.2 production structured-stage recovery', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(await taskStatus(taskId)).toBe('failed');
+    expect(await taskStatus(taskId)).toBe('completed');
     expect(calls.filter(call => call.stage === 'review')).toEqual([
       { stage: 'review', formatter: false },
     ]);
     expect(
       (await attemptsFor(taskId)).filter(row => row.stage === 'review'),
     ).toHaveLength(1);
-    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
-    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
+    expect(await checkpointStatus(taskId, 'review')).toBe('succeeded');
   });
 
   test('unparseable reasoning-only response uses one Formatter without primary replay', async () => {
@@ -442,9 +447,15 @@ describe('V3.2 production structured-stage recovery', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(['failed', 'completed']).toContain(await taskStatus(taskId));
+    expect(await taskStatus(taskId)).toBe('completed');
+    expect(calls.filter(call => call.stage === 'review')).toEqual([
+      { stage: 'review', formatter: false },
+      { stage: 'review', formatter: true },
+    ]);
     expect(
-      calls.filter(call => call.stage === 'review' && !call.formatter),
+      (await attemptsFor(taskId)).filter(
+        row => row.stage === 'review' && Number(row.formatter_used) === 1,
+      ),
     ).toHaveLength(1);
   });
 
@@ -508,11 +519,12 @@ describe('V3.2 production structured-stage recovery', () => {
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
     expect(await taskStatus(taskId)).toBe('failed');
-    expect(reviewCalls).toBe(1);
+    expect(reviewCalls).toBe(2);
     const attempts = (await attemptsFor(taskId)).filter(
       row => row.stage === 'review',
     );
     expect(attempts).toHaveLength(1);
+    expect(Number(attempts[0].formatter_used)).toBe(1);
     expect(
       (await attemptsFor(taskId)).filter(row => row.stage === 'proof'),
     ).toHaveLength(0);

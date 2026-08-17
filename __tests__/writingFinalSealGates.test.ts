@@ -138,4 +138,24 @@ describe('Writing Kernel final seal — Draft prompt + frozen model', () => {
     expect(writer!.stripped).not.toMatch(/deepseek-v4-\(flash\|pro\)/);
     expect(writer!.stripped).not.toMatch(/\bresolveLLMRequestConfig(?:ById)?\b/);
   });
+
+  test('Shared Writer keeps first-pass recovery in the kernel, not a second core', () => {
+    const writer = files.find(
+      item => item.name === 'src/services/writing/stages/writerCore.ts',
+    );
+    const recovery = files.find(
+      item => item.name === 'src/services/writing/stages/writerRecovery.ts',
+    );
+    const reasoning = files.find(
+      item => item.name === 'src/services/writing/contracts/stageReasoning.ts',
+    );
+    expect(writer).toBeTruthy();
+    expect(recovery).toBeTruthy();
+    expect(reasoning).toBeTruthy();
+    expect(writer!.stripped).toMatch(/\badoptStructuredWriterText\b/);
+    expect(writer!.stripped).toMatch(/\bcompileKernelStageReasoning\b|\bresolveFrozenStageReasoning\b/);
+    expect(recovery!.stripped).toMatch(/\bselectStructuredCandidate\b/);
+    expect(recovery!.stripped).toMatch(/formatter/);
+    expect(writer!.stripped).not.toMatch(/\bresolveLLMRequestConfig(?:ById)?\b/);
+  });
 });

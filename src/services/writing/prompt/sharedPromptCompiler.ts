@@ -61,10 +61,10 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '请核查正文中的设定、人物、时间线和已确立事实，列出冲突与遗漏。',
   ].join('\n'),
   revision: [
-    '你是唯一的 Shared Revision Writer。',
-    '当前统一流水线的 Brief Compiler / V3.2 Brief Compiler 在此降级为修订规划要求。',
-    '请根据审阅、审计和事实核查，重写完整章节，而不是打补丁。',
-    '必须保留已成立的事件、人物选择、因果和情绪落点。',
+    '你是唯一的 Shared Revision Writer，也是当前统一流水线的 Brief Compiler。',
+    '请输出修订合同，不要从零重写整章，不要另起一篇。',
+    '必须基于已有初稿和审阅/审计/事实核查，做受控修订。',
+    '已成立的事件、人物选择、因果和情绪落点必须保留。',
   ].join('\n'),
   proof: [
     '你是终稿修订员，也是终审校对员和小说终稿编辑。',
@@ -78,6 +78,14 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
 
 const JSON_CONTRACT =
   '【输出契约】只输出 JSON object，schemaVersion=1。必须包含 content（完整章节正文或完整结构化报告）。可选 plan、findings、appliedObligationIds、appliedCanonRequirementIds、appliedStyleRequirementIds、validNoOpRequirementIds、validNoOpReasons。禁止输出 Markdown 围栏。';
+
+const REVISION_BRIEF_CONTRACT = [
+  '【输出契约】只输出一个 JSON object，schemaVersion=1，这是修订合同而不是从零重写。',
+  '必须包含 strategy、actions（数组）、preserve（数组）、ending。',
+  'actions 每项尽量包含 covers 与 instruction；没有必须修改的问题时 actions 必须是 []。',
+  'content 仅在必须改写时输出受控修订后的完整正文；若无需改写，可省略 content 或复用初稿，并在 validNoOpReasons 说明。',
+  '禁止输出 Markdown 围栏，禁止把推理过程写进 content。',
+].join('\n');
 
 const STRUCTURED_REPORT_CONTRACT = [
   '【输出契约】只输出一个 JSON object，schemaVersion=1，禁止 Markdown 围栏、正文复述和解释文字。',
@@ -94,6 +102,8 @@ export function compileSharedWritingPrompt(
 ): SharedPromptCompileResult {
   const outputContract = isStructuredReportStage(input.stage)
     ? 'json_envelope'
+    : input.stage === 'revision'
+    ? 'json_envelope'
     : input.stagePolicy.outputContract ||
       (input.stagePolicy.reviewMode === 'continuation-v5'
         ? 'json_envelope'
@@ -106,11 +116,14 @@ export function compileSharedWritingPrompt(
   });
   const previous = previousArtifactBlock(input.artifacts);
   const rendered = input.frozenContext.rendered?.text || '';
-  const contract = isStructuredReportStage(input.stage)
-    ? STRUCTURED_REPORT_CONTRACT
-    : outputContract === 'json_envelope'
-    ? JSON_CONTRACT
-    : PROSE_CONTRACT;
+  const contract =
+    input.stage === 'revision'
+      ? REVISION_BRIEF_CONTRACT
+      : isStructuredReportStage(input.stage)
+      ? STRUCTURED_REPORT_CONTRACT
+      : outputContract === 'json_envelope'
+      ? JSON_CONTRACT
+      : PROSE_CONTRACT;
   const user = [
     instructionBlock(input.frozenContext),
     rendered ? `【冻结上下文】\n${rendered}` : '',
@@ -143,6 +156,9 @@ function resolveMaxTokens(
   const modelMax = Math.max(256, Number(frozen.model.maxOutputTokens) || 1024);
   if (stage === 'review' || stage === 'audit' || stage === 'factCheck') {
     return Math.min(modelMax, Math.max(768, Math.floor(modelMax * 0.45)));
+  }
+  if (stage === 'revision') {
+    return Math.min(modelMax, 8192);
   }
   return modelMax;
 }
