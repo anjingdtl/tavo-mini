@@ -79,17 +79,25 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
 const JSON_CONTRACT =
   '【输出契约】只输出 JSON object，schemaVersion=1。必须包含 content（完整章节正文或完整结构化报告）。可选 plan、findings、appliedObligationIds、appliedCanonRequirementIds、appliedStyleRequirementIds、validNoOpRequirementIds、validNoOpReasons。禁止输出 Markdown 围栏。';
 
+const STRUCTURED_REPORT_CONTRACT = [
+  '【输出契约】只输出一个 JSON object，schemaVersion=1，禁止 Markdown 围栏、正文复述和解释文字。',
+  '必须包含 content（本次核查的简短报告摘要）、verdict（pass 或 needs_revision）和 findings（数组；没有问题时必须输出 []）。',
+  '每条 finding 应尽量包含 target、issue、instruction；只能报告当前正文中有证据、可定位、可执行的问题。',
+  '可按当前检查重点补充 issues、errors、warnings、confirmed、checked、strengths 或 suggestions，但不能省略 findings。',
+].join('\n');
+
 const PROSE_CONTRACT =
   '【输出契约】直接输出本章完整正文。不要输出标题、分析、JSON 或过程说明。';
 
 export function compileSharedWritingPrompt(
   input: SharedPromptCompileInput,
 ): SharedPromptCompileResult {
-  const outputContract =
-    input.stagePolicy.outputContract ||
-    (input.stagePolicy.reviewMode === 'continuation-v5'
-      ? 'json_envelope'
-      : 'prose');
+  const outputContract = isStructuredReportStage(input.stage)
+    ? 'json_envelope'
+    : input.stagePolicy.outputContract ||
+      (input.stagePolicy.reviewMode === 'continuation-v5'
+        ? 'json_envelope'
+        : 'prose');
   const frozenMessages = readFrozenMessages(input.stagePolicy, input.stage);
   if (frozenMessages && frozenMessages.length > 0 && input.stage === 'draft') {
     return {
@@ -107,8 +115,11 @@ export function compileSharedWritingPrompt(
   });
   const previous = previousArtifactBlock(input.artifacts);
   const rendered = input.frozenContext.rendered?.text || '';
-  const contract =
-    outputContract === 'json_envelope' ? JSON_CONTRACT : PROSE_CONTRACT;
+  const contract = isStructuredReportStage(input.stage)
+    ? STRUCTURED_REPORT_CONTRACT
+    : outputContract === 'json_envelope'
+    ? JSON_CONTRACT
+    : PROSE_CONTRACT;
   const user = [
     instructionBlock(input.frozenContext),
     rendered ? `【冻结上下文】\n${rendered}` : '',
@@ -128,6 +139,10 @@ export function compileSharedWritingPrompt(
     responseFormat: outputContract === 'json_envelope' ? 'json_object' : 'text',
     outputContract,
   };
+}
+
+function isStructuredReportStage(stage: SharedWritingStageName): boolean {
+  return stage === 'review' || stage === 'audit' || stage === 'factCheck';
 }
 
 function readFrozenMessages(

@@ -9,6 +9,7 @@ describe('LLM timeout policy', () => {
       'pipeline_draft',
       'pipeline_review',
       'pipeline_factcheck',
+      'pipeline_brief',
       'pipeline_proof',
     ]) {
       expect(resolveLLMTimeoutPolicy(scenario).totalTimeoutMs).toBe(300_000);

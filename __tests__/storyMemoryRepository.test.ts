@@ -113,6 +113,44 @@ describe('story memory repository', () => {
     await expect(getProjectStoryMemory(7)).rejects.toThrow('JSON 已损坏');
   });
 
+  it('hydrates the schema default placeholder before Story Memory CAS writes', async () => {
+    mockOne.mockResolvedValueOnce({
+      project_id: 7,
+      schema_version: 1,
+      through_chapter_id: null,
+      through_chapter_position: -1,
+      memory_json: '{}',
+      estimated_tokens: 0,
+      state_fingerprint: '',
+      last_applied_patch_id: null,
+      status: 'dirty',
+      source: 'native',
+      dirty_from_position: 0,
+      last_error: '',
+      updated_at: '2026-07-18T00:00:00.000Z',
+    });
+
+    const result = await getProjectStoryMemory(7);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'dirty',
+        dirtyFromPosition: 0,
+        state: expect.objectContaining({
+          projectId: 7,
+          characters: {},
+          relationships: {},
+          mainline: expect.any(Object),
+        }),
+      }),
+    );
+    expect(mockExecute).toHaveBeenCalledWith(
+      mockDatabase,
+      expect.stringContaining('UPDATE project_story_memory SET'),
+      expect.arrayContaining([7, '{}']),
+    );
+  });
+
   it('lazily initializes legacy projects without invoking an LLM', async () => {
     const state = createEmptyStoryMemory(7);
     mockOne
@@ -255,6 +293,43 @@ describe('story memory repository', () => {
     expect(first.params).toEqual(
       expect.arrayContaining([7, 'persisted-before-rebuild', 'snapshot-base']),
     );
+  });
+
+  it('preserves native SQLite object diagnostics from a batch transaction', async () => {
+    const state = createEmptyStoryMemory(7);
+    state.metadata.stateFingerprint = 'result-fingerprint';
+    mockExecuteTransaction.mockRejectedValueOnce({
+      code: 19,
+      message: 'FOREIGN KEY constraint failed',
+    });
+
+    await expect(
+      saveStoryMemoryBatchUpdate({
+        previousFingerprint: 'persisted-before-rebuild',
+        state,
+        batch: {
+          schemaVersion: 2,
+          batchId: 'batch-native-error',
+          projectId: 7,
+          fromChapterId: 1,
+          fromPosition: 0,
+          throughChapterId: 3,
+          throughPosition: 2,
+          sourceFingerprint: 'source',
+          baseStateFingerprint: 'snapshot-base',
+          resultStateFingerprint: 'result-fingerprint',
+          patch: {} as any,
+          chapterSummaries: [],
+          estimatedTokens: 10,
+          status: 'applied',
+          lastError: '',
+          generatedAt: '2026-07-18T00:00:00.000Z',
+          appliedAt: '2026-07-18T00:00:00.000Z',
+        },
+        chapterSummaries: [],
+        createSnapshot: false,
+      }),
+    ).rejects.toThrow('19: FOREIGN KEY constraint failed');
   });
 
   it('surfaces transaction failures without partial fallback writes', async () => {

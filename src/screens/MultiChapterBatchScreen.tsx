@@ -53,6 +53,15 @@ import * as db from '../services/database';
 
 type BatchView = 'create' | 'preview' | 'running' | 'paused' | 'report';
 
+export function resolveMultiChapterRouteMode(
+  routeMode: MultiChapterWritingMode | undefined,
+  projectMode: string | null | undefined,
+): MultiChapterWritingMode {
+  return (
+    routeMode || (projectMode === 'continuation' ? 'continuation' : 'outline')
+  );
+}
+
 type PersistedBatchItemForHydration = {
   ordinal: number;
   title: string;
@@ -217,11 +226,20 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   } | null>(null);
 
   // Route mode decides the CREATION mode only (doc §29); once an active batch
-  // exists its persisted writingMode is authoritative.
-  const routeMode: MultiChapterWritingMode =
-    route.params?.writingMode === 'continuation' ? 'continuation' : 'outline';
+  // exists its persisted writingMode is authoritative. When a nested editor
+  // route survives a project switch, there may be no fresh route params, so
+  // the current project's mode is the safe fallback instead of defaulting to
+  // outline.
+  const routeMode = resolveMultiChapterRouteMode(
+    route.params?.writingMode,
+    currentProject?.mode,
+  );
+  const batchForCurrentProject =
+    currentProject && store.batch?.projectId === currentProject.id
+      ? store.batch
+      : null;
   const mode: MultiChapterWritingMode =
-    store.batch?.writingMode ?? routeMode;
+    batchForCurrentProject?.writingMode ?? routeMode;
   const isContinuation = mode === 'continuation';
 
   const refresh = useCallback(() => {
@@ -270,6 +288,22 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
 
+  // A nested stack route can stay mounted while the user changes project or
+  // switches between outline/continuation workspaces. Local form/plan state
+  // must not leak across that boundary; durable batch state is re-hydrated by
+  // the active-batch load above.
+  useEffect(() => {
+    setForm({
+      sourcePrompt: '',
+      chapterCount: String(BATCH_DEFAULT_CHAPTERS),
+      targetWords: String(BATCH_DEFAULT_TARGET_WORDS),
+    });
+    setEdited([]);
+    hydratedPlanRef.current = false;
+    setContinuationAnchorInfo(null);
+    setView('create');
+  }, [currentProject?.id, routeMode]);
+
   // 运行页轮询（运行中每 2s 刷新一次状态）。
   useEffect(() => {
     if (!store.batch || view !== 'running') return;
@@ -277,7 +311,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     return () => clearInterval(timer);
   }, [store.batch, view, refresh]);
 
-  const batchStatus = store.batch?.status;
+  const batchStatus = batchForCurrentProject?.status;
   useEffect(() => {
     // After the user confirms a resume, keep the progress view visible while
     // the store re-arms the checkpoint and starts its background drive. The
@@ -312,7 +346,14 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     } else {
       setView('running');
     }
-  }, [batchStatus, store.reconciling, store.items, resumeSubmitting]);
+  }, [
+    batchStatus,
+    store.reconciling,
+    store.items,
+    resumeSubmitting,
+    currentProject?.id,
+    routeMode,
+  ]);
 
   // 冷启动恢复：编辑计划从持久化数据重建（本地 edited state 是易失的，
   // 新进程后为空）。等待一份完整的 durable plan，避免 batch 行和 item 行
@@ -365,27 +406,27 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   };
 
   const handleStart = async () => {
-    if (!store.batch) return;
+    if (!batchForCurrentProject) return;
     const valid = edited.length > 0;
     if (!valid) {
       Alert.alert('请先完成计划');
       return;
     }
     try {
-      await store.saveEditedPlan(store.batch.id, edited);
+      await store.saveEditedPlan(batchForCurrentProject.id, edited);
       // 立即切到运行页：store.start 非阻塞驱动 reconcile，页面通过轮询
       // 刷新进度（此前 await 整批完成后才切页，用户以为按钮没响应）。
       setView('running');
-      await store.start(store.batch.id);
+      await store.start(batchForCurrentProject.id);
     } catch (error: any) {
       Alert.alert('启动失败', String(error?.message || '请检查计划后重试'));
     }
   };
 
   const handleResume = async () => {
-    if (!store.batch || resumeGuardRef.current) return;
+    if (!batchForCurrentProject || resumeGuardRef.current) return;
     if (
-      Number(store.batch.outlineWorkflowVersion) !==
+      Number(batchForCurrentProject.outlineWorkflowVersion) !==
       CURRENT_OUTLINE_WORKFLOW_VERSION
     ) {
       Alert.alert(
@@ -422,7 +463,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
     // reconciliation are intentionally asynchronous and may take minutes.
     setView('running');
     try {
-      await store.resume(store.batch.id);
+      await store.resume(batchForCurrentProject.id);
       resumeGuardRef.current = false;
       setResumeSubmitting(false);
     } catch (error: any) {
@@ -433,18 +474,18 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   };
 
   const handlePause = async () => {
-    if (!store.batch) return;
+    if (!batchForCurrentProject) return;
     try {
-      await store.pause(store.batch.id);
+      await store.pause(batchForCurrentProject.id);
     } catch {
       // store surfaces errors via state
     }
   };
 
   const handleRestartLegacyBatch = async () => {
-    if (!store.batch) return;
+    if (!batchForCurrentProject) return;
     try {
-      await store.restartLegacyBatch(store.batch.id);
+      await store.restartLegacyBatch(batchForCurrentProject.id);
       setEdited(useMultiChapterBatchStore.getState().plan?.chapters.map(c => ({ ...c })) || []);
       setView('preview');
       Alert.alert('新版批次已创建', '已保留旧批次历史，并把未完成章节转入新版批次。请确认计划后开始写作。');
@@ -454,8 +495,8 @@ export function MultiChapterBatchScreen(): React.ReactElement {
   };
 
   const handleCancel = () => {
-    if (!store.batch) return;
-    const batchId = store.batch.id;
+    if (!batchForCurrentProject) return;
+    const batchId = batchForCurrentProject.id;
     Alert.alert('结束批次', '已完成章节会保留，未完成章节将被放弃。确定结束？', [
       { text: '取消', style: 'cancel' },
       {
@@ -472,16 +513,16 @@ export function MultiChapterBatchScreen(): React.ReactElement {
         ? '一键续写 N 章'
         : '一键写 N 章'
       : view === 'preview'
-        ? isContinuation
-          ? '续写计划预览'
-          : '规划预览'
-        : view === 'report'
-          ? '批次报告'
-          : store.batch
-            ? `第 ${store.batch.currentOrdinal}/${store.batch.chapterCount} 章`
-            : isContinuation
-              ? '一键续写 N 章'
-              : '一键写 N 章';
+          ? isContinuation
+            ? '续写计划预览'
+            : '规划预览'
+          : view === 'report'
+            ? '批次报告'
+            : batchForCurrentProject
+              ? `第 ${batchForCurrentProject.currentOrdinal}/${batchForCurrentProject.chapterCount} 章`
+              : isContinuation
+                ? '一键续写 N 章'
+                : '一键写 N 章';
 
   return (
     <Screen>
@@ -634,7 +675,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           </>
         )}
 
-        {view === 'running' && store.batch && (
+        {view === 'running' && batchForCurrentProject && (
           <RunningView
             theme={theme}
             store={store}
@@ -653,7 +694,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           />
         )}
 
-        {view === 'paused' && store.batch && (
+        {view === 'paused' && batchForCurrentProject && (
           <PausedView
             theme={theme}
             store={store}
@@ -674,7 +715,7 @@ export function MultiChapterBatchScreen(): React.ReactElement {
           />
         )}
 
-        {view === 'report' && store.batch && (
+        {view === 'report' && batchForCurrentProject && (
           <ReportView
             theme={theme}
             store={store}

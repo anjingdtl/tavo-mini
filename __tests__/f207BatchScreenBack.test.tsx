@@ -47,6 +47,8 @@ jest.mock('../src/store/multiChapterBatchStore', () => ({
   useMultiChapterBatchStore: () => ({
     batch: {
       id: 'b1',
+      projectId: 1,
+      writingMode: 'outline',
       status: 'running',
       currentOrdinal: 1,
       completedCount: 0,

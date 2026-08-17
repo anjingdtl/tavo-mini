@@ -79,6 +79,18 @@ const production = productionFiles
   .filter(item => item.text.length > 0 && isProduction(item.rel))
   .map(item => ({ ...item, stripped: stripComments(item.text) }));
 
+// Unlike the broader production scan above, this graph includes the
+// quarantined legacy directory. A retired Writer is only truly detached when
+// no runtime module (including compatibility-only runtime modules) imports it.
+const runtimeSource = productionFiles
+  .map(file => ({
+    file,
+    rel: path.relative(ROOT, file).split(path.sep).join('/'),
+    text: readIfExists(file) ?? '',
+  }))
+  .filter(item => item.text.length > 0)
+  .map(item => ({ ...item, stripped: stripComments(item.text) }));
+
 const BANNED_MODULES = [
   'continuation/generation/legacy/continuationGenerationRunner',
   'continuation/generation/continuationContextBuilder',
@@ -159,6 +171,13 @@ describe('Writing Production Call Graph — hard architecture gates', () => {
         }
       }
     }
+  });
+
+  test('G4b: the retired V5 Writer has ZERO runtime importers', () => {
+    const importers = runtimeSource.filter(item =>
+      /from\s+['"][^'"]*continuationV5Writers/.test(item.stripped),
+    );
+    expect(importers.map(item => item.rel)).toEqual([]);
   });
 
   test('G5: legacy continuation runner symbols have ZERO production callers', () => {

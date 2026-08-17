@@ -217,7 +217,38 @@ export async function getProjectStoryMemory(
     'SELECT * FROM project_story_memory WHERE project_id = ?',
     [projectId],
   );
-  return row && typeof row.memory_json === 'string' ? mapProjectRow(row) : null;
+  if (!row || typeof row.memory_json !== 'string') return null;
+  if (row.memory_json.trim() === '{}') {
+    const hydrated = hydrateDefaultProjectStoryMemoryRow(row);
+    await execute(
+      await openDatabase(),
+      `UPDATE project_story_memory SET
+        schema_version = ?, through_chapter_id = ?,
+        through_chapter_position = ?, memory_json = ?,
+        estimated_tokens = ?, state_fingerprint = ?,
+        last_applied_patch_id = ?, status = ?, source = ?,
+        dirty_from_position = ?, last_error = ?, updated_at = ?
+       WHERE project_id = ? AND memory_json = ?`,
+      [
+        hydrated.schema_version,
+        hydrated.through_chapter_id,
+        hydrated.through_chapter_position,
+        hydrated.memory_json,
+        hydrated.estimated_tokens,
+        hydrated.state_fingerprint,
+        hydrated.last_applied_patch_id,
+        hydrated.status,
+        hydrated.source,
+        hydrated.dirty_from_position,
+        hydrated.last_error,
+        hydrated.updated_at,
+        row.project_id,
+        row.memory_json,
+      ],
+    );
+    return mapProjectRow(hydrated);
+  }
+  return mapProjectRow(row);
 }
 
 export async function ensureProjectStoryMemoryRow(
@@ -805,7 +836,12 @@ export async function saveStoryMemoryBatchUpdate(
   try {
     await executeTransaction(await openDatabase(), statements);
   } catch (error) {
-    const message = error instanceof Error ? error.message : '检查点事务失败。';
+    // react-native-sqlite-storage reports native transaction failures as a
+    // plain object on some Android versions (for example `{ code, message }`),
+    // so an `instanceof Error` check would erase the actual SQLite constraint
+    // or locking diagnostic and leave the state gate with an unactionable
+    // generic message.
+    const message = describeSqlTransactionFailure(error);
     if (message.includes('base_state_fingerprint')) {
       throw new StoryMemoryError(
         'MEMORY_BASE_FINGERPRINT_MISMATCH',
@@ -814,6 +850,81 @@ export async function saveStoryMemoryBatchUpdate(
     }
     throw new StoryMemoryError('MEMORY_CHECKPOINT_TRANSACTION_FAILED', message);
   }
+}
+
+/**
+ * Durable write paths may create the project row before the first Story
+ * Memory worker runs. The schema's `{}` SQL default is only a placeholder,
+ * not a valid StoryMemoryState. Repair that exact default while continuing
+ * to reject genuinely corrupted JSON below.
+ */
+function hydrateDefaultProjectStoryMemoryRow(
+  row: ProjectStoryMemoryDbRow,
+): ProjectStoryMemoryDbRow {
+  const source: StoryMemoryState['metadata']['source'] =
+    row.source === 'legacy_bootstrap' ? 'legacy_bootstrap' : 'native';
+  const state = createEmptyStoryMemory(row.project_id, source);
+  const status: StoryMemoryBuildStatus = [
+    'empty',
+    'clean',
+    'dirty',
+    'rebuilding',
+    'failed',
+  ].includes(row.status)
+    ? row.status
+    : row.dirty_from_position != null
+      ? 'dirty'
+      : 'empty';
+  const updatedAt = row.updated_at || new Date().toISOString();
+  state.metadata = {
+    ...state.metadata,
+    status,
+    source,
+    lastAppliedPatchId: null,
+    dirtyFromPosition: row.dirty_from_position ?? null,
+    lastError: row.last_error || '',
+    updatedAt,
+  };
+  return {
+    ...row,
+    schema_version: 1,
+    through_chapter_id: null,
+    through_chapter_position: -1,
+    memory_json: canonicalStringify(state),
+    estimated_tokens: state.metadata.estimatedTokens,
+    state_fingerprint: state.metadata.stateFingerprint,
+    last_applied_patch_id: null,
+    status,
+    source,
+    last_error: state.metadata.lastError,
+    updated_at: updatedAt,
+  };
+}
+
+function describeSqlTransactionFailure(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  if (error && typeof error === 'object') {
+    const nativeError = error as {
+      message?: unknown;
+      code?: unknown;
+      detail?: unknown;
+    };
+    const message =
+      typeof nativeError.message === 'string' ? nativeError.message.trim() : '';
+    const code = nativeError.code != null ? String(nativeError.code) : '';
+    const detail =
+      typeof nativeError.detail === 'string' ? nativeError.detail.trim() : '';
+    const parts = [code, message, detail].filter(Boolean);
+    if (parts.length > 0) return parts.join(': ');
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {
+      // Fall through to the stable generic message.
+    }
+  }
+  return '检查点事务失败。';
 }
 
 /** Mark dirty only when edited/deleted position is within checkpoint coverage. */

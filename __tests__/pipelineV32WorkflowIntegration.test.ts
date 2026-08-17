@@ -368,7 +368,7 @@ describe('V3.2 production structured-stage recovery', () => {
     expect(attempts.filter(row => row.stage === 'review').length).toBeGreaterThanOrEqual(1);
   });
 
-  test('complete reasoning-only candidate is adopted locally without primary replay or Formatter', async () => {
+  test('reasoning-only candidate fails closed without primary replay or Formatter', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v32-reasoning-only';
@@ -398,13 +398,15 @@ describe('V3.2 production structured-stage recovery', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(await taskStatus(taskId)).toBe('completed');
+    expect(await taskStatus(taskId)).toBe('failed');
     expect(calls.filter(call => call.stage === 'review')).toEqual([
       { stage: 'review', formatter: false },
     ]);
     expect(
       (await attemptsFor(taskId)).filter(row => row.stage === 'review'),
     ).toHaveLength(1);
+    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
+    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
   });
 
   test('unparseable reasoning-only response uses one Formatter without primary replay', async () => {

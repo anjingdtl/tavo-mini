@@ -82,6 +82,10 @@ function reviewV2Report(overrides: Record<string, unknown> = {}): object {
   return {
     schemaVersion: 2,
     draftHash: DRAFT_HASH,
+    // Shared Writer's generic structured-report gate requires an explicit
+    // report signal. Keep the historical V2 payload intact while expressing
+    // that signal through the shared contract.
+    findings: [],
     requiredCorrections: [
       {
         id: 'r1',
@@ -112,6 +116,7 @@ function factCheckV2Report(overrides: Record<string, unknown> = {}): object {
   return {
     schemaVersion: 2,
     draftHash: DRAFT_HASH,
+    findings: [],
     requiredCorrections: [
       {
         id: 'f1',
@@ -476,7 +481,7 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(await checkpointStatus(taskId, 'factCheck')).toBe('succeeded');
   });
 
-  it('V2 full single-audit failure: one valid report still builds the contract', async () => {
+  it('V2 full invalid first audit fails closed before the second shared stage', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('full');
     const taskId = 't-v2-single';
@@ -501,16 +506,16 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(await taskStatus(taskId)).toBe('completed');
-    expect(await checkpointStatus(taskId, 'review')).toBe('succeeded');
-    expect(await checkpointStatus(taskId, 'factCheck')).toBe('succeeded');
-    expect(await checkpointStatus(taskId, 'proof')).toBe('succeeded');
+    expect(await taskStatus(taskId)).toBe('failed');
+    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
+    expect(await checkpointStatus(taskId, 'factCheck')).toBe('pending');
+    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
     const attempts = await attemptsFor(taskId);
     expect(attempts.filter(a => a.stage === 'review').length).toBe(1);
-    expect(attempts.filter(a => a.stage === 'proof').length).toBe(1);
+    expect(attempts.filter(a => a.stage === 'proof').length).toBe(0);
   });
 
-  it('V2 full double-audit failure: Draft fallback, Proof NEVER fires', async () => {
+  it('V2 full double-audit failure: shared Writer fails closed, Proof NEVER fires', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('full');
     const taskId = 't-v2-double';
@@ -534,16 +539,17 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(await checkpointStatus(taskId, 'proof')).toBe('succeeded');
-    expect(await taskStatus(taskId)).toBe('completed');
+    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
+    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
+    expect(await taskStatus(taskId)).toBe('failed');
     const rows = await all(
       `SELECT final_text FROM pipeline_tasks WHERE id = ?`,
       [taskId],
     );
-    expect(String(rows[0]?.final_text ?? '')).toContain('森林');
+    expect(rows[0]?.final_text ?? null).toBeNull();
   });
 
-  it('V2 malformed Review is normalized locally with one request', async () => {
+  it('V2 malformed Review fails closed with one request', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v2-repair';
@@ -581,7 +587,9 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(attempts.filter(a => a.stage === 'review').length).toBe(1);
     expectV2AttemptVersions(attempts);
     expect(reviewMessages).toHaveLength(1);
-    expect(await taskStatus(taskId)).toBe('completed');
+    expect(await taskStatus(taskId)).toBe('failed');
+    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
+    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
   });
 
   it('V2 reasoning-only Review fails closed without a format-repair request', async () => {
@@ -624,7 +632,9 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     expect(reviewConfigs).toHaveLength(1);
     expect(reviewConfigs[0].thinking).toEqual({ type: 'disabled' });
-    expect(await taskStatus(taskId)).toBe('completed');
+    expect(await taskStatus(taskId)).toBe('failed');
+    expect(await checkpointStatus(taskId, 'review')).toBe('failed');
+    expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
   });
 
   it('Final Artifact Validator blocks incomplete proof BEFORE checkpoint success (draft fallback)', async () => {

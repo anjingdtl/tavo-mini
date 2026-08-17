@@ -285,9 +285,8 @@ export async function resumeContinuationV5Run(
 // runner path (test/compat only).
 export { markContinuationV5StagesCancelled } from '../continuationStageCancellation';
 
-// Named re-exports from the capability layer for test compatibility (parse/
-// hash helpers, length policy, the stage-caller test hook and the pipeline
-// options type). Production code imports these from shared stages or from
+// Named re-exports from the contract layer for historical test/compatibility
+// callers. Production code imports these from the shared Writing Kernel or
 // continuationV5Contracts directly.
 export {
   parseContinuationV5DraftEnvelope,
@@ -299,5 +298,4 @@ export {
   hashAuditEnvelope,
   CONTINUATION_V5_LENGTH_POLICY,
 } from '../continuationV5Contracts';
-export { __test__ } from './continuationV5Writers';
 export type { V5PipelineOptions } from '../../../writing/stages/continuationStageCapabilities';

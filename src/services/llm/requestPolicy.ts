@@ -212,6 +212,7 @@ export function resolveLLMTimeoutPolicy(
     scenario === 'chapter_draft' ||
     scenario === 'chapter_revision' ||
     scenario === 'batch_planner' ||
+    scenario === 'pipeline_brief' ||
     // Continuation planner/writer/checker prompts can carry a large frozen
     // Canon/style bundle. They need the same long-running budget as chapter
     // drafting; otherwise `continuation_writer` falls through to the 60s

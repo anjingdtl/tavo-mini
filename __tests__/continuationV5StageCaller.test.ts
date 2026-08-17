@@ -1,144 +1,17 @@
 /**
- * V5 default stage caller + Draft Writer empty-content regression tests.
+ * Historical V5 contract/diagnostic regression tests.
  *
- * Covers:
- *  - defaultV5StageCaller forwards responseFormat: 'json_object' to callLLMResult
- *    (the root cause of the "V5 Draft Writer content 不能为空" failure).
- *  - Draft Writer returning {"schemaVersion":1,"content":""} still fails, no
- *    body artifact is created, and the saved diagnostics carry the new safe fields.
- *  - A valid JSON with non-empty content still parses and executes.
+ * The retired V5 Writer and its stage caller are intentionally not imported.
+ * New continuation execution is covered by the shared Writing Kernel and
+ * production call-graph gates.
  */
-
-// jest.mock is hoisted, so the factory must be self-contained (no outer refs).
-jest.mock('../src/services/llm', () => {
-  const callLLMResult = jest.fn();
-  return {
-    callLLMResult,
-    resolveLLMRequestConfig: jest.fn(async () => ({
-      id: 1,
-      name: '测试模型',
-      provider_type: 'openai_compatible',
-      api_key: 'test',
-      model_name: 'test-model',
-      url: 'https://example.test/v1',
-      context_window: 128000,
-      max_output_tokens: 32000,
-    })),
-    resolveLLMRequestConfigById: jest.fn(async () => ({
-      id: 1,
-      name: '测试模型',
-      provider_type: 'openai_compatible',
-      api_key: 'test',
-      model_name: 'test-model',
-      url: 'https://example.test/v1',
-      context_window: 128000,
-      max_output_tokens: 32000,
-    })),
-  };
-});
-
-import { __test__ } from '../src/services/continuation/generation/continuationV5Runner';
 import { parseContinuationV5DraftEnvelope } from '../src/services/continuation/generation/continuationV5Contracts';
 import {
   buildV5DraftWriterDiagnostics,
   mapV5DraftWriterEmptyContentError,
 } from '../src/services/continuation/generation/errorFormat';
-import { callLLMResult as callLLMResultMock } from '../src/services/llm';
 
-const frozenModelConfig = {
-  configId: 1,
-  name: '测试模型',
-  providerType: 'openai_compatible' as const,
-  url: 'https://example.test/v1',
-  modelName: 'test-model',
-  contextWindow: 128000,
-  maxOutputTokens: 32000,
-};
-
-describe('V5 default stage caller forwards responseFormat', () => {
-  beforeEach(() => {
-    (callLLMResultMock as jest.Mock).mockReset();
-  });
-
-  test('passes responseFormat: json_object to callLLMResult for every V5 stage', async () => {
-    (callLLMResultMock as jest.Mock).mockResolvedValue({
-      text: '{}',
-      inputTokens: 10,
-      outputTokens: 1,
-      totalTokens: 11,
-      finishReason: 'stop',
-      rawUsage: { prompt_tokens: 10, completion_tokens: 1 },
-    });
-    await __test__.defaultV5StageCaller({
-      stage: 'draft_writer',
-      messages: [{ role: 'user', content: '写续写' }],
-      maxTokens: 1000,
-      configId: 1,
-      responseFormat: 'json_object',
-      signal: new AbortController().signal,
-      projectId: 1,
-      runId: 'run-1',
-      frozenModelConfig,
-    });
-    expect(callLLMResultMock).toHaveBeenCalledTimes(1);
-    const [, , config] = (callLLMResultMock as jest.Mock).mock.calls[0];
-    expect(config.responseFormat).toBe('json_object');
-    expect(config.scenario).toBe('continuation_v5_draft_writer');
-  });
-
-  test('omits responseFormat when the caller requests text', async () => {
-    (callLLMResultMock as jest.Mock).mockResolvedValue({
-      text: 'plain text',
-      inputTokens: 10,
-      outputTokens: 2,
-      totalTokens: 12,
-      finishReason: 'stop',
-      rawUsage: { prompt_tokens: 10, completion_tokens: 2 },
-    });
-    await __test__.defaultV5StageCaller({
-      stage: 'final_reviser',
-      messages: [{ role: 'user', content: 'plain' }],
-      maxTokens: 1000,
-      configId: 1,
-      responseFormat: 'text',
-      signal: new AbortController().signal,
-      projectId: 1,
-      runId: 'run-2',
-      frozenModelConfig,
-    });
-    const [, , config] = (callLLMResultMock as jest.Mock).mock.calls[0];
-    expect(config.responseFormat).toBeUndefined();
-  });
-
-  test('maps finishReason/emptyReason/usage onto StageLlmCallResult', async () => {
-    (callLLMResultMock as jest.Mock).mockResolvedValue({
-      text: 'hello',
-      inputTokens: 5,
-      outputTokens: 3,
-      totalTokens: 8,
-      finishReason: 'length',
-      emptyReason: 'length',
-      rawUsage: { prompt_tokens: 5, completion_tokens: 3 },
-    });
-    const result = await __test__.defaultV5StageCaller({
-      stage: 'draft_writer',
-      messages: [{ role: 'user', content: 'x' }],
-      maxTokens: 100,
-      configId: 1,
-      responseFormat: 'json_object',
-      signal: new AbortController().signal,
-      projectId: 1,
-      runId: 'run-3',
-      frozenModelConfig,
-    });
-    expect(result.text).toBe('hello');
-    expect(result.finishReason).toBe('length');
-    expect(result.emptyReason).toBe('length');
-    expect(result.usage).toEqual({ prompt: 5, completion: 3 });
-  });
-});
-
-describe('V5 Draft Writer empty-content regression', () => {
+describe('historical V5 empty-content diagnostics', () => {
   test('parseable JSON with empty content still throws (no artifact)', () => {
     const emptyContentJson = JSON.stringify({
       schemaVersion: 1,
@@ -169,7 +42,6 @@ describe('V5 Draft Writer empty-content regression', () => {
       },
       jsonOutputRequested: true,
     });
-    // Required new fields.
     expect(diag.emptyReason).toBeNull();
     expect(diag.finishReason).toBe('stop');
     expect(diag.completionTokens).toBe(42);
@@ -178,7 +50,6 @@ describe('V5 Draft Writer empty-content regression', () => {
     expect(diag.topLevelJsonKeys).toEqual(
       expect.arrayContaining(['schemaVersion', 'plan', 'content']),
     );
-    // Never leaks sensitive values: only key NAMES, never body/key/headers.
     expect(JSON.stringify(diag)).not.toContain('api_key');
     expect(JSON.stringify(diag)).not.toContain('Bearer');
   });
@@ -210,12 +81,11 @@ describe('V5 Draft Writer empty-content regression', () => {
     expect(userFacing).not.toBe(internal);
     expect(userFacing).toContain('模型返回了空正文');
     expect(userFacing).toContain('重试');
-    // Non-empty-content errors pass through unchanged.
     expect(mapV5DraftWriterEmptyContentError('网络错误')).toBe('网络错误');
   });
 });
 
-describe('V5 Draft Writer valid content path', () => {
+describe('historical V5 valid content contract', () => {
   test('valid JSON still parses into a usable envelope', () => {
     const validJson = JSON.stringify({
       schemaVersion: 1,

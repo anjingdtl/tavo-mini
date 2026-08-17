@@ -249,12 +249,25 @@ export async function executeSharedWriterStage(input: {
 
 function attachUsage(
   artifact: SharedWritingArtifact,
-  result: { inputTokens?: number; outputTokens?: number; totalTokens?: number },
+  result: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    usage?: { prompt?: number; completion?: number; total?: number };
+  },
 ): void {
+  const inputTokens = Number(
+    result.inputTokens ?? result.usage?.prompt ?? 0,
+  );
+  const outputTokens = Number(
+    result.outputTokens ?? result.usage?.completion ?? 0,
+  );
   artifact.usage = {
-    inputTokens: Number(result.inputTokens || 0),
-    outputTokens: Number(result.outputTokens || 0),
-    totalTokens: Number(result.totalTokens || 0),
+    inputTokens,
+    outputTokens,
+    totalTokens: Number(
+      result.totalTokens ?? result.usage?.total ?? inputTokens + outputTokens,
+    ),
   };
 }
 

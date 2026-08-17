@@ -87,6 +87,7 @@ import { BATCH_DEFAULT_CHAPTERS, BATCH_DEFAULT_TARGET_WORDS } from '../types/mul
 import type { BatchChapterPlan } from '../types/multiChapterBatch';
 
 let instanceId = `ui_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+let batchLoadGeneration = 0;
 export function resetBatchInstanceId(): void {
   instanceId = `ui_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -221,29 +222,52 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
     lastStage: null,
 
     loadBatch: async batchId => {
-      set({ loading: true, error: null });
+      const generation = ++batchLoadGeneration;
+      set({
+        batch: null,
+        items: [],
+        plan: null,
+        loading: true,
+        error: null,
+        lastMessage: null,
+        lastStage: null,
+      });
       try {
         const [batch, items] = await Promise.all([
           batchRepo.getBatchById(batchId),
           batchRepo.getBatchItems(batchId),
         ]);
+        if (generation !== batchLoadGeneration) return;
         set({ batch, items, loading: false });
       } catch (error: any) {
+        if (generation !== batchLoadGeneration) return;
         set({ loading: false, error: String(error?.message || '加载批次失败') });
       }
     },
 
     loadActiveBatchForProject: async projectId => {
-      set({ loading: true, error: null });
+      const generation = ++batchLoadGeneration;
+      set({
+        batch: null,
+        items: [],
+        plan: null,
+        loading: true,
+        error: null,
+        lastMessage: null,
+        lastStage: null,
+      });
       try {
         const batch = await batchRepo.getActiveBatchByProject(projectId);
+        if (generation !== batchLoadGeneration) return;
         if (!batch) {
           set({ batch: null, items: [], loading: false });
           return;
         }
         const items = await batchRepo.getBatchItems(batch.id);
+        if (generation !== batchLoadGeneration) return;
         set({ batch, items, loading: false });
       } catch (error: any) {
+        if (generation !== batchLoadGeneration) return;
         set({ loading: false, error: String(error?.message || '加载批次失败') });
       }
     },

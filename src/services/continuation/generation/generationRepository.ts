@@ -1102,6 +1102,7 @@ export interface ContinuationStageResultPatch {
   status: ContinuationStageResultStatus;
   outputJson?: string | null;
   artifactId?: string | null;
+  inputTokens?: number | null;
   outputTokens?: number | null;
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -1407,13 +1408,16 @@ export async function updateStageResult(
   const completedAt = input.completedAt ?? nowIso();
   await db.executeSql(
     `UPDATE continuation_generation_stage_results SET
-       status = ?, output_json = ?, artifact_id = ?, output_tokens = ?,
+       status = ?, output_json = ?, artifact_id = ?,
+       input_tokens = COALESCE(?, input_tokens),
+       output_tokens = COALESCE(?, output_tokens),
        error_code = ?, error_message = ?, completed_at = ?, updated_at = ?
      WHERE run_id = ? AND stage = ? AND request_count BETWEEN 0 AND 1`,
     [
       input.status,
       input.outputJson ?? null,
       input.artifactId ?? null,
+      input.inputTokens ?? null,
       input.outputTokens ?? null,
       input.errorCode ?? null,
       input.errorMessage ?? null,

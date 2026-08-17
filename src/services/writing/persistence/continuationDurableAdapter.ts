@@ -3,6 +3,7 @@ import {
   getLatestArtifactForStage,
   getStageResult,
   insertArtifact,
+  reserveContinuationStage,
   updateStageResult,
 } from '../../continuation/generation/generationRepository';
 import { hashContent } from '../../continuation/generation/continuationV5Contracts';
@@ -35,15 +36,30 @@ export function createContinuationDurableAdapter(input: {
   return {
     binding: 'continuation-generation-ledger',
     async loadExisting(stage) {
-      const mapped = ledgerStage(stage);
-      if (!mapped) return null;
-      const existing = await getLatestArtifactForStage(input.run.id, mapped);
-      if (!existing?.content) return null;
-      return {
-        stage,
-        body: existing.content,
-        structured: { contentHash: existing.contentHash },
-      };
+      return loadContinuationArtifact(input.run.id, stage);
+    },
+    async reserve(stage) {
+      const node = continuationNode(stage);
+      // final_validate is a local zero-request settlement node; factCheck and
+      // persist have no physical V5 ledger node and must remain formal skips.
+      if (!node || node === 'final_validate') return;
+      const budget = input.snapshot.stageBudgets[node];
+      const reservation = await reserveContinuationStage({
+        runId: input.run.id,
+        stage: node,
+        modelConfigId: budget.configId,
+        inputTokens: budget.compiledPromptTokens,
+        minOutputTokens: budget.minimumOutputTokens,
+        maxOutputTokens: budget.maximumOutputTokens,
+      });
+      if (!reservation.reserved) {
+        // A persisted reservation is authoritative. The shared writer must
+        // fail closed here instead of issuing a duplicate LLM request after a
+        // resume or concurrent driver.
+        throw new Error(
+          `续写阶段 ${node} 已存在持久 reservation，禁止重复请求。`,
+        );
+      }
     },
     async persistStageArtifact(stage, artifact) {
       const mapped = ledgerStage(stage);
@@ -70,6 +86,8 @@ export function createContinuationDurableAdapter(input: {
             envelope: artifact.structured || { content: artifact.body },
             contentHash: hashContent(artifact.body || ''),
           }),
+          inputTokens: artifact.usage?.inputTokens,
+          outputTokens: artifact.usage?.outputTokens,
         });
       }
     },
@@ -157,10 +175,21 @@ export async function loadContinuationArtifact(
     if (!row?.outputJson) return null;
     try {
       const parsed = JSON.parse(row.outputJson);
+      const envelope = parsed?.envelope;
+      const body =
+        typeof envelope?.content === 'string'
+          ? envelope.content
+          : typeof envelope?.body === 'string'
+            ? envelope.body
+            : typeof envelope?.report === 'string'
+              ? envelope.report
+              : envelope && typeof envelope === 'object'
+                ? JSON.stringify(envelope)
+                : '';
       return {
         stage,
-        body: parsed?.envelope?.content || '',
-        structured: parsed?.envelope,
+        body,
+        structured: envelope,
       };
     } catch {
       return null;

@@ -33,9 +33,15 @@ jest.mock('../src/store/themeStore', () => ({
 
 jest.mock('../src/store/projectStore', () => ({
   useProjectStore: () => ({
-    currentProject: { id: 1, name: '测试项目', mode: 'outline' },
+    currentProject: mockCurrentProject,
   }),
 }));
+
+let mockCurrentProject: {
+  id: number;
+  name: string;
+  mode: 'outline' | 'continuation';
+} = { id: 1, name: '测试项目', mode: 'outline' };
 
 const mockGoBack = jest.fn();
 jest.mock('@react-navigation/native', () => ({
@@ -53,6 +59,7 @@ const mockStart = jest.fn(async () => {
 const mockRefresh = jest.fn(async () => undefined);
 let mockReconciling = false;
 let mockBatchStatus = 'ready';
+let mockBatchProjectId = 1;
 let mockItem1Status = 'pending';
 let mockItem1NextRetryAt: number | null = null;
 
@@ -60,7 +67,7 @@ jest.mock('../src/store/multiChapterBatchStore', () => ({
   useMultiChapterBatchStore: () => ({
     batch: {
       id: 'b1',
-      projectId: 1,
+      projectId: mockBatchProjectId,
       status: mockBatchStatus,
       currentOrdinal: 1,
       chapterCount: 2,
@@ -139,13 +146,18 @@ jest.mock('../src/store/multiChapterBatchStore', () => ({
   }),
 }));
 
-import { MultiChapterBatchScreen } from '../src/screens/MultiChapterBatchScreen';
+import {
+  MultiChapterBatchScreen,
+  resolveMultiChapterRouteMode,
+} from '../src/screens/MultiChapterBatchScreen';
 
 describe('batch screen run-state consistency', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockReconciling = false;
     mockBatchStatus = 'ready';
+    mockBatchProjectId = 1;
+    mockCurrentProject = { id: 1, name: '测试项目', mode: 'outline' };
     mockItem1Status = 'pending';
     mockItem1NextRetryAt = null;
     mockIsEnabled.mockResolvedValue(true);
@@ -184,5 +196,18 @@ describe('batch screen run-state consistency', () => {
     const { findByText, queryByText } = render(<MultiChapterBatchScreen />);
     await findByText(/批次进度/);
     expect(queryByText('开始批量写作')).toBeNull();
+  });
+
+  it('uses the current continuation project when a reused route has no mode params', async () => {
+    mockCurrentProject = { id: 2, name: '续写项目', mode: 'continuation' };
+    // The in-memory store still contains the previous project's outline batch.
+    mockBatchProjectId = 1;
+
+    const { findByText } = render(<MultiChapterBatchScreen />);
+
+    await findByText('一键续写 N 章');
+    expect(resolveMultiChapterRouteMode(undefined, 'continuation')).toBe(
+      'continuation',
+    );
   });
 });
