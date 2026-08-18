@@ -355,13 +355,12 @@ describe('Writing chapter observability contract', () => {
       projections: [draftOnly, reviewWithDraft, proofWithStack],
     });
     expect(draftOnly.carriesFullFrozenContext).toBe(true);
-    expect(reviewWithDraft.carriesFullFrozenContext).toBe(true);
-    expect(proofWithStack.artifactTokens).toBeGreaterThan(
-      reviewWithDraft.artifactTokens,
+    expect(reviewWithDraft.carriesFullFrozenContext).toBe(false);
+    expect(proofWithStack.previousArtifactKeys).toEqual(
+      expect.arrayContaining(['draft', 'review', 'factCheck', 'revision']),
     );
-    expect(duplicate.duplicateContextTokens).toBeGreaterThan(
-      duplicate.frozenContextTokens,
-    );
+    expect(proofWithStack.artifactTokens).toBeGreaterThan(0);
+    expect(duplicate.duplicateContextTokens).toBeGreaterThan(0);
   });
 
   test('observability JSON round-trips without collapsing call kinds', () => {

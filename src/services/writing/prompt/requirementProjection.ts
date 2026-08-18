@@ -5,6 +5,10 @@ import type {
 } from '../contracts/writingRequirement';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 import type { WritingStageArtifacts } from '../contracts/writingStage';
+import {
+  aggregateStageFindings,
+  formatAggregatedFindingsBlock,
+} from '../context/findingsAggregator';
 
 const KIND_LABEL: Record<string, string> = {
   outline: '大纲',
@@ -97,19 +101,24 @@ function requirementAppliesToStage(
 
 export function previousArtifactBlock(
   artifacts: WritingStageArtifacts,
+  stage?: SharedWritingStageName,
 ): string {
-  const lines: string[] = [];
+  if (stage === 'draft' || stage === 'finalValidate' || stage === 'persist') {
+    return '';
+  }
   const draft = readBody(artifacts.draft);
-  const review = readBody(artifacts.review);
-  const audit = readBody(artifacts.audit);
-  const factCheck = readBody(artifacts.factCheck);
   const revision = readBody(artifacts.revision);
-  if (draft) lines.push(`【已有初稿】\n${draft}`);
-  if (review) lines.push(`【已有审阅】\n${review}`);
-  if (audit) lines.push(`【已有审计】\n${audit}`);
-  if (factCheck) lines.push(`【已有事实核查】\n${factCheck}`);
-  if (revision) lines.push(`【已有修订稿】\n${revision}`);
-  return lines.join('\n\n');
+  if (stage === 'review' || stage === 'audit' || stage === 'factCheck') {
+    return draft ? `【已有初稿】\n${draft}` : '';
+  }
+  const findings = formatAggregatedFindingsBlock(aggregateStageFindings(artifacts));
+  if (stage === 'proof') {
+    const candidate = revision || draft;
+    return [candidate ? `【终稿候选】\n${candidate}` : '', findings]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return [draft ? `【已有初稿】\n${draft}` : '', findings].filter(Boolean).join('\n\n');
 }
 
 function readBody(value: unknown): string {

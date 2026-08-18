@@ -25,7 +25,7 @@
 |---|---|---|---|
 | 0 | Baseline & Observability | **完成（可进入 Phase 1）** | `TAVO-MINI_ONE-Flow_Phase0_Baseline报告_20260818.md` |
 | 1 | ONE Memory | **本轮完成（可进入 Phase 2）** | `TAVO-MINI_ONE-Flow_Phase1_ONE-Memory_实施与验收_20260818.md` |
-| 2 | ONE Context | 未开始 | `TAVO-MINI_ONE-Flow_Phase2_ONE-Context_实施与验收_20260818.md` |
+| 2 | ONE Context | **部分建设（未封）** | `TAVO-MINI_ONE-Flow_Phase2_ONE-Context_实施与验收_20260818.md` |
 | 3 | ONE Pipeline | 未开始 | `TAVO-MINI_ONE-Flow_Phase3_ONE-Pipeline_实施与验收_20260818.md` |
 | 4 | ONE Flow 接驳 + 集成长测 | 未开始 | `TAVO-MINI_ONE-Flow_最终集成验收报告_20260818.md` |
 
@@ -109,13 +109,8 @@ UI / batch / resume
 
 ## 7. 下一 Phase
 
-进入 **Phase 2：ONE Context**。
+**Phase 2 已部分建设：** Stage Projection + Findings Aggregator 已接入 Shared Compiler。Draft 仍带完整 Frozen Context；后续 Stage 按 kind 切片；Revision/Proof 消费汇总 Findings，不再叠完整检查报告。
 
-只做：
+剩余债：`continuationSourceCollection.planContinuationContextBudget` 仍是场景侧布局预算，不得假装已经 ONE Budget。未跑新的真实 LLM 长测。
 
-- Source Adapter 只提供 candidate，不再拥有第二套最终 Budget
-- 复用现有 Elastic / Hierarchical Budget
-- ONE Frozen Context → Deterministic Stage Projection（不是五套 Stage Budget）
-- Findings Aggregator，Revision 优先消费汇总 findings
-
-不做：重写 Budget 数学模型、新增固定输入 Token 上限、重写 Writer。
+进入后续 PDCA 前不要宣布 `ONE FLOW FINAL SEALED / GO`。

@@ -18,6 +18,7 @@ import {
   previousArtifactBlock,
   projectRequirementsForStage,
 } from './requirementProjection';
+import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
 
 export interface SharedPromptCompileInput {
@@ -129,8 +130,12 @@ export function compileSharedWritingPrompt(
     requirements: input.requirements,
     frozenContext: input.frozenContext,
   });
-  const previous = previousArtifactBlock(input.artifacts);
-  const rendered = input.frozenContext.rendered?.text || '';
+  const previous = previousArtifactBlock(input.artifacts, input.stage);
+  const projected = projectFrozenContextForStage({
+    frozenContext: input.frozenContext,
+    stage: input.stage,
+  });
+  const rendered = projected.text;
   const contract =
     input.stage === 'revision'
       ? REVISION_BRIEF_CONTRACT

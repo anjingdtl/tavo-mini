@@ -22,6 +22,8 @@ export * from './context/buildWritingContextPlan';
 export * from './context/allocateWritingContextBudget';
 export * from './context/renderWritingContext';
 export * from './context/freezeWritingContext';
+export * from './context/stageContextProjection';
+export * from './context/findingsAggregator';
 export * from './context/buildFrozenWritingContext';
 export * from './trace/writingTrace';
 export * from './observability';

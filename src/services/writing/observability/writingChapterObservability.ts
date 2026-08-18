@@ -286,7 +286,7 @@ export function measureStageContextProjection(input: {
     stagePolicy: input.frozenContext.stagePolicy,
   });
   const frozenText = input.frozenContext.rendered?.text || '';
-  const previous = previousArtifactBlock(artifacts);
+  const previous = previousArtifactBlock(artifacts, input.stage);
   const previousArtifactKeys = (
     ['draft', 'review', 'audit', 'factCheck', 'revision'] as const
   ).filter(key => Boolean(readArtifactBody(artifacts[key])));
