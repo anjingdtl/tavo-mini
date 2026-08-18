@@ -21,6 +21,7 @@ import { checkNextChapterReady } from '../src/services/multiChapterBatch/continu
 import {
   contentRevisionHash,
   listPendingOutbox,
+  retryFailedContinuationOutbox,
 } from '../src/services/continuation/generation/generationRepository';
 
 const PROJECT_ID = 1;
@@ -476,5 +477,49 @@ describe('ONE-Flow closure outbox relevance gate (P0-1)', () => {
       'apply_event',
     ]);
     expect(claimed[0].dedupeKey).toBe('extract_state:239:current');
+  });
+
+  test('retryFailedContinuationOutbox resets failed rows without UPDATE-LIMIT syntax', async () => {
+    await sql('DELETE FROM continuation_state_sync_outbox');
+    await seedOutbox({
+      id: 301,
+      operation: 'rebuild_story_memory',
+      dedupeKey: 'rebuild_story_memory:1:40:netfail',
+      state: 'failed',
+      lastError: 'Network request failed',
+      payloadJson: JSON.stringify({ fromPosition: 40 }),
+    });
+    await seedOutbox({
+      id: 302,
+      operation: 'extract_state',
+      dedupeKey: 'extract_state:102:hashx',
+      state: 'failed',
+      lastError: 'Network request failed',
+    });
+    await seedOutbox({
+      id: 303,
+      operation: 'apply_event',
+      dedupeKey: 'apply_event:ce_x',
+      state: 'pending',
+    });
+
+    const reset = await retryFailedContinuationOutbox(PROJECT_ID);
+    expect(reset).toBe(2);
+    const rows = await sql(
+      `SELECT dedupe_key, state FROM continuation_state_sync_outbox
+       ORDER BY dedupe_key`,
+    );
+    expect(rows.rows.item(0)).toEqual({
+      dedupe_key: 'apply_event:ce_x',
+      state: 'pending',
+    });
+    expect(rows.rows.item(1)).toEqual({
+      dedupe_key: 'extract_state:102:hashx',
+      state: 'pending',
+    });
+    expect(rows.rows.item(2)).toEqual({
+      dedupe_key: 'rebuild_story_memory:1:40:netfail',
+      state: 'pending',
+    });
   });
 });

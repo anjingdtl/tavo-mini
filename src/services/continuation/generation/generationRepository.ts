@@ -2743,6 +2743,11 @@ export async function retryContinuationOutbox(id: string): Promise<boolean> {
  * Configuration-missing errors (`error_code` style reasons encoded in
  * last_error) are intentionally NOT filtered here — the caller/UI decides what
  * to surface; the worker's own attempt budget prevents runaway billing.
+ *
+ * The LIMIT lives in a sub-select: Android's bundled SQLite is built without
+ * SQLITE_ENABLE_UPDATE_DELETE_LIMIT, so `UPDATE ... ORDER BY ... LIMIT`
+ * raises a syntax error on devices while passing under sql.js in tests
+ * (observed: the "retry all" button silently failed on a 39-row backlog).
  */
 export async function retryFailedContinuationOutbox(
   projectId: number,
@@ -2753,8 +2758,11 @@ export async function retryFailedContinuationOutbox(
   const [res] = await db.executeSql(
     `UPDATE continuation_state_sync_outbox
      SET state = 'pending', attempt_count = 0, last_error = NULL, updated_at = ?
-     WHERE project_id = ? AND state = 'failed'
-     ORDER BY created_at ASC LIMIT ?`,
+     WHERE id IN (
+       SELECT id FROM continuation_state_sync_outbox
+       WHERE project_id = ? AND state = 'failed'
+       ORDER BY created_at ASC LIMIT ?
+     )`,
     [ts, projectId, limit],
   );
   return res.rowsAffected ?? 0;
