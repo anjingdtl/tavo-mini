@@ -10,7 +10,8 @@
  *   1. the completed chapter is finalized;
  *   2. its extract_state outbox task finished (not failed);
  *   3. its rebuild_story_memory outbox task finished (not failed);
- *   4. story memory has no hard gap covering the chapter;
+ *   4. no unresolved outbox failure the Freeze depends on (closure P0-1:
+ *      historical/stale/superseded/covered/unrelated failures never block);
  *   5. the Source snapshot still matches the frozen batch anchor;
  *   6. the Canon snapshot id/revision still match the frozen anchor;
  *   7. the chapter body was not concurrently modified after finalize
@@ -22,7 +23,7 @@ import { contentRevisionHash } from '../continuation/generation/generationReposi
 import {
   countPendingMajorProposals,
   getOutboxByDedupe,
-  getOutboxSummary,
+  listOutboxForProject,
   findLatestAdoptedRunForChapter,
 } from '../continuation/generation/generationRepository';
 import { processContinuationOutbox } from '../continuation/generation/continuationStateOutboxWorker';
@@ -31,6 +32,7 @@ import { CanonQueryService } from '../continuation/canon/canonQueryService';
 import { evaluatePostWritingMemoryReady } from '../writing/memory/postWritingMemoryReady';
 import { replayPendingContinuityProposals } from '../writing/memory/continuityStateAutoCommit';
 import type { ContinuationBatchAnchorV1 } from '../../types/multiChapterBatch';
+import type { ContinuationOutboxItem } from '../continuation/generation/types';
 
 export type StateGateResult =
   | { ready: true }
@@ -163,31 +165,28 @@ export async function checkNextChapterReady(
     }
   }
 
-  // 4. Story memory hard gap covering the chapter.
-  const summary = await getOutboxSummary(projectId);
-  if (summary.failedCount > 0) {
+  // 4. Outbox failure relevance (closure P0-1): only unresolved hard failures
+  // the next-chapter Freeze actually depends on may block. Historical rows
+  // keep their diagnostic value but must not pollute future batches.
+  const storyMemory = await readStoryMemoryTruth(projectId);
+  const blockingFailures = await findBlockingOutboxFailures({
+    projectId,
+    completedPosition,
+    storyMemory,
+  });
+  if (blockingFailures.length > 0) {
     return {
       ready: false,
       status: 'blocked',
-      reason: `项目存在失败的状态同步任务（${summary.failedCount} 个）`,
+      reason: blockingFailures[0].reason,
       errorCode: 'BATCH_CONTINUATION_STATE_SYNC_FAILED',
     };
   }
 
   // ONE Memory ready policy: extract already settled above; this function
   // is the single next-chapter Freeze gate for SM + conflict confirmation.
-  let storyMemoryStatus: string | null = null;
-  let dirtyFromPosition: number | null = null;
-  try {
-    const memory = await db.getProjectStoryMemory(projectId);
-    storyMemoryStatus = String((memory as any)?.status || '') || null;
-    dirtyFromPosition =
-      (memory as any)?.dirtyFromPosition != null
-        ? Number((memory as any).dirtyFromPosition)
-        : null;
-  } catch {
-    // non-fatal — outbox rows above are the authoritative settlement signal
-  }
+  let storyMemoryStatus: string | null = storyMemory.status;
+  let dirtyFromPosition: number | null = storyMemory.dirtyFromPosition;
   let pendingConfirmationCount = 0;
   try {
     // Leftover pre-Phase-1 pending rows are still `status=pending`. Replay
@@ -298,6 +297,189 @@ export async function checkNextChapterReady(
   }
 
   return { ready: true };
+}
+
+/** Scoped story-memory truth snapshot used by the failure classifier. */
+interface StoryMemoryTruth {
+  status: string | null;
+  dirtyFromPosition: number | null;
+  throughPosition: number | null;
+}
+
+async function readStoryMemoryTruth(
+  projectId: number,
+): Promise<StoryMemoryTruth> {
+  try {
+    const memory = await db.getProjectStoryMemory(projectId);
+    return {
+      status: String((memory as any)?.status || '') || null,
+      dirtyFromPosition:
+        (memory as any)?.dirtyFromPosition != null
+          ? Number((memory as any).dirtyFromPosition)
+          : null,
+      throughPosition:
+        (memory as any)?.state?.throughChapterPosition != null
+          ? Number((memory as any).state.throughChapterPosition)
+          : null,
+    };
+  } catch {
+    // non-fatal — outbox rows above are the authoritative settlement signal
+    return { status: null, dirtyFromPosition: null, throughPosition: null };
+  }
+}
+
+/** Relevance vocabulary for historical outbox failures (closure P0-1). */
+export type OutboxFailureCategory =
+  | 'blocking'
+  | 'stale'
+  | 'covered'
+  | 'superseded'
+  | 'historical'
+  | 'unrelated';
+
+function parseExtractDedupeKey(
+  dedupeKey: string,
+): { chapterId: number; revisionHash: string } | null {
+  const match = dedupeKey.match(/^extract_state:(\d+):(.+)$/);
+  if (!match) return null;
+  const chapterId = Number(match[1]);
+  return Number.isFinite(chapterId)
+    ? { chapterId, revisionHash: match[2] }
+    : null;
+}
+
+function parseRebuildFromPosition(row: ContinuationOutboxItem): number | null {
+  try {
+    const payload = JSON.parse(row.payloadJson);
+    const from = Number(payload?.fromPosition);
+    if (Number.isFinite(from)) return from;
+  } catch {
+    // fall through to the dedupe key
+  }
+  const parts = row.dedupeKey.split(':');
+  if (parts[0] !== 'rebuild_story_memory') return null;
+  const raw = parts[1] === 'auto' ? parts[3] : parts[2];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function storyMemoryTruthCovers(
+  truth: StoryMemoryTruth,
+  completedPosition: number,
+): boolean {
+  return (
+    truth.status === 'clean' &&
+    (truth.dirtyFromPosition == null ||
+      truth.dirtyFromPosition > completedPosition) &&
+    truth.throughPosition != null &&
+    truth.throughPosition >= completedPosition
+  );
+}
+
+/**
+ * Classify one failed outbox row against what the next-chapter Freeze
+ * actually depends on. Rows are never deleted; irrelevant history is
+ * separated from unresolved hard failures:
+ *   - stale: the chapter content moved past the failed row's revision
+ *   - covered: current story-memory truth already attests the range
+ *   - superseded: a later completed rebuild redid the failed range
+ *   - historical: deleted chapter / no-op legacy operation
+ *   - unrelated: row only affects positions beyond the Freeze's range
+ *   - blocking: unresolved hard failure the Freeze depends on
+ */
+function classifyOutboxFailure(input: {
+  row: ContinuationOutboxItem;
+  chaptersById: Map<number, { position: number; revisionHash: string }>;
+  completedRebuilds: ContinuationOutboxItem[];
+  storyMemory: StoryMemoryTruth;
+  completedPosition: number;
+}): OutboxFailureCategory {
+  const { row, chaptersById, completedRebuilds, storyMemory, completedPosition } =
+    input;
+
+  if (row.operation === 'apply_event') {
+    // The worker handler is a bookkeeping no-op: the event itself is already
+    // durable at confirmation time, so a failed legacy row cannot leave
+    // unsettled state behind.
+    return 'historical';
+  }
+
+  if (row.operation === 'extract_state') {
+    const parsed = parseExtractDedupeKey(row.dedupeKey);
+    if (!parsed) return 'blocking';
+    const chapter = chaptersById.get(parsed.chapterId);
+    if (!chapter) return 'historical';
+    if (chapter.revisionHash !== parsed.revisionHash) return 'stale';
+    if (chapter.position > completedPosition) return 'unrelated';
+    return 'blocking';
+  }
+
+  if (row.operation === 'rebuild_story_memory') {
+    const fromPosition = parseRebuildFromPosition(row);
+    if (fromPosition == null) return 'blocking';
+    if (fromPosition > completedPosition) return 'unrelated';
+    if (storyMemoryTruthCovers(storyMemory, completedPosition)) {
+      return 'covered';
+    }
+    const superseded = completedRebuilds.some(done => {
+      const doneFrom = parseRebuildFromPosition(done);
+      return (
+        doneFrom != null &&
+        doneFrom <= fromPosition &&
+        !!done.completedAt &&
+        done.completedAt > row.updatedAt
+      );
+    });
+    if (superseded) return 'superseded';
+    return 'blocking';
+  }
+
+  // Unknown operation shape → fail-closed.
+  return 'blocking';
+}
+
+/** Failed outbox rows (project-scoped) that still block the next Freeze. */
+async function findBlockingOutboxFailures(input: {
+  projectId: number;
+  completedPosition: number;
+  storyMemory: StoryMemoryTruth;
+}): Promise<Array<{ reason: string }>> {
+  const failedRows = await listOutboxForProject(input.projectId, 'failed');
+  if (failedRows.length === 0) return [];
+
+  const chapters = await db.getChaptersByProject(input.projectId);
+  const chaptersById = new Map(
+    (chapters as any[]).map(ch => [
+      Number(ch.id),
+      {
+        position: Number(ch.position),
+        revisionHash: contentRevisionHash(String(ch.content ?? '')),
+      },
+    ]),
+  );
+  const completedRebuilds = (await listOutboxForProject(
+    input.projectId,
+    'completed',
+  )).filter(row => row.operation === 'rebuild_story_memory');
+
+  const blocking: Array<{ reason: string }> = [];
+  for (const row of failedRows) {
+    const category = classifyOutboxFailure({
+      row,
+      chaptersById,
+      completedRebuilds,
+      storyMemory: input.storyMemory,
+      completedPosition: input.completedPosition,
+    });
+    if (category === 'blocking') {
+      blocking.push({
+        reason: `状态同步任务存在未解决的失败（${row.dedupeKey}：${
+          row.lastError || '未知原因'
+        }）`,
+      });
+    }
+  }
+  return blocking;
 }
 
 /** Kick the outbox processor once (best-effort acceleration, doc §17). */
