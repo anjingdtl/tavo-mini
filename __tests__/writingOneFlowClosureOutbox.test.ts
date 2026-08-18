@@ -18,7 +18,10 @@ import {
   openDatabase,
 } from '../src/data/connection/openDatabase';
 import { checkNextChapterReady } from '../src/services/multiChapterBatch/continuationBatchStateGate';
-import { contentRevisionHash } from '../src/services/continuation/generation/generationRepository';
+import {
+  contentRevisionHash,
+  listPendingOutbox,
+} from '../src/services/continuation/generation/generationRepository';
 
 const PROJECT_ID = 1;
 const COMPLETED_CHAPTER_ID = 101;
@@ -43,6 +46,7 @@ interface OutboxSeed {
   payloadJson?: string;
   chapterId?: number | null;
   lastError?: string;
+  createdAt?: string;
   updatedAt?: string;
   completedAt?: string | null;
 }
@@ -63,8 +67,8 @@ function seedOutbox(seed: OutboxSeed): Promise<any> {
       seed.state,
       seed.state === 'failed' ? 5 : 1,
       seed.lastError ?? (seed.state === 'failed' ? '历史失败' : null),
-      seed.updatedAt ?? ts(0),
-      seed.updatedAt ?? ts(0),
+      seed.createdAt ?? seed.updatedAt ?? ts(0),
+      seed.updatedAt ?? seed.createdAt ?? ts(0),
       seed.completedAt ?? (seed.state === 'completed' ? ts(10) : null),
     ],
   );
@@ -437,5 +441,40 @@ describe('ONE-Flow closure outbox relevance gate (P0-1)', () => {
     );
     const result = await checkNextChapterReady(gateInput());
     expect(result.ready).toBe(false);
+  });
+
+  test('newer extract_state is claimed before a FIFO storm of older apply/rebuild', async () => {
+    await sql('DELETE FROM continuation_state_sync_outbox');
+    for (let i = 0; i < 8; i++) {
+      await seedOutbox({
+        id: 200 + i,
+        operation: i % 2 === 0 ? 'apply_event' : 'rebuild_story_memory',
+        dedupeKey: `storm:${i}`,
+        state: 'pending',
+        payloadJson: JSON.stringify({ fromPosition: 40 + i }),
+        createdAt: ts(i),
+        updatedAt: ts(i),
+      });
+    }
+    await seedOutbox({
+      id: 299,
+      operation: 'extract_state',
+      dedupeKey: 'extract_state:239:current',
+      state: 'pending',
+      chapterId: COMPLETED_CHAPTER_ID,
+      payloadJson: JSON.stringify({
+        projectId: PROJECT_ID,
+        chapterId: COMPLETED_CHAPTER_ID,
+      }),
+      createdAt: ts(900),
+      updatedAt: ts(900),
+    });
+
+    const claimed = await listPendingOutbox(2);
+    expect(claimed.map(row => row.operation)).toEqual([
+      'extract_state',
+      'apply_event',
+    ]);
+    expect(claimed[0].dedupeKey).toBe('extract_state:239:current');
   });
 });

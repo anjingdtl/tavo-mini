@@ -2585,10 +2585,21 @@ export async function listPendingOutbox(
   limit = 20,
 ): Promise<ContinuationOutboxItem[]> {
   const db = await openDatabase();
+  // extract_state first so a current-chapter Ready Gate is not starved
+  // behind a FIFO storm of older apply_event / rebuild_story_memory rows
+  // (observed on project 16: 139 pending replay leftovers sat in front of
+  // extract_state:239 and BATCH_CONTINUATION_STATE_SYNC_TIMEOUT fired
+  // while the already-adopted last chapter waited). apply_event is a
+  // bookkeeping no-op and is next; rebuilds stay FIFO among themselves.
   const [res] = await db.executeSql(
     `SELECT * FROM continuation_state_sync_outbox
      WHERE state IN ('pending', 'interrupted')
-     ORDER BY created_at ASC LIMIT ?`,
+     ORDER BY CASE operation
+       WHEN 'extract_state' THEN 0
+       WHEN 'apply_event' THEN 1
+       ELSE 2
+     END, created_at ASC
+     LIMIT ?`,
     [limit],
   );
   const out: ContinuationOutboxItem[] = [];
