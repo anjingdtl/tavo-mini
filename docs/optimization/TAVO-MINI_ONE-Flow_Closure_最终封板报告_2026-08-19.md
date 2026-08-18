@@ -95,8 +95,8 @@
 
 - `.github/workflows/generation-stability.yml` 已加入 3 个 Closure 套件（无 allow-failure）
 - Push 后要求远端 **Verify = Green 且 Generation Stability = Green**（结果见下，推送后回填）
-  - [ ] Verify Green
-  - [ ] Generation Stability Green
+  - [x] Verify Green（run #32168043065，completed success，7m20s，@ fc031880）
+  - [x] Generation Stability Green（run #32168043194，completed success，40s，@ fc031880）
 
 ## 十、封板条件核对（方案§十四）
 
