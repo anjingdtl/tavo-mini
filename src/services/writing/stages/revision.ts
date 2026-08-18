@@ -9,6 +9,7 @@ import {
   resolveStageSkipOrNull,
   skippedStageResult,
 } from './writerCore';
+import { evaluateRuntimeStageSkip } from './evaluateRuntimeStageSkip';
 
 export async function runRevisionStage(
   input: SharedWritingStageInput,
@@ -25,6 +26,18 @@ export async function runRevisionStage(
       input,
       skip.skipReason,
       skip.policyRuleId,
+    );
+  }
+  const runtimeSkip = evaluateRuntimeStageSkip({
+    stage: 'revision',
+    artifacts: input.artifacts,
+  });
+  if (runtimeSkip.skip) {
+    return skippedStageResult(
+      'revision',
+      input,
+      runtimeSkip.skipReason,
+      runtimeSkip.policyRuleId,
     );
   }
   try {

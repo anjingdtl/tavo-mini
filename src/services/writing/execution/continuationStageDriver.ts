@@ -7,10 +7,11 @@
  * continuation run row (the durable substrate for adoption/state review).
  *
  * Phase 2 (steps, POST-FREEZE): the kernel engine drives the continuation
- * capabilities through the shared stage set — Stage ledger → Draft(V1∥A1) →
- * Revision(V2)+Audit(C2) → Proof/Final Reviser(V3)+Final Validate →
- * settlement. Every round consumes the frozen snapshot; no live source
- * reads occur after Freeze.
+ * capabilities through the shared stage set and the ONE Stage DAG —
+ * Draft → (Review ∥ Audit) → Conditional Revision → Proof → Final Validate.
+ * Driver batches remain for durable UI rounds; the runner owns dependencies.
+ * Every round consumes the frozen snapshot; no live source reads occur
+ * after Freeze.
  */
 import {
   getRunById,

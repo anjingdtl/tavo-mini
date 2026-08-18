@@ -306,14 +306,14 @@ describe('V3.2 production structured-stage recovery', () => {
     for (const row of attempts.filter(item => item.stage !== 'draft')) {
       expect(Number(row.request_version)).toBeGreaterThanOrEqual(2);
     }
-    for (const stage of ['review', 'factCheck', 'brief']) {
+    for (const stage of ['review', 'factCheck']) {
       expect(configs[stage]).toHaveLength(1);
       expect(configs[stage][0]).toMatchObject({
         thinking: { type: 'enabled' },
         reasoningEffort: 'low',
       });
     }
-    expect(await checkpointStatus(taskId, 'brief')).toBe('succeeded');
+    expect(await checkpointStatus(taskId, 'brief')).toBe('skipped');
   });
 
   test('content-only malformed Review invokes exactly one disabled-Thinking Formatter', async () => {
@@ -618,10 +618,9 @@ describe('V3.2 production structured-stage recovery', () => {
       'draft',
       'review',
       'factCheck',
-      'brief',
       'proof',
     ]);
-    expect(calls.map(call => call.maxTokens).length).toBe(5);
+    expect(calls.map(call => call.maxTokens).length).toBe(4);
     expect(calls.map(call => call.maxTokens)[0]).toBe(200000);
     expect(Math.max(...calls.map(call => call.maxTokens))).toBe(200000);
     const rows = await all(

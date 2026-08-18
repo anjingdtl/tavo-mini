@@ -410,7 +410,11 @@ function decideAfterBrief(
   proof: PersistedStageCheckpoint,
 ): PipelineAction {
   if (isOpen(brief.status)) return { type: 'run_brief' };
-  if (brief.status === 'failed' || brief.status === 'skipped') {
+  if (brief.status === 'skipped') {
+    // Formal skip (no executable findings / One-Shot) is not a failed Brief.
+    return decideAfterProof(task, proof, true);
+  }
+  if (brief.status === 'failed') {
     // V3 Final is not trustworthy without a validated Brief.  In particular,
     // an API response that failed the Brief schema gate must never be replaced
     // by a local success-looking fallback and allowed to reach Proof.  Keep

@@ -9,6 +9,7 @@ import {
   resolveStageSkipOrNull,
   skippedStageResult,
 } from './writerCore';
+import { evaluateRuntimeStageSkip } from './evaluateRuntimeStageSkip';
 
 export async function runProofStage(
   input: SharedWritingStageInput,
@@ -18,6 +19,19 @@ export async function runProofStage(
   const skip = resolveStageSkipOrNull('proof', input);
   if (skip.skip) {
     return skippedStageResult('proof', input, skip.skipReason, skip.policyRuleId);
+  }
+  const runtimeSkip = evaluateRuntimeStageSkip({
+    stage: 'proof',
+    artifacts: input.artifacts,
+    proofPolicy: input.stagePolicy.values?.proofPolicy,
+  });
+  if (runtimeSkip.skip) {
+    return skippedStageResult(
+      'proof',
+      input,
+      runtimeSkip.skipReason,
+      runtimeSkip.policyRuleId,
+    );
   }
   try {
     const artifact = await executeSharedWriterStage({

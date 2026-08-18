@@ -790,7 +790,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     ]);
     expect(newTask).not.toBeNull();
     expect(String((newTask as any).status)).toBe('completed');
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(5);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(4);
 
     const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
       taskId,
@@ -900,7 +900,7 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     expect(t.pipeline_context_hash).toBe(frozen.pipelineContextHash);
     // finalize 按生产语义重算 fingerprint；resume 本身不得清空它。
     expect(t.input_fingerprint).not.toBeNull();
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(5);
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(4);
 
     const attempts = await attemptsFor(taskId);
     const succeeded = attempts.filter(a => a.status === 'succeeded');

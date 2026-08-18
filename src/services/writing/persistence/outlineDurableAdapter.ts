@@ -4,6 +4,7 @@ import type { Chapter } from '../../../types/novel';
 import type {
   SharedWritingArtifact,
   SharedWritingStageName,
+  SharedWritingStageResult,
   WritingDurablePersistAdapter,
   WritingStageArtifacts,
 } from '../contracts/writingStage';
@@ -81,6 +82,32 @@ export function createOutlineDurableAdapter(input: {
           inputTokens: artifact.usage?.inputTokens,
           outputTokens: artifact.usage?.outputTokens,
           totalTokens: artifact.usage?.totalTokens,
+        });
+      }
+    },
+    async persistStageSkip(stage, result: SharedWritingStageResult) {
+      if (stage === 'finalValidate' || stage === 'persist') return;
+      const store = usePipelineTaskStore.getState();
+      const mapped = pipelineStageName(stage);
+      const skipResult = {
+        stage: mapped,
+        text: '',
+        status: 'skipped' as const,
+        error: result.skipReason || 'policy_skipped',
+        durationMs: 0,
+      };
+      if (store.persistTaskStage) {
+        await store.persistTaskStage(input.taskId, skipResult as any);
+      } else {
+        store.updateTaskStage(input.taskId, skipResult as any);
+      }
+      if (typeof db.upsertStageCheckpoint === 'function') {
+        await db.upsertStageCheckpoint({
+          taskId: input.taskId,
+          stage: mapped as any,
+          status: 'skipped',
+          errorCode: result.policyRuleId || 'STAGE_SKIPPED',
+          errorMessage: result.skipReason || 'policy_skipped',
         });
       }
     },
