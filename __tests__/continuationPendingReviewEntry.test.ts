@@ -17,13 +17,15 @@ function makeDb(rows: RunRow[]) {
   return {
     executeSql: jest.fn(async (sql: string, params: unknown[] = []) => {
       let filtered = [...rows];
-      if (sql.includes('chapter_id')) {
+      // Match on the WHERE clause only: the metadata projection SELECT
+      // also lists project_id / chapter_id as plain columns.
+      if (/WHERE[\s\S]*chapter_id = \?/i.test(sql)) {
         const projectId = params[0];
         const chapterId = params[1];
         filtered = filtered.filter(
           r => r.project_id === projectId && r.chapter_id === chapterId,
         );
-      } else if (sql.includes('project_id')) {
+      } else if (/WHERE[\s\S]*project_id = \?/i.test(sql)) {
         const projectId = params[0];
         filtered = filtered.filter(r => r.project_id === projectId);
       }

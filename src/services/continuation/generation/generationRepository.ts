@@ -84,14 +84,47 @@ function rowSettings(r: any): ContinuationGenerationSettings {
   };
 }
 
+/**
+ * Metadata projection for continuation_generation_runs reads.
+ *
+ * A 50+ chapter continuation project accumulates multi-megabyte
+ * context_snapshot_json values in run rows. On low-RAM devices the Android
+ * CursorWindow shrinks to 1MB, so any SELECT that materializes the snapshot
+ * column throws SQLiteBlobTooBigException and fails the whole pipeline
+ * (observed as stage_failed on a 51-chapter project). Metadata reads must
+ * therefore project the giant column away; consumers that truly need the
+ * snapshot body use getRunContextSnapshotJson(), which streams it in chunks
+ * via substr(). workflowVersion and the kernel trace id are extracted in
+ * SQL with json_extract so metadata-only callers keep their semantics.
+ */
+const RUN_METADATA_SELECT = `
+  id, project_id, chapter_id, target_position, source_id, source_snapshot_json,
+  canon_snapshot_id, canon_revision, story_memory_fingerprint,
+  story_memory_through_position, input_revision_hash, user_instruction,
+  settings_snapshot_json, context_trace_json, token_usage_json,
+  NULL AS context_snapshot_json,
+  json_extract(context_snapshot_json, '$.workflowVersion') AS workflow_version,
+  json_extract(context_snapshot_json, '$.writingKernelTrace.generationTraceId') AS generation_trace_id,
+  json_extract(context_snapshot_json, '$.generationTraceId') AS generation_trace_id_fallback,
+  state, stage, completion_reason, adopted_revision_hash, finalized_revision_hash,
+  error_code, error_message, created_at, updated_at, completed_at`;
+
+/** Chunk size (characters) for streamed snapshot reads. */
+const RUN_SNAPSHOT_CHUNK_CHARS = 512 * 1024;
+
 function rowRun(r: any): ContinuationGenerationRun {
   let workflowVersion: 2 | 4 | 5 | undefined;
-  try {
-    const value = JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion;
-    workflowVersion =
-      value === 2 || value === 4 || value === 5 ? value : undefined;
-  } catch {
-    workflowVersion = undefined;
+  const extracted = Number(r.workflow_version);
+  if (extracted === 2 || extracted === 4 || extracted === 5) {
+    workflowVersion = extracted;
+  } else {
+    try {
+      const value = JSON.parse(r.context_snapshot_json || '{}')?.workflowVersion;
+      workflowVersion =
+        value === 2 || value === 4 || value === 5 ? value : undefined;
+    } catch {
+      workflowVersion = undefined;
+    }
   }
   return {
     id: r.id,
@@ -487,11 +520,60 @@ export async function getRunById(
 ): Promise<ContinuationGenerationRun | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_generation_runs WHERE id = ?',
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs WHERE id = ?`,
     [runId],
   );
   if (res.rows.length === 0) return null;
   return rowRun(res.rows.item(0));
+}
+
+/**
+ * Streamed reader for a run's frozen context snapshot. Reads the giant
+ * context_snapshot_json column in substr() chunks so the row never has to
+ * fit inside the platform CursorWindow. Character semantics: SQLite length()
+ * and substr() both count TEXT in characters, matching JS string concat.
+ */
+export async function getRunContextSnapshotJson(
+  runId: string,
+): Promise<string | null> {
+  const db = await openDatabase();
+  const [lenRes] = await db.executeSql(
+    'SELECT length(context_snapshot_json) AS len FROM continuation_generation_runs WHERE id = ?',
+    [runId],
+  );
+  if (lenRes.rows.length === 0) return null;
+  const total = Number(lenRes.rows.item(0).len);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  let out = '';
+  for (let start = 1; start <= total; start += RUN_SNAPSHOT_CHUNK_CHARS) {
+    const [res] = await db.executeSql(
+      'SELECT substr(context_snapshot_json, ?, ?) AS piece FROM continuation_generation_runs WHERE id = ?',
+      [start, RUN_SNAPSHOT_CHUNK_CHARS, runId],
+    );
+    out += String(res.rows.item(0).piece ?? '');
+  }
+  return out;
+}
+
+/**
+ * The kernel trace id for a run, extracted in SQL (never loads the body).
+ * Prefers the writing kernel trace field, falling back to the snapshot-level
+ * id used by older snapshots.
+ */
+export async function getRunGenerationTraceId(
+  runId: string,
+): Promise<string | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT
+       json_extract(context_snapshot_json, '$.writingKernelTrace.generationTraceId') AS tid,
+       json_extract(context_snapshot_json, '$.generationTraceId') AS fallback
+     FROM continuation_generation_runs WHERE id = ?`,
+    [runId],
+  );
+  if (res.rows.length === 0) return null;
+  const row = res.rows.item(0);
+  return row.tid ?? row.fallback ?? null;
 }
 
 export async function listRunsForProject(
@@ -500,7 +582,7 @@ export async function listRunsForProject(
 ): Promise<ContinuationGenerationRun[]> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_runs
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs
      WHERE project_id = ? ORDER BY created_at DESC LIMIT ?`,
     [projectId, limit],
   );
@@ -512,7 +594,7 @@ export async function listRunsForProject(
 export async function listRunningRuns(): Promise<ContinuationGenerationRun[]> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_runs
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs
      WHERE state IN ('queued', 'running')`,
   );
   const out: ContinuationGenerationRun[] = [];
@@ -2523,7 +2605,7 @@ export async function findLatestAdoptedRunForChapter(
 ): Promise<ContinuationGenerationRun | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_runs
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs
      WHERE project_id = ? AND chapter_id = ?
        AND state = 'completed' AND completion_reason = 'adopted'
      ORDER BY completed_at DESC, created_at DESC LIMIT 1`,
@@ -2544,7 +2626,7 @@ export async function findLatestPendingReviewRunForChapter(
 ): Promise<ContinuationGenerationRun | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_runs
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs
      WHERE project_id = ? AND chapter_id = ?
        AND state IN ('awaiting_user', 'awaiting_regeneration')
      ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
@@ -2564,7 +2646,7 @@ export async function listPendingReviewRunsForProject(
 ): Promise<ContinuationGenerationRun[]> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_runs
+    `SELECT ${RUN_METADATA_SELECT} FROM continuation_generation_runs
      WHERE project_id = ? AND state IN ('awaiting_user', 'awaiting_regeneration')
      ORDER BY updated_at DESC, created_at DESC LIMIT ?`,
     [projectId, limit],

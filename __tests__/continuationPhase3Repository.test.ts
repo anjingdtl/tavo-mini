@@ -139,11 +139,33 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     });
     return res([]);
   }
-  if (/SELECT \* FROM continuation_generation_runs WHERE id/i.test(n)) {
+  if (/FROM continuation_generation_runs WHERE id/i.test(n)) {
+    if (/SELECT length\(context_snapshot_json\)/i.test(n)) {
+      const row = store.runs.find(r => r.id === params[0]);
+      return res(
+        row ? [{ len: String(row.context_snapshot_json ?? '').length }] : [],
+      );
+    }
+    if (/SELECT substr\(context_snapshot_json/i.test(n)) {
+      const row = store.runs.find(r => r.id === params[2]);
+      const body = String(row?.context_snapshot_json ?? '');
+      return res([{ piece: body.substr(Number(params[0]) - 1, Number(params[1])) }]);
+    }
+    if (/^SELECT json_extract\(context_snapshot_json/i.test(n)) {
+      const row = store.runs.find(r => r.id === params[0]);
+      let workflowVersion: number | null = null;
+      try {
+        workflowVersion = JSON.parse(row?.context_snapshot_json ?? '{}')
+          ?.workflowVersion;
+      } catch {
+        workflowVersion = null;
+      }
+      return res([{ workflow_version: workflowVersion, tid: null, fallback: null }]);
+    }
     return res(store.runs.filter(r => r.id === params[0]));
   }
   if (
-    /SELECT \* FROM continuation_generation_runs WHERE project_id = \? AND chapter_id = \?/i.test(
+    /FROM continuation_generation_runs WHERE project_id = \? AND chapter_id = \?/i.test(
       n,
     )
   ) {
@@ -168,10 +190,10 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
         .slice(0, 1),
     );
   }
-  if (/SELECT \* FROM continuation_generation_runs WHERE project_id/i.test(n)) {
+  if (/FROM continuation_generation_runs WHERE project_id/i.test(n)) {
     return res(store.runs.filter(r => r.project_id === params[0]));
   }
-  if (/SELECT \* FROM continuation_generation_runs WHERE state IN/i.test(n)) {
+  if (/FROM continuation_generation_runs WHERE state IN/i.test(n)) {
     return res(store.runs.filter(r => ['queued', 'running'].includes(r.state)));
   }
   if (/UPDATE continuation_generation_runs SET/i.test(n)) {

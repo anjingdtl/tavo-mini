@@ -17,6 +17,7 @@ import {
 } from '../../data/repositories/pipelineTaskRepository';
 import {
   getRunById,
+  getRunContextSnapshotJson,
   casUpdateRunState,
 } from '../continuation/generation/generationRepository';
 import { sha256Hex } from '../continuation/hashUtils';
@@ -237,7 +238,15 @@ export async function persistWritingKernelTraceForContinuationRun(
   completedTrace: WritingKernelTrace,
 ): Promise<void> {
   const run = await getRunById(runId);
-  if (!run?.contextSnapshotJson) {
+  if (!run) {
+    throw new Error(
+      `Writing Kernel trace persistence blocked: run ${runId} not found`,
+    );
+  }
+  // Streamed read: the snapshot body can exceed the platform CursorWindow
+  // on long continuation projects and must not be loaded with the row.
+  run.contextSnapshotJson = await getRunContextSnapshotJson(runId);
+  if (!run.contextSnapshotJson) {
     throw new Error(
       `Writing Kernel trace persistence blocked: run ${runId} has no frozen snapshot`,
     );

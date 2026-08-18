@@ -19,6 +19,7 @@ import {
   casUpdateRunState,
   ensureGenerationSettings,
   getRunById,
+  getRunContextSnapshotJson,
   insertRun,
   newContinuationRunId,
 } from '../generationRepository';
@@ -217,6 +218,8 @@ export async function resumeContinuationV5Run(
   if (run.state !== 'interrupted' && run.state !== 'failed') {
     throw new Error('仅 interrupted/failed V5 运行可恢复');
   }
+  // Streamed read: snapshot bodies on long projects exceed CursorWindow.
+  run.contextSnapshotJson = await getRunContextSnapshotJson(runId);
   if (!run.contextSnapshotJson) throw new Error('缺少冻结 V5 context。');
   const snapshot = JSON.parse(
     run.contextSnapshotJson,

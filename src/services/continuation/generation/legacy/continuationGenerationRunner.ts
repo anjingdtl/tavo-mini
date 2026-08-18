@@ -36,6 +36,7 @@ import {
   getLatestArtifact,
   getPlan,
   getRunById,
+  getRunContextSnapshotJson,
   insertArtifact,
   insertCheckResults,
   insertRun,
@@ -1946,6 +1947,8 @@ export async function resumeInterruptedRun(
   }
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state !== 'interrupted') throw new Error('仅 interrupted 可恢复');
+  // Streamed read: snapshot bodies on long projects exceed CursorWindow.
+  run.contextSnapshotJson = await getRunContextSnapshotJson(runId);
   if (!run.contextSnapshotJson) {
     throw new Error('缺少冻结 context，请重新发起');
   }

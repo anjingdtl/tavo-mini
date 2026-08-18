@@ -71,6 +71,7 @@ import {
   getLatestArtifactForStage,
   getPlan,
   getRunById,
+  getRunContextSnapshotJson,
   getStageResult,
   insertArtifact,
   insertCheckResults,
@@ -3325,6 +3326,8 @@ export async function resumeContinuationV4Run(
   if (run.state !== 'interrupted' && run.state !== 'failed') {
     throw new Error('仅 interrupted/failed V4 运行可恢复');
   }
+  // Streamed read: snapshot bodies on long projects exceed CursorWindow.
+  run.contextSnapshotJson = await getRunContextSnapshotJson(runId);
   if (!run.contextSnapshotJson) throw new Error('缺少冻结 V4 context。');
   const snapshot = JSON.parse(run.contextSnapshotJson) as ContinuationContextSnapshotV3;
   if (snapshot.schemaVersion !== 3 || snapshot.workflowVersion !== 4) {

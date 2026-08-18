@@ -53,6 +53,7 @@ import {
   getLatestEligibleArtifact,
   getPlan,
   getRunById,
+  getRunContextSnapshotJson,
   findLatestAdoptedRunForChapter,
   insertArtifact,
   insertCheckResults,
@@ -1626,6 +1627,14 @@ export async function finalizeContinuationChapter(input: {
       input.chapterId,
     );
     resolvedSourceRunId = sourceRun?.id ?? null;
+  }
+  if (sourceRun) {
+    // Metadata reads project the giant snapshot column away (CursorWindow
+    // limit on low-RAM devices); the finalization trace still needs the
+    // frozen fields, so stream the body back in chunks here.
+    sourceRun.contextSnapshotJson = await getRunContextSnapshotJson(
+      sourceRun.id,
+    );
   }
 
   let frozenStateExtractionConfigId: number | null = null;

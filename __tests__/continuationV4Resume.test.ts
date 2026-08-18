@@ -51,6 +51,7 @@ jest.mock('../src/services/continuation/generation/generationRepository', () => 
   getLatestArtifactForStage: jest.fn(),
   getPlan: jest.fn(),
   getRunById: jest.fn(),
+  getRunContextSnapshotJson: jest.fn(),
   getStageResult: jest.fn(),
   insertArtifact: jest.fn(),
   insertCheckResults: jest.fn(),
@@ -306,6 +307,9 @@ describe('Continuation V4 runner', () => {
     mockRepository.insertRun.mockResolvedValue(activeRun);
     mockRepository.newContinuationRunId.mockReturnValue('ct_v4_workflow');
     mockRepository.getRunById.mockImplementation(async () => activeRun);
+    mockRepository.getRunContextSnapshotJson.mockImplementation(
+      async () => activeRun.contextSnapshotJson ?? null,
+    );
     mockRepository.listStageResults.mockImplementation(async () => rows);
     mockRepository.getStageResult.mockImplementation(async (_runId, stage) =>
       rows.find(row => row.stage === stage) || null,

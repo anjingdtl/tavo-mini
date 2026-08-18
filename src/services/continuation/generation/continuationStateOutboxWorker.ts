@@ -15,10 +15,10 @@ import { planStageCapacity } from '../../writing/scenario/continuationStageCapac
 import {
   casOutboxState,
   contentRevisionHash,
+  getRunGenerationTraceId,
   insertProposals,
   ensureGenerationSettings,
   getOutboxByDedupe,
-  getRunById,
   listPendingOutbox,
   markRunsInterruptedOnColdStart,
   MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
@@ -335,17 +335,12 @@ async function recordStateExtractionObservability(
 ): Promise<void> {
   if (!payload.sourceRunId) return;
   try {
-    const run = await getRunById(payload.sourceRunId);
-    const snapshot = run?.contextSnapshotJson
-      ? (JSON.parse(run.contextSnapshotJson) as {
-          generationTraceId?: string;
-          writingKernelTrace?: { generationTraceId?: string };
-        })
-      : null;
-    const generationTraceId =
-      snapshot?.writingKernelTrace?.generationTraceId ||
-      snapshot?.generationTraceId ||
-      null;
+    // SQL-side json_extract: the snapshot body itself can exceed the
+    // platform CursorWindow on long continuation projects and must not be
+    // materialized just to read the trace id.
+    const generationTraceId = await getRunGenerationTraceId(
+      payload.sourceRunId,
+    );
     if (!generationTraceId) return;
     recordPostWritingObservability({
       generationTraceId,

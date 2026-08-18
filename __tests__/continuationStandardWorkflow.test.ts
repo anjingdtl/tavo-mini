@@ -12,6 +12,9 @@ const mockState: {
 } = { run: null, artifacts: [], plans: [], checks: [] };
 
 const mockGetRunById = jest.fn(async (..._args: any[]) => mockState.run);
+const mockGetRunContextSnapshotJson = jest.fn(
+  async (..._args: any[]) => mockState.run?.contextSnapshotJson ?? null,
+);
 const mockCasUpdateRunState = jest.fn(
   async (_id: string, expected: string[], patch: any) => {
     if (!mockState.run || !expected.includes(mockState.run.state)) return false;
@@ -86,6 +89,8 @@ jest.mock(
     return {
       ...actual,
       getRunById: (...args: any[]) => (mockGetRunById as any)(...args),
+      getRunContextSnapshotJson: (...args: any[]) =>
+        (mockGetRunContextSnapshotJson as any)(...args),
       casUpdateRunState: (...args: any[]) =>
         (mockCasUpdateRunState as any)(...args),
       getLatestArtifact: (...args: any[]) =>
