@@ -274,9 +274,28 @@ export function resolveContinuationWriterOutputBudget(input: {
 }
 
 /**
- * Build the context layout from the Writer envelope. The hard Canon/locked
- * rule size is supplied when known and is removed before soft categories are
- * normalized. All category budgets therefore remain proportional.
+ * Source-collection demand / fetch bounds for Continuation.
+ *
+ * This is NOT the production final Context Budget. It only bounds how much
+ * Canon / seam / memory / style to read while collecting candidates.
+ * FrozenWritingContext.allocation is decided solely by
+ * allocateWritingContextBudget after candidates enter the ONE planner.
+ *
+ * The category math is the existing Continuation layout (not a new model).
+ */
+export function planContinuationSourceDemand(input: {
+  modelContextLimit: number;
+  writerMaxOutputTokens: number;
+  targetChapterChars?: number;
+  hardContextTokens?: number;
+  hasPrimaryAnchor?: boolean;
+}): ContinuationContextBudgetPlan {
+  return planContinuationContextBudget(input);
+}
+
+/**
+ * @deprecated Use planContinuationSourceDemand. Kept as the existing
+ * layout math implementation so we do not invent a second budget model.
  */
 export function planContinuationContextBudget(input: {
   modelContextLimit: number;

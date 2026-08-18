@@ -62,7 +62,7 @@ import type {
 } from '../../continuation/generation/types';
 import { ContinuationCapabilityBlockedError } from '../../continuation/generation/types';
 import {
-  planContinuationContextBudget,
+  planContinuationSourceDemand,
   planStageCapacity,
   type ContinuationStageBudgets,
   type ResolvedStageCapacity,
@@ -336,7 +336,7 @@ export async function buildContinuationContext(
           hardContextTokens,
           hasPrimaryAnchor,
         })
-      : planContinuationContextBudget({
+      : planContinuationSourceDemand({
           modelContextLimit: layoutLimit,
           writerMaxOutputTokens: layoutMaxOut,
           targetChapterChars: settings.targetChapterChars,
@@ -998,21 +998,16 @@ export async function buildContinuationContext(
   ];
 
   const totalInputTokens = categories.reduce((s, c) => s + c.tokens, 0);
-  if (totalInputTokens > contextBudget.inputBudget) {
-    // Explicit block rather than silent hard-rule truncation.
-    // Soft trim recent + style already clipped; if still over, block.
-    const hardTokens = categories
-      .filter(c => c.name === 'lockedRules' || c.name === 'canon')
-      .reduce((s, c) => s + c.tokens, 0);
-    if (hardTokens > contextBudget.inputBudget) {
-      throw new ContinuationCapabilityBlockedError(
-        `上下文预算不足：硬规则约 ${hardTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
-      );
-    }
+  const hardTokens = categories
+    .filter(c => c.name === 'lockedRules' || c.name === 'canon')
+    .reduce((s, c) => s + c.tokens, 0);
+  if (hardTokens > contextBudget.inputBudget) {
     throw new ContinuationCapabilityBlockedError(
-      `上下文预算不足：已组装约 ${totalInputTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
+      `上下文预算不足：硬规则约 ${hardTokens} token，可用 ${contextBudget.inputBudget}。请换更大上下文模型或降低目标章节长度。`,
     );
   }
+  // Soft overflow is NOT a second final budget. Collection already bounded
+  // fetch sizes; allocateWritingContextBudget is the only freeze allocation.
 
   const trace: ContinuationContextTrace = {
     sourceId: source.sourceId,

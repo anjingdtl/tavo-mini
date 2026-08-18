@@ -1,71 +1,54 @@
 # TAVO-MINI ONE Flow Phase 2 — ONE Context 实施与验收
 
 **日期：** 2026-08-18  
-**状态：** **部分建设（PARTIAL）。未封。** 必须在 ONE Memory 之后继续 PDCA，不得宣布 `ONE FLOW FINAL SEALED / GO`。
+**状态：** Phase 2 本轮收束完成（可进入 Phase 3）。**未封 `ONE FLOW FINAL SEALED / GO`。**
 
 ---
 
-## 1. 本轮已落地
+## 1. 已落地
 
-| 目标 | 本轮 |
+| 目标 | 结果 |
 |---|---|
-| Production Context Planner = 1 | 仍是 `buildWritingContextPlan`（未新增第二套 Planner） |
-| Final Budget Decision = 1（Kernel 通用） | 仍是 `allocateWritingContextBudget` |
-| Frozen Context Truth = 1 | 未改 Freeze 算法 |
-| Adapter 不做最终 Budget | Outline / Continuation Writing Adapter 仍只出 candidate |
-| 无新固定输入 Token 上限 | Projection / Aggregator 无 32K / 100K cap |
-| Deterministic Stage Projection | **已接入** Shared Prompt Compiler |
-| Findings Aggregator | **已接入** Revision / Proof 的 previous artifacts |
+| Production Context Planner = 1 | `buildWritingContextPlan` |
+| Final Budget Decision = 1 | `allocateWritingContextBudget` 是唯一写入 `FrozenWritingContext.allocation` 的决策 |
+| Frozen Context Truth = 1 | Freeze 算法未重写 |
+| Adapter 不做最终 Budget | Writing Adapter 只出 candidate |
+| 无新固定输入 Token 上限 | Projection / Aggregator / Demand planner 均无 32K/100K cap |
+| Deterministic Stage Projection | Shared Compiler 已接入 |
+| Findings Aggregator | Revision / Proof 消费汇总 Findings |
+| 去除双层最终 Budget | Collection 改为 **fetch demand**；软 overflow 不再当最终闸门 |
 
-### 调用图（本轮）
+### 调用图
 
 ```text
-Source Adapters
+Source Adapters / Collection demand (I/O bound)
   → collect / normalize
   → ONE Planner (buildWritingContextPlan)
   → ONE generic budget (allocateWritingContextBudget)
   → ONE Render / ONE Freeze
   → compileSharedWritingPrompt
-        → projectFrozenContextForStage   // 确定性切片，不再预算
-        → previousArtifactBlock(stage)
-              → aggregateStageFindings   // Revision/Proof 不再叠完整报告
+        → projectFrozenContextForStage
+        → previousArtifactBlock(stage) + aggregateStageFindings
 ```
 
-Stage 切片（kind allowlist，不是五套 Budget）：
+Continuation `planContinuationSourceDemand` / 既有 `planContinuationContextBudget` 数学 **只用于采集时限制 Canon/接缝/记忆读取量**，不再对“已组装软 token 超窗”做第二套最终失败。硬 Canon / 锁定规则超窗仍 fail-closed。
 
-| Stage | 切片 |
-|---|---|
-| Draft | 完整 Frozen Render |
-| Review | instruction / outline / writer_style / preset / note |
-| Audit / FactCheck | canon / boundary / seam / anchor / character / worldbook / story_memory |
-| Revision | instruction / outline / canon / boundary / writer_style / story_memory + 初稿 + 汇总 Findings |
-| Proof | writer_style / instruction + 终稿候选 + 汇总 Findings |
+`planContinuationV4ContextBudget` 仍只在采集路径上给 Writer envelope 做 fetch bound，不进入 Freeze allocation。
 
 ---
 
-## 2. 明确未做（下一刀）
-
-- **未**拆除 `continuationSourceCollection.planContinuationContextBudget`（场景侧布局预算仍在，不是本轮 Fake 统一）。
-- **未**把 Elastic / Hierarchical 数学收成新公式。
-- **未**改 Canon / Story Memory / Writer Core。
-- **未**跑 10 章真实 LLM 长测。Before/After 墙钟仍以 Phase 0 基线为准。
-
-`planContinuationContextBudget` 仍是 Phase 2 剩余债：场景收集阶段的布局预算，必须在确认不破坏 Continuation Freeze 后再并入 ONE Budget 入口。
-
----
-
-## 3. 门禁
+## 2. 门禁
 
 | 项 | 结果 |
 |---|---|
-| `__tests__/writingOneFlowPhase2Context.test.ts` | PASS |
-| Generation Stability yml | 已挂上 |
-| 受影响 writing 套件（20 suites / 130 tests） | PASS |
-| typecheck / eslint（本轮文件） | PASS |
+| `__tests__/writingOneFlowPhase2Context.test.ts` | 含 collection≠final budget 硬门禁 |
+| typecheck | PASS |
+| 未跑新的 10 章真实 LLM | 仍以 Phase 0 基线对照 |
 
 ---
 
-## 4. 决策
+## 3. 明确不做
 
-**继续 PDCA，不封 Phase 2。**  
-下一刀：审计并收束 Continuation Source Collection 的第二套布局预算，且必须先红灯再动生产。
+- 未重写 Elastic / Hierarchical 数学模型
+- 未重写 Canon / Story Memory / Writer
+- 未宣称 ONE FLOW FINAL SEALED

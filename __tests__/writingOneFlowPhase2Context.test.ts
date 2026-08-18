@@ -56,6 +56,23 @@ describe('ONE Context planner and budget', () => {
       expect(text).not.toMatch(/32\s*\*\s*1024|100\s*\*\s*1024|maxInputTokens\s*=/);
     }
   });
+
+  test('Continuation collection is fetch demand, not a second final budget', () => {
+    const collection = read(
+      'src/services/writing/scenario/continuationSourceCollection.ts',
+    );
+    const capacity = read(
+      'src/services/writing/scenario/continuationStageCapacity.ts',
+    );
+    const freeze = read('src/services/writing/context/buildFrozenWritingContext.ts');
+    expect(collection).toContain('planContinuationSourceDemand');
+    expect(collection).not.toContain('planContinuationContextBudget({');
+    expect(collection).not.toMatch(/已组装约 \$\{totalInputTokens\}/);
+    expect(capacity).toContain('This is NOT the production final Context Budget');
+    expect(freeze).toContain('allocateWritingContextBudget({');
+    expect(freeze).not.toContain('planContinuationSourceDemand');
+    expect(freeze).not.toContain('planContinuationV4ContextBudget');
+  });
 });
 
 describe('Deterministic stage projection', () => {
