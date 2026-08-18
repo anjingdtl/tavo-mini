@@ -2225,17 +2225,18 @@ export async function listProposals(
   return out;
 }
 
+/**
+ * Remaining pending proposals after ONE Memory auto-commit.
+ * Routine State Update is committed in extract_state; leftover rows are
+ * the conflict / unmergeable / low-confidence confirmation gate.
+ */
 export async function countPendingMajorProposals(
   projectId: number,
 ): Promise<number> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
     `SELECT COUNT(*) AS c FROM continuation_state_proposals
-     WHERE project_id = ? AND status = 'pending'
-       AND proposal_type IN (
-         'relationship_change', 'new_world_fact', 'new_character',
-         'character_state'
-       )`,
+     WHERE project_id = ? AND status = 'pending'`,
     [projectId],
   );
   return res.rows.item(0).c as number;

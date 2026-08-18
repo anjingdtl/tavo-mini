@@ -24,6 +24,7 @@ import {
   MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
 } from './generationRepository';
 import { recordPostWritingObservability } from '../../writing/observability/writingObservabilityCollector';
+import { autoCommitRoutineContinuityProposals } from '../../writing/memory/continuityStateAutoCommit';
 import type { ProposalType } from './types';
 
 /**
@@ -303,7 +304,7 @@ async function handleExtractState(
     finishReason: finishReason ?? null,
     emptyReason: emptyReason ?? null,
   });
-  await insertProposals(
+  const inserted = await insertProposals(
     proposals.map(p => ({
       projectId: payload.projectId,
       chapterId: payload.chapterId,
@@ -318,6 +319,14 @@ async function handleExtractState(
       evidenceEnd: p.evidenceEnd,
     })),
   );
+  try {
+    await autoCommitRoutineContinuityProposals({
+      projectId: payload.projectId,
+      proposals: inserted,
+    });
+  } catch {
+    // Extract already persisted. Leftover pending rows stay confirmable.
+  }
 }
 
 async function recordStateExtractionObservability(

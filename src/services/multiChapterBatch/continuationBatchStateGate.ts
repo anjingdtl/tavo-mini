@@ -20,6 +20,7 @@ import * as db from '../database';
 import { openDatabase } from '../../data/connection/openDatabase';
 import { contentRevisionHash } from '../continuation/generation/generationRepository';
 import {
+  countPendingMajorProposals,
   getOutboxByDedupe,
   getOutboxSummary,
   findLatestAdoptedRunForChapter,
@@ -187,6 +188,23 @@ export async function checkNextChapterReady(
     }
   } catch {
     // non-fatal — outbox rows above are the authoritative settlement signal
+  }
+
+  // Conflict-only confirmation: routine State Update is auto-committed during
+  // extract_state. Leftover pending rows are Canon / major / unmergeable /
+  // low-confidence gates and must not silently enter the next batch chapter.
+  try {
+    const pendingConfirmationCount = await countPendingMajorProposals(projectId);
+    if (pendingConfirmationCount > 0) {
+      return {
+        ready: false,
+        status: 'blocked',
+        reason: `存在 ${pendingConfirmationCount} 项需人工确认的状态冲突`,
+        errorCode: 'BATCH_CONTINUATION_STATE_CONFLICT',
+      };
+    }
+  } catch {
+    // Test doubles / older fixtures without the proposals table stay unblocked.
   }
 
   // 5. Source snapshot drift vs the frozen anchor.

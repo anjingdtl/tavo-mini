@@ -208,7 +208,7 @@ describe('P1-C ContinuationStateReviewScreen (fix-plan §4.2)', () => {
       <ContinuationStateReviewScreen onClose={jest.fn()} />,
     );
     await waitFor(() => {
-      expect(getByText('暂无待确认状态')).toBeTruthy();
+      expect(getByText('暂无待确认冲突')).toBeTruthy();
     });
   });
 

@@ -42,8 +42,8 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
     try {
       const src = await getActiveContinuationSource(currentProject.id);
       setActiveSource(src);
-      // Surface a badge count for pending major proposals so the user knows
-      // there are state changes to review (fix-plan §4.2).
+      // Conflict-only confirmation badge (ONE Memory). Routine State Update
+      // auto-commits; leftover pending rows are the confirmation gate.
       try {
         const n = await countPendingMajorProposals(currentProject.id);
         setPendingProposalCount(n);
@@ -201,14 +201,14 @@ export const ContinuationHomeBody: React.FC<{
         <Card>
           <View style={styles.rowBetween}>
             <Text style={[styles.title, { color: theme.colors.textPrimary, flex: 1 }]}>
-              状态待确认
+              状态冲突待确认
             </Text>
             <Text style={[styles.badge, { color: theme.colors.danger }]}>
               {home.pendingProposalCount}
             </Text>
           </View>
           <Text style={[styles.body2, { color: theme.colors.textSecondary }]}>
-            有 {home.pendingProposalCount} 项重要状态变化等待你确认后纳入续写上下文。
+            有 {home.pendingProposalCount} 项冲突或低置信状态等待确认。正常章节状态已自动提交。
           </Text>
           <Button
             label="去审核"

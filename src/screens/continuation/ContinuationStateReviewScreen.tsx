@@ -1,12 +1,12 @@
 /**
  * Continuation state proposal review (Spec §12, fix-plan §4.2).
  *
- * Lists pending state-extraction proposals for the current project, lets the
- * user confirm or reject each one with an optional decision note, and only the
- * confirm action calls confirmProposal (which creates the state event + Story
- * Memory dirty + outbox in one local transaction). Never displays the prompt,
- * chapter body, or any credentials — only the proposal summary, type, evidence
- * span and linked entities.
+ * Lists confirmation-required state proposals (Canon conflict, major
+ * conflict, unmergeable, or low-confidence that affects later chapters).
+ * Routine State Extraction auto-commits after local / Canon validate.
+ * Confirm still calls confirmProposal (state event + Story Memory dirty +
+ * outbox in one local transaction). Never displays the prompt, chapter body,
+ * or any credentials.
  */
 import React, { useCallback, useState } from 'react';
 import {
@@ -177,7 +177,7 @@ export const ContinuationStateReviewScreen: React.FC<{
   if (!currentProject) {
     return (
       <Screen>
-        <Header title="状态待确认" action={headerAction} />
+        <Header title="状态冲突待确认" action={headerAction} />
         <EmptyState title="请先选择项目" description="在「项目」Tab 选择一个原著续写项目。" />
       </Screen>
     );
@@ -185,15 +185,18 @@ export const ContinuationStateReviewScreen: React.FC<{
 
   return (
     <Screen>
-      <Header title="状态待确认" action={headerAction} />
+      <Header title="状态冲突待确认" action={headerAction} />
       <ScrollView contentContainerStyle={styles.pad}>
         <Text style={[styles.hint, { color: colors.textSecondary }]}>
-          定稿章节会提取状态变化供你审核。确认后的变化将纳入后续续写上下文并触发 Story Memory 重建。
+          正常章节状态会自动提交。只有 Canon 冲突、重大状态冲突、无法自动合并或低置信且影响后续章节时才需要确认。
         </Text>
         {loading ? (
           <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xl }} />
         ) : proposals.length === 0 ? (
-          <EmptyState title="暂无待确认状态" description="定稿续写章节后，提取到的状态变化会出现在这里。" />
+          <EmptyState
+            title="暂无待确认冲突"
+            description="正常状态已自动提交。这里只列出冲突、无法合并或低置信且影响后续章节的项。"
+          />
         ) : (
           <>
             <View style={styles.bulkActions}>

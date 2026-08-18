@@ -23,8 +23,8 @@
 
 | Phase | 目标 | 状态 | 文档 |
 |---|---|---|---|
-| 0 | Baseline & Observability | **本轮完成（可进入 Phase 1）** | `TAVO-MINI_ONE-Flow_Phase0_Baseline报告_20260818.md` |
-| 1 | ONE Memory | 未开始 | `TAVO-MINI_ONE-Flow_Phase1_ONE-Memory_实施与验收_20260818.md` |
+| 0 | Baseline & Observability | **完成（可进入 Phase 1）** | `TAVO-MINI_ONE-Flow_Phase0_Baseline报告_20260818.md` |
+| 1 | ONE Memory | **本轮完成（可进入 Phase 2）** | `TAVO-MINI_ONE-Flow_Phase1_ONE-Memory_实施与验收_20260818.md` |
 | 2 | ONE Context | 未开始 | `TAVO-MINI_ONE-Flow_Phase2_ONE-Context_实施与验收_20260818.md` |
 | 3 | ONE Pipeline | 未开始 | `TAVO-MINI_ONE-Flow_Phase3_ONE-Pipeline_实施与验收_20260818.md` |
 | 4 | ONE Flow 接驳 + 集成长测 | 未开始 | `TAVO-MINI_ONE-Flow_最终集成验收报告_20260818.md` |
@@ -95,15 +95,27 @@ UI / batch / resume
 
 ---
 
-## 6. 下一 Phase
+## 6. Phase 1 已落地（摘要）
 
-进入 **Phase 1：ONE Memory**。
+- 长期叙事记忆仍只有 Story Memory；Continuation 没有第二套 LTM。
+- 正常 State Extraction：`insertProposals` 后 `autoCommitRoutineContinuityProposals`。
+- 仅 Canon 硬冲突 / 重大状态冲突 / 无法自动合并 / 低置信且影响后续 留在审核页。
+- 权威序已实现并测过；融合时硬事实冲突不让 State 覆盖 Canon。
+- Batch 普通 State Update 不再等人；剩余确认项才 `BATCH_CONTINUATION_STATE_CONFLICT`。
+
+详见 `TAVO-MINI_ONE-Flow_Phase1_ONE-Memory_实施与验收_20260818.md`。
+
+---
+
+## 7. 下一 Phase
+
+进入 **Phase 2：ONE Context**。
 
 只做：
 
-- Outline / Continuation 共用同一套 Story Memory
-- 保留 Canon 与 Structured Continuity State
-- 正常章节 Auto Commit；只在 Canon Conflict / 重大冲突 / 低置信且影响后续 / 无法自动合并时弹确认
-- Memory Authority：Canon > Frozen Boundary > Continuity State > Story Memory > Recent Prose
+- Source Adapter 只提供 candidate，不再拥有第二套最终 Budget
+- 复用现有 Elastic / Hierarchical Budget
+- ONE Frozen Context → Deterministic Stage Projection（不是五套 Stage Budget）
+- Findings Aggregator，Revision 优先消费汇总 findings
 
-不做：重写 Story Memory、重写 Canon、重写 Writer、重写 Budget。
+不做：重写 Budget 数学模型、新增固定输入 Token 上限、重写 Writer。

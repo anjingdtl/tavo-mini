@@ -140,6 +140,7 @@ export type {
   RepairCandidateMode,
   RepairCoverageIssue,
 } from './continuationRepairPatch';
+export { commitAcceptedProposal } from './commitStateProposal';
 export {
   getEffectiveContinuationState,
   confirmProposal,
