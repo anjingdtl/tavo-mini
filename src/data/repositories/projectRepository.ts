@@ -151,7 +151,7 @@ export async function createProject(
   // V2.2.2 修复：用统一 transaction executor 取代旧的异步 callback。
   // 原因：react-native-sqlite-storage 的 transaction 期望 callback **同步**执行所有 SQL，
   // 任何 await 都会让 transaction 被 finalize 触发 InvalidStateError (DOM Exception 11)。
-  // 这里改成：先 INSERT projects → 拿 insertId → 再 ensureDefaultPreset → 绑预设 + 建首章 + touch。
+  // 这里改成：先 INSERT projects → 拿 insertId → 再 ensureDefaultPreset → 绑预设 + touch。
   // 整个写入过程走同步 statement batch，原子性保留。
   const insertProjectResult = await execute(
     database,
@@ -209,19 +209,8 @@ export async function createProject(
       sql: 'INSERT OR REPLACE INTO project_resources (project_id, resource_type, resource_id, enabled) VALUES (?, ?, ?, ?)',
       params: [projectId, 'preset', defaultPresetId, 0],
     },
-    {
-      sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      params: [
-        projectId,
-        0,
-        '第 1 章',
-        '',
-        '',
-        'planned',
-        timestamp,
-        timestamp,
-      ],
-    },
+    // 不再种子首章：空章节列表是合法状态（一键 N 章/手动建章都从 position 0
+    // 开始），种子空章会让批量生成从“第 2 章”起跳、导入包 position 0 冲突。
   ]);
   await execute(database, 'UPDATE projects SET updated_at = ? WHERE id = ?', [
     timestamp,
@@ -341,6 +330,41 @@ export async function createChapter(
   );
   await touchProject(projectId);
   return result.insertId!;
+}
+
+export interface BulkChapterInput {
+  position: number;
+  title?: string;
+  content?: string;
+  status?: string;
+}
+
+/**
+ * 批量创建章节（TXT 导入等一次性写入大量正文的场景）。
+ * 所有章节在单个事务里写入，任一失败整体回滚；结束后 touch 一次项目。
+ */
+export async function createChaptersBulk(
+  projectId: number,
+  chapters: BulkChapterInput[],
+): Promise<number> {
+  if (chapters.length === 0) return 0;
+  const timestamp = now();
+  const statements: SqlStatement[] = chapters.map(chapter => ({
+    sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    params: [
+      projectId,
+      chapter.position,
+      chapter.title?.trim() || `第 ${chapter.position + 1} 章`,
+      '',
+      chapter.content ?? '',
+      chapter.status ?? 'draft',
+      timestamp,
+      timestamp,
+    ],
+  }));
+  await executeTransaction(await openDatabase(), statements);
+  await touchProject(projectId);
+  return chapters.length;
 }
 
 const CHAPTER_COLUMNS = new Set([

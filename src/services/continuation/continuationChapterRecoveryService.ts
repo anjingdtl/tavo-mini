@@ -255,7 +255,8 @@ export async function createRecoveryProject(input: {
 
   const project = await createContinuationProject({ name: recoveryName });
   const seeded = await getChaptersByProject(project.id);
-  // createProject seeds one empty chapter at position 0 — reuse it for the first body.
+  // createProject no longer seeds a first chapter; keep the reuse branch for
+  // pre-existing projects that still carry a seeded empty chapter at position 0.
   const first = bodies[0];
   if (seeded[0]) {
     await updateChapter(seeded[0].id, {

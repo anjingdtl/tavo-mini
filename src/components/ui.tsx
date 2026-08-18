@@ -270,7 +270,7 @@ export function SegmentedControl<T extends string | number>({
             onPress={() => onChange(option.value)}
             style={[styles.segment, size === 'prominent' && styles.segmentProminent, active && { backgroundColor: theme.colors.card }]}
           >
-            <Text style={[styles.segmentText, size === 'prominent' && styles.segmentTextProminent, { color: active ? theme.colors.accent : theme.colors.textSecondary }]}>{option.label}</Text>
+            <Text numberOfLines={1} style={[styles.segmentText, size === 'prominent' && styles.segmentTextProminent, { color: active ? theme.colors.accent : theme.colors.textSecondary }]}>{option.label}</Text>
           </TouchableOpacity>
         );
       })}
@@ -367,7 +367,9 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, fontWeight: '700', marginBottom: spacing.xs },
   input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, fontSize: 15, lineHeight: 21 },
   segmented: { flexDirection: 'row', padding: 4, borderRadius: 7, gap: 4 },
-  segment: { flex: 1, minHeight: 38, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
+  // flexGrow + flexBasis:auto 让各 segment 按标签内容比例分宽（剩余空间均分），
+  // 而不是强制等宽——等宽会把“作家风格”这类 4 字标签挤断成两行导致整行错位。
+  segment: { flexGrow: 1, flexShrink: 1, paddingHorizontal: 2, minHeight: 38, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
   segmentText: { fontSize: 13, fontWeight: '700', letterSpacing: 0.2 },
   segmentedProminent: { padding: 5, borderRadius: 9, gap: 5 },
   segmentProminent: { minHeight: 50, borderRadius: 7 },

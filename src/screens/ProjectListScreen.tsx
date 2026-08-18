@@ -40,6 +40,13 @@ import {
   importProjectPackage,
 } from '../services/projectImport';
 import {
+  pickAndPreviewTxtProject,
+  importTxtProject,
+  buildTxtPreview,
+  smartSplitTxtChaptersWithLLM,
+  type TxtImportPackage,
+} from '../services/projectTxtImport';
+import {
   NEW_PROJECT_MODE_OPTIONS,
   PROJECT_MODE_LABELS,
   isValidProjectMode,
@@ -270,7 +277,16 @@ export const ProjectListScreen: React.FC = () => {
     ]);
   };
 
-  const handleImport = async () => {
+  const handleImport = () => {
+    if (importing) return;
+    Alert.alert('导入', '选择要导入的文件类型：', [
+      { text: '取消', style: 'cancel' },
+      { text: 'JSON 项目包', onPress: () => handleImportJson() },
+      { text: 'TXT 小说', onPress: () => handleImportTxt() },
+    ]);
+  };
+
+  const handleImportJson = async () => {
     if (importing) return;
     setImporting(true);
     try {
@@ -308,6 +324,97 @@ export const ProjectListScreen: React.FC = () => {
       );
     } catch (error: any) {
       Alert.alert('导入失败', error?.message || '无法读取项目文件。');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const showTxtImportConfirm = (input: {
+    preview: ReturnType<typeof buildTxtPreview>;
+    pkg: TxtImportPackage;
+    rawText: string;
+  }) => {
+    const { preview, pkg, rawText } = input;
+    const sampleLine =
+      preview.sampleTitles.length > 0
+        ? `章节样例：${preview.sampleTitles.join('、')}\n`
+        : '';
+    const warningLine =
+      preview.warnings.length > 0 ? `\n${preview.warnings.join('\n')}` : '';
+    Alert.alert(
+      '导入 TXT 小说',
+      `项目名：${preview.name}\n编码：${preview.encoding}\n章节：${
+        preview.chapterCount
+      }\n${sampleLine}\n将导入为「大纲创作」项目，章节可继续编辑。${warningLine}`,
+      [
+        { text: '取消', style: 'cancel' },
+        ...(preview.needsSmartSplit
+          ? [
+              {
+                text: '智能分章（LLM）',
+                onPress: async () => {
+                  setImporting(true);
+                  try {
+                    const chapters = await smartSplitTxtChaptersWithLLM(rawText);
+                    const nextPkg: TxtImportPackage = {
+                      ...pkg,
+                      chapters,
+                      splitMode: 'llm',
+                      warnings: [],
+                    };
+                    showTxtImportConfirm({
+                      preview: buildTxtPreview(nextPkg),
+                      pkg: nextPkg,
+                      rawText,
+                    });
+                  } catch (error: any) {
+                    Alert.alert(
+                      '智能分章失败',
+                      error?.message || '请检查 LLM 配置后重试。',
+                    );
+                  } finally {
+                    setImporting(false);
+                  }
+                },
+              },
+            ]
+          : []),
+        {
+          text: '导入',
+          onPress: async () => {
+            setImporting(true);
+            try {
+              const newId = await importTxtProject(pkg);
+              await loadProjects();
+              const newProject = useProjectStore
+                .getState()
+                .projects.find(p => p.id === newId);
+              if (newProject) setCurrentProject(newProject);
+              Toast.show({
+                type: 'success',
+                text1: '导入成功',
+                text2: `项目「${pkg.name}」已导入 ${pkg.chapters.length} 章。`,
+              });
+            } catch (error: any) {
+              Alert.alert('导入失败', error?.message || '未知错误');
+            } finally {
+              setImporting(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleImportTxt = async () => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const result = await pickAndPreviewTxtProject();
+      if (!result) return;
+      showTxtImportConfirm(result);
+    } catch (error: any) {
+      Alert.alert('导入失败', error?.message || '无法读取 TXT 文件。');
     } finally {
       setImporting(false);
     }

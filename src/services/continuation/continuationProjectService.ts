@@ -17,8 +17,8 @@ export interface CreateContinuationProjectInput {
 /**
  * Create a continuation project (Spec §8.1, §13).
  *
- * Reuses the existing project-creation transaction (which seeds the first
- * continuation chapter at position 0) and then ensures the
+ * Reuses the existing project-creation transaction (no chapter is seeded;
+ * chapters arrive via 原著导入/续写生成) and then ensures the
  * continuation_settings row exists so the import UI has a place to write the
  * active source pointer.
  */

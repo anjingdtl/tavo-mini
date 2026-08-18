@@ -1533,8 +1533,10 @@ export const ResourceLibrary: React.FC<{
             {PRESET_CATALOG.map(item => (
               <Card key={item.id}>
                 <View style={styles.titleRow}>
-                  <Text style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
-                  <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：内置</Text>
+                  <Text numberOfLines={2} style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
+                </View>
+                <View style={styles.tagRow}>
+                  <Text numberOfLines={1} style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：内置</Text>
                 </View>
                 <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
                 <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
@@ -1906,6 +1908,7 @@ export const ResourceLibrary: React.FC<{
                     <View style={styles.rowText}>
                       <View style={styles.titleRow}>
                         <Text
+                          numberOfLines={2}
                           style={[
                             styles.itemTitle,
                             { color: theme.colors.textPrimary },
@@ -1913,8 +1916,11 @@ export const ResourceLibrary: React.FC<{
                         >
                           {titleFor(tab, item)}
                         </Text>
+                      </View>
+                      <View style={styles.tagRow}>
                         {tab === 'notes' && noteMode !== 'none' ? (
                           <Text
+                            numberOfLines={1}
                             style={[
                               styles.modeTag,
                               {
@@ -1930,6 +1936,7 @@ export const ResourceLibrary: React.FC<{
                           <>
                             <Text
                               testID={`writer-style-source-${item.id}`}
+                              numberOfLines={1}
                               style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
                             >
                               来源：{writerStyleSourceLabel(item)}
@@ -1937,6 +1944,7 @@ export const ResourceLibrary: React.FC<{
                             {activeWriterStyleId === item.id ? (
                               <Text
                                 testID={`writer-style-active-${item.id}`}
+                                numberOfLines={1}
                                 style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
                               >
                                 当前项目正在使用
@@ -1945,7 +1953,10 @@ export const ResourceLibrary: React.FC<{
                           </>
                         ) : null}
                         {currentProject?.mode === 'continuation' ? (
-                          <Text style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>
+                          <Text
+                            numberOfLines={1}
+                            style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+                          >
                             {continuationUsageFor(tab, item.id) === 'external_supplement' ? '续写补充' : continuationUsageFor(tab, item.id) === 'original_mirror' ? '原著镜像' : continuationUsageFor(tab, item.id) === 'excluded' ? '不参与' : '待确认'}
                           </Text>
                         ) : null}
@@ -2568,6 +2579,8 @@ function writerStyleSourceLabel(item: any): string {
       return 'AI/结构化';
     case 'legacy_shinewriter':
       return '旧版';
+    case 'default_runtime_baseline':
+      return '内置';
     default:
       return item.source_format || '用户';
   }
@@ -2602,7 +2615,7 @@ const styles = StyleSheet.create({
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   rowText: { flex: 1 },
-  itemTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4 },
+  itemTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4, flexShrink: 1 },
   itemMeta: { fontSize: 13, lineHeight: 18 },
   tokenMeta: {
     fontSize: 12,
@@ -2700,6 +2713,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.sm,
+  },
+  // 徽章独立成行并允许换行，避免“来源：旧版”等标签与长标题同排时溢出卡片。
+  tagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: 4,
   },
   modeTag: {
     fontSize: 11,

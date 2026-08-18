@@ -255,16 +255,16 @@ describe('createProject SQLite transaction safety (V2.2.2)', () => {
     }
   });
 
-  test('createProject pushes project + chapter + (optional preset) writes through transactions or direct executeSql', async () => {
+  test('createProject pushes project + (optional preset) writes through transactions or direct executeSql', async () => {
     const db = require('../src/services/database');
     db.__resetForTest();
     await db.openDatabase();
 
     await db.createProject('TaraRegression', 'outline');
 
-    // 关键表都应当被写过
-    expect(seenInserts).toEqual(
-      expect.arrayContaining(['PROJECTS', 'CHAPTERS']),
-    );
+    // 关键表都应当被写过；同时防回归：createProject 不再种子首章
+    // （种子空章会让一键 N 章从“第 2 章”起跳、导入包 position 0 冲突）。
+    expect(seenInserts).toEqual(expect.arrayContaining(['PROJECTS']));
+    expect(seenInserts).not.toContain('CHAPTERS');
   });
 });
