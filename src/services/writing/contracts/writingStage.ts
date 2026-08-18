@@ -113,6 +113,12 @@ export interface SharedWritingArtifact {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    promptCacheHitTokens?: number | null;
+    promptCacheMissTokens?: number | null;
+    logicalStageCallCount?: number;
+    formatterCallCount?: number;
+    physicalRequestCount?: number;
+    protocolFallbackCount?: number;
   };
 }
 

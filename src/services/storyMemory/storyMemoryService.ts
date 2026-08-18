@@ -64,6 +64,7 @@ import {
   stopStoryMemoryForeground,
   updateStoryMemoryForeground,
 } from './storyMemoryForeground';
+import { recordPostWritingObservability } from '../writing/observability/writingObservabilityCollector';
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -970,8 +971,11 @@ export async function finalizeChapterMemory(
     signal?: AbortSignal;
     /** Force legacy every-chapter patch path. */
     legacyEveryChapter?: boolean;
+    /** Optional chapter generation id for Phase 0 post-writing telemetry. */
+    generationTraceId?: string;
   } = {},
 ): Promise<FinalizeChapterMemoryResult> {
+  const startedAt = Date.now();
   const chapter = await db.getChapterById(chapterId);
   if (!chapter) throw new Error('章节不存在。');
   if (!chapter.content.trim())
@@ -1183,6 +1187,16 @@ export async function finalizeChapterMemory(
     setTimeout(() => {
       void backgroundJob!().catch(() => undefined);
     }, 0);
+  }
+  if (options.generationTraceId) {
+    const durationMs = Date.now() - startedAt;
+    recordPostWritingObservability({
+      generationTraceId: options.generationTraceId,
+      kind: 'story_memory',
+      durationMs,
+      blockingMs: durationMs,
+      physicalRequestCount: 0,
+    });
   }
   return result;
 }

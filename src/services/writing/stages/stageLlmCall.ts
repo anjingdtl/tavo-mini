@@ -9,12 +9,35 @@
 import { callLLMResult } from '../../llm';
 import type { LLMCallConfig } from '../../llm';
 import type { ChatMessage, LLMResult } from '../../llm/types';
+import { createWritingPhysicalRequestAccounting } from '../observability/writingPhysicalRequestAccounting';
 
-export function callWritingStageLLM(
+export type WritingStageLlmResult = LLMResult & {
+  physicalRequestCount: number;
+  protocolFallbackCount: number;
+};
+
+export async function callWritingStageLLM(
   messages: ChatMessage[],
   maxTokens: number,
   config: LLMCallConfig,
   abortSignal?: AbortSignal,
-): Promise<LLMResult> {
-  return callLLMResult(messages, maxTokens, config, abortSignal);
+): Promise<WritingStageLlmResult> {
+  const accounting = createWritingPhysicalRequestAccounting(
+    config.physicalRequestHooks,
+  );
+  const result = await callLLMResult(
+    messages,
+    maxTokens,
+    {
+      ...config,
+      physicalRequestHooks: accounting.hooks,
+    },
+    abortSignal,
+  );
+  const snapshot = accounting.snapshot();
+  return {
+    ...result,
+    physicalRequestCount: snapshot.physicalRequestCount || 1,
+    protocolFallbackCount: snapshot.protocolFallbackCount,
+  };
 }

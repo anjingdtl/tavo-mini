@@ -20,6 +20,10 @@ import {
   isAdoptableStructuredReport,
   shouldRunWriterFormatter,
 } from './writerRecovery';
+import {
+  classifyWritingLlmCall,
+  recordWritingLlmCall,
+} from '../observability';
 
 export function emptyRequirementResult() {
   return {
@@ -190,6 +194,7 @@ export async function executeSharedWriterStage(input: {
     Math.max(256, stageInput.modelConfig.maxOutputTokens || compiled.maxTokens),
   );
   if (stageInput.callStage) {
+    const injectedStartedAt = Date.now();
     const injected = await stageInput.callStage({
       stage,
       messages: compiled.messages,
@@ -204,7 +209,19 @@ export async function executeSharedWriterStage(input: {
       reasoningText: (injected as { reasoningText?: string }).reasoningText,
     });
     const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
-    attachUsage(artifact, injected);
+    attachUsage(artifact, injected, {
+      kind: classifyWritingLlmCall({}),
+      physicalRequestCount: 1,
+      protocolFallbackCount: 0,
+    });
+    recordWriterCall(stageInput, {
+      stage,
+      kind: classifyWritingLlmCall({}),
+      result: injected,
+      physicalRequestCount: 1,
+      protocolFallbackCount: 0,
+      durationMs: Date.now() - injectedStartedAt,
+    });
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
     return artifact;
   }
@@ -213,6 +230,7 @@ export async function executeSharedWriterStage(input: {
   const stageReasoning = resolveFrozenStageReasoning(stage, stageInput);
   const isReport =
     stage === 'review' || stage === 'audit' || stage === 'factCheck';
+  const primaryStartedAt = Date.now();
   const primary = await callWritingStageLLM(
     compiled.messages,
     maxTokens,
@@ -272,6 +290,7 @@ export async function executeSharedWriterStage(input: {
       outputContract: compiled.outputContract,
       candidate: String(primary.text || primary.reasoningText || ''),
     });
+    const formatterStartedAt = Date.now();
     const formatted = await callWritingStageLLM(
       formatter.messages,
       Math.min(maxTokens, 4096),
@@ -308,7 +327,32 @@ export async function executeSharedWriterStage(input: {
       const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
       artifact.formatterUsed = true;
       artifact.adoptedFrom = adopted.adoptedFrom;
-      attachUsage(artifact, formatted);
+      attachUsage(artifact, primary, {
+        kind: classifyWritingLlmCall({}),
+        physicalRequestCount: primary.physicalRequestCount,
+        protocolFallbackCount: primary.protocolFallbackCount,
+      });
+      attachUsage(artifact, formatted, {
+        kind: classifyWritingLlmCall({ isFormatter: true }),
+        physicalRequestCount: formatted.physicalRequestCount,
+        protocolFallbackCount: formatted.protocolFallbackCount,
+      });
+      recordWriterCall(stageInput, {
+        stage,
+        kind: classifyWritingLlmCall({}),
+        result: primary,
+        physicalRequestCount: primary.physicalRequestCount,
+        protocolFallbackCount: primary.protocolFallbackCount,
+        durationMs: formatterStartedAt - primaryStartedAt,
+      });
+      recordWriterCall(stageInput, {
+        stage,
+        kind: classifyWritingLlmCall({ isFormatter: true }),
+        result: formatted,
+        physicalRequestCount: formatted.physicalRequestCount,
+        protocolFallbackCount: formatted.protocolFallbackCount,
+        durationMs: Date.now() - formatterStartedAt,
+      });
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
       return artifact;
     } catch (error) {
@@ -320,7 +364,19 @@ export async function executeSharedWriterStage(input: {
   }
   const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
   artifact.adoptedFrom = adopted.adoptedFrom;
-  attachUsage(artifact, primary);
+  attachUsage(artifact, primary, {
+    kind: classifyWritingLlmCall({}),
+    physicalRequestCount: primary.physicalRequestCount,
+    protocolFallbackCount: primary.protocolFallbackCount,
+  });
+  recordWriterCall(stageInput, {
+    stage,
+    kind: classifyWritingLlmCall({}),
+    result: primary,
+    physicalRequestCount: primary.physicalRequestCount,
+    protocolFallbackCount: primary.protocolFallbackCount,
+    durationMs: Date.now() - primaryStartedAt,
+  });
   await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
   return artifact;
 }
@@ -366,6 +422,13 @@ function attachUsage(
     outputTokens?: number;
     totalTokens?: number;
     usage?: { prompt?: number; completion?: number; total?: number };
+    promptCacheHitTokens?: number | null;
+    promptCacheMissTokens?: number | null;
+  },
+  extras?: {
+    kind: 'logical_stage' | 'formatter' | 'post_writing_auxiliary';
+    physicalRequestCount?: number;
+    protocolFallbackCount?: number;
   },
 ): void {
   const inputTokens = Number(
@@ -374,13 +437,82 @@ function attachUsage(
   const outputTokens = Number(
     result.outputTokens ?? result.usage?.completion ?? 0,
   );
+  const previous = artifact.usage;
+  const nextInput = (previous?.inputTokens || 0) + inputTokens;
+  const nextOutput = (previous?.outputTokens || 0) + outputTokens;
+  const cacheHit = nullableSum(
+    previous?.promptCacheHitTokens,
+    result.promptCacheHitTokens,
+  );
+  const cacheMiss = nullableSum(
+    previous?.promptCacheMissTokens,
+    result.promptCacheMissTokens,
+  );
   artifact.usage = {
-    inputTokens,
-    outputTokens,
-    totalTokens: Number(
-      result.totalTokens ?? result.usage?.total ?? inputTokens + outputTokens,
-    ),
+    inputTokens: nextInput,
+    outputTokens: nextOutput,
+    totalTokens:
+      (previous?.totalTokens || 0) +
+      Number(
+        result.totalTokens ?? result.usage?.total ?? inputTokens + outputTokens,
+      ),
+    promptCacheHitTokens: cacheHit,
+    promptCacheMissTokens: cacheMiss,
+    logicalStageCallCount:
+      (previous?.logicalStageCallCount || 0) +
+      (extras?.kind === 'logical_stage' ? 1 : 0),
+    formatterCallCount:
+      (previous?.formatterCallCount || 0) +
+      (extras?.kind === 'formatter' ? 1 : 0),
+    physicalRequestCount:
+      (previous?.physicalRequestCount || 0) +
+      Math.max(0, extras?.physicalRequestCount ?? 1),
+    protocolFallbackCount:
+      (previous?.protocolFallbackCount || 0) +
+      Math.max(0, extras?.protocolFallbackCount ?? 0),
   };
+}
+
+function recordWriterCall(
+  stageInput: SharedWritingStageInput,
+  input: {
+    stage: SharedWritingStageName;
+    kind: 'logical_stage' | 'formatter' | 'post_writing_auxiliary';
+    result: {
+      inputTokens?: number;
+      outputTokens?: number;
+      usage?: { prompt?: number; completion?: number };
+      promptCacheHitTokens?: number | null;
+      promptCacheMissTokens?: number | null;
+    };
+    physicalRequestCount: number;
+    protocolFallbackCount: number;
+    durationMs: number;
+  },
+): void {
+  recordWritingLlmCall(stageInput.frozenContext.generationTraceId, {
+    kind: input.kind,
+    stage: input.stage,
+    inputTokens: Number(
+      input.result.inputTokens ?? input.result.usage?.prompt ?? 0,
+    ),
+    outputTokens: Number(
+      input.result.outputTokens ?? input.result.usage?.completion ?? 0,
+    ),
+    physicalRequestCount: Math.max(0, input.physicalRequestCount ?? 1),
+    protocolFallbackCount: Math.max(0, input.protocolFallbackCount ?? 0),
+    promptCacheHitTokens: input.result.promptCacheHitTokens ?? null,
+    promptCacheMissTokens: input.result.promptCacheMissTokens ?? null,
+    durationMs: Math.max(0, input.durationMs),
+  });
+}
+
+function nullableSum(
+  left: number | null | undefined,
+  right: number | null | undefined,
+): number | null {
+  if (left == null && right == null) return null;
+  return (left ?? 0) + (right ?? 0);
 }
 
 function emptyWriterError(

@@ -1,3 +1,4 @@
+import type { WritingChapterObservability } from '../observability/writingChapterObservability';
 import type {
   FrozenModelConfig,
   WritingInstruction,
@@ -113,6 +114,8 @@ export interface WritingKernelStageEvent {
   /** Formal-skip provenance (status === 'skipped', One-Shot profile). */
   skipReason?: string;
   policyRuleId?: string;
+  /** Observation-only stage duration. Not part of Freeze identity. */
+  durationMs?: number;
 }
 
 export interface WritingKernelTrace {
@@ -132,4 +135,9 @@ export interface WritingKernelTrace {
   unexpectedLiveReadCount: number;
   fatalCount: number;
   falseAppliedRequirementCount: number;
+  /**
+   * Phase 0 chapter observability. Optional so historical traces keep parsing.
+   * Never participates in freezeFingerprint.
+   */
+  observability?: WritingChapterObservability;
 }

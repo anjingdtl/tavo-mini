@@ -27,6 +27,10 @@ import {
   appendWritingKernelStageEvent,
   createWritingKernelTrace,
 } from './trace/writingTrace';
+import {
+  bindWritingObservabilityCollector,
+  finalizeWritingKernelObservability,
+} from './observability/writingObservabilityCollector';
 
 /** Hard bound: 5 pre-freeze steps + up to 11 stages with retries. */
 const MAX_KERNEL_STEPS = 96;
@@ -109,6 +113,7 @@ export async function runWritingKernel<TResult = unknown>(input: {
         freezeSeen = true;
         frozenContext = outcome.frozenContext;
         trace = outcome.trace;
+        bindWritingObservabilityCollector(trace, frozenContext);
         continue;
       }
 
@@ -160,6 +165,10 @@ export async function runWritingKernel<TResult = unknown>(input: {
     }
   } finally {
     await driver.finalize();
+  }
+
+  if (trace) {
+    trace = finalizeWritingKernelObservability(trace, frozenContext);
   }
 
   if (input.persistTrace && trace) {

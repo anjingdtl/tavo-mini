@@ -50,6 +50,7 @@ import type {
   FrozenWritingContext,
   WritingKernelTrace,
 } from './writing/contracts/frozenWritingContext';
+import { parseWritingChapterObservability } from './writing/observability/writingChapterObservability';
 import type {
   WritingScenario,
   WritingSourceTrace,
@@ -475,6 +476,12 @@ function parseWritingSourceTrace(
   };
 }
 
+function observabilityFromRaw(
+  raw: unknown,
+): WritingKernelTrace['observability'] | undefined {
+  return parseWritingChapterObservability(raw);
+}
+
 const WRITING_KERNEL_STAGES = new Set([
   'collect',
   'normalize',
@@ -534,6 +541,7 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
       'restart_task',
     );
   }
+  const observability = observabilityFromRaw(raw.observability);
   const events = raw.events.map((event, index) => {
     if (
       !isPlainObject(event) ||
@@ -541,7 +549,8 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
       !WRITING_KERNEL_STAGES.has(event.stage) ||
       (event.status !== 'started' &&
         event.status !== 'completed' &&
-        event.status !== 'blocked') ||
+        event.status !== 'blocked' &&
+        event.status !== 'skipped') ||
       (event.detail != null && typeof event.detail !== 'string')
     ) {
       throw new OutlineContextError(
@@ -554,6 +563,15 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
       stage: event.stage as WritingKernelTrace['events'][number]['stage'],
       status: event.status as WritingKernelTrace['events'][number]['status'],
       ...(typeof event.detail === 'string' ? { detail: event.detail } : {}),
+      ...(typeof event.skipReason === 'string'
+        ? { skipReason: event.skipReason }
+        : {}),
+      ...(typeof event.policyRuleId === 'string'
+        ? { policyRuleId: event.policyRuleId }
+        : {}),
+      ...(typeof event.durationMs === 'number' && Number.isFinite(event.durationMs)
+        ? { durationMs: event.durationMs }
+        : {}),
     };
   });
   return {
@@ -572,6 +590,7 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
     ...(typeof raw.stagePolicyFingerprint === 'string'
       ? { stagePolicyFingerprint: raw.stagePolicyFingerprint }
       : {}),
+    ...(observability ? { observability } : {}),
     events,
     silentContextLossCount: parseTraceCounter(
       raw.silentContextLossCount,

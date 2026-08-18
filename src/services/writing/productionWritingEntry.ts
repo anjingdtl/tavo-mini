@@ -27,6 +27,7 @@ import type {
 } from './contracts/writingSource';
 import { runWritingKernel } from './unifiedWritingKernel';
 import type { WritingKernelTrace } from './contracts/frozenWritingContext';
+import { mergeWritingChapterObservability } from './observability/writingChapterObservability';
 import { createOutlineStageDriver } from './execution/outlineStageDriver';
 import {
   createContinuationStageDriver,
@@ -99,6 +100,14 @@ export function mergePostFreezeKernelTrace(
   return {
     ...existing,
     events,
+    ...(completed.observability || existing.observability
+      ? {
+          observability: mergeWritingChapterObservability(
+            existing.observability,
+            completed.observability,
+          ),
+        }
+      : {}),
   };
 }
 

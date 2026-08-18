@@ -20,6 +20,12 @@ import { runReviewStage } from './review';
 import type { SemanticApplyCheckInput } from './semanticApply';
 import type { StageLlmCaller } from '../scenario/continuationWritingTypes';
 import { toFrozenStageModelConfig } from '../contracts/freezeModelConfig';
+import {
+  addWritingStagePersistMs,
+  beginWritingStageTiming,
+  bindWritingObservabilityCollector,
+  endWritingStageTiming,
+} from '../observability/writingObservabilityCollector';
 
 export interface WritingStagesRunInput {
   frozenContext: FrozenWritingContext;
@@ -38,6 +44,7 @@ export interface WritingStagesRunInput {
 export async function runWritingStages(
   input: WritingStagesRunInput,
 ): Promise<SharedWritingStageResult[]> {
+  bindWritingObservabilityCollector(input.trace, input.frozenContext);
   const results: SharedWritingStageResult[] = [];
   const artifacts: WritingStageArtifacts = { ...(input.artifacts || {}) };
   if (input.persistAdapter?.loadExisting) {
@@ -56,6 +63,12 @@ export async function runWritingStages(
     }
   }
   for (const stage of input.stages) {
+    const persistAdapter = wrapPersistAdapterForObservability(
+      input.persistAdapter,
+      input.frozenContext.generationTraceId,
+      stage,
+    );
+    beginWritingStageTiming(input.frozenContext.generationTraceId, stage);
     const stageInput: SharedWritingStageInput = {
       frozenContext: input.frozenContext,
       artifacts,
@@ -72,7 +85,7 @@ export async function runWritingStages(
       modelConfig: toFrozenStageModelConfig(input.frozenContext.model),
       trace: input.trace,
       semanticApply: input.semanticApply,
-      persistAdapter: input.persistAdapter,
+      persistAdapter,
       callStage: input.callStage,
       abortSignal: input.abortSignal,
     };
@@ -107,11 +120,20 @@ export async function runWritingStages(
     if (result.artifact) {
       artifacts[stage] = result.artifact;
     }
+    endWritingStageTiming({
+      generationTraceId: input.frozenContext.generationTraceId,
+      stage,
+      status: result.status,
+      skipReason: result.skipReason,
+      policyRuleId: result.policyRuleId,
+      frozenContext: input.frozenContext,
+      artifacts,
+    });
     if (result.status === 'skipped') {
       // Formal skip (One-Shot profile): mirror `skipped` into the durable
       // ledger so policy-skipped stages never linger as `queued`. Never
       // issues a request and never writes an empty artifact.
-      await input.persistAdapter?.persistStageSkip?.(stage, result);
+      await persistAdapter?.persistStageSkip?.(stage, result);
       continue;
     }
     if (result.status !== 'completed') {
@@ -124,9 +146,45 @@ export async function runWritingStages(
               ),
               { code: result.diagnostics[0] },
             );
-      await input.persistAdapter?.persistStageFailure?.(stage, error);
+      await persistAdapter?.persistStageFailure?.(stage, error);
       throw error;
     }
   }
   return results;
+}
+
+function wrapPersistAdapterForObservability(
+  adapter: WritingDurablePersistAdapter | undefined,
+  generationTraceId: string,
+  stage: SharedWritingStage,
+): WritingDurablePersistAdapter | undefined {
+  if (!adapter) return adapter;
+  const time = async <T>(work: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await work();
+    } finally {
+      addWritingStagePersistMs(generationTraceId, stage, Date.now() - startedAt);
+    }
+  };
+  return {
+    ...adapter,
+    loadExisting: adapter.loadExisting
+      ? (name => adapter.loadExisting!(name))
+      : undefined,
+    reserve: adapter.reserve
+      ? name => time(() => adapter.reserve!(name))
+      : undefined,
+    persistStageArtifact: (name, artifact) =>
+      time(() => adapter.persistStageArtifact(name, artifact)),
+    persistStageFailure: adapter.persistStageFailure
+      ? (name, error) => time(() => adapter.persistStageFailure!(name, error))
+      : undefined,
+    persistStageSkip: adapter.persistStageSkip
+      ? (name, result) => time(() => adapter.persistStageSkip!(name, result))
+      : undefined,
+    persistFinal: adapter.persistFinal
+      ? artifacts => time(() => adapter.persistFinal!(artifacts))
+      : undefined,
+  };
 }

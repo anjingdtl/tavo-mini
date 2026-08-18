@@ -24,6 +24,7 @@ export * from './context/renderWritingContext';
 export * from './context/freezeWritingContext';
 export * from './context/buildFrozenWritingContext';
 export * from './trace/writingTrace';
+export * from './observability';
 export * from './unifiedWritingKernel';
 export * from './replay/writingReplay';
 export * from './productionWritingEntry';

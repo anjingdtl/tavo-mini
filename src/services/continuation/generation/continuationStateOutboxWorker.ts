@@ -18,10 +18,12 @@ import {
   insertProposals,
   ensureGenerationSettings,
   getOutboxByDedupe,
+  getRunById,
   listPendingOutbox,
   markRunsInterruptedOnColdStart,
   MAX_OUTBOX_AUTO_RETRY_ATTEMPTS,
 } from './generationRepository';
+import { recordPostWritingObservability } from '../../writing/observability/writingObservabilityCollector';
 import type { ProposalType } from './types';
 
 /**
@@ -272,6 +274,7 @@ async function handleExtractState(
       configId != null
         ? await resolveLLMRequestConfigById(configId)
         : await resolveLLMRequestConfig();
+    const extractStartedAt = Date.now();
     const result = await callLLMResult(
       messages,
       resolveContinuationStateExtractionMaxOutputTokens(requestConfig),
@@ -289,6 +292,11 @@ async function handleExtractState(
     raw = result.text ?? '';
     finishReason = result.finishReason;
     emptyReason = result.emptyReason;
+    await recordStateExtractionObservability(payload, {
+      durationMs: Date.now() - extractStartedAt,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+    });
   }
 
   const proposals = parseExtraction(raw, content.length, {
@@ -310,6 +318,38 @@ async function handleExtractState(
       evidenceEnd: p.evidenceEnd,
     })),
   );
+}
+
+async function recordStateExtractionObservability(
+  payload: { sourceRunId?: string | null },
+  usage: { durationMs: number; inputTokens?: number; outputTokens?: number },
+): Promise<void> {
+  if (!payload.sourceRunId) return;
+  try {
+    const run = await getRunById(payload.sourceRunId);
+    const snapshot = run?.contextSnapshotJson
+      ? (JSON.parse(run.contextSnapshotJson) as {
+          generationTraceId?: string;
+          writingKernelTrace?: { generationTraceId?: string };
+        })
+      : null;
+    const generationTraceId =
+      snapshot?.writingKernelTrace?.generationTraceId ||
+      snapshot?.generationTraceId ||
+      null;
+    if (!generationTraceId) return;
+    recordPostWritingObservability({
+      generationTraceId,
+      kind: 'state_extraction',
+      durationMs: usage.durationMs,
+      blockingMs: 0,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      physicalRequestCount: 1,
+    });
+  } catch {
+    // Observability must never fail state extraction.
+  }
 }
 
 /** Diagnostic metadata for parseExtraction error messages. */

@@ -60,3 +60,5 @@ jobs:
           __tests__/writingOneShotResume.test.ts
           __tests__/writingOneShotOnePaidCallPerChapter.test.ts
           __tests__/writingOneShotSkipLedgerSemantics.test.ts
+          __tests__/writingChapterObservability.test.ts
+          __tests__/writingOneFlowPhase0Baseline.test.ts

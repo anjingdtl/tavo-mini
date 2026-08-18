@@ -6,13 +6,14 @@ import type {
   WritingKernelTrace,
 } from '../contracts/frozenWritingContext';
 import type { WritingRequest } from '../contracts/writingSource';
+import { bindWritingObservabilityCollector } from '../observability/writingObservabilityCollector';
 
 export function createWritingKernelTrace(input: {
   request: WritingRequest;
   frozenContext: FrozenWritingContext;
   events?: WritingKernelStageEvent[];
 }): WritingKernelTrace {
-  return {
+  const trace: WritingKernelTrace = {
     version: 1,
     writingRunId: input.request.writingRunId,
     generationTraceId: input.request.generationTraceId,
@@ -34,6 +35,8 @@ export function createWritingKernelTrace(input: {
     fatalCount: 0,
     falseAppliedRequirementCount: 0,
   };
+  bindWritingObservabilityCollector(trace, input.frozenContext);
+  return trace;
 }
 
 export function appendWritingKernelStageEvent(
