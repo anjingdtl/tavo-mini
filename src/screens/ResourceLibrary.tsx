@@ -51,6 +51,7 @@ import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
 import * as db from '../services/database';
 import type { ResourceType } from '../services/database';
 import { estimateTokens } from '../utils/tokenEstimator';
+import { estimatePresetTokens } from '../services/context/resources/presetContextCompiler';
 import { getNoteChapters } from '../utils/noteChapters';
 import {
   DEFAULT_STYLE_WEIGHTS,
@@ -1978,9 +1979,11 @@ export const ResourceLibrary: React.FC<{
                       >
                         预估{' '}
                         {item.estimated_tokens ??
-                          estimateTokens(
-                            item.content || item.data_json || '',
-                          )}{' '}
+                          ((tab as ResourceTab) === 'presets'
+                            ? estimatePresetTokens(item)
+                            : estimateTokens(
+                                item.content || item.data_json || '',
+                              ))}{' '}
                         / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
                       </Text>
                       <View style={styles.usageRow}>
@@ -2591,7 +2594,12 @@ function estimateEditorTokens(editor: EditorState): number {
   if (editor.kind === 'worldbook') return estimateTokens(editor.content);
   if (editor.kind === 'notes') return estimateTokens(editor.content);
   if (editor.kind === 'presets')
-    return estimateTokens(editor.semanticJson);
+    // semanticJson 在保存前是空串；按当前编辑的三段文本用运行时口径估算。
+    return estimatePresetTokens({
+      system_prompt: editor.systemPrompt,
+      writing_style: editor.writingStyle,
+      extra_instructions: editor.extraInstructions,
+    });
   return Number(editor.item.estimated_tokens || 0);
 }
 

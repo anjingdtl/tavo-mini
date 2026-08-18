@@ -12,6 +12,7 @@ import {
 import {
   Download,
   History,
+  Pencil,
   Plus,
   Trash2,
   Upload,
@@ -65,6 +66,7 @@ export const ProjectListScreen: React.FC = () => {
     loadProjects,
     createProject,
     deleteProject,
+    renameProject,
     setCurrentProject,
     workspaceMode,
     selectWorkspaceMode,
@@ -73,6 +75,9 @@ export const ProjectListScreen: React.FC = () => {
   const [newName, setNewName] = useState('');
   const [newMode, setNewMode] = useState<ProjectMode>('outline');
   const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState<Project | null>(null);
+  const [renameName, setRenameName] = useState('');
+  const [renamingBusy, setRenamingBusy] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -277,6 +282,38 @@ export const ProjectListScreen: React.FC = () => {
     ]);
   };
 
+  const openRenameModal = (project: Project) => {
+    setRenaming(project);
+    setRenameName(project.name);
+  };
+
+  const handleRename = async () => {
+    if (!renaming) return;
+    const name = renameName.trim();
+    if (!name || name === renaming.name) {
+      setRenaming(null);
+      return;
+    }
+    setRenamingBusy(true);
+    try {
+      await renameProject(renaming.id, name);
+      Toast.show({
+        type: 'success',
+        text1: '项目已重命名',
+        text2: `「${renaming.name}」→「${name}」`,
+      });
+      setRenaming(null);
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: '重命名失败',
+        text2: error?.message || '未知错误',
+      });
+    } finally {
+      setRenamingBusy(false);
+    }
+  };
+
   const handleImport = () => {
     if (importing) return;
     Alert.alert('导入', '选择要导入的文件类型：', [
@@ -460,6 +497,13 @@ export const ProjectListScreen: React.FC = () => {
                 <History size={18} color={theme.colors.accent} />
               </TouchableOpacity>
             ) : null}
+            <TouchableOpacity
+              accessibilityLabel="重命名项目"
+              onPress={() => openRenameModal(item)}
+              style={styles.iconButton}
+            >
+              <Pencil size={18} color={theme.colors.accent} />
+            </TouchableOpacity>
             <TouchableOpacity
               accessibilityLabel="导出项目"
               onPress={() => showExportOptions(item)}
@@ -647,6 +691,50 @@ export const ProjectListScreen: React.FC = () => {
                 label={creating ? '创建中...' : '创建'}
                 onPress={handleCreate}
                 disabled={!newName.trim() || creating}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={renaming !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenaming(null)}
+      >
+        <Pressable
+          style={styles.overlay}
+          onPress={() => setRenaming(null)}
+        >
+          <Pressable
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              重命名项目
+            </Text>
+            <Field
+              testID="rename-project-name"
+              label="项目名称"
+              value={renameName}
+              onChangeText={setRenameName}
+              placeholder="输入新的项目名称"
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={() => setRenaming(null)}
+              />
+              <Button
+                testID="rename-project-confirm"
+                label={renamingBusy ? '保存中...' : '保存'}
+                onPress={handleRename}
+                disabled={!renameName.trim() || renamingBusy}
               />
             </View>
           </Pressable>

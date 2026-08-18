@@ -147,6 +147,27 @@ export function buildFrozenPresetContextFromSource(
   return frozen;
 }
 
+/**
+ * 运行时注入的作家风格组合文本（草稿/校对阶段全量注入口径）。
+ * UI 侧的「预估占用 tokens」必须复用同一拼接，避免显示与实际注入不一致。
+ */
+export function buildPresetCombinedText(input: {
+  system_prompt?: string | null;
+  writing_style?: string | null;
+  extra_instructions?: string | null;
+}): string {
+  const systemText = String(input.system_prompt || '').trim();
+  const writingStyleText = String(input.writing_style || '').trim();
+  const extraInstructionsText = String(input.extra_instructions || '').trim();
+  return [
+    systemText || DEFAULT_RUNTIME_SYSTEM_PROMPT,
+    writingStyleText && `写作风格：${writingStyleText}`,
+    extraInstructionsText && `附加要求：${extraInstructionsText}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function compileUserPreset(
   preset: Preset,
   requestedPresetId: number,
@@ -154,13 +175,7 @@ function compileUserPreset(
   const systemText = String(preset.system_prompt || '').trim();
   const writingStyleText = String(preset.writing_style || '').trim();
   const extraInstructionsText = String(preset.extra_instructions || '').trim();
-  const combinedText = [
-    systemText || DEFAULT_RUNTIME_SYSTEM_PROMPT,
-    writingStyleText && `写作风格：${writingStyleText}`,
-    extraInstructionsText && `附加要求：${extraInstructionsText}`,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  const combinedText = buildPresetCombinedText(preset);
   return {
     presetId: Number(preset.id),
     presetName: preset.name || '未命名作家风格',
@@ -263,6 +278,14 @@ export function renderPresetForStage(
   };
 }
 
-export function estimatePresetTokens(frozen: FrozenPresetContext): number {
-  return estimateTokens(frozen.combinedText);
+/**
+ * 按运行时注入口径（草稿/校对全量注入）估算作家风格占用 tokens。
+ * 接收 presets 表行或编辑器当前内容的三段文本。
+ */
+export function estimatePresetTokens(preset: {
+  system_prompt?: string | null;
+  writing_style?: string | null;
+  extra_instructions?: string | null;
+}): number {
+  return estimateTokens(buildPresetCombinedText(preset));
 }

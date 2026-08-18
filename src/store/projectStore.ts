@@ -85,6 +85,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   renameProject: async (id, name) => {
     await db.updateProject(id, name);
+    // 当前项目被改名时同步内存引用，避免各页标题/导航仍显示旧名。
+    const current = get().currentProject;
+    if (current?.id === id) {
+      set({ currentProject: { ...current, name } });
+    }
     await get().loadProjects();
   },
 
