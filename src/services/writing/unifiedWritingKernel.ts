@@ -124,6 +124,12 @@ export async function runWritingKernel<TResult = unknown>(input: {
           outcome.stage,
           outcome.status,
           outcome.detail,
+          outcome.status === 'skipped'
+            ? {
+                skipReason: outcome.skipReason,
+                policyRuleId: outcome.policyRuleId,
+              }
+            : undefined,
         );
         continue;
       }

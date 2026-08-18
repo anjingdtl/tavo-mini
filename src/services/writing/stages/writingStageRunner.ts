@@ -108,6 +108,10 @@ export async function runWritingStages(
       artifacts[stage] = result.artifact;
     }
     if (result.status === 'skipped') {
+      // Formal skip (One-Shot profile): mirror `skipped` into the durable
+      // ledger so policy-skipped stages never linger as `queued`. Never
+      // issues a request and never writes an empty artifact.
+      await input.persistAdapter?.persistStageSkip?.(stage, result);
       continue;
     }
     if (result.status !== 'completed') {

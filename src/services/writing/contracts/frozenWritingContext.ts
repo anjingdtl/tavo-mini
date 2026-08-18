@@ -108,8 +108,11 @@ export type WritingKernelStage =
 
 export interface WritingKernelStageEvent {
   stage: WritingKernelStage;
-  status: 'started' | 'completed' | 'blocked';
+  status: 'started' | 'completed' | 'blocked' | 'skipped';
   detail?: string;
+  /** Formal-skip provenance (status === 'skipped', One-Shot profile). */
+  skipReason?: string;
+  policyRuleId?: string;
 }
 
 export interface WritingKernelTrace {

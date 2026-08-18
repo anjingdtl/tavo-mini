@@ -82,9 +82,12 @@ function reviewV2Report(overrides: Record<string, unknown> = {}): object {
   return {
     schemaVersion: 2,
     draftHash: DRAFT_HASH,
-    // Shared Writer's generic structured-report gate requires an explicit
-    // report signal. Keep the historical V2 payload intact while expressing
-    // that signal through the shared contract.
+    // Shared Writer first-pass contract: a structured report must carry an
+    // explicit adoptable signal (content + verdict, or issues/strengths/
+    // suggestions). Without it the stage is unadoptable and fires the one
+    // thinking-disabled Formatter rescue instead of completing first-pass.
+    content: '审阅完成：老者语气需要更温和，其余无阻塞问题。',
+    verdict: 'needs_revision',
     findings: [],
     requiredCorrections: [
       {
@@ -116,6 +119,8 @@ function factCheckV2Report(overrides: Record<string, unknown> = {}): object {
   return {
     schemaVersion: 2,
     draftHash: DRAFT_HASH,
+    content: '事实核查完成：主角与老者的关系与设定冲突。',
+    verdict: 'needs_revision',
     findings: [],
     requiredCorrections: [
       {
@@ -148,12 +153,17 @@ function llm(text: string, finishReason: string = 'stop'): LLMResult {
 
 /** Classify a request by its prompt content; returns the stage name. */
 function stageOf(messages: ChatMessage[]): string {
-  const all = messages.map(m => String(m.content ?? '')).join('\n');
-  if (all.includes('你是初稿作者')) return 'draft';
-  if (all.includes('你是小说终审前的审阅编辑')) return 'review';
-  if (all.includes('可定位、可执行的修正合同')) return 'factCheck';
-  if (all.includes('你是终稿修订员')) return 'proof';
-  if (all.includes('【修订合同（Edit Work Packet）')) return 'proof';
+  const joined = messages.map(m => String(m.content ?? '')).join('\n');
+  if (joined.includes('你是初稿作者')) return 'draft';
+  if (joined.includes('你是小说终审前的审阅编辑')) return 'review';
+  if (joined.includes('可定位、可执行的修正合同')) return 'factCheck';
+  if (joined.includes('你是终稿修订员')) return 'proof';
+  if (joined.includes('【修订合同（Edit Work Packet）')) return 'proof';
+  // One thinking-disabled Formatter rescue is part of the Shared Writer
+  // first-pass contract (V3.2): an unadoptable structured report gets at most
+  // one reformat request before the stage fails closed.
+  if (joined.includes('Shared review Formatter')) return 'reviewFormatter';
+  if (joined.includes('Shared factCheck Formatter')) return 'factCheckFormatter';
   return 'unknown';
 }
 
@@ -297,14 +307,6 @@ async function taskStatus(taskId: string): Promise<string> {
     `SELECT status, final_text, error FROM pipeline_tasks WHERE id = ?`,
     [taskId],
   );
-  if (rows[0]?.error) {
-    // eslint-disable-next-line no-console
-    console.log(
-      'DEBUG task error:',
-      taskId,
-      String(rows[0].error).slice(0, 300),
-    );
-  }
   return rows[0]?.status ?? '__missing__';
 }
 
@@ -350,7 +352,7 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(await checkpointStatus(taskId, 'proof')).toBe('succeeded');
   });
 
-  it('V2 Review / FactCheck use deterministic, reasoning-disabled audit requests', async () => {
+  it('V2 Review / FactCheck use deterministic audit requests with frozen per-stage thinking', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('full');
     const taskId = 't-v2-structured-audit-options';
@@ -378,12 +380,19 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     for (const stage of ['review', 'factCheck'] as const) {
       expect(auditConfigs[stage]).toHaveLength(1);
+      // V3.3 per-stage frozen thinking: outline audit primaries run with
+      // thinking enabled (FactCheck pinned to low effort). Deterministic
+      // sampling (temperature 0.2 / top_p 1 / json_object) is unchanged.
       expect(auditConfigs[stage][0]).toMatchObject({
         responseFormat: 'json_object',
-        thinking: { type: 'disabled' },
+        thinking: { type: 'enabled' },
+        temperature: 0.2,
         top_p: 1,
       });
     }
+    expect(auditConfigs.factCheck[0]).toMatchObject({
+      reasoningEffort: 'low',
+    });
   });
 
   it('V2 DeepSeek Final Reviser freezes adaptive reasoning semantics and usage', async () => {
@@ -430,7 +439,7 @@ describe('V2 production state machine (frozen version=2)', () => {
       expect(stageConfigs[stage]).toHaveLength(1);
     }
     expect(stageConfigs.review[0]).toMatchObject({
-      thinking: { type: 'disabled' },
+      thinking: { type: 'enabled' },
     });
     const attemptRows = await all(
       `SELECT reasoning_tokens, frozen_request_json, request_fingerprint
@@ -592,13 +601,15 @@ describe('V2 production state machine (frozen version=2)', () => {
     expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
   });
 
-  it('V2 reasoning-only Review fails closed without a format-repair request', async () => {
+  it('V2 reasoning-only Review gets one thinking-disabled Formatter rescue then fails closed', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-v2-reasoning-repair-budget';
     await registerTask(taskId, chapterId);
     const reviewConfigs: any[] = [];
+    const formatterConfigs: any[] = [];
     let reviewCalls = 0;
+    let formatterCalls = 0;
     mockCallLLMResult = jest
       .fn()
       .mockImplementation(
@@ -606,20 +617,33 @@ describe('V2 production state machine (frozen version=2)', () => {
           switch (stageOf(messages)) {
             case 'draft':
               return llm(DRAFT_BODY);
-            case 'review':
+            case 'review': {
               reviewCalls += 1;
               reviewConfigs.push(config);
-              if (reviewCalls === 1) {
-                return {
-                  text: null,
-                  reasoningText: '先分析章节结构……'.repeat(40),
-                  emptyReason: 'reasoning_only',
-                  inputTokens: 50,
-                  outputTokens: 1500,
-                  totalTokens: 1550,
-                };
-              }
-              return llm(JSON.stringify(reviewV2Report()));
+              // Reasoning-only primary: no adoptable content channel.
+              return {
+                text: null,
+                reasoningText: '先分析章节结构……'.repeat(40),
+                emptyReason: 'reasoning_only',
+                inputTokens: 50,
+                outputTokens: 1500,
+                totalTokens: 1550,
+              };
+            }
+            case 'reviewFormatter': {
+              formatterCalls += 1;
+              formatterConfigs.push(config);
+              // Formatter rescue also returns reasoning-only prose → the
+              // stage must fail closed here, with NO further requests.
+              return {
+                text: null,
+                reasoningText: '整理候选语义……'.repeat(20),
+                emptyReason: 'reasoning_only',
+                inputTokens: 50,
+                outputTokens: 600,
+                totalTokens: 650,
+              };
+            }
             case 'proof':
               return llm(DRAFT_BODY + '\n\n老者温和地提醒了他。');
             default:
@@ -630,8 +654,12 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    expect(reviewConfigs).toHaveLength(1);
-    expect(reviewConfigs[0].thinking).toEqual({ type: 'disabled' });
+    expect(reviewCalls).toBe(1);
+    // Primary review uses the V3.3 frozen per-stage thinking (enabled).
+    expect(reviewConfigs[0].thinking).toEqual({ type: 'enabled' });
+    // Exactly ONE rescue Formatter, always thinking-disabled.
+    expect(formatterCalls).toBe(1);
+    expect(formatterConfigs[0].thinking).toEqual({ type: 'disabled' });
     expect(await taskStatus(taskId)).toBe('failed');
     expect(await checkpointStatus(taskId, 'review')).toBe('failed');
     expect(await checkpointStatus(taskId, 'proof')).toBe('pending');
@@ -747,12 +775,23 @@ describe('V2 production state machine (frozen version=2)', () => {
         // Legacy proof prompt has no Final-Reviser marker; assert V2 never
         // fires by rejecting the V2-only stage names.
         if (stage === 'draft') return llm(DRAFT_BODY);
-        if (stage === 'review' || stage === 'factCheck') {
+        if (stage === 'review') {
+          // Legacy free-form review shape — still adoptable by the shared
+          // first-pass gate through the issues/strengths/suggestions signal.
           return llm(
             JSON.stringify({
               strengths: ['场景清晰'],
               issues: ['老者语气生硬'],
               suggestions: ['让语气温和'],
+            }),
+          );
+        }
+        if (stage === 'factCheck') {
+          // FactCheck adoptability needs verdict/errors/warnings/confirmed.
+          return llm(
+            JSON.stringify({
+              confirmed: ['老者是守林人'],
+              issues: [],
             }),
           );
         }
@@ -764,16 +803,6 @@ describe('V2 production state machine (frozen version=2)', () => {
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
-    // eslint-disable-next-line no-console
-    console.log(
-      'DEBUG legacy cp:',
-      JSON.stringify(
-        await all(
-          `SELECT stage, status, error_message FROM pipeline_stage_checkpoints WHERE task_id = ?`,
-          [taskId],
-        ),
-      ),
-    );
     expect(await taskStatus(taskId)).toBe('completed');
     const attempts = await attemptsFor(taskId);
     for (const a of attempts) {

@@ -37,6 +37,7 @@ import type {
 } from '../../continuation/generation/types';
 import type { WritingKernelStage } from '../contracts/frozenWritingContext';
 import type {
+  SharedWritingStageResult,
   WritingStageDriver,
   WritingStepOutcome,
 } from '../contracts/writingStage';
@@ -55,6 +56,37 @@ function stageOutcome(
   action: string,
 ): WritingStepOutcome {
   return { kind: 'stage', stage, action, status };
+}
+
+/**
+ * Derive the durable step outcomes from the REAL shared stage results so a
+ * formally skipped stage (One-Shot profile) surfaces `skipped` with its
+ * frozen skip provenance — never a fake `completed`. Local settlement stages
+ * (finalValidate / persist) always complete.
+ */
+function outcomesFromResults(
+  results: SharedWritingStageResult[],
+  action: string,
+  settlementActions: Partial<Record<string, string>> = {},
+): WritingStepOutcome[] {
+  return results.map(result =>
+    result.status === 'skipped'
+      ? {
+          kind: 'stage' as const,
+          stage: result.stage as WritingKernelStage,
+          action: settlementActions[result.stage] || action,
+          status: 'skipped' as const,
+          skipReason: result.skipReason,
+          policyRuleId: result.policyRuleId,
+          detail: result.skipReason,
+        }
+      : {
+          kind: 'stage' as const,
+          stage: result.stage as WritingKernelStage,
+          action: settlementActions[result.stage] || action,
+          status: 'completed' as const,
+        },
+  );
 }
 
 /**
@@ -169,7 +201,7 @@ export async function createContinuationStageDriver(
           if (!kernelFreeze.frozenContext) {
             throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
           }
-          await runWritingStages({
+          const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
             stages: ['draft', 'review'],
@@ -181,10 +213,7 @@ export async function createContinuationStageDriver(
             abortSignal: options.signal,
           });
           round = 'round2';
-          pendingOutcomes = [
-            stageOutcome('draft', 'completed', 'round1'),
-            stageOutcome('review', 'completed', 'round1'),
-          ];
+          pendingOutcomes = outcomesFromResults(results, 'round1');
           return pendingOutcomes.shift()!;
         }
         if (armed === 'round2') {
@@ -192,7 +221,7 @@ export async function createContinuationStageDriver(
           if (!kernelFreeze.frozenContext) {
             throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
           }
-          await runWritingStages({
+          const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
             stages: ['revision', 'audit', 'factCheck'],
@@ -204,11 +233,7 @@ export async function createContinuationStageDriver(
             abortSignal: options.signal,
           });
           round = 'round3';
-          pendingOutcomes = [
-            stageOutcome('revision', 'completed', 'round2'),
-            stageOutcome('audit', 'completed', 'round2'),
-            stageOutcome('factCheck', 'completed', 'round2'),
-          ];
+          pendingOutcomes = outcomesFromResults(results, 'round2');
           return pendingOutcomes.shift()!;
         }
         if (armed === 'round3') {
@@ -220,7 +245,7 @@ export async function createContinuationStageDriver(
             run,
             snapshot: snapshotWithTraceId,
           });
-          await runWritingStages({
+          const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
             stages: ['proof', 'finalValidate', 'persist'],
@@ -268,11 +293,9 @@ export async function createContinuationStageDriver(
             },
           });
           round = 'settle';
-          pendingOutcomes = [
-            stageOutcome('proof', 'completed', 'round3'),
-            stageOutcome('finalValidate', 'completed', 'round3'),
-            stageOutcome('persist', 'completed', 'settlement'),
-          ];
+          pendingOutcomes = outcomesFromResults(results, 'round3', {
+            persist: 'settlement',
+          });
           done = true;
           const settled = await getRunById(runId);
           settleResult = settled ?? run;

@@ -41,10 +41,20 @@ export function appendWritingKernelStageEvent(
   stage: WritingKernelStage,
   status: WritingKernelStageEvent['status'],
   detail?: string,
+  skip?: { skipReason?: string; policyRuleId?: string },
 ): WritingKernelTrace {
   return {
     ...trace,
-    events: [...trace.events, { stage, status, ...(detail ? { detail } : {}) }],
+    events: [
+      ...trace.events,
+      {
+        stage,
+        status,
+        ...(detail ? { detail } : {}),
+        ...(skip?.skipReason ? { skipReason: skip.skipReason } : {}),
+        ...(skip?.policyRuleId ? { policyRuleId: skip.policyRuleId } : {}),
+      },
+    ],
   };
 }
 

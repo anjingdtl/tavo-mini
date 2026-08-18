@@ -14,6 +14,7 @@ import type {
 import type {
   SharedWritingArtifact,
   SharedWritingStageName,
+  SharedWritingStageResult,
   WritingDurablePersistAdapter,
   WritingStageArtifacts,
 } from '../contracts/writingStage';
@@ -101,6 +102,28 @@ export function createContinuationDurableAdapter(input: {
         outputJson: JSON.stringify({
           schemaVersion: 1,
           error: error instanceof Error ? error.message : String(error || ''),
+        }),
+      });
+    },
+    async persistStageSkip(stage, result: SharedWritingStageResult) {
+      // Formal skip (One-Shot profile): settle the ledger row on the EXISTING
+      // `skipped` status (schema-32 CHECK already allows it) with the frozen
+      // skip provenance. No request is issued, no artifact is written, and a
+      // skipped stage must never be readable back as executed output.
+      const node = continuationNode(stage);
+      if (!node) return;
+      await updateStageResult({
+        runId: input.run.id,
+        stage: node,
+        status: 'skipped',
+        outputJson: JSON.stringify({
+          schemaVersion: 1,
+          envelope: {
+            skipped: true,
+            skipReason: result.skipReason || 'policy_skipped',
+            policyRuleId: result.policyRuleId || null,
+          },
+          contentHash: hashContent(''),
         }),
       });
     },

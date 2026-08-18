@@ -53,3 +53,10 @@ jobs:
           __tests__/writingFinalSealGates.test.ts
           __tests__/writingFinalSealBehavior.test.ts
           __tests__/writingFirstPassContracts.test.ts
+          __tests__/writingOneShotProfile.test.ts
+          __tests__/writingOneShotPaidCallGate.test.ts
+          __tests__/writingOneShotStagePolicy.test.ts
+          __tests__/writingOneShotElasticBudget.test.ts
+          __tests__/writingOneShotResume.test.ts
+          __tests__/writingOneShotOnePaidCallPerChapter.test.ts
+          __tests__/writingOneShotSkipLedgerSemantics.test.ts

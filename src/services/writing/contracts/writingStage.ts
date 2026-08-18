@@ -35,8 +35,12 @@ export interface WritingStageNotification {
   stage: WritingKernelStage;
   /** Durable action that produced this notification (trace metadata only). */
   action: string;
-  status: 'started' | 'completed' | 'blocked';
+  status: 'started' | 'completed' | 'blocked' | 'skipped';
   detail?: string;
+  /** Present when status === 'skipped': the frozen policy rule that formally
+   * skipped the stage (One-Shot profile). skipped ≠ completed/failed/queued. */
+  skipReason?: string;
+  policyRuleId?: string;
 }
 
 /** The authoritative Freeze snapshot handed to the engine exactly once.
@@ -124,6 +128,15 @@ export interface WritingDurablePersistAdapter {
   persistStageFailure?(
     stage: SharedWritingStageName,
     error: unknown,
+  ): Promise<void>;
+  /**
+   * Persist a FORMAL skip (e.g. One-Shot profile) so the durable ledger never
+   * leaves a policy-skipped stage stuck in `queued`. Must NOT issue any model
+   * request or write an empty artifact pretending the stage executed.
+   */
+  persistStageSkip?(
+    stage: SharedWritingStageName,
+    result: SharedWritingStageResult,
   ): Promise<void>;
   persistFinal?(artifacts: WritingStageArtifacts): Promise<void>;
 }
