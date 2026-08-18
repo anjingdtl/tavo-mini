@@ -110,7 +110,20 @@ export function resolveContinuationStateExtractionMaxOutputTokens(
 }
 
 export async function coldStartNormalizeContinuation(): Promise<number> {
-  return markRunsInterruptedOnColdStart();
+  const interruptedRuns = await markRunsInterruptedOnColdStart();
+  // Outbox rows stuck in `running` belong to a worker that no longer
+  // exists after the restart; listPendingOutbox only claims pending /
+  // interrupted, so without this reset they would never be retried and the
+  // Ready Gate would wait on them forever (observed after a mid-batch app
+  // restart during a large pending replay).
+  const db = await openDatabase();
+  await db.executeSql(
+    `UPDATE continuation_state_sync_outbox
+     SET state = 'interrupted', updated_at = ?
+     WHERE state = 'running'`,
+    [new Date().toISOString()],
+  );
+  return interruptedRuns;
 }
 
 /**
