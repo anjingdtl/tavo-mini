@@ -6,6 +6,7 @@ import type {
 } from '../../continuation/generation/types';
 import type { WritingSource, WritingSourceBundle } from '../contracts/writingSource';
 import { assertValidWritingSourceBundle } from '../contracts/writingSourceValidation';
+import { renderStructuredContinuityStateCandidate } from '../flow/memoryContextCandidates';
 import { createWritingSourceTrace } from '../trace/writingSourceTrace';
 
 type AnyContinuationSnapshot =
@@ -197,6 +198,30 @@ export function buildContinuationWritingSourceBundle(input: {
         sourceId: snapshot.projectId,
         revision,
         content,
+        requirement: 'preferred',
+        activation: 'automatic',
+      }),
+    );
+  }
+  const continuityStateText = renderStructuredContinuityStateCandidate(
+    snapshot.bundles?.effectiveState,
+  );
+  if (continuityStateText.trim()) {
+    const appliedEventIds = Array.isArray(
+      snapshot.bundles?.effectiveState?.appliedEventIds,
+    )
+      ? snapshot.bundles.effectiveState.appliedEventIds.join(',')
+      : '';
+    bundle.preferred.push(
+      source({
+        candidateId: 'continuity-state:effective',
+        kind: 'structured_continuity_state',
+        sourceId: snapshot.projectId,
+        revision:
+          appliedEventIds ||
+          snapshot.storyMemory.stateFingerprint ||
+          snapshot.inputRevisionHash,
+        content: continuityStateText,
         requirement: 'preferred',
         activation: 'automatic',
       }),

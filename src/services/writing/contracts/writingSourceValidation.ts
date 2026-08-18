@@ -91,7 +91,13 @@ export function validateWritingSourceBundle(
 
     const scenarioMismatch =
       (scenario === 'outline' &&
-        ['canon', 'source_boundary', 'seam', 'primary_anchor'].includes(source.kind)) ||
+        [
+          'canon',
+          'source_boundary',
+          'seam',
+          'primary_anchor',
+          'structured_continuity_state',
+        ].includes(source.kind)) ||
       (scenario === 'continuation' && source.kind === 'outline');
     if (scenarioMismatch) {
       issues.push(

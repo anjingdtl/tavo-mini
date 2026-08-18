@@ -27,7 +27,7 @@
 | 1 | ONE Memory | **本轮完成（可进入 Phase 2）** | `TAVO-MINI_ONE-Flow_Phase1_ONE-Memory_实施与验收_20260818.md` |
 | 2 | ONE Context | **本轮收束完成（可进入 Phase 3）** | `TAVO-MINI_ONE-Flow_Phase2_ONE-Context_实施与验收_20260818.md` |
 | 3 | ONE Pipeline | **本轮完成（可进入 Phase 4）** | `TAVO-MINI_ONE-Flow_Phase3_ONE-Pipeline_实施与验收_20260818.md` |
-| 4 | ONE Flow 接驳 + 集成长测 | 未开始 | `TAVO-MINI_ONE-Flow_最终集成验收报告_20260818.md` |
+| 4 | ONE Flow 接驳 + 集成长测 | **接驳完成；压缩长测已跑。未封板** | `TAVO-MINI_ONE-Flow_Phase4_ONE-Flow_实施与验收_20260818.md` / `TAVO-MINI_ONE-Flow_最终集成验收报告_20260818.md` |
 
 Phase 0 只建立可重复观测，不改生产写作决策、不改 Writer / Prompt / Budget / Canon / Story Memory 算法。
 
@@ -113,4 +113,4 @@ UI / batch / resume
 
 **Phase 3：** 显式 DAG；Draft 后 Review ∥ FactCheck/Audit；无 findings 则 Revision 正式 skip；standard Proof 仍 Required。
 
-下一刀是 Phase 4 接驳与真实 LLM 长测。禁止宣布 `ONE FLOW FINAL SEALED / GO`。
+Phase 4 接驳已落地，压缩长测见 `TAVO-MINI_ONE-Flow_Phase4_ONE-Flow_实施与验收_20260818.md`。禁止宣布 `ONE FLOW FINAL SEALED / GO`。

@@ -28,6 +28,8 @@ import {
 import { processContinuationOutbox } from '../continuation/generation/continuationStateOutboxWorker';
 import { continuationSourceReader } from '../continuation/continuationSourceReader';
 import { CanonQueryService } from '../continuation/canon/canonQueryService';
+import { evaluatePostWritingMemoryReady } from '../writing/memory/postWritingMemoryReady';
+import { replayPendingContinuityProposals } from '../writing/memory/continuityStateAutoCommit';
 import type { ContinuationBatchAnchorV1 } from '../../types/multiChapterBatch';
 
 export type StateGateResult =
@@ -171,40 +173,54 @@ export async function checkNextChapterReady(
       errorCode: 'BATCH_CONTINUATION_STATE_SYNC_FAILED',
     };
   }
+
+  // ONE Memory ready policy: extract already settled above; this function
+  // is the single next-chapter Freeze gate for SM + conflict confirmation.
+  let storyMemoryStatus: string | null = null;
+  let dirtyFromPosition: number | null = null;
   try {
     const memory = await db.getProjectStoryMemory(projectId);
-    const status = String((memory as any)?.status || '');
-    const dirtyFrom = (memory as any)?.dirtyFromPosition;
-    if (
-      (status === 'dirty' || status === 'rebuilding') &&
-      dirtyFrom != null &&
-      Number(dirtyFrom) <= completedPosition
-    ) {
-      return {
-        ready: false,
-        status: 'waiting',
-        reason: '故事记忆重建尚未完成',
-      };
-    }
+    storyMemoryStatus = String((memory as any)?.status || '') || null;
+    dirtyFromPosition =
+      (memory as any)?.dirtyFromPosition != null
+        ? Number((memory as any).dirtyFromPosition)
+        : null;
   } catch {
     // non-fatal — outbox rows above are the authoritative settlement signal
   }
-
-  // Conflict-only confirmation: routine State Update is auto-committed during
-  // extract_state. Leftover pending rows are Canon / major / unmergeable /
-  // low-confidence gates and must not silently enter the next batch chapter.
+  let pendingConfirmationCount = 0;
   try {
-    const pendingConfirmationCount = await countPendingMajorProposals(projectId);
-    if (pendingConfirmationCount > 0) {
-      return {
-        ready: false,
-        status: 'blocked',
-        reason: `存在 ${pendingConfirmationCount} 项需人工确认的状态冲突`,
-        errorCode: 'BATCH_CONTINUATION_STATE_CONFLICT',
-      };
-    }
+    // Leftover pre-Phase-1 pending rows are still `status=pending`. Replay
+    // them through the ONE Memory classifier before treating the remainder
+    // as a real conflict gate.
+    await replayPendingContinuityProposals(projectId);
+    pendingConfirmationCount = await countPendingMajorProposals(projectId);
   } catch {
     // Test doubles / older fixtures without the proposals table stay unblocked.
+  }
+  const memoryReady = evaluatePostWritingMemoryReady({
+    pendingStateExtractionCount: 0,
+    storyMemoryStatus,
+    dirtyFromPosition,
+    completedPosition,
+    pendingConfirmationCount,
+  });
+  if (memoryReady.status === 'waiting') {
+    return {
+      ready: false,
+      status: 'waiting',
+      reason: memoryReady.reason || '故事记忆尚未就绪',
+    };
+  }
+  if (memoryReady.status === 'conflict_parked') {
+    return {
+      ready: false,
+      status: 'blocked',
+      reason:
+        memoryReady.reason ||
+        `存在 ${pendingConfirmationCount} 项需人工确认的状态冲突`,
+      errorCode: 'BATCH_CONTINUATION_STATE_CONFLICT',
+    };
   }
 
   // 5. Source snapshot drift vs the frozen anchor.

@@ -29,6 +29,10 @@ import type {
 import { StoryMemoryError } from './storyMemoryTypes';
 import { validateChapterMemoryPatch } from './storyMemoryValidator';
 import {
+  assertWritingPersistedEventAllowsMemoryUpdate,
+  buildWritingPersistedEvent,
+} from '../writing/flow/writingPersistedEvent';
+import {
   createDefaultStoryMemoryPolicy,
   evaluateStoryMemoryDue,
   listPendingChapters,
@@ -973,6 +977,9 @@ export async function finalizeChapterMemory(
     legacyEveryChapter?: boolean;
     /** Optional chapter generation id for Phase 0 post-writing telemetry. */
     generationTraceId?: string;
+    freezeFingerprint?: string;
+    executionProfile?: 'standard' | 'one_shot';
+    appliedRequirementIds?: string[];
   } = {},
 ): Promise<FinalizeChapterMemoryResult> {
   const startedAt = Date.now();
@@ -980,6 +987,20 @@ export async function finalizeChapterMemory(
   if (!chapter) throw new Error('章节不存在。');
   if (!chapter.content.trim())
     throw new Error('章节正文为空，无法更新故事记忆。');
+  const writingPersistedEvent = buildWritingPersistedEvent({
+    generationTraceId:
+      options.generationTraceId ||
+      `outline-finalize:${chapter.project_id}:${chapter.id}`,
+    freezeFingerprint: options.freezeFingerprint || 'outline-local-finalize',
+    projectId: chapter.project_id,
+    chapterId: chapter.id,
+    chapterPosition: Number(chapter.position) || 0,
+    finalBody: chapter.content,
+    executionProfile: options.executionProfile,
+    appliedRequirementIds: options.appliedRequirementIds,
+    scenario: 'outline',
+  });
+  assertWritingPersistedEventAllowsMemoryUpdate(writingPersistedEvent);
 
   let maintenance: StoryMemoryMaintenanceRequest | null = null;
   let backgroundJob: (() => Promise<void>) | null = null;

@@ -80,6 +80,7 @@ function kindForSource(source: WritingSource): WritingRequirementKind {
       return source.kind;
     case 'story_memory':
     case 'episodic_memory':
+    case 'structured_continuity_state':
     case 'note':
     case 'preset':
     case 'other':

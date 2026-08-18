@@ -9,6 +9,7 @@ import { useProjectStore } from '../../store/projectStore';
 import { useThemeStore } from '../../store/themeStore';
 import { getActiveContinuationSource } from '../../services/continuation/continuationImportService';
 import { countPendingMajorProposals } from '../../services/continuation/generation';
+import { replayPendingContinuityProposals } from '../../services/writing/memory/continuityStateAutoCommit';
 import { PROJECT_MODE_LABELS } from '../../services/continuation/projectMode';
 import type { ContinuationSource } from '../../services/continuation/types';
 
@@ -45,6 +46,7 @@ export function useContinuationHome(navigation: ContinuationHomeNavigation) {
       // Conflict-only confirmation badge (ONE Memory). Routine State Update
       // auto-commits; leftover pending rows are the confirmation gate.
       try {
+        await replayPendingContinuityProposals(currentProject.id);
         const n = await countPendingMajorProposals(currentProject.id);
         setPendingProposalCount(n);
       } catch {

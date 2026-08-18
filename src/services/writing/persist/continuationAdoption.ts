@@ -91,6 +91,10 @@ import {
   type ResolvedStageCapacity,
 } from '../scenario/continuationStageCapacity';
 import {
+  assertWritingPersistedEventAllowsMemoryUpdate,
+  buildWritingPersistedEvent,
+} from '../flow/writingPersistedEvent';
+import {
   countHanCharacters,
   evaluateContinuationLength,
   isContinuationLengthIssueSubtype,
@@ -1529,6 +1533,47 @@ export async function abandonRun(runId: string): Promise<void> {
   activeControllers.delete(runId);
 }
 
+function parseRunSnapshot(run: ContinuationGenerationRun | null): any | null {
+  if (!run?.contextSnapshotJson) return null;
+  try {
+    return JSON.parse(run.contextSnapshotJson);
+  } catch {
+    return null;
+  }
+}
+
+function readRunTraceField(
+  run: ContinuationGenerationRun | null,
+  field: 'generationTraceId' | 'freezeFingerprint',
+): string {
+  const snapshot = parseRunSnapshot(run);
+  const value = snapshot?.writingKernelTrace?.[field];
+  return typeof value === 'string' && value.trim() ? value.trim() : '';
+}
+
+function readRunExecutionProfile(
+  run: ContinuationGenerationRun | null,
+): 'standard' | 'one_shot' {
+  const snapshot = parseRunSnapshot(run);
+  const profile =
+    snapshot?.frozenWritingContext?.stagePolicy?.values?.executionProfile;
+  return profile === 'one_shot' ? 'one_shot' : 'standard';
+}
+
+function readRunAppliedRequirementIds(
+  run: ContinuationGenerationRun | null,
+): string[] {
+  const snapshot = parseRunSnapshot(run);
+  const items = snapshot?.frozenWritingContext?.requirements?.items;
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter(
+      (item: { applied?: boolean; id?: string }) =>
+        item && item.applied && typeof item.id === 'string' && item.id.trim(),
+    )
+    .map((item: { id: string }) => item.id);
+}
+
 /**
  * Finalize chapter: mark finalized, dirty SM, link source run and enqueue
  * extract_state outbox — all in ONE local transaction (Spec §11.1, fix-plan §2).
@@ -1608,6 +1653,23 @@ export async function finalizeContinuationChapter(input: {
     missingFrozenConfigReason = 'manual_or_unknown_source_run';
   }
 
+  const persistedEvent = buildWritingPersistedEvent({
+    generationTraceId:
+      readRunTraceField(sourceRun, 'generationTraceId') ||
+      `continuation-finalize:${input.chapterId}:${revisionHash}`,
+    freezeFingerprint:
+      readRunTraceField(sourceRun, 'freezeFingerprint') ||
+      'continuation-local-finalize',
+    projectId: input.projectId,
+    chapterId: input.chapterId,
+    chapterPosition: position,
+    finalBody: input.content,
+    executionProfile: readRunExecutionProfile(sourceRun),
+    appliedRequirementIds: readRunAppliedRequirementIds(sourceRun),
+    scenario: 'continuation',
+  });
+  assertWritingPersistedEventAllowsMemoryUpdate(persistedEvent);
+
   const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
   const rebuildDedupeKey = `rebuild_story_memory:auto:${input.projectId}:${position}:${revisionHash}`;
   const outboxId = `co_${v4().replace(/-/g, '')}`;
@@ -1677,6 +1739,7 @@ export async function finalizeContinuationChapter(input: {
         llmConfigId: frozenStateExtractionConfigId,
         // Visible audit hint only — never the prompt or chapter body.
         configNote: missingFrozenConfigReason,
+        writingPersistedEvent: persistedEvent,
       },
       dedupeKey,
       ts,

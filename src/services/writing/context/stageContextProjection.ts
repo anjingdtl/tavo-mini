@@ -27,6 +27,7 @@ export const STAGE_CONTEXT_KIND_ALLOWLIST: Record<
     'character',
     'worldbook',
     'story_memory',
+    'structured_continuity_state',
   ],
   factCheck: [
     'canon',
@@ -36,6 +37,7 @@ export const STAGE_CONTEXT_KIND_ALLOWLIST: Record<
     'character',
     'worldbook',
     'story_memory',
+    'structured_continuity_state',
   ],
   revision: [
     'instruction',
@@ -44,6 +46,7 @@ export const STAGE_CONTEXT_KIND_ALLOWLIST: Record<
     'source_boundary',
     'writer_style',
     'story_memory',
+    'structured_continuity_state',
   ],
   proof: ['writer_style', 'instruction'],
   finalValidate: [],

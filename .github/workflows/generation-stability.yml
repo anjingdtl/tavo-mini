@@ -65,3 +65,4 @@ jobs:
           __tests__/writingOneFlowPhase1Memory.test.ts
           __tests__/writingOneFlowPhase2Context.test.ts
           __tests__/writingOneFlowPhase3Pipeline.test.ts
+          __tests__/writingOneFlowPhase4Flow.test.ts

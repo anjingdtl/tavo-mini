@@ -28,6 +28,7 @@ export * from './context/buildFrozenWritingContext';
 export * from './trace/writingTrace';
 export * from './observability';
 export * from './memory';
+export * from './flow';
 export * from './unifiedWritingKernel';
 export * from './replay/writingReplay';
 export * from './productionWritingEntry';

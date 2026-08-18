@@ -15,6 +15,7 @@ export type WritingSourceKind =
   | 'note'
   | 'story_memory'
   | 'episodic_memory'
+  | 'structured_continuity_state'
   | 'writer_style'
   | 'preset'
   | 'instruction'

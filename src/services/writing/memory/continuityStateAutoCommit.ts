@@ -5,6 +5,7 @@
  */
 import { CanonQueryService } from '../../continuation/canon/canonQueryService';
 import { commitAcceptedProposal } from '../../continuation/generation/commitStateProposal';
+import { listProposals } from '../../continuation/generation/generationRepository';
 import type { ContinuationStateProposal } from '../../continuation/generation/types';
 import {
   classifyContinuityProposalCommit,
@@ -19,6 +20,18 @@ export interface AutoCommitContinuityResult {
     reason: ContinuityConfirmationReason;
     policyRuleId: string;
   }>;
+}
+
+/**
+ * Replay leftover pending rows (pre-Phase-1 libraries) through the same
+ * classifier used by extract_state. Routine leftovers auto-commit; only
+ * real conflict / unmergeable / low-confidence-affects-later stay pending.
+ */
+export async function replayPendingContinuityProposals(
+  projectId: number,
+): Promise<AutoCommitContinuityResult> {
+  const proposals = await listProposals(projectId, 'pending');
+  return autoCommitRoutineContinuityProposals({ projectId, proposals });
 }
 
 export async function autoCommitRoutineContinuityProposals(input: {
