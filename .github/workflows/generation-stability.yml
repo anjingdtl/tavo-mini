@@ -66,3 +66,6 @@ jobs:
           __tests__/writingOneFlowPhase2Context.test.ts
           __tests__/writingOneFlowPhase3Pipeline.test.ts
           __tests__/writingOneFlowPhase4Flow.test.ts
+          __tests__/writingOneFlowClosureOutbox.test.ts
+          __tests__/writingOneFlowClosurePendingReplay.test.ts
+          __tests__/writingOneFlowClosureReadyGate.test.ts
