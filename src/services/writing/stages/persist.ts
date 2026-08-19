@@ -5,18 +5,18 @@ import type {
 } from '../contracts/writingStage';
 import { evaluateWritingRequirements } from '../contracts/writingRequirement';
 import { preflightSharedStage } from './sharedStage';
+import { resolveStageSkipOrNull, skippedStageResult } from './writerCore';
 import {
-  resolveStageSkipOrNull,
-  skippedStageResult,
-} from './writerCore';
+  finalCandidateModeForPolicy,
+  resolveFinalWritingCandidate,
+} from './finalCandidate';
 
-function readBody(value: unknown): string {
+function readFinalValidateBody(value: unknown): string {
   if (!value) return '';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return value.trim();
   if (typeof value === 'object') {
     const row = value as Record<string, unknown>;
-    if (typeof row.body === 'string') return row.body;
-    if (typeof row.content === 'string') return row.content;
+    if (typeof row.body === 'string' && row.body.trim()) return row.body.trim();
   }
   return '';
 }
@@ -38,12 +38,15 @@ export async function runPersistStage(
       skip.policyRuleId,
     );
   }
-  const body =
-    readBody(input.artifacts.finalValidate) ||
-    readBody(input.artifacts.proof) ||
-    readBody(input.artifacts.revision) ||
-    readBody(input.artifacts.draft);
-  if (!body.trim()) {
+  // The validated Final Candidate is the single source of truth. Persist does
+  // NOT re-derive its own proof→revision→draft chain (no dual truth). Under
+  // the compact contract this never reads a Proof artifact at all.
+  const candidateBody =
+    readFinalValidateBody(input.artifacts.finalValidate) ||
+    resolveFinalWritingCandidate(input.artifacts, {
+      mode: finalCandidateModeForPolicy(input.stagePolicy),
+    }).body;
+  if (!candidateBody.trim()) {
     return {
       stage: 'persist',
       status: 'failed',
@@ -56,7 +59,7 @@ export async function runPersistStage(
   }
   const artifact: SharedWritingArtifact = {
     stage: 'persist',
-    body,
+    body: candidateBody,
     diagnostics: ['persisted'],
   };
   try {

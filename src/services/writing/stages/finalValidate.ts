@@ -5,11 +5,12 @@ import type {
 } from '../contracts/writingStage';
 import { evaluateWritingRequirements } from '../contracts/writingRequirement';
 import { preflightSharedStage } from './sharedStage';
-import {
-  resolveStageSkipOrNull,
-  skippedStageResult,
-} from './writerCore';
+import { resolveStageSkipOrNull, skippedStageResult } from './writerCore';
 import { checkSemanticRequirementApplication } from './semanticApply';
+import {
+  finalCandidateModeForPolicy,
+  resolveFinalWritingCandidate,
+} from './finalCandidate';
 
 function readBody(value: unknown): string {
   if (!value) return '';
@@ -40,20 +41,12 @@ export async function runFinalValidateStage(
     );
   }
 
-  const proof = input.artifacts.proof as SharedWritingArtifact | undefined;
-  const revision = input.artifacts.revision as SharedWritingArtifact | undefined;
-  const draft = input.artifacts.draft as SharedWritingArtifact | undefined;
-  const loaded =
-    (await input.persistAdapter?.loadExisting?.('proof')) ||
-    (await input.persistAdapter?.loadExisting?.('revision')) ||
-    (await input.persistAdapter?.loadExisting?.('draft'));
-  const finalBody =
-    readBody(proof) ||
-    readBody(revision) ||
-    readBody(draft) ||
-    loaded?.body ||
-    input.frozenContext.instruction.currentContent ||
-    '';
+  // ONE Final Candidate — single source of truth. No proof dependency in the
+  // compact contract; legacy resume may include proof via candidate mode.
+  const candidate = resolveFinalWritingCandidate(input.artifacts, {
+    mode: finalCandidateModeForPolicy(input.stagePolicy),
+  });
+  const finalBody = candidate.body;
   if (!finalBody.trim()) {
     return {
       stage: 'finalValidate',
@@ -68,12 +61,12 @@ export async function runFinalValidateStage(
 
   const artifact: SharedWritingArtifact = {
     stage: 'finalValidate',
+    sourceStage: candidate.sourceStage,
     body: finalBody,
-    structured: proof?.structured || revision?.structured,
-    appliedRequirementIds:
-      proof?.appliedRequirementIds || revision?.appliedRequirementIds || [],
-    validNoOpRequirementIds: proof?.validNoOpRequirementIds,
-    validNoOpReasons: proof?.validNoOpReasons,
+    structured: candidate.structured,
+    appliedRequirementIds: candidate.appliedRequirementIds,
+    validNoOpRequirementIds: candidate.validNoOpRequirementIds,
+    validNoOpReasons: candidate.validNoOpReasons,
   };
 
   if (input.stagePolicy.semanticApplyRequired) {
@@ -82,9 +75,9 @@ export async function runFinalValidateStage(
         ? await input.semanticApply()
         : input.semanticApply || {
             beforeRevisionBody:
-              readBody(revision) ||
-              input.frozenContext.instruction.currentContent ||
-              '',
+              (readBody(input.artifacts.revision) ||
+                input.frozenContext.instruction.currentContent ||
+                ''),
             finalBody,
             appliedRequirementIds: artifact.appliedRequirementIds || [],
             validNoOpRequirementIds: artifact.validNoOpRequirementIds,
