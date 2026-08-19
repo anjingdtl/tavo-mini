@@ -17,8 +17,8 @@
 | **0** | 第二期 Baseline 与调用成本固化 | ✅ **GO** | `e0608fb` | ✅ | ✅ verify 全绿 |
 | **1** | Final Candidate Contract 收束 | ✅ **GO** | `81a27ac` | ✅ | ✅ verify + Android Debug 全绿 |
 | **2** | Pipeline Topology Version + Resume | ✅ **GO** | `e6cae5b` | ✅ | ✅ verify + Migration + Android Debug 全绿 |
-| **3** | Proof 从新 Standard 删除 | ✅ ** **GO** | `5abdbe5` | ✅ | ✅ verify + Android Debug + 真实 LLM 穿测 全绿 |
-| **4** | Review/Audit/FactCheck 合并 ONE QA | ⬜ 未开始 | — | — | — |
+| **3** | Proof 从新 Standard 删除 | ✅ **GO** | `5abdbe5` | ✅ | ✅ verify + Android Debug + 真实 LLM 穿测 全绿 |
+| **4** | Review/Audit/FactCheck 合并 ONE QA | 🚧 **施工完成·待封板** | 待提交 | ✅（报告已建，Android Debug/真机后回填终值） | ⚠️ 单测绿；Android Debug / 真实 LLM / 全量 verify 待续 |
 | **5** | Revision Trigger / API / Token 治理 | ⬜ 未开始 | — | — | — |
 | **6** | Batch / Single / Resume / UI / Ledger 收束 | ⬜ 未开始 | — | — | — |
 | **7** | 真实 LLM 穿测 + 最终封板 | ⬜ 未开始 | — | — | — |
@@ -121,12 +121,33 @@
 - ⚠️ 方案 §6.6 的 Outline 2 章 + Continuation 2 章大样本按计划串到 Phase 7 一并完成最终封板。
 - ✅ **PHASE 3 GO**，允许进入 Phase 4（合并 ONE QA）。
 
-### Phase 4 — 合并 ONE QA（方案 §7）
-- 生产实现唯一 `runQaStage()` + `compileSharedWritingPrompt('qa')` + `executeSharedWriterStage(stage='qa')`
-- Outline/Continuation 不得有第二套 QA；场景差异只在 Source Adapter / Frozen Requirements / Policy
-- 需要扩展：`SharedWritingStageName` 增 `'qa'`、`STAGE_PROTOCOL.qa`、`WRITING_STAGE_DAG`（qa 依赖 draft，revision 依赖 qa）、`writerCore`/`writerRecovery`/`findingsAggregator`/`evaluateRuntimeStageSkip`（qa 作为唯一 findings 源）、`stageContextProjection.STAGE_CONTEXT_KIND_ALLOWLIST.qa`、durable adapters 的 `qa` 映射（outline checkpoint `'qa'`；continuation ledger node 如 `'unified_qa'`）
-- Commit：`refactor(writing): consolidate compact standard checks into one qa stage`
-- **红线：** 不新增自动 LLM Stage、不固定 Token cap
+### Phase 4 — 合并 ONE QA（方案 §7）【接手期施工完成，待封板】
+
+**目标：** 生产实现唯一 `runQaStage()` + `compileSharedWritingPrompt('qa')` + `executeSharedWriterStage(stage='qa')`；Outline/Continuation 无第二套 QA；场景差异只在 Source Adapter / Frozen Requirements / Policy；compact DAG = `draft → qa → revision → finalValidate → persist`。
+
+**已完成（代码 + 单测全绿）：**
+- 🆕 `src/services/writing/stages/qa.ts` — 唯一生产 QA 实现。
+- 🆕 `src/services/migrations/v55-to-v56.ts` — `unified_qa` ledger CHECK 重建（幂等 + 缺表跳过），`SCHEMA_VERSION` 55 → 56。
+- ✏️ `writingStageDag.ts` 拆 `LEGACY/COMPACT_WRITING_STAGE_DAG` + `getWritingStageDagForTopology`；`taskView.stageNamesForPipelineTopology` compact = `[draft, qa, (brief)]`。
+- ✏️ `determineNextPipelineAction` 新增 `run_qa` + `decideCompactFull`；One-Shot 前置短路不受影响；legacy 分支原样保留。
+- ✏️ `outlineStageRuntime` / `runOutlineSharedWriterAction` / `outlineStageDriver` — `run_qa → ['qa']` 运行时 dispatch。
+- ✏️ `continuationStageDriver` — compact round1=`[draft]`、round2=`['qa','revision']`；`maxPhysicalRequests` compact 4 → 3。
+- ✏️ `writerCore/writerRecovery/writingStageRunner/evaluateRuntimeStageSkip/findingsAggregator/stageContextProjection/sharedPromptCompiler/requirementProjection/reasoningPolicy/stageReasoning` — qa 纳入结构化 report、adoption、formatter、revision trigger、context allowlist、reasoning freeze。
+- ✏️ durable adapters — outline checkpoint `'qa'`；continuation ledger `unified_qa`（V5 models/budget/generationRepository/contextViews 同步）。
+- ✏️ UI 层（`PipelineProgress` / `PipelineResultScreen` / `ContextPreviewScreen`）qa 标签；旧文案全链路清理按 §9 归入 Phase 6。
+
+**接手期全量回归驱动的 4 个真 BUG 修复（均有回归测试）：**
+1. `normalizePersistedPipelineTopologyVersion` 只认数字 1/2，freeze 写的是字符串 `'compact_standard'` → 运行时 DAG 查 legacy → `WRITING_STAGE_DAG_DEADLOCK: qa`。修复：normalize 同时接受 label 字符串。
+2. `stageReasoning.LLM_STAGES` 漏 `'qa'` → `resolveFrozenStageReasoning('qa')` undefined → shared writer 崩溃。修复：补 qa 并归入结构化低档（§7.7）。
+3. `v55-to-v56` 迁移缺源表时崩溃（`no such table: continuation_generation_stage_results`）。修复：缺表跳过（对齐 v51 纪律）。
+4. `outlineStageRuntime` action switch 漏 `run_qa` → compact 任务首个 QA 步 failTask('未知流水线动作')。修复：补 case。
+
+**Red Tests：** `writingQaConsolidationContract.test.ts` 19 用例（§7.10 架构/调用图/Resume/Legacy/Freeze/输出契约 + label 归一化 + qa reasoning freeze）、`outlineStageRuntimeRunQaDispatch.test.ts` 3 用例、`migrations-schema55-to-56.test.ts` 5 用例（CHECK 扩展/数据保留/幂等/缺表跳过/fresh DDL 顺序）→ 全 PASS。
+**期望收紧：** `f301BatchResumeFrozenContext` 新 run 3 calls → 2 calls（draft+qa，pass 跳过修订）；`writingProofRemovalContract` Case 3/4/5 改 qa checkpoint；`writingOneFlowPhase3Pipeline` DAG 未知 stage 断言改 toThrow。
+**已验证绿：** lint 0 errors / typecheck PASS / verify:version OK；f301 3/3、v50-v51、ProofRemoval+Phase3 21/21、QA 契约 19/19、dispatch 3/3、迁移 5/5。
+**待续（封板门槛）：** Android Debug 构建、模拟器真实 LLM 冒烟（冒烟 DB 已备好 `scripts/phase4-smoke-db.py`：compact batch topology=2 + DeepSeek 配置，schema 55→56 顺带做迁移穿测）、全量 `npm run verify` 终值回填。
+**红线自检：** 未新增自动 LLM Stage / 未建第二套 Writer/QA/Context/Prompt Compiler/Memory / 未拆分 Outline/Continuation 流水线 / 未固定 Token cap / 未破坏 Freeze/Resume/Semantic Apply/Canon/ONE Context/ONE Memory。
+**验收报告：** `docs/optimization/TAVO-MINI_Phase2_OneQA_验收报告_2026-08-19.md`（GO Gate 表格待 Android Debug/真机后回填终值）。
 
 ### Phase 5 — Revision Trigger / API / Token 治理（方案 §8）
 - QA `verdict:pass + []` → Revision = 0；仅 executable blocking/warning finding 才 Revision = 1
