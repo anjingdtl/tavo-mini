@@ -3,7 +3,7 @@
 - **方案基线：** `docs/optimization/TAVO-MINI_第二期_Standard-Pipeline深度收束与流水线提速总方案_V1.0.md`
 - **施工基线（唯一）：** 本地仓库 `E:\AiWorkSpace\tavo-mini`
 - **更新日期：** 2026-08-19
-- **当前 HEAD：** `e6cae5b`（Phase 2 已 commit；Phase 1 = `81a27ac`；Phase 0 = `e0608fb`）
+- **当前 HEAD：** `5abdbe5`（Phase 3 已 commit；Phase 2 = `e6cae5b`；Phase 1 = `81a27ac`；Phase 0 = `e0608fb`）
 - **目标顶层：** `Draft → ONE QA → Conditional Revision → Local FinalValidate → Persist`
   - Clean Standard ≤ 2 次逻辑 LLM；需修订 ≤ 3 次；One-Shot = 1 次
   - New Standard 中 Review=0 / Audit=0 / FactCheck=0 / Proof=0（仅 Legacy Resume 保留旧拓扑）
@@ -17,7 +17,7 @@
 | **0** | 第二期 Baseline 与调用成本固化 | ✅ **GO** | `e0608fb` | ✅ | ✅ verify 全绿 |
 | **1** | Final Candidate Contract 收束 | ✅ **GO** | `81a27ac` | ✅ | ✅ verify + Android Debug 全绿 |
 | **2** | Pipeline Topology Version + Resume | ✅ **GO** | `e6cae5b` | ✅ | ✅ verify + Migration + Android Debug 全绿 |
-| **3** | Proof 从新 Standard 删除 | ⬜ 未开始 | — | — | — |
+| **3** | Proof 从新 Standard 删除 | ✅ ** **GO** | `5abdbe5` | ✅ | ✅ verify + Android Debug + 真实 LLM 穿测 全绿 |
 | **4** | Review/Audit/FactCheck 合并 ONE QA | ⬜ 未开始 | — | — | — |
 | **5** | Revision Trigger / API / Token 治理 | ⬜ 未开始 | — | — | — |
 | **6** | Batch / Single / Resume / UI / Ledger 收束 | ⬜ 未开始 | — | — | — |
@@ -106,6 +106,20 @@
 - Red Test：compact 下 proof dispatch=0 / physical=0 / ledger=0；Legacy 仍能 resume proof
 - Commit：`refactor(writing): remove proof from compact standard production topology`
 - 关键落点：`determineNextPipelineAction.ts`（decision）、`outlineStageDriver.ts` ACTION_STAGES、checkpoint 预置 `initialStages`、`outlineWorkflowVersion.ts`、`finalCandidate`（compact 已排除 proof ✔）
+
+**Phase 3 已封板（commit `5abdbe5`）：**
+- ✅ `decideAfterBrief` 在 compact 下短路到 `finalize_from_draft` / `complete`，`run_proof` 不再返回。
+- ✅ `stageNamesForPipelineTopology({ hasBrief, pipelineTopologyVersion })` 决定 compact 是否预置 proof。
+- ✅ `resolveStageCheckpoints` + `checkpointsFromRows` 透传 topology：compact 下忽略 stray proof 行。
+- ✅ `continuationStageDriver.ts` round3 topology-aware：`compact` → `['finalValidate', 'persist']`；`maxPhysicalRequests` 从 5 收窄为 4。
+- ✅ Red Test `writingProofRemovalContract.test.ts` 12/12 PASS；`pipelineTopologyContract.test.ts` 24/24 PASS。
+- ✅ `f301BatchResumeFrozenContext.test.ts`：`unbound + new run` 用例 `4 → 3 calls` 期望收紧（legacy-task-resumes-proof 仍为 1）。
+- ✅ `npm run verify` 全绿 = 477 suites / 3719 tests。
+- ✅ `npm run apk:debug` BUILD SUCCESSFUL，56.68 MB / EXIT=0。
+- ✅ **真实 LLM 穿测**（fresh project 48 + compact batch `batch_p3u_*`）：UI 显示"批次完成 · 总调用 4"；`llm_usage_logs` 仅有 `pipeline_draft / pipeline_review / pipeline_factcheck / pipeline_brief` 4 条；`pipeline_stage_checkpoints` 仅 `{draft, review, factCheck, brief}` succeeded，**0 proof 行**。
+- ✅ 验收报告：`docs/optimization/TAVO-MINI_Phase2_ProofRemoved_验收报告_2026-08-19.md`
+- ⚠️ 方案 §6.6 的 Outline 2 章 + Continuation 2 章大样本按计划串到 Phase 7 一并完成最终封板。
+- ✅ **PHASE 3 GO**，允许进入 Phase 4（合并 ONE QA）。
 
 ### Phase 4 — 合并 ONE QA（方案 §7）
 - 生产实现唯一 `runQaStage()` + `compileSharedWritingPrompt('qa')` + `executeSharedWriterStage(stage='qa')`
