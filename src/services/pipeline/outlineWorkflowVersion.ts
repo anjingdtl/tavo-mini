@@ -268,6 +268,14 @@ export function pipelineTopologyLabel(
     : 'legacy_standard';
 }
 
+/** True when the frozen topology is the compact Standard (2) DAG. */
+export function isCompactPipelineTopology(value: unknown): boolean {
+  return (
+    normalizePersistedPipelineTopologyVersion(value) ===
+    COMPACT_PIPELINE_TOPOLOGY_VERSION
+  );
+}
+
 /**
  * Normalize a frozen `pipeline_topology_version` value.
  *   - absent / legacy default → 1 (legacy_standard) — historical rows never

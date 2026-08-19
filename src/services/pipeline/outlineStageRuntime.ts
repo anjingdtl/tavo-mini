@@ -1664,6 +1664,7 @@ export async function reconcilePipelineTask(
         stageResults: task.stageResults,
         outlineWorkflowVersion: task.outlineWorkflowVersion,
         contextBudgetVersion: task.contextBudgetVersion,
+        pipelineTopologyVersion: task.pipelineTopologyVersion,
       });
       const view = buildPersistedTaskView(task);
       const action = determineNextPipelineAction(view, stages);

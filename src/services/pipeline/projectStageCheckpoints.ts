@@ -43,7 +43,7 @@ export function projectStageResultsToCheckpoints(
       status?: string;
     }
   >,
-  options: { includeBrief?: boolean } = {},
+  options: { includeBrief?: boolean; includeProof?: boolean } = {},
 ): PersistedStageCheckpoint[] {
   const map = new Map<string, PersistedStageCheckpoint>();
 
@@ -70,9 +70,15 @@ export function projectStageResultsToCheckpoints(
     }
   }
 
+  // Compact Standard (二 Phase §6) has no proof node.
+  const includeProof = options.includeProof !== false;
   const names = options.includeBrief
-    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-    : ['draft', 'review', 'factCheck', 'proof'];
+    ? includeProof
+      ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+      : ['draft', 'review', 'factCheck', 'brief']
+    : includeProof
+    ? ['draft', 'review', 'factCheck', 'proof']
+    : ['draft', 'review', 'factCheck'];
   return names.map(stage => {
     return (
       map.get(stage) || {

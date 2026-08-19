@@ -200,7 +200,7 @@ describe('Case 2 — compact durable semantics fixture (resume after crash)', ()
     // draft and review (the future QA) were succeeded → never re-requested.
   });
 
-  test('compact task: all audits succeeded, proof interrupted → resume proof only', () => {
+  test('compact task: all audits + revision succeeded → local finalize, proof never dispatched', () => {
     const view = taskView({
       pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     });
@@ -211,8 +211,10 @@ describe('Case 2 — compact durable semantics fixture (resume after crash)', ()
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'interrupted'),
     ];
+    // Compact Standard (Phase 3 §6) has no proof node: a stray proof
+    // checkpoint is ignored and the run local-finalizes from the candidate.
     const action = determineNextPipelineAction(view, stages);
-    expect(action.type).toBe('run_proof');
+    expect(action.type).toBe('finalize_from_draft');
   });
 });
 

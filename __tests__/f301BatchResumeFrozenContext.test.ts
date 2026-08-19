@@ -790,7 +790,10 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     ]);
     expect(newTask).not.toBeNull();
     expect(String((newTask as any).status)).toBe('completed');
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(4);
+    // New batch (created without topology override) freezes compact(2)
+    // (二 Phase §6): the fresh run is draft→review→factCheck → local finalize.
+    // No proof node → 3 logical LLM calls instead of the legacy 4.
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
 
     const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
       taskId,

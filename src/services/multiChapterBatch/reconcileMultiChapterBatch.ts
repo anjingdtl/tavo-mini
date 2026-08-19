@@ -56,6 +56,7 @@ import {
   LEGACY_PIPELINE_TOPOLOGY_VERSION,
   shouldIncludeBriefCheckpoint,
 } from '../pipeline/outlineWorkflowVersion';
+import { stageNamesForPipelineTopology } from '../pipeline/taskView';
 import { executeContinuationBatchStep } from './continuationBatchAdapter';
 import { setBatchUsageFromContinuationRuns } from './continuationBatchUsage';
 
@@ -436,13 +437,16 @@ async function executeBatchAction(params: {
         Number(batch.outlineWorkflowVersion) === CURRENT_OUTLINE_WORKFLOW_VERSION
           ? batch.contextBudgetVersion
           : CURRENT_CONTEXT_BUDGET_VERSION;
-      const isStructured = shouldIncludeBriefCheckpoint({
-        outlineWorkflowVersion: Number(taskWorkflowVersion),
-        contextBudgetVersion: Number(taskContextVersion),
+      const taskTopologyVersion =
+        batch.pipelineTopologyVersion ?? LEGACY_PIPELINE_TOPOLOGY_VERSION;
+      // Compact Standard (二 Phase §6) omits the proof checkpoint; legacy keeps it.
+      const stages: PipelineCheckpointStage[] = stageNamesForPipelineTopology({
+        hasBrief: shouldIncludeBriefCheckpoint({
+          outlineWorkflowVersion: Number(taskWorkflowVersion),
+          contextBudgetVersion: Number(taskContextVersion),
+        }),
+        pipelineTopologyVersion: taskTopologyVersion,
       });
-      const stages: PipelineCheckpointStage[] = isStructured
-        ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-        : ['draft', 'review', 'factCheck', 'proof'];
       await createPipelineTaskForBatchItem({
         batchId,
         ordinal: currentItem.ordinal,
@@ -537,6 +541,10 @@ async function executeBatchAction(params: {
           contextBudgetVersion:
             existingTask.contextBudgetVersion != null
               ? Number(existingTask.contextBudgetVersion)
+              : null,
+          pipelineTopologyVersion:
+            existingTask.pipelineTopologyVersion != null
+              ? Number(existingTask.pipelineTopologyVersion)
               : null,
           createdAt: Number(existingTask.createdAt ?? Date.now()),
           updatedAt: Number(existingTask.updatedAt ?? Date.now()),

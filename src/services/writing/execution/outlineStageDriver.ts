@@ -38,6 +38,7 @@ import { determineNextPipelineAction } from '../../pipeline/determineNextPipelin
 import {
   buildPersistedTaskView,
   resolveStageCheckpoints,
+  stageNamesForPipelineTopology,
 } from '../../pipeline/taskView';
 import {
   checkPipelineResumeContract,
@@ -440,12 +441,14 @@ export async function createOutlineStageDriver(
   const initialTask = usePipelineTaskStore
     .getState()
     .tasks.find(t => t.id === taskId);
-  const initialStages = shouldIncludeBriefCheckpoint({
-    outlineWorkflowVersion: initialTask?.outlineWorkflowVersion,
-    contextBudgetVersion: initialTask?.contextBudgetVersion,
-  })
-    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-    : ['draft', 'review', 'factCheck', 'proof'];
+  // Compact Standard (二 Phase §6) omits the proof checkpoint; legacy keeps it.
+  const initialStages = stageNamesForPipelineTopology({
+    hasBrief: shouldIncludeBriefCheckpoint({
+      outlineWorkflowVersion: initialTask?.outlineWorkflowVersion,
+      contextBudgetVersion: initialTask?.contextBudgetVersion,
+    }),
+    pipelineTopologyVersion: initialTask?.pipelineTopologyVersion,
+  });
   await db.ensurePendingCheckpoints(taskId, initialStages as any);
 
 
@@ -489,6 +492,7 @@ export async function createOutlineStageDriver(
       stageResults: task.stageResults,
       outlineWorkflowVersion: task.outlineWorkflowVersion,
       contextBudgetVersion: task.contextBudgetVersion,
+      pipelineTopologyVersion: task.pipelineTopologyVersion,
     });
     const isFinalize =
       action.type === 'finalize_from_draft' ||
@@ -620,6 +624,7 @@ export async function createOutlineStageDriver(
           stageResults: task.stageResults,
           outlineWorkflowVersion: task.outlineWorkflowVersion,
           contextBudgetVersion: task.contextBudgetVersion,
+          pipelineTopologyVersion: task.pipelineTopologyVersion,
         });
         const view = buildPersistedTaskView(task);
         const action = determineNextPipelineAction(view, stages);

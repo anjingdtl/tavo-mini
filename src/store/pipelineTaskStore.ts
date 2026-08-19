@@ -7,6 +7,7 @@ import {
   LEGACY_PIPELINE_TOPOLOGY_VERSION,
   shouldIncludeBriefCheckpoint,
 } from '../services/pipeline/outlineWorkflowVersion';
+import { stageNamesForPipelineTopology } from '../services/pipeline/taskView';
 import type { PipelineCheckpointStage } from '../services/pipeline/types';
 
 function mergeStageResult(
@@ -321,14 +322,15 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       updatedAt: now,
       resolvedAt: null,
     };
-    const checkpointStages: PipelineCheckpointStage[] = shouldIncludeBriefCheckpoint(
-      {
-        outlineWorkflowVersion: task.outlineWorkflowVersion,
-        contextBudgetVersion: task.contextBudgetVersion,
-      },
-    )
-      ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-      : ['draft', 'review', 'factCheck', 'proof'];
+    // Compact Standard (二 Phase §6) omits the proof checkpoint; legacy keeps it.
+    const checkpointStages: PipelineCheckpointStage[] =
+      stageNamesForPipelineTopology({
+        hasBrief: shouldIncludeBriefCheckpoint({
+          outlineWorkflowVersion: task.outlineWorkflowVersion,
+          contextBudgetVersion: task.contextBudgetVersion,
+        }),
+        pipelineTopologyVersion: task.pipelineTopologyVersion,
+      });
     // Persist parent + pending checkpoints in ONE transaction BEFORE
     // the task enters the store or is handed to the runner. On failure we
     // do not add a ghost task, do not return an id, and do not start the

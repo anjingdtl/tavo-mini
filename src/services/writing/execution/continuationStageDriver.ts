@@ -43,6 +43,7 @@ import type {
   WritingStepOutcome,
 } from '../contracts/writingStage';
 import { runWritingStages } from '../stages/writingStageRunner';
+import { finalCandidateModeForPolicy } from '../stages/finalCandidate';
 
 export interface ContinuationStageDriver extends WritingStageDriver {
   /** Resolves once the durable run row exists (entry handoff point). */
@@ -110,9 +111,15 @@ export async function createContinuationStageDriver(
     bindPreparedRunTrace(prepared, input, runId);
   // One-Shot (极速): the run's physical-request budget is the frozen
   // profile's cap (1). Standard continuation keeps the V5 five-request cap.
+  // Phase 3 §6: Compact Standard (二) DAG drops the proof node, so the
+  // physical-request budget is 4 instead of 5. Legacy Standard keeps 5.
   const oneShotProfile =
     kernelFreeze.frozenContext?.stagePolicy?.values?.executionProfile ===
     'one_shot';
+  const isCompactContinuation =
+    finalCandidateModeForPolicy(
+      kernelFreeze.frozenContext?.stagePolicy || { values: {} },
+    ) === 'compact';
   const run = await insertRun({
     id: runId,
     projectId: input.projectId,
@@ -134,7 +141,7 @@ export async function createContinuationStageDriver(
     contextTraceJson: JSON.stringify(unifiedTrace),
     tokenUsageJson: JSON.stringify({
       workflowVersion: 5,
-      maxPhysicalRequests: oneShotProfile ? 1 : 5,
+      maxPhysicalRequests: oneShotProfile ? 1 : isCompactContinuation ? 4 : 5,
       physicalRequestCount: 0,
       stages: {},
     }),
@@ -160,6 +167,19 @@ export async function createContinuationStageDriver(
     trace: kernelFreeze.trace,
     frozenContext: kernelFreeze.frozenContext,
   };
+
+  // Phase 3 §6: Compact Standard (二) DAG has NO Proof node. The frozen
+  // stagePolicy.values.pipelineTopologyVersion==='compact_standard' gates the
+  // round3 stage set: compact runs skip proof and go straight to FinalValidate
+  // + Persist (the revision IS the final body, via finalCandidate 'compact').
+  // Legacy continues to dispatch proof for historical compatibility.
+  const compactTopology =
+    finalCandidateModeForPolicy(
+      kernelFreeze.frozenContext?.stagePolicy || { values: {} },
+    ) === 'compact';
+  const round3Stages: ('proof' | 'finalValidate' | 'persist')[] = compactTopology
+    ? ['finalValidate', 'persist']
+    : ['proof', 'finalValidate', 'persist'];
 
   let round: RoundName = 'ledger';
   let armed: RoundName | null = null;
@@ -249,7 +269,7 @@ export async function createContinuationStageDriver(
           const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
-            stages: ['proof', 'finalValidate', 'persist'],
+            stages: round3Stages,
             persistAdapter,
             callStage: options.callStage,
             abortSignal: options.signal,
@@ -323,7 +343,12 @@ export async function createContinuationStageDriver(
           }
           case 'round3': {
             armed = 'round3';
-            return stageOutcome('proof', 'started', 'round3');
+            // Phase 3 §6: compact Standard skips the proof stage, so the
+            // first settled stage is finalValidate.
+            const firstRound3Stage: WritingKernelStage = compactTopology
+              ? 'finalValidate'
+              : 'proof';
+            return stageOutcome(firstRound3Stage, 'started', 'round3');
           }
           case 'settle':
           default: {

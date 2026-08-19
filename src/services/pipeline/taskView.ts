@@ -14,14 +14,37 @@ import type {
 } from './types';
 import type { PipelineStageCheckpointRow } from '../../data/repositories/pipelineStageCheckpointRepository';
 import { projectStageResultsToCheckpoints } from './projectStageCheckpoints';
-import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
+import {
+  isCompactPipelineTopology,
+  shouldIncludeBriefCheckpoint,
+} from './outlineWorkflowVersion';
+
+/**
+ * Stage names the state machine consults for a task. Compact Standard (二 Phase
+ * §6) has NO proof node: the final body is the Revision (or Draft) candidate.
+ */
+export function stageNamesForPipelineTopology(params: {
+  hasBrief?: boolean;
+  pipelineTopologyVersion?: unknown;
+}): PipelineCheckpointStage[] {
+  if (isCompactPipelineTopology(params.pipelineTopologyVersion)) {
+    return params.hasBrief
+      ? ['draft', 'review', 'factCheck', 'brief']
+      : ['draft', 'review', 'factCheck'];
+  }
+  return params.hasBrief
+    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
+    : ['draft', 'review', 'factCheck', 'proof'];
+}
 
 export function checkpointsFromRows(
   rows: PipelineStageCheckpointRow[],
+  options?: { pipelineTopologyVersion?: unknown },
 ): PersistedStageCheckpoint[] {
-  const names: PipelineCheckpointStage[] = rows.some(row => row.stage === 'brief')
-    ? ['draft', 'review', 'factCheck', 'brief', 'proof']
-    : ['draft', 'review', 'factCheck', 'proof'];
+  const names = stageNamesForPipelineTopology({
+    hasBrief: rows.some(row => row.stage === 'brief'),
+    pipelineTopologyVersion: options?.pipelineTopologyVersion,
+  });
   const map = new Map(rows.map(r => [r.stage, r]));
   return names.map(stage => {
     const row = map.get(stage);
@@ -51,15 +74,19 @@ export function resolveStageCheckpoints(params: {
   stageResults?: PipelineTask['stageResults'];
   outlineWorkflowVersion?: number | null;
   contextBudgetVersion?: number | null;
+  pipelineTopologyVersion?: number | null;
 }): PersistedStageCheckpoint[] {
   if (params.checkpointRows && params.checkpointRows.length > 0) {
-    return checkpointsFromRows(params.checkpointRows);
+    return checkpointsFromRows(params.checkpointRows, {
+      pipelineTopologyVersion: params.pipelineTopologyVersion,
+    });
   }
   return projectStageResultsToCheckpoints(params.stageResults || [], {
     includeBrief: shouldIncludeBriefCheckpoint({
       outlineWorkflowVersion: params.outlineWorkflowVersion,
       contextBudgetVersion: params.contextBudgetVersion,
     }),
+    includeProof: !isCompactPipelineTopology(params.pipelineTopologyVersion),
   });
 }
 

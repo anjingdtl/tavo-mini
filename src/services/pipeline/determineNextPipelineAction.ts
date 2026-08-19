@@ -10,7 +10,10 @@
 
 import type { PipelineMode, PipelineStageName } from '../../types/pipeline';
 import { getCheckpoint } from './projectStageCheckpoints';
-import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
+import {
+  isCompactPipelineTopology,
+  shouldIncludeBriefCheckpoint,
+} from './outlineWorkflowVersion';
 import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
 import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from './finalBriefComplianceValidator';
 import type {
@@ -191,6 +194,9 @@ export function determineNextPipelineAction(
     outlineWorkflowVersion: task.outlineWorkflowVersion,
     contextBudgetVersion: task.contextBudgetVersion,
   });
+  // Compact Standard (二 Phase §6): the frozen topology omits the Proof node.
+  // The final body is the Revision (or Draft) candidate; Legacy keeps Proof.
+  const compact = isCompactPipelineTopology(task.pipelineTopologyVersion);
 
   // --- Draft ---------------------------------------------------------
   if (isOpen(draft.status)) {
@@ -224,15 +230,15 @@ export function determineNextPipelineAction(
     return decideNoReview(task, proof);
   }
   if (mode === 'twoStage') {
-    if (isV3) return decideTwoStageV3(task, review, brief, proof);
+    if (isV3) return decideTwoStageV3(task, review, brief, proof, compact);
     return decideTwoStage(task, review, proof);
   }
   if (mode === 'conditional') {
-    if (isV3) return decideConditionalV3(task, factCheck, brief, proof);
+    if (isV3) return decideConditionalV3(task, factCheck, brief, proof, compact);
     return decideConditional(task, factCheck, proof);
   }
   if (mode === 'full') {
-    if (isV3) return decideFullV3(task, review, factCheck, brief, proof);
+    if (isV3) return decideFullV3(task, review, factCheck, brief, proof, compact);
     return decideFull(task, review, factCheck, proof);
   }
 
@@ -408,10 +414,21 @@ function decideAfterBrief(
   task: PersistedPipelineTaskView,
   brief: PersistedStageCheckpoint,
   proof: PersistedStageCheckpoint,
+  compact?: boolean,
 ): PipelineAction {
   if (isOpen(brief.status)) return { type: 'run_brief' };
   if (brief.status === 'skipped') {
     // Formal skip (no executable findings / One-Shot) is not a failed Brief.
+    if (compact) {
+      // No executable findings → no Revision → Draft is the final candidate.
+      if (hasUsableFinalText(task)) {
+        if (String(task.status) === 'completed') {
+          return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+        }
+        return { type: 'complete' };
+      }
+      return { type: 'finalize_from_draft' };
+    }
     return decideAfterProof(task, proof, true);
   }
   if (brief.status === 'failed') {
@@ -435,6 +452,17 @@ function decideAfterBrief(
       userAction: 'restart_task',
     });
   }
+  // Compact Standard (二 Phase §6): no Proof node. The validated Revision
+  // (or Draft) candidate goes straight to Local FinalValidate + Persist.
+  if (compact) {
+    if (hasUsableFinalText(task)) {
+      if (String(task.status) === 'completed') {
+        return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+      }
+      return { type: 'complete' };
+    }
+    return { type: 'finalize_from_draft' };
+  }
   return decideAfterProof(task, proof, true);
 }
 
@@ -443,6 +471,7 @@ function decideTwoStageV3(
   review: PersistedStageCheckpoint,
   brief: PersistedStageCheckpoint,
   proof: PersistedStageCheckpoint,
+  compact?: boolean,
 ): PipelineAction {
   if (isOpen(review.status)) return { type: 'run_review' };
   if (review.status === 'failed') {
@@ -463,7 +492,7 @@ function decideTwoStageV3(
       userAction: 'restart_task',
     });
   }
-  return decideAfterBrief(task, brief, proof);
+  return decideAfterBrief(task, brief, proof, compact);
 }
 
 function decideConditional(
@@ -504,6 +533,7 @@ function decideConditionalV3(
   factCheck: PersistedStageCheckpoint,
   brief: PersistedStageCheckpoint,
   proof: PersistedStageCheckpoint,
+  compact?: boolean,
 ): PipelineAction {
   if (isOpen(factCheck.status)) return { type: 'run_fact_check' };
   if (factCheck.status === 'failed') {
@@ -528,7 +558,7 @@ function decideConditionalV3(
       },
     );
   }
-  return decideAfterBrief(task, brief, proof);
+  return decideAfterBrief(task, brief, proof, compact);
 }
 
 function auditResolved(status: StageStatus): boolean {
@@ -591,6 +621,7 @@ function decideFullV3(
   factCheck: PersistedStageCheckpoint,
   brief: PersistedStageCheckpoint,
   proof: PersistedStageCheckpoint,
+  compact?: boolean,
 ): PipelineAction {
   if (!task.hasAuditContext) {
     const auditsAllResolved =
@@ -630,5 +661,5 @@ function decideFullV3(
       userAction: 'retry',
     });
   }
-  return decideAfterBrief(task, brief, proof);
+  return decideAfterBrief(task, brief, proof, compact);
 }
