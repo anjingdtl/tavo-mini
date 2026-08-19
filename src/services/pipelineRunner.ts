@@ -26,30 +26,11 @@ import type {
 } from '../types/pipeline';
 import type { ContextAutomationPolicyV3 } from './contextAutomationPolicy';
 import { getPipelineTaskResumePayload } from '../data/repositories/pipelineTaskRepository';
-import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
-  CURRENT_OUTLINE_WORKFLOW_VERSION,
-  PHASE2_CONTEXT_BUDGET_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
-} from './pipeline/outlineWorkflowVersion';
+import { checkPipelineResumeContract } from './pipeline/outlineWorkflowVersion';
 import {
   runOutlineWritingKernel,
   resumeOutlineWritingKernel,
 } from './writing/productionWritingEntry';
-
-/**
- * Resume compatibility check (Plan §12 / §23 GO Gate #12 / #13).
- * V2 (5) and V3 (6) tasks are both resumable on their own version; neither
- * is silently upgraded. Any other version (1–4 legacy) is blocked.
- */
-function isTaskContextBudgetVersionResumable(version: unknown): boolean {
-  const n = Number(version);
-  return (
-    n === CURRENT_CONTEXT_BUDGET_VERSION ||
-    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
-    n === PHASE2_CONTEXT_BUDGET_VERSION
-  );
-}
 
 const cancelledTasks = new Set<string>();
 const taskAbortControllers = new Map<string, AbortController>();
@@ -271,21 +252,22 @@ export async function resumePipeline(
   const inMemoryTask = usePipelineTaskStore
     .getState()
     .tasks.find(task => task.id === taskId);
-  // Reject a known legacy row before hydrating its large payload. Besides
-  // preserving the fail-closed resume contract, this keeps legacy rejection
-  // independent of the DB detail reader (important during cold-start faults).
-  if (
-    inMemoryTask &&
-    incompleteStatuses.has(String(inMemoryTask.status)) &&
-    (Number(inMemoryTask.outlineWorkflowVersion) !==
-      CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      !isTaskContextBudgetVersionResumable(inMemoryTask.contextBudgetVersion))
-  ) {
-    const error = Object.assign(
-      new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),
-      { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
-    );
-    throw error;
+  // Reject a known legacy/corrupt row before hydrating its large payload.
+  // Besides preserving the fail-closed resume contract, this keeps legacy
+  // rejection independent of the DB detail reader (during cold-start faults).
+  if (inMemoryTask && incompleteStatuses.has(String(inMemoryTask.status))) {
+    const contract = checkPipelineResumeContract({
+      status: inMemoryTask.status,
+      contextBudgetVersion: inMemoryTask.contextBudgetVersion,
+      pipelineTopologyVersion: inMemoryTask.pipelineTopologyVersion,
+    });
+    if (!contract.ok) {
+      const error = Object.assign(
+        new Error(contract.errorMessage || '该任务无法继续，请按新版重新生成。'),
+        { code: contract.errorCode },
+      );
+      throw error;
+    }
   }
   // Task-list queries intentionally omit large TEXT columns. Always hydrate a
   // summary row before reconcile needs the frozen context; this also makes a
@@ -298,18 +280,19 @@ export async function resumePipeline(
       .getState()
       .registerPersistedTask(persistedTask as PipelineTask);
   }
-  if (
-    persistedTask &&
-    incompleteStatuses.has(String(persistedTask.status)) &&
-    (Number(persistedTask.outlineWorkflowVersion) !==
-      CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      !isTaskContextBudgetVersionResumable(persistedTask.contextBudgetVersion))
-  ) {
-    const error = Object.assign(
-      new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),
-      { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
-    );
-    throw error;
+  if (persistedTask && incompleteStatuses.has(String(persistedTask.status))) {
+    const contract = checkPipelineResumeContract({
+      status: persistedTask.status,
+      contextBudgetVersion: persistedTask.contextBudgetVersion,
+      pipelineTopologyVersion: persistedTask.pipelineTopologyVersion,
+    });
+    if (!contract.ok) {
+      const error = Object.assign(
+        new Error(contract.errorMessage || '该任务无法继续，请按新版重新生成。'),
+        { code: contract.errorCode },
+      );
+      throw error;
+    }
   }
   // Resume must validate the persisted envelope before the Kernel is allowed
   // to backfill or execute anything. A corrupt/forged hash is a fail-closed

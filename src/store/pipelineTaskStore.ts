@@ -3,7 +3,10 @@ import * as db from '../services/database';
 import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../types/pipeline';
 import { classifyInterruptedTask } from '../services/pipelineTaskContext';
 import { OutlineContextError } from '../services/outlineContextBuilder';
-import { shouldIncludeBriefCheckpoint } from '../services/pipeline/outlineWorkflowVersion';
+import {
+  LEGACY_PIPELINE_TOPOLOGY_VERSION,
+  shouldIncludeBriefCheckpoint,
+} from '../services/pipeline/outlineWorkflowVersion';
 import type { PipelineCheckpointStage } from '../services/pipeline/types';
 
 function mergeStageResult(
@@ -43,6 +46,8 @@ interface PipelineTaskState {
       outlineWorkflowVersion: 1 | 2 | 3 | 4;
       /** Frozen context budget version (1 = Legacy, 2–4 = historical, 5 = current, 6 = V3 hierarchical elastic). */
       contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+      /** Frozen pipeline topology version (1 = legacy_standard, 2 = compact_standard). */
+      pipelineTopologyVersion?: 1 | 2;
     },
   ) => Promise<string>;
   /**
@@ -202,6 +207,7 @@ function persistTask(task: PipelineTask) {
     pipelineContextHash: task.pipelineContextHash ?? null,
     outlineWorkflowVersion: task.outlineWorkflowVersion ?? null,
     contextBudgetVersion: task.contextBudgetVersion ?? null,
+    pipelineTopologyVersion: task.pipelineTopologyVersion ?? null,
     parentTaskId: task.parentTaskId ?? null,
     derivedKind: task.derivedKind ?? null,
     derivedInstruction: task.derivedInstruction ?? null,
@@ -259,6 +265,10 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
           row.contextBudgetVersion != null
             ? Number(row.contextBudgetVersion)
             : null,
+        pipelineTopologyVersion:
+          row.pipelineTopologyVersion != null
+            ? Number(row.pipelineTopologyVersion)
+            : null,
         parentTaskId: row.parentTaskId ?? null,
         derivedKind:
           row.derivedKind === 'final_rewrite' ? 'final_rewrite' : null,
@@ -303,6 +313,10 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       // for pre-upgrade rows). Legacy callers (freeform) omit versions → 1.
       outlineWorkflowVersion: versions?.outlineWorkflowVersion ?? 1,
       contextBudgetVersion: versions?.contextBudgetVersion ?? 1,
+      // §5.2: freeze the pipeline topology ONCE at task creation. New standard
+      // callers pass compact (2); legacy/freeform callers omit → legacy (1).
+      pipelineTopologyVersion:
+        versions?.pipelineTopologyVersion ?? LEGACY_PIPELINE_TOPOLOGY_VERSION,
       createdAt: now,
       updatedAt: now,
       resolvedAt: null,
@@ -332,6 +346,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
           error: null,
           outlineWorkflowVersion: task.outlineWorkflowVersion ?? null,
           contextBudgetVersion: task.contextBudgetVersion ?? null,
+          pipelineTopologyVersion: task.pipelineTopologyVersion ?? null,
           createdAt: now,
           updatedAt: now,
           resolvedAt: null,
@@ -407,6 +422,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextHash: next.pipelineContextHash ?? null,
       outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
       contextBudgetVersion: next.contextBudgetVersion ?? null,
+      pipelineTopologyVersion: next.pipelineTopologyVersion ?? null,
       parentTaskId: next.parentTaskId ?? null,
       derivedKind: next.derivedKind ?? null,
       derivedInstruction: next.derivedInstruction ?? null,
@@ -452,6 +468,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextHash: next.pipelineContextHash ?? null,
       outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
       contextBudgetVersion: next.contextBudgetVersion ?? null,
+      pipelineTopologyVersion: next.pipelineTopologyVersion ?? null,
       parentTaskId: next.parentTaskId ?? null,
       derivedKind: next.derivedKind ?? null,
       derivedInstruction: next.derivedInstruction ?? null,
@@ -507,6 +524,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextHash: next.pipelineContextHash ?? null,
       outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
       contextBudgetVersion: next.contextBudgetVersion ?? null,
+      pipelineTopologyVersion: next.pipelineTopologyVersion ?? null,
       parentTaskId: next.parentTaskId ?? null,
       derivedKind: next.derivedKind ?? null,
       derivedInstruction: next.derivedInstruction ?? null,
@@ -558,6 +576,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextHash: next.pipelineContextHash ?? null,
       outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
       contextBudgetVersion: next.contextBudgetVersion ?? null,
+      pipelineTopologyVersion: next.pipelineTopologyVersion ?? null,
       parentTaskId: next.parentTaskId ?? null,
       derivedKind: next.derivedKind ?? null,
       derivedInstruction: next.derivedInstruction ?? null,
@@ -611,6 +630,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
       pipelineContextHash: next.pipelineContextHash ?? null,
       outlineWorkflowVersion: next.outlineWorkflowVersion ?? null,
       contextBudgetVersion: next.contextBudgetVersion ?? null,
+      pipelineTopologyVersion: next.pipelineTopologyVersion ?? null,
       parentTaskId: next.parentTaskId ?? null,
       derivedKind: next.derivedKind ?? null,
       derivedInstruction: next.derivedInstruction ?? null,

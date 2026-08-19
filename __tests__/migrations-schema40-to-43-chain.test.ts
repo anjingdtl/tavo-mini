@@ -168,10 +168,10 @@ describe('U3: Schema40 (V2.11.24) → current full chain (real sql.js)', () => {
       "SELECT value FROM settings WHERE key = 'schema_version'",
     );
     expect(after[0].rows.item(0).value).toBe(String(SCHEMA_VERSION));
-    // Schema 53 added continuation-batch columns and Schema 54 added the
-    // one-shot execution_profile batch column with a safe default; the
-    // version pin guards accidental schema drift.
-    expect(String(SCHEMA_VERSION)).toBe('54');
+    // Schema 53 added continuation-batch columns, Schema 54 the one-shot
+    // execution_profile batch column, Schema 55 the pipeline-topology freeze
+    // columns — all with safe defaults; the version pin guards drift.
+    expect(String(SCHEMA_VERSION)).toBe('55');
 
     const fullAfter = await snapshotTables();
     for (const table of Object.keys(before)) {

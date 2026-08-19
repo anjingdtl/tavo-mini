@@ -119,6 +119,14 @@ export interface PipelineTask {
    * independent elastic reservations. Frozen with the task.
    */
   contextBudgetVersion?: number | null;
+  /**
+   * Frozen pipeline topology version (Schema 55+).
+   * 1 = legacy_standard; 2 = compact_standard. Freeze ONCE at task creation;
+   * batch child chapters inherit the batch value; resume NEVER re-reads the
+   * live default. Pre-upgrade rows default to 1 (legacy) so historical Frozen
+   * tasks are never taken over by the compact Standard topology.
+   */
+  pipelineTopologyVersion?: number | null;
   /** Parent task for a derived Final-only rewrite; source task is immutable. */
   parentTaskId?: string | null;
   /** Currently supported derived task kind. */

@@ -234,6 +234,7 @@ export async function savePipelineTask(task: {
   pipelineContextHash?: string | null;
   outlineWorkflowVersion?: number | null;
   contextBudgetVersion?: number | null;
+  pipelineTopologyVersion?: number | null;
   parentTaskId?: string | null;
   derivedKind?: string | null;
   derivedInstruction?: string | null;
@@ -257,9 +258,10 @@ export async function savePipelineTask(task: {
        id, target_type, target_id, status, stage_results, final_text, error,
        input_fingerprint, pipeline_context_json, pipeline_context_version,
        pipeline_context_hash, outline_workflow_version, context_budget_version,
+       pipeline_topology_version,
        parent_task_id, derived_kind, derived_instruction,
        created_at, updated_at, resolved_at, resolved_action
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        target_type = excluded.target_type,
        target_id = excluded.target_id,
@@ -273,6 +275,7 @@ export async function savePipelineTask(task: {
        pipeline_context_hash = COALESCE(excluded.pipeline_context_hash, pipeline_tasks.pipeline_context_hash),
        outline_workflow_version = pipeline_tasks.outline_workflow_version,
        context_budget_version = pipeline_tasks.context_budget_version,
+       pipeline_topology_version = pipeline_tasks.pipeline_topology_version,
        parent_task_id = COALESCE(excluded.parent_task_id, pipeline_tasks.parent_task_id),
        derived_kind = COALESCE(excluded.derived_kind, pipeline_tasks.derived_kind),
        derived_instruction = COALESCE(excluded.derived_instruction, pipeline_tasks.derived_instruction),
@@ -293,6 +296,7 @@ export async function savePipelineTask(task: {
       task.pipelineContextHash ?? null,
       task.outlineWorkflowVersion ?? 1,
       task.contextBudgetVersion ?? 1,
+      task.pipelineTopologyVersion ?? 1,
       task.parentTaskId ?? null,
       task.derivedKind ?? null,
       task.derivedInstruction ?? null,
@@ -337,6 +341,7 @@ export async function createPipelineTaskWithCheckpoints(
     pipelineContextHash?: string | null;
     outlineWorkflowVersion?: number | null;
     contextBudgetVersion?: number | null;
+    pipelineTopologyVersion?: number | null;
     parentTaskId?: string | null;
     derivedKind?: string | null;
     derivedInstruction?: string | null;
@@ -354,9 +359,10 @@ export async function createPipelineTaskWithCheckpoints(
               id, target_type, target_id, status, stage_results, final_text, error,
               input_fingerprint, pipeline_context_json, pipeline_context_version,
               pipeline_context_hash, outline_workflow_version, context_budget_version,
+              pipeline_topology_version,
               parent_task_id, derived_kind, derived_instruction,
               created_at, updated_at, resolved_at, resolved_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         task.id,
         task.targetType,
@@ -371,6 +377,7 @@ export async function createPipelineTaskWithCheckpoints(
         task.pipelineContextHash ?? null,
         task.outlineWorkflowVersion ?? 1,
         task.contextBudgetVersion ?? 1,
+        task.pipelineTopologyVersion ?? 1,
         task.parentTaskId ?? null,
         task.derivedKind ?? null,
         task.derivedInstruction ?? null,
@@ -413,6 +420,7 @@ export async function createDerivedPipelineTaskWithCheckpoints(
     pipelineContextHash?: string | null;
     outlineWorkflowVersion?: number | null;
     contextBudgetVersion?: number | null;
+    pipelineTopologyVersion?: number | null;
     parentTaskId: string;
     derivedKind: string;
     derivedInstruction: string;
@@ -446,9 +454,10 @@ export async function createDerivedPipelineTaskWithCheckpoints(
               id, target_type, target_id, status, stage_results, final_text, error,
               input_fingerprint, pipeline_context_json, pipeline_context_version,
               pipeline_context_hash, outline_workflow_version, context_budget_version,
+              pipeline_topology_version,
               parent_task_id, derived_kind, derived_instruction,
               created_at, updated_at, resolved_at, resolved_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         task.id,
         task.targetType,
@@ -463,6 +472,7 @@ export async function createDerivedPipelineTaskWithCheckpoints(
         task.pipelineContextHash ?? null,
         task.outlineWorkflowVersion ?? 1,
         task.contextBudgetVersion ?? 1,
+        task.pipelineTopologyVersion ?? 1,
         task.parentTaskId,
         task.derivedKind,
         task.derivedInstruction,
@@ -519,6 +529,7 @@ export interface PipelineTaskDerivedFinalMetadata {
   pipelineContextHash: string | null;
   outlineWorkflowVersion: number | null;
   contextBudgetVersion: number | null;
+  pipelineTopologyVersion: number | null;
   parentTaskId: string | null;
   derivedKind: string | null;
   derivedInstruction: string | null;
@@ -540,7 +551,7 @@ export async function getPipelineTaskForDerivedFinalRewrite(
   const row = await one<Row>(
     `SELECT id, target_type, target_id, status, error,
             input_fingerprint, pipeline_context_version, pipeline_context_hash,
-            outline_workflow_version, context_budget_version,
+            outline_workflow_version, context_budget_version, pipeline_topology_version,
             parent_task_id, derived_kind, derived_instruction,
             created_at, updated_at, resolved_at, resolved_action
        FROM pipeline_tasks
@@ -567,6 +578,10 @@ export async function getPipelineTaskForDerivedFinalRewrite(
     contextBudgetVersion:
       row.context_budget_version != null
         ? Number(row.context_budget_version)
+        : null,
+    pipelineTopologyVersion:
+      row.pipeline_topology_version != null
+        ? Number(row.pipeline_topology_version)
         : null,
     parentTaskId: row.parent_task_id ?? null,
     derivedKind: row.derived_kind ?? null,
@@ -703,7 +718,7 @@ export async function getPipelineTaskAdoptionPayload(
 const PIPELINE_TASK_SUMMARY_COLUMNS = `
   id, target_type, target_id, status, error,
   input_fingerprint, pipeline_context_version, pipeline_context_hash,
-  outline_workflow_version, context_budget_version,
+  outline_workflow_version, context_budget_version, pipeline_topology_version,
   parent_task_id, derived_kind, derived_instruction,
   created_at, updated_at, resolved_at, resolved_action`;
 
@@ -779,6 +794,10 @@ function mapPipelineTaskSummary(
     contextBudgetVersion:
       row.context_budget_version != null
         ? Number(row.context_budget_version)
+        : null,
+    pipelineTopologyVersion:
+      row.pipeline_topology_version != null
+        ? Number(row.pipeline_topology_version)
         : null,
     parentTaskId: row.parent_task_id ?? null,
     derivedKind: row.derived_kind ?? null,

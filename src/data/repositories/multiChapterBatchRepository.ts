@@ -14,6 +14,7 @@ import { executeTransaction, type SqlStatement } from '../../services/database/t
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  CURRENT_PIPELINE_TOPOLOGY_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
 } from '../../services/pipeline/outlineWorkflowVersion';
@@ -72,6 +73,13 @@ export interface MultiChapterBatchRow {
    */
   outlineWorkflowVersion: number;
   contextBudgetVersion: number;
+  /**
+   * Frozen pipeline topology version (Schema 55+).
+   * 1 = legacy_standard; 2 = compact_standard. Freeze ONCE at batch creation;
+   * every chapter task of the batch inherits this value instead of re-reading
+   * the app default. Pre-upgrade rows default to 1 (legacy).
+   */
+  pipelineTopologyVersion: number;
   /** Schema 53 writing mode; pre-53 rows read as 'outline'. */
   writingMode: MultiChapterWritingMode;
   /** Serialized ContinuationBatchAnchorV1 (continuation mode only). */
@@ -257,6 +265,7 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     usedOutputTokens: Number(row.used_output_tokens ?? 0),
     outlineWorkflowVersion: Number(row.outline_workflow_version ?? 1),
     contextBudgetVersion: Number(row.context_budget_version ?? 1),
+    pipelineTopologyVersion: Number(row.pipeline_topology_version ?? 1),
     writingMode:
       row.writing_mode === 'continuation' ? 'continuation' : 'outline',
     continuationAnchorJson: row.continuation_anchor_json ?? null,
@@ -346,6 +355,9 @@ export interface CreateBatchInput {
    */
   outlineWorkflowVersion?: number;
   contextBudgetVersion?: number;
+  /** Schema 55: frozen pipeline topology version; new batches default to the
+   * current compact_standard (2) so every child task inherits it. */
+  pipelineTopologyVersion?: number;
   /** Frozen V3 policy copied to every child task at first execution. */
   contextAutomationPolicyV3?: ContextAutomationPolicyV3 | null;
   /** Schema 53: continuation mode + frozen anchor/policy JSON. */
@@ -375,12 +387,12 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
        id, project_id, status, source_prompt, chapter_count,
        target_words_per_chapter, pipeline_mode, reasoning_effort,
        max_llm_calls, max_input_tokens, max_output_tokens,
-       outline_workflow_version, context_budget_version,
+       outline_workflow_version, context_budget_version, pipeline_topology_version,
        writing_mode, continuation_anchor_json, continuation_execution_policy_json,
        execution_profile,
        planner_request_json,
        created_at, updated_at
-     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.projectId,
@@ -394,6 +406,7 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.budget?.maxOutputTokens ?? null,
       input.outlineWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
       contextBudgetVersion,
+      input.pipelineTopologyVersion ?? CURRENT_PIPELINE_TOPOLOGY_VERSION,
       input.writingMode ?? 'outline',
       input.writingMode === 'continuation'
         ? (input.continuationAnchorJson ?? null)
@@ -1044,6 +1057,8 @@ export async function createPipelineTaskForBatchItem(params: {
     /** Frozen batch versions (§4.4): every child task copies the batch. */
     outlineWorkflowVersion?: number | null;
     contextBudgetVersion?: number | null;
+    /** Schema 55: child task inherits the batch's frozen topology. */
+    pipelineTopologyVersion?: number | null;
     createdAt: number;
     updatedAt: number;
     resolvedAt: number | null;
@@ -1058,9 +1073,9 @@ export async function createPipelineTaskForBatchItem(params: {
     {
       sql: `INSERT INTO pipeline_tasks (
               id, target_type, target_id, status, stage_results, final_text, error,
-              outline_workflow_version, context_budget_version,
+              outline_workflow_version, context_budget_version, pipeline_topology_version,
               created_at, updated_at, resolved_at
-            ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, NULL)`,
+            ) VALUES (?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, NULL)`,
       params: [
         params.task.id,
         params.task.targetType,
@@ -1070,6 +1085,7 @@ export async function createPipelineTaskForBatchItem(params: {
         params.task.error,
         params.task.outlineWorkflowVersion ?? 1,
         params.task.contextBudgetVersion ?? 1,
+        params.task.pipelineTopologyVersion ?? 1,
         params.task.createdAt,
         params.task.updatedAt,
       ],

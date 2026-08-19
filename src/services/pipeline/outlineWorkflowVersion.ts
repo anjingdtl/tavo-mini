@@ -223,3 +223,111 @@ export function normalizePersistedContextBudgetVersion(
   if (n === 2) return 2;
   return 1;
 }
+
+// ---------------------------------------------------------------------------
+// Pipeline Topology Version (二 Phase §5).
+//
+// Unlike `outlineWorkflowVersion` (the outline-protocol detail) and
+// `contextBudgetVersion` (the budget allocator detail), `pipelineTopologyVersion`
+// FREEZES the whole post-Freeze stage topology the task must honour:
+//   1 = legacy_standard  → Draft → Review/Audit/FactCheck → Revision → Proof
+//                          → FinalValidate → Persist
+//   2 = compact_standard → Draft → QA → Revision? → FinalValidate → Persist
+//                          (QA unification lands in Phase 4; Phase 2/3 only
+//                           remove Proof from the compact DAG)
+//
+// Contract (二 Phase §5.2/§5.4/§5.5):
+//   - task creation Freeze ONCE; batch creation Freeze ONCE; child chapters
+//     inherit the batch topology.
+//   - Resume NEVER re-reads the live default: it reads the frozen column and
+//     the frozen `stagePolicy.values.pipelineTopologyVersion` string.
+//   - Historical rows (pre-Schema 55) default to 1 = legacy_standard so they
+//     are NEVER taken over by the compact Standard topology.
+//   - A present-but-invalid frozen value is corrupt → fail-closed (resume
+//     gate must NOT guess the current default).
+// ---------------------------------------------------------------------------
+export type PipelineTopologyVersion = 1 | 2;
+export const LEGACY_PIPELINE_TOPOLOGY_VERSION: PipelineTopologyVersion = 1;
+export const COMPACT_PIPELINE_TOPOLOGY_VERSION: PipelineTopologyVersion = 2;
+/**
+ * Topology frozen on NEW tasks/batches. Only creation code may read this;
+ * resume and reconcile must read the frozen task/batch value.
+ */
+export const CURRENT_PIPELINE_TOPOLOGY_VERSION: PipelineTopologyVersion =
+  COMPACT_PIPELINE_TOPOLOGY_VERSION;
+
+export type PipelineTopologyLabel = 'legacy_standard' | 'compact_standard';
+
+/** Kernel-freeze string label written into `stagePolicy.values`. */
+export function pipelineTopologyLabel(
+  value: unknown,
+): PipelineTopologyLabel {
+  return normalizePersistedPipelineTopologyVersion(value) ===
+    COMPACT_PIPELINE_TOPOLOGY_VERSION
+    ? 'compact_standard'
+    : 'legacy_standard';
+}
+
+/**
+ * Normalize a frozen `pipeline_topology_version` value.
+ *   - absent / legacy default → 1 (legacy_standard) — historical rows never
+ *     drift into the compact topology.
+ *   - 2 → compact_standard.
+ *   - present but any other value → null = CORRUPT. The resume gate treats
+ *     this as fail-closed (`PIPELINE_TOPOLOGY_CORRUPT`) and never guesses.
+ */
+export function normalizePersistedPipelineTopologyVersion(
+  value: unknown,
+): PipelineTopologyVersion | null {
+  if (value == null || value === '') return LEGACY_PIPELINE_TOPOLOGY_VERSION;
+  const n = Number(value);
+  if (n === 1) return LEGACY_PIPELINE_TOPOLOGY_VERSION;
+  if (n === 2) return COMPACT_PIPELINE_TOPOLOGY_VERSION;
+  return null;
+}
+
+/**
+ * Single-source resume contract gate (二 Phase §5.5/§5.6, H4/H6).
+ *
+ * Resume must never depend on the LIVE default. It only checks what the task
+ * FROZE:
+ *   - the frozen topology value must be valid (1/2); a present-but-invalid
+ *     value is corrupt → fail-closed `PIPELINE_TOPOLOGY_CORRUPT` (never
+ *     guess the current default, never take over the task).
+ *   - the frozen context-budget protocol must be resumable (5/6/7).
+ *     A legacy `outlineWorkflowVersion` is NOT a block by itself: a legacy
+ *     task whose budget protocol is compatible resumes under its FROZEN old
+ *     topology (`pipelineTopologyVersion=1` → legacy DAG), never under the
+ *     compact Standard topology (H6).
+ */
+export function checkPipelineResumeContract(input: {
+  status?: string | null;
+  contextBudgetVersion?: unknown;
+  pipelineTopologyVersion?: unknown;
+}): {
+  ok: boolean;
+  errorCode?: 'PIPELINE_TOPOLOGY_CORRUPT' | 'LEGACY_PIPELINE_RESUME_BLOCKED';
+  errorMessage?: string;
+} {
+  const topology = normalizePersistedPipelineTopologyVersion(
+    input.pipelineTopologyVersion,
+  );
+  if (topology == null) {
+    return {
+      ok: false,
+      errorCode: 'PIPELINE_TOPOLOGY_CORRUPT',
+      errorMessage:
+        '该任务冻结的流水线拓扑版本损坏，无法安全继续；请按新版重新生成。',
+    };
+  }
+  if (!isResumableContextBudgetVersion(input.contextBudgetVersion)) {
+    return {
+      ok: false,
+      errorCode: 'LEGACY_PIPELINE_RESUME_BLOCKED',
+      errorMessage:
+        '该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。',
+    };
+  }
+  void input.status;
+  return { ok: true };
+}

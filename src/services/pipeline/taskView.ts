@@ -74,6 +74,7 @@ export function buildPersistedTaskView(
     | 'pipelineContextVersion'
     | 'outlineWorkflowVersion'
     | 'contextBudgetVersion'
+    | 'pipelineTopologyVersion'
     | 'error'
   >,
   options?: {
@@ -107,6 +108,9 @@ export function buildPersistedTaskView(
     pipelineMode: mode,
     outlineWorkflowVersion,
     contextBudgetVersion,
+    // §5.2: the topology is frozen on the task row at creation; resume reads
+    // this frozen value, never the live CURRENT_PIPELINE_TOPOLOGY_VERSION.
+    pipelineTopologyVersion: task.pipelineTopologyVersion ?? null,
     // Frozen with the execution snapshot; resume never re-reads the setting.
     executionProfile:
       parsed?.execution?.executionProfile === 'one_shot'

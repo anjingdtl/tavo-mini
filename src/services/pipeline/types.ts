@@ -83,6 +83,12 @@ export interface PersistedPipelineTaskView {
   outlineWorkflowVersion?: number | null;
   contextBudgetVersion?: number | null;
   /**
+   * Frozen pipeline topology version (Schema 55+). 1 = legacy_standard;
+   * 2 = compact_standard. Read from the frozen task row, never the live
+   * default; corrupt frozen values must be rejected before this decision.
+   */
+  pipelineTopologyVersion?: number | null;
+  /**
    * One-Shot (极速) execution profile frozen in the execution snapshot.
    * undefined / 'standard' keeps the full audit pipeline.
    */

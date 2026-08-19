@@ -89,6 +89,7 @@ import {
   isStructuredContextBudgetVersion,
   isStructuredOutlineWorkflowVersion,
   normalizePersistedContextBudgetVersion,
+  pipelineTopologyLabel,
   shouldIncludeBriefCheckpoint,
 } from './outlineWorkflowVersion';
 import {
@@ -1072,6 +1073,13 @@ async function actionPersistInitialSnapshot(
         ...(execution.executionProfile === 'one_shot'
           ? { executionProfile: 'one_shot' as const }
           : {}),
+        // §5.2: freeze the topology label into the kernel freeze from the
+        // TASK ROW (frozen at creation); never the live default.
+        pipelineTopologyVersion: pipelineTopologyLabel(
+          usePipelineTaskStore
+            .getState()
+            .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
+        ),
       },
     },
   };

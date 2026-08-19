@@ -66,8 +66,9 @@ import { migrateV50ToV51 } from './v50-to-v51';
 import { migrateV51ToV52 } from './v51-to-v52';
 import { migrateV52ToV53 } from './v52-to-v53';
 import { migrateV53ToV54 } from './v53-to-v54';
+import { migrateV54ToV55 } from './v54-to-v55';
 
-export const SCHEMA_VERSION = 54;
+export const SCHEMA_VERSION = 55;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -399,6 +400,14 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV53ToV54,
   },
+  {
+    from: 54,
+    to: 55,
+    breaking: false,
+    // Logic migration: idempotent pipeline-topology freeze columns (54→55).
+    buildStatements: noSchemaStatements,
+    migrate: migrateV54ToV55,
+  },
 ];
 
 export async function runMigrations(
@@ -452,6 +461,8 @@ export async function runMigrations(
       await migrateV52ToV53(db);
     } else if (migration.from === 53 && migration.to === 54) {
       await migrateV53ToV54(db);
+    } else if (migration.from === 54 && migration.to === 55) {
+      await migrateV54ToV55(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

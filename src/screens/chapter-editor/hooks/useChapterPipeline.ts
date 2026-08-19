@@ -20,7 +20,9 @@ import { requestNotificationPermission } from '../../../utils/notificationPermis
 import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
 import { useProjectStore } from '../../../store/projectStore';
 import {
+  COMPACT_PIPELINE_TOPOLOGY_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  LEGACY_PIPELINE_TOPOLOGY_VERSION,
   resolveNewChapterContextBudgetVersion,
 } from '../../../services/pipeline/outlineWorkflowVersion';
 import { cancelContinuationRun } from '../../../services/writing/persist/continuationAdoption';
@@ -59,6 +61,7 @@ type CreateTask = (
   versions?: {
     outlineWorkflowVersion: 1 | 2 | 3 | 4;
     contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+    pipelineTopologyVersion?: 1 | 2;
   },
 ) => Promise<string>;
 
@@ -302,6 +305,11 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
             ? CURRENT_OUTLINE_WORKFLOW_VERSION
             : 1,
           contextBudgetVersion,
+          // §5.2: new Standard outline chapters freeze the compact_standard
+          // topology ONCE here; resume never re-reads the live default.
+          pipelineTopologyVersion: isOutlineChapter
+            ? COMPACT_PIPELINE_TOPOLOGY_VERSION
+            : LEGACY_PIPELINE_TOPOLOGY_VERSION,
         });
       } catch (error: any) {
         setProgressVisible(false);

@@ -603,6 +603,7 @@ describe('retry exhaustion & cold-start waiting', () => {
         usedOutputTokens: 0,
         outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
         contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+        pipelineTopologyVersion: 1,
         writingMode: 'outline',
         continuationAnchorJson: null,
         continuationExecutionPolicyJson: null,

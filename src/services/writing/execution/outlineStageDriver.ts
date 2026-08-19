@@ -40,10 +40,8 @@ import {
   resolveStageCheckpoints,
 } from '../../pipeline/taskView';
 import {
-  CURRENT_CONTEXT_BUDGET_VERSION,
-  CURRENT_OUTLINE_WORKFLOW_VERSION,
-  PHASE2_CONTEXT_BUDGET_VERSION,
-  V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
+  checkPipelineResumeContract,
+  pipelineTopologyLabel,
   shouldIncludeBriefCheckpoint,
 } from '../../pipeline/outlineWorkflowVersion';
 import { mapOutlineErrorToPipelineError } from '../../pipeline/errors';
@@ -233,6 +231,12 @@ async function backfillKernelFreezeFromEnvelope(input: {
       values: {
         contextBudgetVersion: execution.contextBudgetVersion,
         outlineStageReasoning: execution.stageReasoning,
+        // §5.2: the frozen topology label joins the kernel freeze so
+        // post-Freeze stages (Final Candidate / future DAG switches) read the
+        // frozen value, never the live default.
+        pipelineTopologyVersion: pipelineTopologyLabel(
+          task?.pipelineTopologyVersion,
+        ),
       },
     },
   };
@@ -262,15 +266,6 @@ async function backfillKernelFreezeFromEnvelope(input: {
 
 function getErrorMessage(error: any, fallback: string): string {
   return error?.message ? String(error.message) : fallback;
-}
-
-function isTaskContextBudgetVersionResumable(version: unknown): boolean {
-  const n = Number(version);
-  return (
-    n === CURRENT_CONTEXT_BUDGET_VERSION ||
-    n === V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION ||
-    n === PHASE2_CONTEXT_BUDGET_VERSION
-  );
 }
 
 /**
@@ -357,18 +352,29 @@ export async function createOutlineStageDriver(
     }
     if (
       persistedTask &&
-      incompleteStatuses.has(String(persistedTask.status)) &&
-      (Number(persistedTask.outlineWorkflowVersion) !==
-        CURRENT_OUTLINE_WORKFLOW_VERSION ||
-        !isTaskContextBudgetVersionResumable(persistedTask.contextBudgetVersion))
+      incompleteStatuses.has(String(persistedTask.status))
     ) {
-      releaseReconcileLock(taskId);
-      releaseTaskAbort(taskId);
-      clearLLMTaskQueueDefaults(taskId);
-      throw Object.assign(
-        new Error('该任务使用旧版生成流程或预算协议，不能继续；请按新版重新生成。'),
-        { code: 'LEGACY_PIPELINE_RESUME_BLOCKED' },
-      );
+      // §5.5/§5.6 (H4/H6): resume checks ONLY the frozen contract — the
+      // frozen topology must be valid (corrupt → fail-closed) and the frozen
+      // budget protocol must be resumable. Legacy tasks with a compatible
+      // budget resume under their FROZEN old topology, never the compact
+      // Standard topology, and never the live default.
+      const contract = checkPipelineResumeContract({
+        status: persistedTask.status,
+        contextBudgetVersion: persistedTask.contextBudgetVersion,
+        pipelineTopologyVersion: persistedTask.pipelineTopologyVersion,
+      });
+      if (!contract.ok) {
+        releaseReconcileLock(taskId);
+        releaseTaskAbort(taskId);
+        clearLLMTaskQueueDefaults(taskId);
+        throw Object.assign(
+          new Error(
+            contract.errorMessage || '该任务无法继续，请按新版重新生成。',
+          ),
+          { code: contract.errorCode },
+        );
+      }
     }
     onStageUpdate?.({
       stage: 'idle',

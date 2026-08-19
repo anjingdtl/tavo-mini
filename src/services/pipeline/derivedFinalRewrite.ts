@@ -10,7 +10,10 @@ import {
 } from '../../data/repositories/pipelineStageCheckpointRepository';
 import { parsePersistedPipelineTaskContext } from '../pipelineTaskContext';
 import { getPipelineStageOrder } from '../../utils/stages';
-import { shouldIncludeBriefCheckpoint } from './outlineWorkflowVersion';
+import {
+  LEGACY_PIPELINE_TOPOLOGY_VERSION,
+  shouldIncludeBriefCheckpoint,
+} from './outlineWorkflowVersion';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import type { PipelineTask } from '../../types/pipeline';
 import {
@@ -196,6 +199,8 @@ export async function createDerivedFinalRewriteTask(
     pipelineContextHash: parent.pipelineContextHash ?? null,
     outlineWorkflowVersion: parentWorkflowVersion as 3 | 4,
     contextBudgetVersion: Number(parent.contextBudgetVersion) as 3 | 4 | 5 | 6,
+    pipelineTopologyVersion:
+      parent.pipelineTopologyVersion ?? LEGACY_PIPELINE_TOPOLOGY_VERSION,
     parentTaskId: parent.id,
     derivedKind: DERIVED_FINAL_REWRITE_KIND,
     derivedInstruction: normalizedInstruction,

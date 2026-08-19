@@ -20,6 +20,7 @@ import {
 import { getPipelineStageOrder } from '../utils/stages';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  CURRENT_PIPELINE_TOPOLOGY_VERSION,
   isCurrentOutlinePipelineContextBudgetVersion,
   PHASE2_CONTEXT_BUDGET_VERSION,
 } from '../services/pipeline/outlineWorkflowVersion';
@@ -268,6 +269,7 @@ export const PipelineTaskScreen: React.FC = () => {
         {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion: PHASE2_CONTEXT_BUDGET_VERSION,
+          pipelineTopologyVersion: CURRENT_PIPELINE_TOPOLOGY_VERSION,
         },
       );
       Toast.show({ type: 'info', text1: '新版任务已创建', text2: '正在执行完整流水线' });

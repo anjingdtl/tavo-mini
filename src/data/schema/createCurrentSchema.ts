@@ -22,6 +22,7 @@ import { buildSchema50CreateSqls } from '../../services/migrations/v49-to-v50';
 import { buildSchema51CreateSqls } from '../../services/migrations/v50-to-v51';
 import { buildSchema53CreateSqls } from '../../services/migrations/v52-to-v53';
 import { buildSchema54CreateSqls } from '../../services/migrations/v53-to-v54';
+import { buildSchema55CreateSqls } from '../../services/migrations/v54-to-v55';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -265,6 +266,7 @@ export function createCurrentSchemaStatements(): string[] {
         pipeline_context_hash TEXT,
         outline_workflow_version INTEGER NOT NULL DEFAULT 1,
         context_budget_version INTEGER NOT NULL DEFAULT 1,
+        pipeline_topology_version INTEGER NOT NULL DEFAULT 1,
         parent_task_id TEXT,
         derived_kind TEXT,
         derived_instruction TEXT,
@@ -699,6 +701,9 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema53CreateSqls(),
     // Schema 54 one-shot execution_profile batch column (idempotent ALTER).
     ...buildSchema54CreateSqls(),
+    // Schema 55 pipeline-topology freeze columns on pipeline_tasks +
+    // multi_chapter_batches (idempotent ALTERs against the fresh tables above).
+    ...buildSchema55CreateSqls(),
     // Schema 49 V3.2 candidate scratch and validation diagnostics.
     ...buildSchema49CreateSqls(),
     // Schema 50 durable Story Memory physical-request ledger.

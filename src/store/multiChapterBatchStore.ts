@@ -15,6 +15,7 @@ import type {
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  CURRENT_PIPELINE_TOPOLOGY_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
   V3_HIERARCHICAL_CONTEXT_BUDGET_VERSION,
   type ContextBudgetVersion,
@@ -345,6 +346,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           // allocator (Plan §12 / §23 GO Gate #13 V3 Resume no drift).
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion,
+          pipelineTopologyVersion: CURRENT_PIPELINE_TOPOLOGY_VERSION,
           contextAutomationPolicyV3,
           writingMode,
           continuationAnchorJson,
@@ -734,6 +736,7 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
               : 'standard',
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion,
+          pipelineTopologyVersion: CURRENT_PIPELINE_TOPOLOGY_VERSION,
           contextAutomationPolicyV3,
         });
         for (const chapter of plan.chapters) {

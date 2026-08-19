@@ -53,6 +53,7 @@ import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
+  LEGACY_PIPELINE_TOPOLOGY_VERSION,
   shouldIncludeBriefCheckpoint,
 } from '../pipeline/outlineWorkflowVersion';
 import { executeContinuationBatchStep } from './continuationBatchAdapter';
@@ -458,6 +459,10 @@ async function executeBatchAction(params: {
           // versions — never re-reads the app default mid-batch.
           outlineWorkflowVersion: taskWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion: taskContextVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
+          // §5.2: child chapters inherit the batch's frozen topology. A
+          // pre-upgrade batch (topology defaulted to 1) keeps legacy children.
+          pipelineTopologyVersion:
+            batch.pipelineTopologyVersion ?? LEGACY_PIPELINE_TOPOLOGY_VERSION,
           createdAt: now,
           updatedAt: now,
           resolvedAt: null,
@@ -485,6 +490,8 @@ async function executeBatchAction(params: {
         pipelineContextHash: null,
         outlineWorkflowVersion: taskWorkflowVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION,
         contextBudgetVersion: taskContextVersion ?? CURRENT_CONTEXT_BUDGET_VERSION,
+        pipelineTopologyVersion:
+          batch.pipelineTopologyVersion ?? LEGACY_PIPELINE_TOPOLOGY_VERSION,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
