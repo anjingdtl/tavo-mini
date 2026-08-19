@@ -67,6 +67,9 @@ export const CONTINUATION_STAGE_PROGRESS: Record<
 const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   idle: '准备中...',
   draft: '草稿中...',
+  // Phase 4 (§7.2): the unified qa stage replaces review/factCheck/audit for
+  // compact Standard; legacy UI labels remain for historical topology.
+  qa: '检查中...',
   review: '点评中...',
   factCheck: '事实检查中...',
   brief: '整理终稿 Brief 中...',

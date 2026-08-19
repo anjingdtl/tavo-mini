@@ -187,32 +187,48 @@ describe('Case 2 — compact durable semantics fixture (resume after crash)', ()
     const view = taskView({
       pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     });
-    // The Phase 4 QA checkpoint occupies the same shared audit slot today.
+    // Phase 4 §7.2: the unified `qa` checkpoint is the active path; review
+    // and factCheck are legacy leftovers that the compact decision must
+    // ignore.
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'interrupted'),
+      checkpoint('qa', 'interrupted'),
       checkpoint('brief', 'pending'),
       checkpoint('proof', 'pending'),
     ];
     const action = determineNextPipelineAction(view, stages);
-    expect(action.type).toBe('run_fact_check');
-    // draft and review (the future QA) were succeeded → never re-requested.
+    expect(action.type).toBe('run_qa');
+    // draft succeeded → never re-requested; resume picks up the qa step.
   });
 
-  test('compact task: all audits + revision succeeded → local finalize, proof never dispatched', () => {
+  test('compact task: qa + revision succeeded → local finalize, proof never dispatched', () => {
     const view = taskView({
       pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     });
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'interrupted'),
     ];
-    // Compact Standard (Phase 3 §6) has no proof node: a stray proof
-    // checkpoint is ignored and the run local-finalizes from the candidate.
+    // Phase 3 §6 + Phase 4 §7.2: no proof node, only the qa → brief path.
+    // A stray proof checkpoint is ignored and the run local-finalizes.
+    const action = determineNextPipelineAction(view, stages);
+    expect(action.type).toBe('finalize_from_draft');
+  });
+
+  test('compact task: stray review / factCheck checkpoints are ignored (Phase 4 §7.2)', () => {
+    // Legacy QA leftovers must not trigger a second QA dispatch.
+    const view = taskView({
+      pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
+    });
+    const stages: PersistedStageCheckpoint[] = [
+      checkpoint('draft', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
+      checkpoint('brief', 'succeeded'),
+      checkpoint('review', 'pending'),
+      checkpoint('factCheck', 'pending'),
+    ];
     const action = determineNextPipelineAction(view, stages);
     expect(action.type).toBe('finalize_from_draft');
   });
@@ -309,7 +325,7 @@ describe('Case 4 — Schema 54 → 55 migration (real sql.js)', () => {
   });
 
   test('SCHEMA_VERSION advanced to 55', () => {
-    expect(SCHEMA_VERSION).toBe(55);
+    expect(SCHEMA_VERSION).toBe(56);
   });
 
   test('fresh-install DDL already carries pipeline_topology_version (both tables)', () => {

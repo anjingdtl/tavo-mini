@@ -68,6 +68,24 @@ function requirementAppliesToStage(
   item: WritingRequirement,
 ): boolean {
   if (stage === 'persist' || stage === 'finalValidate') return false;
+  // Phase 4 (二 §7.2 ONE QA): the unified qa stage sees the union of legacy
+  // Review / Audit / FactCheck requirements. Scenario differences arrive as
+  // requirement kinds, so the compiler itself stays one implementation.
+  if (stage === 'qa') {
+    return (
+      item.kind === 'outline' ||
+      item.kind === 'plot' ||
+      item.kind === 'style' ||
+      item.kind === 'user-instruction' ||
+      item.kind === 'obligation' ||
+      item.kind === 'canon' ||
+      item.kind === 'boundary' ||
+      item.kind === 'fact' ||
+      item.kind === 'continuity' ||
+      item.kind === 'character' ||
+      item.kind === 'world-rule'
+    );
+  }
   if (stage === 'audit' || stage === 'factCheck') {
     return (
       item.kind === 'canon' ||
@@ -108,7 +126,12 @@ export function previousArtifactBlock(
   }
   const draft = readBody(artifacts.draft);
   const revision = readBody(artifacts.revision);
-  if (stage === 'review' || stage === 'audit' || stage === 'factCheck') {
+  if (
+    stage === 'qa' ||
+    stage === 'review' ||
+    stage === 'audit' ||
+    stage === 'factCheck'
+  ) {
     return draft ? `【已有初稿】\n${draft}` : '';
   }
   const findings = formatAggregatedFindingsBlock(aggregateStageFindings(artifacts));

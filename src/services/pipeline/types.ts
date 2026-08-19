@@ -116,6 +116,10 @@ export type PipelineAction =
   | { type: 'run_review' }
   | { type: 'run_fact_check' }
   | { type: 'run_review_and_fact_check' }
+  // Phase 4 (二 §7.2): the compact Standard pipeline dispatches ONE QA
+  // through `run_qa`, replacing the three legacy QA actions. Legacy resume
+  // keeps using run_review / run_fact_check for historical topology.
+  | { type: 'run_qa' }
   | { type: 'run_brief' }
   | { type: 'run_proof' }
   | {

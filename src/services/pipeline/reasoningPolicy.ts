@@ -163,6 +163,9 @@ export const STAGE_REASONING_PROFILE_V2: Record<
 > = {
   low: {
     draft: 'low',
+    // Phase 4 §7.2: the unified qa stage inherits the legacy review's tier
+    // for V2 (high-tier QA requires high reasoning effort).
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -170,6 +173,7 @@ export const STAGE_REASONING_PROFILE_V2: Record<
   },
   high: {
     draft: 'high',
+    qa: 'high',
     review: 'high',
     factCheck: 'high',
     brief: 'low',
@@ -177,6 +181,7 @@ export const STAGE_REASONING_PROFILE_V2: Record<
   },
   max: {
     draft: 'max',
+    qa: 'high',
     review: 'high',
     factCheck: 'high',
     brief: 'low',
@@ -198,6 +203,7 @@ export const STAGE_REASONING_PROFILE_V31: Record<
 > = {
   low: {
     draft: 'low',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -205,6 +211,7 @@ export const STAGE_REASONING_PROFILE_V31: Record<
   },
   high: {
     draft: 'high',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -212,6 +219,7 @@ export const STAGE_REASONING_PROFILE_V31: Record<
   },
   max: {
     draft: 'max',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -231,6 +239,7 @@ export const STAGE_REASONING_PROFILE_V32: Record<
 > = {
   low: {
     draft: 'low',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -238,6 +247,7 @@ export const STAGE_REASONING_PROFILE_V32: Record<
   },
   high: {
     draft: 'high',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -245,6 +255,7 @@ export const STAGE_REASONING_PROFILE_V32: Record<
   },
   max: {
     draft: 'max',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -259,6 +270,7 @@ export const STAGE_REASONING_PROFILE_V33: Record<
 > = {
   low: {
     draft: 'low',
+    qa: 'low',
     review: 'low',
     factCheck: 'low',
     brief: 'low',
@@ -266,6 +278,7 @@ export const STAGE_REASONING_PROFILE_V33: Record<
   },
   high: {
     draft: 'high',
+    qa: 'high',
     review: 'high',
     factCheck: 'low',
     brief: 'high',
@@ -273,6 +286,7 @@ export const STAGE_REASONING_PROFILE_V33: Record<
   },
   max: {
     draft: 'max',
+    qa: 'max',
     review: 'max',
     factCheck: 'low',
     brief: 'max',

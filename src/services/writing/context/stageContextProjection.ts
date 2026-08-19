@@ -18,6 +18,27 @@ export const STAGE_CONTEXT_KIND_ALLOWLIST: Record<
   '*' | readonly WritingSourceKind[]
 > = {
   draft: '*',
+  // Phase 4 §7.2 ONE QA: the unified qa stage is the deterministic projection
+  // that replaces Review / Audit / FactCheck. The allowlist is the union of
+  // the three legacy QA lists (deduplicated) so every scenario's required
+  // context is reachable from one stage. Scenario differences (Outline vs
+  // Continuation) reach the QA only via frozen requirements, not via a
+  // second context builder.
+  qa: [
+    'instruction',
+    'outline',
+    'writer_style',
+    'preset',
+    'note',
+    'canon',
+    'source_boundary',
+    'seam',
+    'primary_anchor',
+    'character',
+    'worldbook',
+    'story_memory',
+    'structured_continuity_state',
+  ],
   review: ['instruction', 'outline', 'writer_style', 'preset', 'note'],
   audit: [
     'canon',

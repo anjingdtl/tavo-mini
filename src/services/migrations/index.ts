@@ -67,8 +67,9 @@ import { migrateV51ToV52 } from './v51-to-v52';
 import { migrateV52ToV53 } from './v52-to-v53';
 import { migrateV53ToV54 } from './v53-to-v54';
 import { migrateV54ToV55 } from './v54-to-v55';
+import { migrateV55ToV56 } from './v55-to-v56';
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -408,6 +409,15 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV54ToV55,
   },
+  {
+    from: 55,
+    to: 56,
+    breaking: false,
+    // Logic migration: idempotent continuation stage_results CHECK rebuild
+    // for Phase 4 §7.2 (compact Standard writes a `unified_qa` ledger row).
+    buildStatements: noSchemaStatements,
+    migrate: migrateV55ToV56,
+  },
 ];
 
 export async function runMigrations(
@@ -463,6 +473,10 @@ export async function runMigrations(
       await migrateV53ToV54(db);
     } else if (migration.from === 54 && migration.to === 55) {
       await migrateV54ToV55(db);
+    } else if (migration.from === 55 && migration.to === 56) {
+      // Idempotent logic migration: continuation stage_results CHECK rebuild
+      // for Phase 4 §7.2 (compact Standard writes a `unified_qa` ledger row).
+      await migrateV55ToV56(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

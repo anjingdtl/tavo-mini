@@ -113,6 +113,8 @@ export async function createContinuationStageDriver(
   // profile's cap (1). Standard continuation keeps the V5 five-request cap.
   // Phase 3 §6: Compact Standard (二) DAG drops the proof node, so the
   // physical-request budget is 4 instead of 5. Legacy Standard keeps 5.
+  // Phase 4 §7.2: the compact Standard also collapses Review/Audit/FactCheck
+  // into one qa call, so the budget drops from 4 to 3 (draft + qa + revision).
   const oneShotProfile =
     kernelFreeze.frozenContext?.stagePolicy?.values?.executionProfile ===
     'one_shot';
@@ -141,7 +143,7 @@ export async function createContinuationStageDriver(
     contextTraceJson: JSON.stringify(unifiedTrace),
     tokenUsageJson: JSON.stringify({
       workflowVersion: 5,
-      maxPhysicalRequests: oneShotProfile ? 1 : isCompactContinuation ? 4 : 5,
+      maxPhysicalRequests: oneShotProfile ? 1 : isCompactContinuation ? 3 : 5,
       physicalRequestCount: 0,
       stages: {},
     }),
@@ -180,6 +182,14 @@ export async function createContinuationStageDriver(
   const round3Stages: ('proof' | 'finalValidate' | 'persist')[] = compactTopology
     ? ['finalValidate', 'persist']
     : ['proof', 'finalValidate', 'persist'];
+  // Phase 4 §7.2: compact Standard round1 = draft only, round2 = the unified
+  // QA + Revision. Legacy keeps round1 = [draft, review] and round2 =
+  // [revision, audit, factCheck].
+  const round1Stages: ('draft' | 'review')[] = compactTopology
+    ? ['draft']
+    : ['draft', 'review'];
+  const round2Stages: ('revision' | 'qa' | 'audit' | 'factCheck')[] =
+    compactTopology ? ['qa', 'revision'] : ['revision', 'audit', 'factCheck'];
 
   let round: RoundName = 'ledger';
   let armed: RoundName | null = null;
@@ -225,7 +235,7 @@ export async function createContinuationStageDriver(
           const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
-            stages: ['draft', 'review'],
+            stages: round1Stages,
             persistAdapter: createContinuationDurableAdapter({
               run,
               snapshot: snapshotWithTraceId,
@@ -245,7 +255,7 @@ export async function createContinuationStageDriver(
           const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
             trace: kernelFreeze.trace,
-            stages: ['revision', 'audit', 'factCheck'],
+            stages: round2Stages,
             persistAdapter: createContinuationDurableAdapter({
               run,
               snapshot: snapshotWithTraceId,

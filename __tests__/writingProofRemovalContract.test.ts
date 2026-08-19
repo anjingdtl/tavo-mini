@@ -52,12 +52,14 @@ function checkpoint(
 
 describe('Case 1 — compact Standard has no Proof node', () => {
   test('checkpoint name set omits proof for compact, keeps it for legacy', () => {
+    // Phase 4 §7.2: compact DAG replaces review/factCheck with a single qa
+    // stage; legacy DAG keeps the trio + proof.
     expect(
       stageNamesForPipelineTopology({
         hasBrief: true,
         pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
       }),
-    ).toEqual(['draft', 'review', 'factCheck', 'brief']);
+    ).toEqual(['draft', 'qa', 'brief']);
     expect(
       stageNamesForPipelineTopology({
         hasBrief: true,
@@ -70,8 +72,7 @@ describe('Case 1 — compact Standard has no Proof node', () => {
     const stages = resolveStageCheckpoints({
       checkpointRows: [
         { stage: 'draft', status: 'succeeded' } as any,
-        { stage: 'review', status: 'succeeded' } as any,
-        { stage: 'factCheck', status: 'succeeded' } as any,
+        { stage: 'qa', status: 'succeeded' } as any,
         { stage: 'brief', status: 'succeeded' } as any,
       ],
       pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
@@ -86,28 +87,21 @@ describe('Case 1 — compact Standard has no Proof node', () => {
     const stages = resolveStageCheckpoints({
       checkpointRows: [
         { stage: 'draft', status: 'succeeded' } as any,
-        { stage: 'review', status: 'succeeded' } as any,
-        { stage: 'factCheck', status: 'succeeded' } as any,
+        { stage: 'qa', status: 'succeeded' } as any,
         { stage: 'brief', status: 'succeeded' } as any,
         { stage: 'proof', status: 'pending' } as any,
       ],
       pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     });
     expect(stages.some(s => s.stage === 'proof')).toBe(false);
-    expect(stages.map(s => s.stage)).toEqual([
-      'draft',
-      'review',
-      'factCheck',
-      'brief',
-    ]);
+    expect(stages.map(s => s.stage)).toEqual(['draft', 'qa', 'brief']);
   });
 
   test('compact full task with all audits + revision done → finalize_from_draft, never run_proof', () => {
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'succeeded'),
     ];
     const action = determineNextPipelineAction(view, stages);
@@ -120,8 +114,7 @@ describe('Case 1 — compact Standard has no Proof node', () => {
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'succeeded'),
     ];
@@ -129,12 +122,11 @@ describe('Case 1 — compact Standard has no Proof node', () => {
     expect(action.type).toBe('finalize_from_draft');
   });
 
-  test('compact task still runs its audits and revision normally', () => {
+  test('compact task still runs QA + revision normally', () => {
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'interrupted'),
     ];
     const action = determineNextPipelineAction(view, stages);
@@ -163,8 +155,8 @@ describe('Case 3 — compact revision absent → Draft final', () => {
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      // Phase 4 §7.2: the compact QA checkpoint (not review/factCheck).
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'skipped'),
     ];
     const action = determineNextPipelineAction(view, stages);
@@ -177,8 +169,7 @@ describe('Case 4 — compact revision present → revision is the final candidat
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'succeeded'),
     ];
     expect(determineNextPipelineAction(view, stages).type).toBe(
@@ -192,14 +183,13 @@ describe('Case 5 — crash after revision before finalize', () => {
     const view = taskView({});
     const stages: PersistedStageCheckpoint[] = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'succeeded'),
-      checkpoint('factCheck', 'succeeded'),
+      checkpoint('qa', 'succeeded'),
       checkpoint('brief', 'succeeded'),
     ];
     const action = determineNextPipelineAction(view, stages);
     expect(action.type).toBe('finalize_from_draft');
     // No succeeded stage is re-dispatched (the decision only targets the next
-    // open/terminal step, and none of draft/review/factCheck/brief is open).
+    // open/terminal step, and none of draft/qa/brief is open).
   });
 });
 

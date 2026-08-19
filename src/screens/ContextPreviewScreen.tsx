@@ -113,6 +113,9 @@ const V5_STAGE_LABELS: Record<ContinuationV5PhysicalNode, string> = {
   narrative_architect: 'A1 架构',
   revision_writer: 'V2 修订',
   adversarial_auditor: 'C2 审计',
+  // Phase 4 §7.2: the unified qa label mirrors the new compact Standard ONE
+  // QA node; legacy preview still surfaces narrative_architect + C2 first.
+  unified_qa: 'ONE QA',
   final_reviser: 'V3 终审',
 };
 
@@ -408,6 +411,9 @@ export const ContextPreviewScreen: React.FC<Props> = ({
             narrative_architect: stageModelOf(plannerFrozen),
             revision_writer: stageModelOf(repairFrozen),
             adversarial_auditor: stageModelOf(auditorFrozen),
+            // Phase 4 §7.2: compact Standard unified QA reuses the auditor
+            // model config; preview page keeps the legacy labels untouched.
+            unified_qa: stageModelOf(auditorFrozen),
             final_reviser: stageModelOf(repairFrozen),
           },
           frozenModelConfigs: {

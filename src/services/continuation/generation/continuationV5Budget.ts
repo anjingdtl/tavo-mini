@@ -199,6 +199,10 @@ export function resolveContinuationV5BudgetPreview(input: {
     'narrative_architect',
     'revision_writer',
     'adversarial_auditor',
+    // Phase 4 §7.2: the unified_qa node is the compact Standard ONE QA; the
+    // budget preview mirrors the same envelope so legacy and compact share
+    // identical token math for the auditor role.
+    'unified_qa',
     'final_reviser',
   ];
   const pick = (

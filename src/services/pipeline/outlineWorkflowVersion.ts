@@ -288,6 +288,13 @@ export function normalizePersistedPipelineTopologyVersion(
   value: unknown,
 ): PipelineTopologyVersion | null {
   if (value == null || value === '') return LEGACY_PIPELINE_TOPOLOGY_VERSION;
+  // Kernel freeze writes the STRING label into `stagePolicy.values`
+  // (`pipelineTopologyLabel`), while the durable columns persist the numeric
+  // 1|2. Both shapes must normalize to the same version — otherwise a compact
+  // task resumed through the shared writer consults the LEGACY DAG and
+  // deadlocks on `qa` (Phase 4 §7.2 regression).
+  if (value === 'compact_standard') return COMPACT_PIPELINE_TOPOLOGY_VERSION;
+  if (value === 'legacy_standard') return LEGACY_PIPELINE_TOPOLOGY_VERSION;
   const n = Number(value);
   if (n === 1) return LEGACY_PIPELINE_TOPOLOGY_VERSION;
   if (n === 2) return COMPACT_PIPELINE_TOPOLOGY_VERSION;

@@ -86,6 +86,10 @@ const ACTION_STAGES: Partial<Record<PipelineAction['type'], WritingKernelStage[]
   run_review: ['review'],
   run_fact_check: ['factCheck'],
   run_review_and_fact_check: ['review', 'factCheck'],
+  // Phase 4 (二 §7.2): the unified `qa` action maps to a single qa kernel
+  // stage. Legacy run_review / run_fact_check are unchanged for historical
+  // resume.
+  run_qa: ['qa'],
   run_brief: ['revision'],
   run_proof: ['proof'],
   finalize_from_draft: ['finalValidate', 'persist'],

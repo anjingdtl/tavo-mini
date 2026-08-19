@@ -13,6 +13,10 @@ import {
   WRITING_STAGE_DAG,
   writingStageDependencies,
 } from '../src/services/writing';
+import {
+  COMPACT_WRITING_STAGE_DAG,
+  writingStageDagNodeForTopology,
+} from '../src/services/writing/stages/writingStageDag';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
 import { continuationRequest, outlineRequest } from './helpers/oneShotFixtures';
 import {
@@ -40,6 +44,9 @@ function freezeOutline(values: Record<string, unknown> = {}) {
 
 describe('ONE Pipeline DAG', () => {
   test('DAG is explicit: Draft then QA, then Revision, then Proof', () => {
+    // Phase 4 §7.2: WRITING_STAGE_DAG is the legacy alias (kept for
+    // historical resume). The compact Standard DAG is exposed separately
+    // and replaces review/audit/factCheck with a single qa node.
     expect(WRITING_STAGE_DAG.map(node => node.stage)).toEqual([
       'draft',
       'review',
@@ -69,6 +76,27 @@ describe('ONE Pipeline DAG', () => {
     expect(ready).toEqual(['review', 'factCheck']);
     expect(nextWritingStageWave(ready)).toEqual(['review', 'factCheck']);
     expect(nextWritingStageWave(['review', 'revision'])).toEqual(['review']);
+  });
+
+  test('Compact Standard DAG (§7.2 ONE QA): draft → qa → revision → finalize', () => {
+    // New Phase 4 DAG shape: review/audit/factCheck/proof all removed.
+    expect(COMPACT_WRITING_STAGE_DAG.map(node => node.stage)).toEqual([
+      'draft',
+      'qa',
+      'revision',
+      'finalValidate',
+      'persist',
+    ]);
+    expect(writingStageDagNodeForTopology('qa', 2).dependsOn).toEqual([
+      'draft',
+    ]);
+    expect(writingStageDagNodeForTopology('revision', 2).dependsOn).toEqual([
+      'draft',
+      'qa',
+    ]);
+    // Unknown stage for a topology is a hard error (fail-closed), not
+    // undefined — proof simply is not a compact DAG member.
+    expect(() => writingStageDagNodeForTopology('proof', 2)).toThrow();
   });
 });
 

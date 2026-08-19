@@ -23,6 +23,10 @@ interface V5StageModels {
   narrative_architect: V5StageModel;
   revision_writer: V5StageModel;
   adversarial_auditor: V5StageModel;
+  // Phase 4 §7.2: the compact Standard V5 ledger node is `unified_qa`. Legacy
+  // topology continues to populate narrative_architect + adversarial_auditor
+  // (both kept) and leaves unified_qa unused.
+  unified_qa: V5StageModel;
   final_reviser: V5StageModel;
 }
 
@@ -170,6 +174,15 @@ export async function resolveV5StageModels(
         maxOutputTokens: frozen.revisionWriter!.maxOutputTokens,
       },
       adversarial_auditor: {
+        configId: frozen.adversarialAuditor!.configId,
+        contextWindow: frozen.adversarialAuditor!.contextWindow,
+        maxOutputTokens: frozen.adversarialAuditor!.maxOutputTokens,
+      },
+      // Phase 4 §7.2: the unified_qa node reuses the legacy auditor's model
+      // config. The compact driver dispatches round2 through unified_qa only;
+      // the legacy narrative_architect / adversarial_auditor paths remain
+      // intact for legacy resume.
+      unified_qa: {
         configId: frozen.adversarialAuditor!.configId,
         contextWindow: frozen.adversarialAuditor!.contextWindow,
         maxOutputTokens: frozen.adversarialAuditor!.maxOutputTokens,

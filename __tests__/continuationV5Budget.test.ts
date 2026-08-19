@@ -102,6 +102,10 @@ describe('Continuation V5 budget', () => {
       narrative_architect: model,
       revision_writer: model,
       adversarial_auditor: model,
+      // Phase 4 §7.2: compact Standard adds `unified_qa` as the 6th V5
+      // physical node; legacy topology populates narrative_architect +
+      // adversarial_auditor + leaves unified_qa unused.
+      unified_qa: model,
       final_reviser: model,
     };
     const preview = resolveContinuationV5BudgetPreview({
@@ -116,6 +120,7 @@ describe('Continuation V5 budget', () => {
         'final_reviser',
         'narrative_architect',
         'revision_writer',
+        'unified_qa',
       ].sort(),
     );
   });

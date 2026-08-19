@@ -1,5 +1,6 @@
 export type PipelineStageName =
   | 'draft'
+  | 'qa'
   | 'review'
   | 'factCheck'
   | 'brief'
@@ -15,6 +16,7 @@ export type PipelineTaskStatus =
   | 'idle'
   | 'queued'
   | 'drafting'
+  | 'qa'
   | 'reviewing'
   | 'factChecking'
   | 'briefing'

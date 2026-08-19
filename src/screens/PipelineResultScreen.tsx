@@ -34,6 +34,10 @@ type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'Pipeli
 
 const STAGE_LABELS: Record<PipelineStageResult['stage'], string> = {
   draft: '初稿',
+  // Phase 4 §7.2: the unified qa stage replaces the legacy trio for the
+  // compact Standard path; the label surfaces in the result screen so users
+  // can correlate against the QA call in the ledger.
+  qa: 'QA 检查',
   review: '审阅/评估',
   factCheck: '事实核查',
   brief: '终稿 Brief',

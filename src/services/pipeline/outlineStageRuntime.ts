@@ -1936,6 +1936,11 @@ export async function runOutlineDurableOperation(params: {
     case 'run_review':
     case 'run_fact_check':
     case 'run_review_and_fact_check':
+    // Phase 4 (二 §7.2 ONE QA): the compact Standard action dispatches the
+    // unified qa kernel stage through the same shared writer path as the
+    // legacy trio. Missing this case would drop run_qa into `default` and
+    // fail every compact task at its first QA step.
+    case 'run_qa':
     case 'run_brief':
     case 'run_proof':
       if (options.batchBudgetGate) {

@@ -48,7 +48,10 @@ export function createOutlineDurableAdapter(input: {
     },
     async persistStageArtifact(stage, artifact) {
       if (stage === 'finalValidate' || stage === 'persist') return;
-      if (stage === 'audit' && !artifact.body.trim()) return;
+      // Phase 4 §7.2: the unified `qa` stage is the compact Standard's QA
+      // artifact. Empty body is still skipped so adoption doesn't pick up
+      // an empty revision-trigger source.
+      if ((stage === 'qa' || stage === 'audit') && !artifact.body.trim()) return;
       const store = usePipelineTaskStore.getState();
       const result = {
         stage: pipelineStageName(stage),

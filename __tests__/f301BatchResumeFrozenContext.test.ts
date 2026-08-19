@@ -262,6 +262,19 @@ function currentPipelineResult(messages: unknown[], config: any) {
         totalTokens: 400,
         emptyReason: null,
       };
+    case 'pipeline_qa':
+      // Phase 4 (二 §7.2 ONE QA): the unified QA returns the compact
+      // verdict + findings contract. pass + empty findings → Conditional
+      // Revision is skipped → draft is the final candidate.
+      return {
+        text: JSON.stringify({
+          verdict: 'pass',
+          findings: [],
+        }),
+        inputTokens: 100,
+        outputTokens: 30,
+        totalTokens: 130,
+      };
     case 'pipeline_review':
       return {
         text: JSON.stringify({
@@ -791,9 +804,10 @@ describe('F3-01: draft 首个失败（无 succeeded stage）路径不受影响',
     expect(newTask).not.toBeNull();
     expect(String((newTask as any).status)).toBe('completed');
     // New batch (created without topology override) freezes compact(2)
-    // (二 Phase §6): the fresh run is draft→review→factCheck → local finalize.
-    // No proof node → 3 logical LLM calls instead of the legacy 4.
-    expect(mockCallLLMResult).toHaveBeenCalledTimes(3);
+    // (二 Phase §6/§7): the fresh run is draft → ONE QA → (pass → no
+    // Revision) → local finalize. No review/factCheck/proof nodes → 2
+    // logical LLM calls (was 3 under Phase 3, 4 under legacy).
+    expect(mockCallLLMResult).toHaveBeenCalledTimes(2);
 
     const oldTask = await one(`SELECT * FROM pipeline_tasks WHERE id = ?`, [
       taskId,

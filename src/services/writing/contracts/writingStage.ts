@@ -107,7 +107,7 @@ export interface SharedWritingArtifact {
   validNoOpRequirementIds?: string[];
   validNoOpReasons?: Record<string, string>;
   /** Which earlier stage carried the final body (Phase 2 §4.3). */
-  sourceStage?: 'proof' | 'revision' | 'draft' | null;
+  sourceStage?: 'qa' | 'proof' | 'revision' | 'draft' | null;
   diagnostics?: string[];
   formatterUsed?: boolean;
   adoptedFrom?: 'content' | 'reasoning' | null;

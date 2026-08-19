@@ -43,6 +43,18 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '主要行动、阻力、选择、反应和后果必须真正发生。',
     '不要输出分析过程，不要只写提纲或补丁。',
   ].join('\n'),
+  qa: [
+    // Phase 4 (二 §7.2 ONE QA. The single QA stage for the compact Standard
+    // pipeline. Replaces Review/Audit/FactCheck with one unified check whose
+    // scenario-specific focus is delivered ONLY through frozen requirements
+    // (Outline obligations vs Continuation Canon/Boundary/Seam/Anchor).
+    '你是唯一的 Shared QA Editor。',
+    '当前阶段：QA。这是新 Compact Standard 的唯一检查阶段，',
+    '    统一承担原文 Review + Audit + FactCheck 的职责（不再有第二套检查器）。',
+    '请基于冻结上下文与已冻结需求，按当前场景（Outline vs Continuation）',
+    '    一次给出 verdict 与可定位、可执行的问题清单。',
+    '只报告当前正文中确凿、可定位的问题，禁止“总体不错 / 略显平淡 / 可以更生动”等无据建议。',
+  ].join('\n'),
   review: [
     '你是小说终审前的审阅编辑，也是唯一的 Shared Reviewer。',
     '当前阶段：Review。当前统一流水线的 Review。',
@@ -169,7 +181,14 @@ export function compileSharedWritingPrompt(
 }
 
 function isStructuredReportStage(stage: SharedWritingStageName): boolean {
-  return stage === 'review' || stage === 'audit' || stage === 'factCheck';
+  // Phase 4 §7.2: ONE QA = single structured-report stage. qa inherits the
+  // structured-report contract (json_envelope + verdict + findings).
+  return (
+    stage === 'qa' ||
+    stage === 'review' ||
+    stage === 'audit' ||
+    stage === 'factCheck'
+  );
 }
 
 function resolveMaxTokens(
@@ -177,7 +196,12 @@ function resolveMaxTokens(
   stage: SharedWritingStageName,
 ): number {
   const modelMax = Math.max(256, Number(frozen.model.maxOutputTokens) || 1024);
-  if (stage === 'review' || stage === 'audit' || stage === 'factCheck') {
+  if (
+    stage === 'qa' ||
+    stage === 'review' ||
+    stage === 'audit' ||
+    stage === 'factCheck'
+  ) {
     return Math.min(modelMax, Math.max(768, Math.floor(modelMax * 0.45)));
   }
   if (stage === 'revision') {

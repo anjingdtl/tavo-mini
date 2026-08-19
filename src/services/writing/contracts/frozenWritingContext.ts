@@ -98,6 +98,7 @@ export type WritingKernelStage =
   | 'render'
   | 'freeze'
   | 'draft'
+  | 'qa'
   | 'review'
   | 'audit'
   | 'factCheck'

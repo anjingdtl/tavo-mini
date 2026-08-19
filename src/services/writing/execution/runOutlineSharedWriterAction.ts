@@ -18,6 +18,8 @@ const ACTION_TO_STAGES: Partial<Record<PipelineAction['type'], SharedWritingStag
   run_review: ['review'],
   run_fact_check: ['factCheck'],
   run_review_and_fact_check: ['review', 'factCheck'],
+  // Phase 4 §7.2: the unified qa action maps to one qa kernel stage.
+  run_qa: ['qa'],
   run_brief: ['revision'],
   run_proof: ['proof'],
 };

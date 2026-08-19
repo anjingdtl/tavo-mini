@@ -60,6 +60,9 @@ export type ContinuationV5PhysicalNode =
   | 'narrative_architect'
   | 'revision_writer'
   | 'adversarial_auditor'
+  // Phase 4 (二 §7.2): the unified qa node replaces the legacy trio
+  // (narrative_architect + adversarial_auditor + any historical fact_check).
+  | 'unified_qa'
   | 'final_reviser';
 
 /** V5 zero-request local node. */
@@ -84,6 +87,18 @@ export const CONTINUATION_V5_ROUNDS = {
   round2: ['revision_writer'],
   round3: ['adversarial_auditor'],
   round4: ['final_reviser'],
+} as const;
+
+/**
+ * Phase 4 (二 §7.2): compact Standard V5 round map. Round1 = draft only,
+ * Round2 = unified QA + revision_writer (replaces the legacy review +
+ * audit/factCheck + revision split). Proof is removed from the compact DAG
+ * (Phase 3 §6), so round3 collapses to nothing.
+ */
+export const CONTINUATION_V5_COMPACT_ROUNDS = {
+  round1: ['draft_writer'],
+  round2: ['unified_qa', 'revision_writer'],
+  round3: [],
 } as const;
 
 export const CONTINUATION_V5_MAX_PHYSICAL_REQUESTS = 5;

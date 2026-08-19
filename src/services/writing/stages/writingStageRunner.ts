@@ -15,6 +15,7 @@ import { runFactCheckStage } from './factCheck';
 import { runFinalValidateStage } from './finalValidate';
 import { runPersistStage } from './persist';
 import { runProofStage } from './proof';
+import { runQaStage } from './qa';
 import { runRevisionStage } from './revision';
 import { runReviewStage } from './review';
 import type { SemanticApplyCheckInput } from './semanticApply';
@@ -78,13 +79,18 @@ export async function runWritingStages(
     const ready = readyWritingStages({
       remaining,
       stageOrder: input.stages,
+      pipelineTopologyVersion: input.frozenContext?.stagePolicy?.values
+        ?.pipelineTopologyVersion,
     });
     if (ready.length === 0) {
       throw new Error(
         `WRITING_STAGE_DAG_DEADLOCK: ${remaining.join(', ')}`,
       );
     }
-    const wave = nextWritingStageWave(ready);
+    const wave = nextWritingStageWave(
+      ready,
+      input.frozenContext?.stagePolicy?.values?.pipelineTopologyVersion,
+    );
     const waveResults = await Promise.all(wave.map(stage => executeOne(stage)));
     for (let index = 0; index < wave.length; index += 1) {
       const stage = wave[index];
@@ -159,6 +165,12 @@ async function executeWritingStage(args: {
   switch (stage) {
     case 'draft':
       result = await runDraftStage(stageInput);
+      break;
+    case 'qa':
+      // Phase 4 (二 §7.2): the ONLY production QA implementation. Review /
+      // audit / factCheck remain as adapters that delegate to runQaStage for
+      // historical resume; they never dispatch from a compact Standard path.
+      result = await runQaStage(stageInput);
       break;
     case 'review':
       result = await runReviewStage(stageInput);

@@ -6,7 +6,7 @@
  */
 import type { WritingStageArtifacts } from '../contracts/writingStage';
 
-export type FindingsSourceStage = 'review' | 'audit' | 'factCheck';
+export type FindingsSourceStage = 'qa' | 'review' | 'audit' | 'factCheck';
 
 export interface AggregatedFinding {
   findingId: string;
@@ -19,7 +19,12 @@ export interface AggregatedFinding {
   evidence: string;
 }
 
-const SOURCE_STAGES: FindingsSourceStage[] = ['review', 'audit', 'factCheck'];
+const SOURCE_STAGES: FindingsSourceStage[] = [
+  'qa',
+  'review',
+  'audit',
+  'factCheck',
+];
 const BODY_PREVIEW_LIMIT = 400;
 
 export function aggregateStageFindings(

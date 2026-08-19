@@ -157,6 +157,7 @@ function continuationNode(
   | 'narrative_architect'
   | 'revision_writer'
   | 'adversarial_auditor'
+  | 'unified_qa'
   | 'final_reviser'
   | 'final_validate'
   | null {
@@ -165,6 +166,12 @@ function continuationNode(
       return 'draft_writer';
     case 'review':
       return 'narrative_architect';
+    case 'qa':
+      // Phase 4 (二 §7.2): the compact Standard QA writes its structured
+      // report to a dedicated continuation ledger node. Historical review /
+      // audit / factCheck rows stay on narrative_architect / adversarial_
+      // auditor for legacy resume.
+      return 'unified_qa';
     case 'revision':
       return 'revision_writer';
     case 'audit':

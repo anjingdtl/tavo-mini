@@ -121,7 +121,12 @@ function assertStructuredReport(
   stage: SharedWritingStageName,
   artifact: SharedWritingArtifact,
 ): void {
-  if (stage !== 'review' && stage !== 'audit' && stage !== 'factCheck') {
+  if (
+    stage !== 'qa' &&
+    stage !== 'review' &&
+    stage !== 'audit' &&
+    stage !== 'factCheck'
+  ) {
     return;
   }
   const structured = artifact.structured;
@@ -228,8 +233,15 @@ export async function executeSharedWriterStage(input: {
 
   const requestConfig = await resolveFrozenRequestConfig(stageInput);
   const stageReasoning = resolveFrozenStageReasoning(stage, stageInput);
+  // Phase 4 (二 §7.2): 'qa' is the unified report stage for the compact
+  // Standard path. It behaves like review/audit/factCheck for LLM-call
+  // shaping (json_object + low temperature) and inherits the structured-
+  // report contract from the prompt compiler.
   const isReport =
-    stage === 'review' || stage === 'audit' || stage === 'factCheck';
+    stage === 'qa' ||
+    stage === 'review' ||
+    stage === 'audit' ||
+    stage === 'factCheck';
   const primaryStartedAt = Date.now();
   const primary = await callWritingStageLLM(
     compiled.messages,

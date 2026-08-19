@@ -187,6 +187,10 @@ export function determineNextPipelineAction(
   const factCheck = getCheckpoint(stages, 'factCheck');
   const brief = getCheckpoint(stages, 'brief');
   const proof = getCheckpoint(stages, 'proof');
+  // Phase 4 (二 §7.2): the unified `qa` stage for the compact Standard. The
+  // checkpoint row is named 'qa' for new runs; legacy resume keeps the old
+  // review/factCheck rows. Both shapes coexist in the durable checkpoints.
+  const qaStage = getCheckpoint(stages, 'qa');
   // Structured (Brief-bearing) pipeline predicate — single source of truth
   // (Closure Plan §5). Version 6 (V3 hierarchical) routes through the same V3
   // decide* branches as 3/4/5 so the Brief checkpoint is always created.
@@ -226,6 +230,13 @@ export function determineNextPipelineAction(
   }
 
   // --- Mode branches -------------------------------------------------
+  // Phase 4 (二 §7.2): compact Standard dispatches ONE QA regardless of
+  // pipelineMode (noReview/twoStage/conditional/full all collapse to the
+  // same qa → brief? → finalize path). Legacy resume keeps the historical
+  // branches below for `compact === false` tasks.
+  if (compact) {
+    return decideCompactFull(task, qaStage, brief);
+  }
   if (mode === 'noReview') {
     return decideNoReview(task, proof);
   }
@@ -493,6 +504,77 @@ function decideTwoStageV3(
     });
   }
   return decideAfterBrief(task, brief, proof, compact);
+}
+
+/**
+ * Phase 4 (二 §7.2): compact Standard topology has ONE QA stage. Once
+ * Draft succeeds, the path is: run_qa → run_brief (if qa verdict is
+ * revise) → finalize_from_draft. Proof is intentionally absent (Phase 3
+ * §6.4).
+ */
+function decideCompactFull(
+  task: PersistedPipelineTaskView,
+  qa: PersistedStageCheckpoint,
+  brief: PersistedStageCheckpoint,
+): PipelineAction {
+  if (isOpen(qa.status)) {
+    return { type: 'run_qa' };
+  }
+  if (qa.status === 'failed') {
+    return blocked('STAGE_FAILED', qa.errorMessage || 'QA 失败，请从失败节点重试', {
+      stage: 'qa',
+      userAction: 'retry',
+    });
+  }
+  if (qa.status === 'skipped') {
+    // Formal skip (One-Shot, no findings, etc.) → treat as no Revision.
+    if (hasUsableFinalText(task)) {
+      if (String(task.status) === 'completed') {
+        return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+      }
+      return { type: 'complete' };
+    }
+    return { type: 'finalize_from_draft' };
+  }
+  if (qa.status !== 'succeeded') {
+    return blocked('UNKNOWN_STATE', `QA 阶段状态非法: ${qa.status}`, {
+      stage: 'qa',
+      userAction: 'restart_task',
+    });
+  }
+  // QA succeeded → conditionally run Brief / Revision, then local finalize.
+  if (isOpen(brief.status)) {
+    return { type: 'run_brief' };
+  }
+  if (brief.status === 'failed') {
+    return blocked('STAGE_FAILED', brief.errorMessage || '修订失败，请从失败节点重试', {
+      stage: 'brief',
+      userAction: 'retry',
+    });
+  }
+  if (brief.status === 'skipped') {
+    // Conditional Revision: no executable findings → Draft IS the final.
+    if (hasUsableFinalText(task)) {
+      if (String(task.status) === 'completed') {
+        return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+      }
+      return { type: 'complete' };
+    }
+    return { type: 'finalize_from_draft' };
+  }
+  if (brief.status !== 'succeeded') {
+    return blocked('UNKNOWN_STATE', `Brief 阶段状态非法: ${brief.status}`, {
+      stage: 'brief',
+      userAction: 'restart_task',
+    });
+  }
+  if (hasUsableFinalText(task)) {
+    if (String(task.status) === 'completed') {
+      return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
+    }
+    return { type: 'complete' };
+  }
+  return { type: 'finalize_from_draft' };
 }
 
 function decideConditional(

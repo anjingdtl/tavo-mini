@@ -55,8 +55,8 @@ describe('continuation batch schema 53/54', () => {
     db?.close();
   });
 
-  it('SCHEMA_VERSION is 55', () => {
-    expect(SCHEMA_VERSION).toBe(55);
+  it('SCHEMA_VERSION is 56', () => {
+    expect(SCHEMA_VERSION).toBe(56);
   });
 
   describe('fresh install', () => {

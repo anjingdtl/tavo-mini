@@ -10,7 +10,11 @@ import { selectStructuredCandidate } from '../../pipeline/structuredCandidate';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 
 export function isStructuredWriterStage(stage: SharedWritingStageName): boolean {
+  // Phase 4 (二 §7.2): the unified `qa` stage is structurally identical to
+  // the legacy review/audit/factCheck trio for adoption purposes (json
+  // envelope + verdict + findings).
   return (
+    stage === 'qa' ||
     stage === 'review' ||
     stage === 'audit' ||
     stage === 'factCheck' ||
@@ -55,6 +59,25 @@ export function isAdoptableStructuredReport(
   parsed: Record<string, unknown> | undefined,
 ): boolean {
   if (!parsed) return false;
+  // Phase 4 §7.2: ONE QA uses the simplified verdict + findings contract; the
+  // legacy review stage keeps its stricter requirement (verdict + another
+  // structural field) so historical resume does not silently swallow empty
+  // reviews.
+  if (stage === 'qa') {
+    return Boolean(
+      parsed.verdict ||
+        parsed.outlineAssessment ||
+        parsed.coverage ||
+        parsed.checked ||
+        parsed.content ||
+        parsed.errors ||
+        parsed.warnings ||
+        parsed.confirmed ||
+        parsed.issues ||
+        parsed.strengths ||
+        parsed.suggestions,
+    );
+  }
   if (stage === 'review') {
     return Boolean(
       (parsed.verdict &&
@@ -67,7 +90,7 @@ export function isAdoptableStructuredReport(
         parsed.suggestions,
     );
   }
-  if (stage === 'factCheck' || stage === 'audit') {
+  if (stage === 'audit' || stage === 'factCheck') {
     return Boolean(
       parsed.verdict ||
         parsed.errors ||
@@ -118,6 +141,8 @@ export function compileSharedWriterFormatterPrompt(input: {
       ? 'Brief'
       : input.stage === 'factCheck'
       ? 'FactCheck'
+      : input.stage === 'qa'
+      ? 'QA'
       : input.stage === 'review'
       ? 'Review'
       : input.stage;
@@ -128,8 +153,10 @@ export function compileSharedWriterFormatterPrompt(input: {
         input.stage === 'revision'
           ? '当前统一流水线的 Brief Compiler 只整理修订合同。'
           : '',
-        input.stage === 'review' || input.stage === 'factCheck'
-          ? '你也是一次性的 Audit Formatter。'
+        input.stage === 'qa' ||
+        input.stage === 'review' ||
+        input.stage === 'factCheck'
+          ? '你也是一次性的 QA / Audit Formatter。'
           : '',
         '只整理候选里已经出现的语义，不得重新审阅、不得读取长上下文、不得新增长篇正文。',
         '必须把结果写在 message.content 的 JSON object 里。',
@@ -161,6 +188,8 @@ export function compileSharedWriterFormatterPrompt(input: {
         ? 'pipeline_brief_formatter'
         : input.stage === 'factCheck'
         ? 'pipeline_factcheck_formatter'
+        : input.stage === 'qa'
+        ? 'pipeline_qa_formatter'
         : `pipeline_${input.stage}_formatter`,
   };
 }

@@ -12,6 +12,11 @@ export type FrozenKernelStageReasoningTable = Partial<
 
 const LLM_STAGES: SharedWritingStageName[] = [
   'draft',
+  // Phase 4 (二 §7.2 ONE QA): the unified qa stage is an LLM stage too —
+  // freeze-time and runtime reasoning tables must both carry it, otherwise
+  // resolveFrozenStageReasoning('qa') returns undefined and the shared
+  // writer throws on `stageReasoning.thinking`.
+  'qa',
   'review',
   'audit',
   'factCheck',
@@ -80,7 +85,8 @@ export function compileKernelStageReasoning(input: {
       };
       continue;
     }
-    const structuredLow = stage === 'factCheck' || stage === 'audit';
+    const structuredLow =
+      stage === 'factCheck' || stage === 'audit' || stage === 'qa';
     table[stage] = {
       thinking: { type: 'enabled' },
       reasoningEffort: structuredLow ? 'low' : requested,

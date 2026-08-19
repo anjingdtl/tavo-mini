@@ -32,10 +32,14 @@ export function evaluateRuntimeStageSkip(input: {
   proofPolicy?: unknown;
 }): { skip: false } | { skip: true; skipReason: string; policyRuleId: string } {
   if (input.stage === 'revision') {
+    // Phase 4 §7.2: ONE QA is the unique findings source. The Revision
+    // trigger looks at `qa` artifacts (plus any legacy review/audit/factCheck
+    // artifacts carried by legacy resume).
     if (hasExecutableFindings(input.artifacts)) return { skip: false };
     return {
       skip: true,
-      skipReason: 'Review / Audit / FactCheck 没有可定位、可执行的问题',
+      skipReason:
+        'QA 没有可定位、可执行的问题（Review / Audit / FactCheck 同样汇总于此）',
       policyRuleId: CONDITIONAL_REVISION_RULE_ID,
     };
   }

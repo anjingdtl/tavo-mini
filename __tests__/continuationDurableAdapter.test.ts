@@ -32,6 +32,8 @@ function snapshot() {
       narrative_architect: makeBudget('narrative_architect'),
       revision_writer: makeBudget('revision_writer'),
       adversarial_auditor: makeBudget('adversarial_auditor'),
+      // Phase 4 §7.2: the compact Standard ONE QA ledger node.
+      unified_qa: makeBudget('unified_qa'),
       final_reviser: makeBudget('final_reviser'),
     },
   } as any;

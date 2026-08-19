@@ -23,6 +23,7 @@ import { buildSchema51CreateSqls } from '../../services/migrations/v50-to-v51';
 import { buildSchema53CreateSqls } from '../../services/migrations/v52-to-v53';
 import { buildSchema54CreateSqls } from '../../services/migrations/v53-to-v54';
 import { buildSchema55CreateSqls } from '../../services/migrations/v54-to-v55';
+import { buildV55ToV56Statements } from '../../services/migrations/v55-to-v56';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -704,6 +705,11 @@ export function createCurrentSchemaStatements(): string[] {
     // Schema 55 pipeline-topology freeze columns on pipeline_tasks +
     // multi_chapter_batches (idempotent ALTERs against the fresh tables above).
     ...buildSchema55CreateSqls(),
+    // Schema 56 Phase 4 (§7.2) continuation stage_results CHECK rebuild so
+    // the new `unified_qa` ledger node is allowed. The CHECK list is
+    // extended inline in the migration; here we just call the same builder
+    // so fresh installs land on Schema 56.
+    ...buildV55ToV56Statements().map(statement => statement.sql),
     // Schema 49 V3.2 candidate scratch and validation diagnostics.
     ...buildSchema49CreateSqls(),
     // Schema 50 durable Story Memory physical-request ledger.

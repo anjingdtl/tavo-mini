@@ -76,6 +76,18 @@ export async function ensureContinuationStageLedger(
         maximumOutputTokens:
           snapshot.stageBudgets.adversarial_auditor.maximumOutputTokens,
       },
+      // Phase 4 §7.2: the unified_qa ledger row carries the compact Standard
+      // ONE QA call. The compact driver always writes this row, even when the
+      // legacy auditor row stays empty for legacy resume.
+      unified_qa: {
+        configId: snapshot.stageBudgets.adversarial_auditor.configId,
+        compiledPromptTokens:
+          snapshot.stageBudgets.adversarial_auditor.compiledPromptTokens,
+        minimumOutputTokens:
+          snapshot.stageBudgets.adversarial_auditor.minimumOutputTokens,
+        maximumOutputTokens:
+          snapshot.stageBudgets.adversarial_auditor.maximumOutputTokens,
+      },
       final_reviser: {
         configId: snapshot.stageBudgets.final_reviser.configId,
         compiledPromptTokens:

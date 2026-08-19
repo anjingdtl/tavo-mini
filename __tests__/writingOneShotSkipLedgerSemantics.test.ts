@@ -260,6 +260,9 @@ describe('One-Shot skip semantics: continuation durable ledger', () => {
         narrative_architect: budget,
         revision_writer: budget,
         adversarial_auditor: budget,
+        // Phase 4 §7.2: legacy resume pre-creates the unified_qa ledger row
+        // so the compact Standard path can find it after a topology flip.
+        unified_qa: budget,
         final_reviser: budget,
       },
     });
@@ -272,6 +275,7 @@ describe('One-Shot skip semantics: continuation durable ledger', () => {
           narrative_architect: budget,
           revision_writer: budget,
           adversarial_auditor: budget,
+          unified_qa: budget,
           final_reviser: budget,
         },
       } as any,

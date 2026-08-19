@@ -1214,6 +1214,10 @@ export async function ensureContinuationV5StageResults(input: {
     'narrative_architect',
     'revision_writer',
     'adversarial_auditor',
+    // Phase 4 §7.2: the unified_qa node is the compact Standard V5 ledger
+    // entry. It reuses the auditor's budget envelope so legacy and compact
+    // share the same token envelope math.
+    'unified_qa',
     'final_reviser',
   ];
   const statements = physicalStages.map(stage => {

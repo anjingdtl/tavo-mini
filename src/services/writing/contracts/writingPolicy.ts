@@ -11,6 +11,7 @@ import {
 
 export type SharedWritingStageName =
   | 'draft'
+  | 'qa'
   | 'review'
   | 'audit'
   | 'factCheck'

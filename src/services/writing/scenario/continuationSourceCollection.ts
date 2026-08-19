@@ -1342,6 +1342,15 @@ export async function buildContinuationV5Context(
         frozen.control ??
         frozen.writer!,
     ),
+    // Phase 4 §7.2: the unified_qa node is the compact Standard ONE QA. It
+    // reuses the legacy auditor's frozen model config; legacy topology still
+    // routes through adversarial_auditor (unified_qa is a no-op for legacy).
+    unified_qa: frozenModelToV5Stage(
+      frozen.adversarialAuditor ??
+        frozen.checker ??
+        frozen.control ??
+        frozen.writer!,
+    ),
     final_reviser: frozenModelToV5Stage(
       frozen.finalReviser ?? frozen.repair ?? frozen.writer!,
     ),
@@ -1385,6 +1394,9 @@ export async function buildContinuationV5Context(
       narrative_architect: architectPrompt,
       revision_writer: draftPrompt + 400,
       adversarial_auditor: draftPrompt + 500,
+      // Phase 4 §7.2: the unified_qa node reuses the auditor's prompt token
+      // envelope so the compact Standard ONE QA stays inside the same budget.
+      unified_qa: draftPrompt + 500,
       final_reviser: draftPrompt + 600,
     },
     protocolSkeletonTokens,

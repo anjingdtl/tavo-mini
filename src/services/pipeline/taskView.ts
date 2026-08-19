@@ -21,7 +21,9 @@ import {
 
 /**
  * Stage names the state machine consults for a task. Compact Standard (二 Phase
- * §6) has NO proof node: the final body is the Revision (or Draft) candidate.
+ * §6/§7) replaces Review/Audit/FactCheck with a unified `qa` stage (Phase 4
+ * §7.2 ONE QA) and has NO proof node (Phase 3 §6.2). The compact DAG is
+ * therefore draft → qa → brief (when present) → finalize.
  */
 export function stageNamesForPipelineTopology(params: {
   hasBrief?: boolean;
@@ -29,8 +31,8 @@ export function stageNamesForPipelineTopology(params: {
 }): PipelineCheckpointStage[] {
   if (isCompactPipelineTopology(params.pipelineTopologyVersion)) {
     return params.hasBrief
-      ? ['draft', 'review', 'factCheck', 'brief']
-      : ['draft', 'review', 'factCheck'];
+      ? ['draft', 'qa', 'brief']
+      : ['draft', 'qa'];
   }
   return params.hasBrief
     ? ['draft', 'review', 'factCheck', 'brief', 'proof']
