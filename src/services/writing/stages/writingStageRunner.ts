@@ -51,6 +51,7 @@ export async function runWritingStages(
   if (input.persistAdapter?.loadExisting) {
     for (const stage of [
       'draft',
+      'qa',
       'review',
       'audit',
       'factCheck',

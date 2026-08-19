@@ -52,6 +52,85 @@ export interface ContinuationStageDriver extends WritingStageDriver {
 
 type RoundName = 'ledger' | 'round1' | 'round2' | 'round3' | 'settle';
 
+/** Minimal projection of a durable continuation stage result used to resolve
+ * the Compact Standard Semantic Apply metadata (Phase 4R P0-2). */
+export interface CompactCandidateRow {
+  status?: string | null;
+  outputJson?: string | null;
+}
+
+export interface CompactSemanticApplySource {
+  source: 'revision' | 'draft';
+  beforeRevisionBody: string;
+  appliedRequirementIds: string[];
+  validNoOpRequirementIds: string[];
+  validNoOpReasons: Record<string, string>;
+}
+
+function readCandidateEnvelope(
+  row: CompactCandidateRow | null,
+): Record<string, unknown> {
+  if (!row?.outputJson) return {};
+  try {
+    const output = JSON.parse(row.outputJson);
+    const envelope = output?.envelope ?? output;
+    return envelope && typeof envelope === 'object' ? envelope : {};
+  } catch {
+    return {};
+  }
+}
+
+function asStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map(item => String(item || '').trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function toReasons(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    const text = String(val ?? '').trim();
+    if (text) out[key] = text;
+  }
+  return out;
+}
+
+/**
+ * Phase 4R P0-2: resolve the ONE Final Candidate metadata for the Compact
+ * (new-Standard) Continuation Semantic Apply from the REAL durable stage
+ * results. `revision_writer` succeeded → revision metadata; otherwise
+ * `draft_writer` metadata. There is NO proof / `final_reviser` input, so the
+ * compact contract structurally cannot derive evidence from the Proof node
+ * this DAG does not run — an empty-proof fallback would silently auto-PASS.
+ */
+export function resolveCompactSemanticApplyMetadata(
+  revisionRow: CompactCandidateRow | null,
+  draftRow: CompactCandidateRow | null,
+  revisionBody: string,
+  draftBody: string,
+): CompactSemanticApplySource {
+  const revisionOk = revisionRow?.status === 'success';
+  const envelope = readCandidateEnvelope(revisionOk ? revisionRow : draftRow);
+  const applied = asStrings([
+    ...asStrings(envelope.appliedObligationIds),
+    ...asStrings(envelope.appliedRequirementIds),
+    ...asStrings(envelope.appliedCanonRequirementIds),
+  ]);
+  return {
+    source: revisionOk ? 'revision' : 'draft',
+    beforeRevisionBody: revisionOk ? draftBody : revisionBody || draftBody,
+    appliedRequirementIds: applied,
+    validNoOpRequirementIds: asStrings(envelope.validNoOpRequirementIds),
+    validNoOpReasons: toReasons(envelope.validNoOpReasons),
+  };
+}
+
 function stageOutcome(
   stage: WritingKernelStage,
   status: 'started' | 'completed',
@@ -288,6 +367,38 @@ export async function createContinuationStageDriver(
                 run.id,
                 'final',
               );
+              if (compactTopology) {
+                // Phase 4R P0-2: Compact continuation does NOT run Proof, so a
+                // `final_reviser` row never exists. Semantic Apply must consume
+                // the REAL ONE Final Candidate metadata — `revision_writer`
+                // when it succeeded, otherwise `draft_writer`. It must never
+                // fall back to an empty `final_reviser` evidence source, which
+                // would silently auto-PASS the semantic gate.
+                const [revisionRow, draftRow] = await Promise.all([
+                  getStageResult(run.id, 'revision_writer'),
+                  getStageResult(run.id, 'draft_writer'),
+                ]);
+                const [revisionArtifact, draftArtifact] = await Promise.all([
+                  getLatestArtifactForStage(run.id, 'revision_1'),
+                  getLatestArtifactForStage(run.id, 'draft'),
+                ]);
+                const candidate = resolveCompactSemanticApplyMetadata(
+                  revisionRow,
+                  draftRow,
+                  revisionArtifact?.content || '',
+                  draftArtifact?.content || '',
+                );
+                return {
+                  beforeRevisionBody: candidate.beforeRevisionBody,
+                  finalBody: finalArtifact?.content || '',
+                  appliedRequirementIds: candidate.appliedRequirementIds,
+                  validNoOpRequirementIds:
+                    candidate.validNoOpRequirementIds,
+                  validNoOpReasons: candidate.validNoOpReasons,
+                };
+              }
+              // Legacy resume keeps the historical proof / final_reviser
+              // metadata source for tasks frozen under a legacy topology.
               const revision = await getLatestArtifactForStage(
                 run.id,
                 'revision_1',

@@ -29,6 +29,10 @@ import type {
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
 import { getStoredWritingExecutionProfile } from '../../../data/repositories/pipelineTaskRepository';
+import {
+  CURRENT_PIPELINE_TOPOLOGY_VERSION,
+  pipelineTopologyLabel,
+} from '../../pipeline/outlineWorkflowVersion';
 import type {
   FrozenModelConfig,
   WritingRequest,
@@ -141,6 +145,15 @@ export async function prepareContinuationRun(
       values: {
         workflowVersion: 5,
         targetPosition: snapshot.targetPosition,
+        // Phase 4R: the production Continuation path is frozen onto the SAME
+        // compact Standard topology as new Outline tasks (single upstream
+        // freeze source). Without this, `finalCandidateModeForPolicy` folds
+        // to 'legacy' and the compact ONE-QA [qa,revision] round never runs
+        // in production — a legacy continuation would fall back to the old
+        // review/audit/factCheck DAG even at the standard execution profile.
+        pipelineTopologyVersion: pipelineTopologyLabel(
+          CURRENT_PIPELINE_TOPOLOGY_VERSION,
+        ),
         ...(executionProfile === 'one_shot'
           ? { executionProfile: 'one_shot' as const }
           : {}),

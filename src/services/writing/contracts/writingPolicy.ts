@@ -72,6 +72,10 @@ const DEFAULT_STAGE_ORDER: SharedWritingStageName[] = [
  */
 function oneShotSkipRules(): WritingStagePolicy['skipRules'] {
   return {
+    qa: {
+      skipReason: 'One-Shot profile executes exactly one paid LLM call (the draft)',
+      policyRuleId: 'profile.one_shot.skip_qa',
+    },
     review: {
       skipReason: 'One-Shot profile skips AI review',
       policyRuleId: 'profile.one_shot.skip_review',
