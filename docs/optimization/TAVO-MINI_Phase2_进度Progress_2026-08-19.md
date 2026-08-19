@@ -3,7 +3,7 @@
 - **方案基线：** `docs/optimization/TAVO-MINI_第二期_Standard-Pipeline深度收束与流水线提速总方案_V1.0.md`
 - **施工基线（唯一）：** 本地仓库 `E:\AiWorkSpace\tavo-mini`
 - **更新日期：** 2026-08-19
-- **当前 HEAD：** `81a27ac`（Phase 1 已 commit；Phase 0 = `e0608fb`）
+- **当前 HEAD：** `e6cae5b`（Phase 2 已 commit；Phase 1 = `81a27ac`；Phase 0 = `e0608fb`）
 - **目标顶层：** `Draft → ONE QA → Conditional Revision → Local FinalValidate → Persist`
   - Clean Standard ≤ 2 次逻辑 LLM；需修订 ≤ 3 次；One-Shot = 1 次
   - New Standard 中 Review=0 / Audit=0 / FactCheck=0 / Proof=0（仅 Legacy Resume 保留旧拓扑）
@@ -16,7 +16,7 @@
 |---|---|---|---|---|---|
 | **0** | 第二期 Baseline 与调用成本固化 | ✅ **GO** | `e0608fb` | ✅ | ✅ verify 全绿 |
 | **1** | Final Candidate Contract 收束 | ✅ **GO** | `81a27ac` | ✅ | ✅ verify + Android Debug 全绿 |
-| **2** | Pipeline Topology Version + Resume | ⬜ 未开始 | — | — | — |
+| **2** | Pipeline Topology Version + Resume | ✅ **GO** | `e6cae5b` | ✅ | ✅ verify + Migration + Android Debug 全绿 |
 | **3** | Proof 从新 Standard 删除 | ⬜ 未开始 | — | — | — |
 | **4** | Review/Audit/FactCheck 合并 ONE QA | ⬜ 未开始 | — | — | — |
 | **5** | Revision Trigger / API / Token 治理 | ⬜ 未开始 | — | — | — |
@@ -78,17 +78,27 @@
 
 ---
 
-## 四、后续 Phase 2–7（下一 agent 路途要点）
+## 三-2、Phase 2 — Pipeline Topology Version + Resume Contract（已完成 ✅ GO）
+
+**Commit：** `e6cae5b feat(writing): freeze compact-standard pipeline topology for new tasks`
+
+**施工内容：**
+- 🆕 `pipeline_topology_version`（1=legacy_standard，2=compact_standard）持久列：Schema 55（`v54-to-v55.ts` 幂等 ALTER + fresh DDL + `schemaManifest` backup 列同步）。
+- task/batch 创建各 Freeze 一次；子章继承 batch；派生终稿继承父任务。
+- Kernel freeze `stagePolicy.values.pipelineTopologyVersion` 标签（driver + runtime 两处）。
+- Resume gate 改为 `checkPipelineResumeContract`：只查冻结契约（topology 合法 + cbv 可续），**移除 live `CURRENT_OUTLINE_WORKFLOW_VERSION` 比较** → cbv 可续的 legacy 任务按冻结旧 topology Resume；损坏 → `PIPELINE_TOPOLOGY_CORRUPT` fail-closed。
+- 🆕 Red Test `pipelineTopologyContract.test.ts` 21 用例（§5.6 Case 1–5 + 标签联动）。
+
+**硬 Gate 证据：** `npm run verify` 全绿（476 suites / 3707 tests）+ 全链路 Schema40→55 迁移 + `npm run apk:debug` BUILD SUCCESSFUL（56.56 MB / EXIT=0）。
+**验收报告：** `docs/optimization/TAVO-MINI_Phase2_TopologyVersionResume_验收报告_2026-08-19.md`
+
+**Phase 2 过渡说明：** 新任务冻结 compact(2) 但 Phase 2 仍跑 proof（DAG 未变）；kernel values 已带 `compact_standard` → Phase 1 compact Final Candidate 生效（proof 不再是最终正文候选），proof 付费冗余调用在 Phase 3 移除。
+
+---
+
+## 四、后续 Phase 3–7（下一 agent 路途要点）
 
 每个 Phase 都要先读方案对应章节，完成 **PDCA → Red Test → Full Regression → GO/NO-GO → 独立 commit + 验收报告**。
-
-### Phase 2 — Pipeline Topology Version + Resume Contract（方案 §5）
-- 新增冻结 `pipelineTopologyVersion`（1=legacy_standard，2=compact_standard）
-- task/batch 创建时各 Freeze 一次、子章继承 batch、Resume 不重读 live 默认
-- 历史 Frozen Task 按**旧 topology** Resume（这是本方案的硬要求；当前 `resumePipeline` / `outlineStageDriver.ts:333-372` 会以 `LEGACY_PIPELINE_RESUME_BLOCKED` 阻止 owv≠4 任务——需评估：是扩展 resume 放行能力，还是保持现状并说明；**不可让旧任务被 Compact Standard 接管**）
-- 迁移（schema 增列）+ 幂等 + `pipelineTopologyVersion` 损坏 fail-closed
-- Commit：`feat(writing): freeze compact-standard pipeline topology for new tasks`
-- 关注点：`src/types/pipeline.ts`（PipelineTask 增字段）、schema（`createCurrentSchema.ts` + `vN-to-vN+1.ts`）、`outlineWorkflowVersion.ts`、`determineNextPipelineAction.ts`、`outlineStageRuntime.ts` freeze 处
 
 ### Phase 3 — Proof 从新 Standard 删除（方案 §6）
 - compact topology 的 DAG 去掉 proof 节点（保留 Legacy Proof Resume）
