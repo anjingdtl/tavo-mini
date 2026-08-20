@@ -450,7 +450,9 @@ export async function createContinuationStageDriver(
         }
         switch (round) {
           case 'ledger': {
-            await ensureContinuationStageLedger(snapshotWithTraceId, runId);
+            await ensureContinuationStageLedger(snapshotWithTraceId, runId, {
+              compactTopology,
+            });
             round = 'round1';
             return { kind: 'progress', detail: 'stage-ledger' };
           }

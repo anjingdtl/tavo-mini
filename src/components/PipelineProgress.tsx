@@ -76,6 +76,20 @@ const STAGE_LABELS: Record<PipelineStageName | 'idle', string> = {
   proof: '打磨中...',
 };
 
+// Phase 6 (§6.3): compact Standard user semantics —
+// 准备上下文 / 生成 / 检查 / 修订 / 校验 / 保存. Kept out of the shared
+// `PipelineStageName` union (which legacy exhaustive maps rely on); resolved
+// here for the compact kernel stages only.
+const COMPACT_STAGE_LABELS: Record<string, string> = {
+  revision: '修订中...',
+  finalValidate: '校验终稿中...',
+  persist: '保存中...',
+};
+
+function stageLabel(stage: PipelineStageName | 'idle'): string {
+  return STAGE_LABELS[stage] || COMPACT_STAGE_LABELS[stage] || String(stage);
+}
+
 export const PipelineProgress: React.FC<PipelineProgressProps> = ({
   stage,
   startedAt,
@@ -117,7 +131,7 @@ export const PipelineProgress: React.FC<PipelineProgressProps> = ({
             ? '排队中，等待可用的模型请求槽位...'
             : continuationStage
             ? CONTINUATION_STAGE_LABELS[continuationStage]
-            : STAGE_LABELS[stage] || stage}
+            : stageLabel(stage)}
         </Text>
         <Text style={[styles.timer, { color: theme.colors.textMuted }]}>
           {elapsed}s

@@ -1206,10 +1206,19 @@ export async function ensureContinuationV5StageResults(input: {
       maximumOutputTokens: number;
     }
   >;
+  /**
+   * Phase 6 §6.2 — the compact Standard continuation ledger must NOT contain
+   * legacy fake never-dispatched rows. When true only `draft_writer`,
+   * `revision_writer` and `unified_qa` (+ `final_validate`) are created;
+   * `narrative_architect` / `adversarial_auditor` / `final_reviser` are
+   * omitted entirely for the compact production path. Legacy resume passes
+   * false to keep the historical full V5 ledger.
+   */
+  compactOnly?: boolean;
 }): Promise<ContinuationGenerationStageResult[]> {
   const db = await openDatabase();
   const ts = nowIso();
-  const physicalStages: ContinuationV5PhysicalNode[] = [
+  const ALL_PHYSICAL: ContinuationV5PhysicalNode[] = [
     'draft_writer',
     'narrative_architect',
     'revision_writer',
@@ -1220,6 +1229,9 @@ export async function ensureContinuationV5StageResults(input: {
     'unified_qa',
     'final_reviser',
   ];
+  const physicalStages: ContinuationV5PhysicalNode[] = input.compactOnly
+    ? ['draft_writer', 'revision_writer', 'unified_qa']
+    : ALL_PHYSICAL;
   const statements = physicalStages.map(stage => {
     const budget = input.stages[stage];
     return {

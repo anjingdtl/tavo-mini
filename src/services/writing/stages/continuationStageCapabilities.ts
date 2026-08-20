@@ -36,9 +36,11 @@ export interface V5PipelineOptions {
 export async function ensureContinuationStageLedger(
   snapshot: ContinuationContextSnapshotV5,
   runId: string,
+  opts?: { compactTopology?: boolean },
 ): Promise<void> {
   await ensureContinuationV5StageResults({
     runId,
+    compactOnly: opts?.compactTopology,
     stages: {
       draft_writer: {
         configId: snapshot.stageBudgets.draft_writer.configId,
