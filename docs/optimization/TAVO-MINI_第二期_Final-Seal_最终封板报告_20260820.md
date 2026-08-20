@@ -1,239 +1,226 @@
-# TAVO-MINI 第二期 Final-Seal 最终封板报告
+# TAVO-MINI 第二期 Final-Seal 实际测试报告（停止收尾版）
 
-日期：2026-08-20（Asia/Shanghai）
+日期：2026-08-21（Asia/Shanghai）
+施工基线：`F:\\ClaudeWorkSpace\\projects\\TAVO-MINI`
+报告性质：真实实机证据记录，不是 GO 宣告
 
-结论：`PHASE 2 FINAL SEALED / GO`
-
-## 1. Final HEAD 身份
-
-| 字段 | 值 |
-|---|---|
-| `remoteMainBeforeWork` | `31e86b3e206ff508255e1e16d1ca8e09e252f5f1` |
-| `finalRepositoryHead` | `d9b603df81006e417a24890a3665911fe196d135` |
-| `finalProductionCodeHead` | `d9b603df81006e417a24890a3665911fe196d135` |
-| `ciValidatedHead` | `d9b603df81006e417a24890a3665911fe196d135`（本地 `generation-stability.yml` workflow-equivalent） |
-| `realLlmValidatedHead` | `d9b603df81006e417a24890a3665911fe196d135` |
-
-开工前已执行 `git fetch origin main`；远端 `main` 未新增提交，未发现需要追加审计的远端变更。最终代码提交仅为：
+## 结论
 
 ```text
-d9b603d ci(writing): wire phase-two gates into generation stability workflow
+PHASE 2 PRE-SEAL / NO-GO
+```
+本轮在 Final Production Code 上完成了真实 Standard 实机穿测，但没有自然获得正式的：
+
+```text
+QA executable finding → Revision=1
 ```
 
-本轮没有修改主流水线架构、Writer/QA/Context/Memory 数量或 Stage 集合。工作树中保留用户提供的封板方案文档；本报告为 docs-only 证据产物，不改变上述生产 HEAD。
+多次 QA 正文已经指出明显的硬约束违反，但实际落库的 QA 结果是普通文本摘要，不是带 `verdict/findings/severity/target/instruction` 的可执行 finding；运行时因此按当前契约跳过 Brief/Revision。不能把这些样本伪装成 Needs-Revision live，也不能宣布 `PHASE 2 FINAL SEALED / GO`。
 
-## 2. 本轮施工
+## 1. HEAD 身份与代码边界
 
-已修改：
+| 字段 | 实际值 | 说明 |
+|---|---|---|
+| `remoteMainBeforeWork` | `7713c81c68203d8dcb61515b150606ba23d02ea0` | C0 fetch 后的远端 `main` |
+| `finalRepositoryHead` | `7713c81c68203d8dcb61515b150606ba23d02ea0` | 本轮实机证据绑定的仓库 HEAD |
+| `finalProductionCodeHead` | `d9b603df81006e417a24890a3665911fe196d135` | 实际生产代码 HEAD |
+| `realLlmValidatedHead` | `d9b603df81006e417a24890a3665911fe196d135` | App 从 `7713c81` 构建；相对该生产 SHA 只有 docs 差异 |
+| `ciValidatedHead` | `NOT VALIDATED` | C2 未进入；没有远端 GitHub Actions SUCCESS 证据 |
 
-- `.github/workflows/generation-stability.yml`
-- `__tests__/phaseTwoGenerationStabilityGate.test.ts`
-
-Workflow 现在显式以 `--runInBand --runTestsByPath` 运行全部 12 个二期 suite；Gate 同时校验每个 suite 的显式路径，并拒绝 focused/skipped test、`allow-failure`、`continue-on-error`、`|| true` 与 `SKIP_PHASE2`。本地 `git diff --check` 通过。
-
-12 个显式 suite：
+已核实：
 
 ```text
-writingPhase2Baseline.test.ts
-writingFinalCandidateContract.test.ts
-outlineWorkflowVersion.test.ts
-writingProofRemovalContract.test.ts
-writingQaConsolidationContract.test.ts
-outlineStageRuntimeRunQaDispatch.test.ts
-writingQaDurablePreloadContract.test.ts
-writingCompactSemanticApplyContract.test.ts
-writingOneShotCompactQaSkip.test.ts
-writingRevisionTriggerContract.test.ts
-continuationCompactLedgerContract.test.ts
-phaseTwoGenerationStabilityGate.test.ts
+HEAD == origin/main == 7713c81c68203d8dcb61515b150606ba23d02ea0
+git diff d9b603d..7713c81 --name-only：仅 docs/ 路径
+非 docs 生产路径差异：0
 ```
 
-## 3. Android Debug / Install / 配置保留
+本轮没有修改主流水线、QA/Revision Prompt、Context、Memory、One-Shot 或 Legacy topology；没有生产代码修复，没有人工写数据库，没有清 App 数据。
 
-最终 HEAD 的 `npm run apk:debug`：`BUILD SUCCESSFUL`。
+## 2. 实机与安装证据
+
+设备与应用：
 
 ```text
-APK: dist/apk/debug/ShineWriter-V2.11.54-debug.apk
-bytes: 52541500
-SHA256: FBF7336BC445F8CFDEFF2CA43BEBC6866DA816F61F63B08729F020D9FF408223
+device: emulator-5554
+API: 37
+package: com.shinewriter
+activity: com.shinewriter/.MainActivity
 versionName: V2.11.54
 versionCode: 2115400
-targetSdk: 36
 ```
 
-在 `emulator-5554` 上执行 `adb install -r`，结果为 `Success`。`firstInstallTime` 保持为 2026-08-08，未执行 `pm clear`、`uninstall` 或任何 App 数据清除。安装后四个最终批次仍全部存在且为 completed。
-
-保留的活动 LLM 配置（密钥未进入报告）：
+构建与安装：
 
 ```text
+npm run apk:debug                 BUILD SUCCESSFUL
+APK: dist/apk/debug/ShineWriter-V2.11.54-debug.apk
+bytes: 53880682
+SHA256: 921D6C69A89BB085DC3700BA5D8EDB8B5B6CD947CA11A30437BBA807C20E7186
+adb -s emulator-5554 install -r  Success
+```
+
+只执行了 `adb install -r`；未执行 `pm clear`、`uninstall` 或任何 App 数据清除。实机使用现有真实 OpenAI-compatible 配置，Standard 设置经 UI 保存并由数据库独立核验为：
+
+```text
+pipeline_mode: full
+pipeline_execution_profile: standard
+pipeline_reasoning_effort: low
 provider: openai_compatible
 base_url: https://api.deepseek.com
 model: deepseek-v4-flash
-context_window: 1000000
-max_output_tokens: 200000
 ```
 
-One-Shot 运行仅通过现有 UI 配置切换为 `pipeline_execution_profile=one_shot`、`pipeline_reasoning_effort=low`；没有新增固定 Token cap。
+密钥未写入本报告。
 
-## 4. Production DAG 与架构门禁
+## 3. Final HEAD 真实 Standard 穿测
+
+测试项目为 UI 创建的 Outline 项目 `tavo final seal natural standard`（project 26）。共完成 15 个真实 Standard 章节任务，章节 254–268 均通过 UI 采纳并最终定稿；没有人工改动任何任务结果。
+
+所有 15 个任务的共同结果：
 
 ```text
-ONE Production Entry = 1
-ONE Kernel = 1
-ONE Writer Core = 1
-ONE Prompt Compiler = 1
-ONE QA = 1
-ONE Context = 1
-ONE Memory = 1
+Draft = 1
+QA = 1
+Revision = 0
+Review/Audit/FactCheck/Proof = 0 paid call / 无对应旧 stage row
+pipeline_tasks.status = completed
+resolved_action = accept
 ```
 
-标准 compact DAG：
+章节 254–268 的最终快照中，`chapters.status=final`、`finalized_at` 非空且正文长度大于 0。代表性 clean trace 显示 `FinalValidate=completed`、`Persist=completed`，Story Memory 代表性快照为 clean；这些只能证明 Clean 路径持久化正常，不能替代缺失的 Needs-Revision 证据。
+
+### 3.1 任务与 QA 实际结果
+
+| chapter | task | QA 实际输出摘要 | 实际 Revision |
+|---:|---|---|---:|
+| 254 | `pt_mt1n0yc9_239` | 符合梗概、无确凿问题 | 0 |
+| 255 | `pt_mt1ng20o_240` | 覆盖要点、无确凿问题 | 0 |
+| 256 | `pt_mt1nnarq_241` | 符合硬性要求 | 0 |
+| 257 | `pt_mt1ntde7_242` | 指出视觉描述、人物说话、未归还地图 | 0 |
+| 258 | `pt_mt1o017y_243` | 判定三只瓶子设定符合 | 0 |
+| 259 | `pt_mt1okyhj_244` | 指出未明确埃利安柑橘过敏 | 0 |
+| 260 | `pt_mt1ortsq_245` | 指出声音描述及蜡封位置错误 | 0 |
+| 261 | `pt_mt1oyuqp_246` | 指出未明确印章且水位超过第一级台阶 | 0 |
+| 262 | `pt_mt1p43wg_247` | 指出多处颜色描述违反色盲设定 | 0 |
+| 263 | `pt_mt1p90db_248` | 指出密封信封未取走及试图开封 | 0 |
+| 264 | `pt_mt1pd54y_249` | 判定符合大纲 | 0 |
+| 265 | `pt_mt1qckad_250` | 明确指出水到第一步后才完成交付的阻塞问题 | 0 |
+| 266 | `pt_mt1qhy9n_251` | 判定四个动作顺序符合 | 0 |
+| 267 | `pt_mt1qncnd_252` | 指出摘下头盔并说话违反硬约束 | 0 |
+| 268 | `pt_mt1qxwl9_253` | 判定密封罗盘章节符合指令 | 0 |
+
+### 3.2 关键失败证据
+
+例如 task `pt_mt1qckad_250` 的 QA 正文实际为：
 
 ```text
-Draft → QA → Conditional Revision → FinalValidate → Persist
+发现一个阻塞性问题：水漫上第一步后才完成交付，不符合“before water reaches the first step”的硬性要求。
 ```
 
-One-Shot 冻结策略：一次 Draft paid LLM；QA/Revision/旧审查 Stage 均策略跳过；随后仍执行 FinalValidate、Persist 与既有 PostWriting/状态同步闭环。
-
-## 5. Final HEAD 真实 LLM 证据
-
-所有下表均来自最终 HEAD 安装后的 App 数据库快照，未使用旧 HEAD live 证据。计数格式为 `logical / formatter / physical / fallback`；Token 为 `input / output`。
-
-### 5.1 Outline Standard 2/2
-
-批次：`batch_mt1a27p2_9vnrrz`，`status=completed`，`topology=compact_standard (2)`，`workflow=4`，`context_budget=7`，批次总调用 6（规划调用 2；章节 kernel 调用按 trace 计）。
-
-| chapter | generationTraceId | freezeFingerprint | profile | Draft | QA | Revision | FinalValidate / Persist | logical/formatter/physical/fallback | tokens |
-|---:|---|---|---|---|---|---|---|---|---:|
-| 248 | `gt-mt1a5fon-0fzpr3py` | `616fbad4fb14cfc81846fe84949ebb0f64e53c1c9556d7a56ed146ba6364fb0d` | standard | 1/0/1/0 | 1/0/1/0 | 0/0/0/0 | PASS / PASS | 2/0/2/0 | 18,903 / 7,637 |
-| 249 | `gt-mt1a7ai9-yj7e77ih` | `1fd958f80a50dd7a5ad5b8e627e43f8b60f2140025793fc7069f47ee53f201e2` | standard | 1/0/1/0 | 1/0/1/0 | 0/0/0/0 | PASS / PASS | 2/0/2/0 | 19,715 / 6,134 |
-
-两章均为 `FinalValidate=completed`、`Persist=completed`，采用 revision 已持久化（revision 177、178）。第 249 章 QA 文本包含非结构化的泛化叙述，但没有 blocking/warning 的可定位可执行 finding；按正式 Revision Trigger Contract 正确保持 Revision=0，未人为篡改 QA。
-
-### 5.2 Continuation Standard 2/2
-
-批次：`batch_mt1apqop_qj7coa`，`status=completed`，`topology=compact_standard (2)`，`workflow=4`，`context_budget=7`，批次总 LLM=4。
-
-| chapter | generationTraceId | freezeFingerprint | profile | Draft | QA | Revision | FinalValidate / Persist | logical/formatter/physical/fallback | tokens |
-|---:|---|---|---|---|---|---|---|---|---:|
-| 250 | `gt_b6271d9b0f289f278af5066dc652f8ac` | `af1635fd69dca5a849c308c3e5af8ca331db78316dc7863987e0beec475f653a` | standard | 1/0/1/0 | 1/0/1/0 | 0/0/0/0 | PASS / PASS | 2/0/2/0 | 51,002 / 2,510 |
-| 251 | `gt_f15c7eb19c9e32308fd1ed3a32a057c4` | `879032c99f9ac26c6a45e6b15f5f3fefc0d6ac580b447aa87b890b750811ffa9` | standard | 1/0/1/0 | 1/0/1/0 | 0/0/0/0 | PASS / PASS | 2/0/2/0 | 51,555 / 9,120 |
-
-Continuation ledger 仅出现以下现代 stage：
+但同一任务的实际阶段结果为：
 
 ```text
-draft_writer      success / request_count=1
-unified_qa        success / request_count=1
-revision_writer   skipped / request_count=0
-final_validate    success / request_count=0
+draft: success, attempt=1
+qa: success, attempt=1
+brief: skipped
+brief reason: QA 无可执行问题（verdict=pass 或无 blocking/warning 可定位修订项：info/generic 不触发）
+revision paid call: 0
 ```
 
-每章的 final artifact 已 finalized/adopted，`completion_reason=adopted`；对应 exact `extract_state` 与 `rebuild_story_memory:auto` 均 completed。批次期间第 251 章曾出现状态同步等待/重试，但 LLM 调用始终为 4，未产生重复付费调用。
+另一个 task `pt_mt1qncnd_252` 明确输出“摘下头盔并说话”违反硬约束，但同样被判定为 `brief skipped`，没有 Revision stage row，也没有 Revision paid call。
 
-非计入样本：早先一次 Outline Standard 尝试的第 2 章收到网络 `outcome_unknown` 后按 fail-closed 规则停止，未 resume、未 retry、未冒充 Final HEAD 证据；最终封板只采用本节列出的新批次 `batch_mt1a27p2_9vnrrz`。
+这说明本轮真实问题不是“没有任何内容违规”，而是：
 
-### 5.3 Outline One-Shot 1/1
+```text
+模型 QA 文本可以识别违规
+但没有产生正式可定位 executable finding
+→ 运行时无法合法触发 Revision
+```
 
-批次：`batch_mt1blsye_8up1vx`，`status=completed`，`topology=compact_standard (2)`，`workflow=4`，`context_budget=7`，`profile=one_shot`，批次总 LLM=1。
+因此 C1 必须 NO-GO。不能用人工补 finding、人工改 severity 或人工写 Revision 来掩盖该问题。
 
-| chapter | generationTraceId | freezeFingerprint | Draft | QA / Revision / Review / Audit / FactCheck / Proof | FinalValidate / Persist | logical/formatter/physical/fallback | tokens |
-|---:|---|---|---|---|---|---|---:|
-| 252 | `gt-mt1bmp7k-rseow9xb` | `7a4e06a64e19e33c278358d6cd7bf66fdb476afe1cfaac58da9aff33b48c8892` | 1/0/1/0 | 0 / 0 / 0 / 0 / 0 / 0 | PASS / PASS | 1/0/1/0 | 11,991 / 4,223 |
+### 3.3 调用与 token 证据
 
-QA/旧审查/Revision/Proof 的 trace/stage row 均为策略 skip 或不存在的 paid call；`chapterWritingPaidCallCount=1`。
+每个任务都只观察到一次 Draft 和一次 QA 主阶段调用；所有任务 Revision=0。`pipeline_stage_attempts` 显示大多数 Draft/QA 的 `formatter_used=0`；chapter 265 的 Draft 记录出现 `formatter_used=1`，该异常已如实保留，未被隐藏或改写。
 
-### 5.4 Continuation One-Shot 1/1
+代表性 task `pt_mt1qxwl9_253` 的 token 记录：
 
-批次：`batch_mt1btnp5_x0jcmb`，`status=completed`，`topology=compact_standard (2)`，`workflow=4`，`context_budget=7`，`profile=one_shot`，批次总 LLM=1。
+```text
+Draft: input=9135, output=2674, total=11809
+QA:    input=8817, output=423,  total=9240
+Revision: no paid call
+```
 
-| chapter | generationTraceId | freezeFingerprint | Draft | QA | Revision | FinalValidate / Persist | logical/formatter/physical/fallback | tokens |
-|---:|---|---|---|---|---|---|---|---:|
-| 253 | `gt_ce47ad8fd80c1bb87284cefc5b360439` | `8ee30f80aea7cb5a4117cfd58eecdeb7e179de019a85f55f75eb4f245e73b698` | 1/0/1/0 | 0/0/0/0 | 0/0/0/0 | PASS / PASS | 1/0/1/0 | 31,869 / 1,547 |
+完整阶段原始结果和逐章数据库快照保存在本报告对应证据目录。
 
-Continuation ledger：`draft_writer=success/request_count=1`、`unified_qa=skipped/request_count=0`、`revision_writer=skipped/request_count=0`、`final_validate=success/request_count=0`。final artifact hash 为 `4be43d3ef59f59a8796fc10c94b085d47dced2a6a83d6eb20158d6c16116c9cc`，exact state extraction 与 Story Memory rebuild 均 completed。
+## 4. Continuation 探索结果（不计入封板样本）
 
-## 6. 硬门禁结果
+为验证真实 Continuation 入口，曾通过 UI 导入本地 TXT 并启动 Canon quick analysis。该输入只有一个短章节，最终自然失败：
 
-| Gate | Result | Evidence |
+```text
+state=failed
+error_code=analysis_minimum_coverage_not_met
+```
+
+该尝试未进入写作 Draft/QA/Revision，不能计入任何 live gate；没有人工补齐覆盖率，也没有修改数据库。
+
+## 5. C0–C4 Gate 实际状态
+
+| 阶段 | 结果 | 实际事实 |
 |---|---|---|
-| Clean Standard ≤2 logical LLM | PASS | 四个 Standard 章节均为 2 |
-| Needs Revision ≤3 logical LLM | PASS | `writingRevisionTriggerContract.test.ts`：blocking executable finding → Revision executes；12/12 PASS；未人为修改 live QA |
-| One-Shot =1 | PASS | chapter 252、253 均为 logical=1 / paid=1 |
-| Review/Audit/FactCheck/Proof=0 | PASS | compact trace 与 One-Shot policy ledger 均无 paid/physical call |
-| Compact ledger 无 `narrative_architect` / `adversarial_auditor` / `final_reviser` 假行 | PASS | continuation ledger 只有 `draft_writer/unified_qa/revision_writer/final_validate` |
-| Resume Duplicate Paid Call | 0 | 所有最终 live run 的 request_count 没有重复 paid call；状态重试未增加 LLM count |
-| Freeze Drift | 0 | 每个 trace freeze 完成；`unexpectedLiveReadCount=0`，无 post-freeze live read |
-| False Applied | 0 | 四组 trace `falseAppliedRequirementCount=0` |
-| FinalValidate / Persist | PASS | 四组全部完成；continuation final artifact finalized/adopted |
-| PostWriting / Story Memory | PASS | exact outbox extract/rebuild completed；安装后 `project_story_memory.status=clean`，through chapter 253 / position 61，`last_error=''` |
+| C0 | GO | HEAD 已锁定；生产代码 SHA 为 `d9b603d`，当前仓库相对它仅 docs 差异 |
+| C1 | **NO-GO** | 15 个真实 Standard 任务全部 `Draft=1 / QA=1 / Revision=0`；无正式 Needs-Revision live |
+| C2 | 未进入 | 未查询或声称远端 Verify / Generation Stability SUCCESS |
+| C3 | 未进入 | 本报告只记录 NO-GO 事实，不写虚假的远端 CI PASS |
+| C4 | 未进入 | 本次提交是测试报告状态更新，不是 Final Seal GO 提交 |
 
-安装后 settled 快照中曾有一条旧的 chapter 251 事件派生 rebuild row 因旧 fingerprint/并发状态变化而失败；该 row 已被当前版本精确 `rebuild_story_memory:auto:16:60:<revisionHash>` 成功覆盖，Story Memory truth 为 clean，且批次状态门禁为 completed。该历史诊断行不属于当前 final artifact 的依赖，也未产生 LLM 调用。
+## 6. Remote CI 状态
 
-## 7. F4 验证
+本轮因为 C1 未 GO，未进入 C2；因此：
 
 ```text
-npm run verify                         PASS
-  lint                                 0 errors / 209 existing warnings
-  typecheck                            PASS
-  verify:version                       PASS (V2.11.54 / 2115400)
-  full Jest                            487 passed suites, 3773 passed tests
-
-Generation Stability workflow-equivalent PASS
-  12 suites / 89 tests                 PASS
-  focused/skipped/allow-failure gate   PASS
-
-Migration PASS
-  43 migration suites / 205 tests      PASS
-
-Android Debug PASS
-  BUILD SUCCESSFUL
-  adb install -r                       Success
+Remote Verify: NOT RUN / NOT VALIDATED
+Remote Generation Stability: NOT RUN / NOT VALIDATED
+Phase 2 Final Seal Gate: NOT RUN / NOT VALIDATED
+ciValidatedHead: NOT VALIDATED
 ```
 
-Full Jest 的 3 个 skipped suites / 8 个 skipped tests 属于既有非二期套件；二期 12 个显式 suite 全部实际运行且无 skip/only。迁移目标文件中包含的 `migrationTestUtils.ts` 是 helper，不是测试 suite；其余 43 个 migration suite 全部通过。
+任何本地 workflow-equivalent 或历史 CI 记录都不能在本轮被写成远端 SUCCESS。
 
-本地 workflow-equivalent 已验证 `generation-stability.yml`。本轮未 push，也未将未运行的远端 GitHub Workflow 写成 SUCCESS；`ciValidatedHead` 仅表示上述同一 SHA 的本地等价验证。
+## 7. 证据索引
 
-## 8. 证据索引
-
-主要原始证据均位于：
+主要证据目录：
 
 ```text
-test-logs/emulator-qa-20260820-162621/
+test-logs/emulator-qa-20260820-final-seal-needs-revision/
 ```
 
-关键文件：
+关键证据：
 
 ```text
-db-final-seal-post-install-settled.sqlite
-db-outline-standard-retry-final.sqlite
-db-continuation-standard-final.sqlite
-db-outline-one-shot-final.sqlite
-db-continuation-one-shot-final.sqlite
-generation-stability-final.log
-revision-trigger-red-test-final.log
-migration-final.log
-verify-final.log
-android-debug-final.log
-adb-install-r-final.log
-final-seal-gate-assertions.log
+apk-debug-build.log
+adb-install-r.log
+pipeline-config-standard.txt
+db-after-user-stop.sqlite
+db-chapter-15-final.sqlite
+chapter-2-stage-results-raw.json … chapter-15-stage-results-raw.json
+clean-pipeline-context.json
+clean-story-memory.txt
+logcat-app-errors-after-ai-safe.txt
 ```
 
-密钥、完整 prompt、完整 response 正文均不进入本报告；数据库快照仅作为本地原始证据保存。
+这些证据保留了真实 UI、数据库状态、阶段结果和设备日志；报告不包含 API key、完整 Prompt 或完整 Draft 正文。
 
-## 9. Final Seal
+## 最终判定
 
 ```text
-Verify PASS
-Generation Stability PASS
-Migration PASS
-Android Debug PASS
-adb install -r PASS
-Outline Standard 2/2 PASS
-Continuation Standard 2/2 PASS
-Outline One-Shot 1/1 PASS
-Continuation One-Shot 1/1 PASS
-Final HEAD 真实 2+2+1+1 PASS
+Clean Standard live: 已观察到并持久化
+Needs-Revision live: FAIL（未获得正式 finding → Revision=1）
+One-Shot live: 本轮未重新执行，不得宣称本轮已闭环
+Remote Verify: 未验证
+Remote Generation Stability: 未验证
+HEAD/报告: 已按本轮真实 NO-GO 状态修正
 
-PHASE 2 FINAL SEALED / GO
+PHASE 2 PRE-SEAL / NO-GO
 ```
