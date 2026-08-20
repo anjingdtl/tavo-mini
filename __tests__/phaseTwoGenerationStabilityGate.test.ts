@@ -2,10 +2,10 @@
  * Phase 7 §7.1 — Phase-two Generation Stability is locked into the CI gate.
  *
  * The suite set below is the phase-two Generation Stability contract. Each
- * file must exist and must NOT carry `.skip` / `.only` / `xdescribe` /
- * `xit` / `fit` / `fdescribe` (which would let a phase gate silently pass on
- * an un-run test). The verify workflow must not mark any of them
- * `allow-failure`.
+ * file must exist, must be explicitly named by generation-stability.yml, and
+ * must not use focused/skipped test declarations (which would let a phase
+ * gate silently pass on an un-run test). The workflow must not bypass any
+ * failure.
  */
 import fs from 'fs';
 import path from 'path';
@@ -23,31 +23,39 @@ const STABILITY_SUITES = [
   // Phase 4R
   'writingQaDurablePreloadContract.test.ts',
   'writingCompactSemanticApplyContract.test.ts',
+  'writingOneShotCompactQaSkip.test.ts',
   // Phase 5
   'writingRevisionTriggerContract.test.ts',
   // Phase 6
   'continuationCompactLedgerContract.test.ts',
+  // The lock itself is part of the explicitly executed final gate.
+  'phaseTwoGenerationStabilityGate.test.ts',
 ];
 
-const SKIP_MARKERS = [
-  '.skip(',
-  '.only(',
-  'test.only',
-  'describe.only',
-  'it.only',
-  'xdescribe',
-  'xit',
-  'fit(',
-  'fdescribe',
+const FOCUSED_TEST_PATTERNS = [
+  /\b(?:describe|test|it)\s*\.\s*(?:skip|only)\s*\(/,
+  /\b(?:xdescribe|xit|fit|fdescribe)\s*\(/,
 ];
+
+const FORBIDDEN_WORKFLOW_MARKERS = [
+  'allow-failure',
+  'continue-on-error',
+  '|| true',
+  'SKIP_PHASE2',
+];
+
+const generationStabilityWorkflowPath = path.join(
+  root,
+  '.github',
+  'workflows',
+  'generation-stability.yml',
+);
+
+const generationStabilityWorkflow = fs.existsSync(generationStabilityWorkflowPath)
+  ? fs.readFileSync(generationStabilityWorkflowPath, 'utf8')
+  : '';
 
 describe('Phase 7 §7.1 — Generation Stability locked in the gate', () => {
-  const workflow = fs.existsSync(
-    path.join(root, '.github', 'workflows', 'verify.yml'),
-  )
-    ? fs.readFileSync(path.join(root, '.github', 'workflows', 'verify.yml'), 'utf8')
-    : '';
-
   test('every stability suite exists as a real test file', () => {
     for (const name of STABILITY_SUITES) {
       const full = path.join(root, '__tests__', name);
@@ -56,17 +64,25 @@ describe('Phase 7 §7.1 — Generation Stability locked in the gate', () => {
     }
   });
 
-  test('no stability suite ships .skip / .only / focused / allow-failure markers', () => {
+  test('generation stability explicitly runs every phase-two suite', () => {
+    expect(generationStabilityWorkflow).toContain('--runInBand');
+    expect(generationStabilityWorkflow).toContain('--runTestsByPath');
+    for (const name of STABILITY_SUITES) {
+      expect(generationStabilityWorkflow).toContain(`__tests__/${name}`);
+    }
+  });
+
+  test('no stability suite ships focused/skipped tests or workflow bypasses', () => {
     for (const name of STABILITY_SUITES) {
       const full = path.join(root, '__tests__', name);
       const source = fs.readFileSync(full, 'utf8');
-      for (const marker of SKIP_MARKERS) {
-        expect(source).not.toContain(marker);
+      for (const pattern of FOCUSED_TEST_PATTERNS) {
+        expect(source).not.toMatch(pattern);
       }
     }
-    // The workflow must run the full suite set in one Jest pass — no
-    // per-suite allow-failure bypass.
-    expect(workflow).not.toContain('allow-failure');
+    for (const marker of FORBIDDEN_WORKFLOW_MARKERS) {
+      expect(generationStabilityWorkflow).not.toContain(marker);
+    }
   });
 
   test('the compact QA/semantic/trigger/ledger suites are all part of the suite set', () => {

@@ -69,3 +69,19 @@ jobs:
           __tests__/writingOneFlowClosureOutbox.test.ts
           __tests__/writingOneFlowClosurePendingReplay.test.ts
           __tests__/writingOneFlowClosureReadyGate.test.ts
+
+      - name: Phase 2 Final Seal generation stability gates
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          __tests__/writingPhase2Baseline.test.ts
+          __tests__/writingFinalCandidateContract.test.ts
+          __tests__/outlineWorkflowVersion.test.ts
+          __tests__/writingProofRemovalContract.test.ts
+          __tests__/writingQaConsolidationContract.test.ts
+          __tests__/outlineStageRuntimeRunQaDispatch.test.ts
+          __tests__/writingQaDurablePreloadContract.test.ts
+          __tests__/writingCompactSemanticApplyContract.test.ts
+          __tests__/writingOneShotCompactQaSkip.test.ts
+          __tests__/writingRevisionTriggerContract.test.ts
+          __tests__/continuationCompactLedgerContract.test.ts
+          __tests__/phaseTwoGenerationStabilityGate.test.ts
