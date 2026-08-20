@@ -18,7 +18,7 @@ import type {
 } from '../src/services/writing/contracts/writingStage';
 
 const qaBlockingFinding = {
-  verdict: 'revise',
+  verdict: 'needs_revision',
   findings: [
     {
       issue: '人物动机与前文设定冲突，需补充铺垫',

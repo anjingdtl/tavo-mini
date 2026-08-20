@@ -5,6 +5,7 @@
  * Review + Audit + FactCheck report bodies.
  */
 import type { WritingStageArtifacts } from '../contracts/writingStage';
+import { validateQaStructuredContract } from '../stages/writerRecovery';
 
 export type FindingsSourceStage = 'qa' | 'review' | 'audit' | 'factCheck';
 
@@ -34,7 +35,7 @@ export function aggregateStageFindings(
   for (const sourceStage of SOURCE_STAGES) {
     const artifact = artifacts[sourceStage];
     if (!artifact) continue;
-    const parsed = extractFindings(artifact);
+    const parsed = extractFindings(artifact, sourceStage);
     parsed.forEach((item, index) => {
       out.push(normalizeFinding(sourceStage, item, index));
     });
@@ -62,7 +63,10 @@ export function formatAggregatedFindingsBlock(
   return `【汇总 Findings】\n${lines.join('\n')}`;
 }
 
-function extractFindings(artifact: unknown): unknown[] {
+function extractFindings(
+  artifact: unknown,
+  sourceStage: FindingsSourceStage,
+): unknown[] {
   if (!artifact || typeof artifact !== 'object') return [];
   const row = artifact as Record<string, unknown>;
   const structured =
@@ -76,6 +80,11 @@ function extractFindings(artifact: unknown): unknown[] {
   const body = typeof row.body === 'string' ? row.body : typeof row.content === 'string' ? row.content : '';
   if (!body.trim()) return [];
   const json = tryParseJson(body);
+  if (sourceStage === 'qa') {
+    const qaStructured = structured || json || undefined;
+    if (!validateQaStructuredContract(qaStructured).valid) return [];
+    return asFindingList(qaStructured?.findings) || [];
+  }
   const fromBody = asFindingList(json?.findings);
   if (fromBody) return fromBody;
   if (json && typeof json.issue === 'string') return [json];

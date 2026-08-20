@@ -24,8 +24,11 @@ import type {
   WritingDurablePersistAdapter,
 } from '../src/services/writing/contracts/writingStage';
 
-function qaArtifact(body: Record<string, unknown>): SharedWritingArtifact {
-  return { stage: 'qa', body: JSON.stringify(body) };
+function reportArtifact(
+  stage: 'qa' | 'review',
+  body: Record<string, unknown>,
+): SharedWritingArtifact {
+  return { stage, body: JSON.stringify(body) };
 }
 
 function makeAdapter(loadExisting: NonNullable<WritingDurablePersistAdapter['loadExisting']>) {
@@ -44,8 +47,9 @@ async function runRevision(qa: Record<string, unknown>, text?: string, topology?
   const freeze = buildWritingKernelFreezeTrace({
     request: continuationRequest({ pipelineTopologyVersion: topology }),
   });
+  const reportStage = topology === 'legacy_standard' ? 'review' : 'qa';
   const loadExisting = jest.fn(async (stage?: string) =>
-    stage === 'qa' ? qaArtifact(qa) : null,
+    stage === reportStage ? reportArtifact(reportStage, qa) : null,
   );
   const callStage = jest.fn(async () => ({
     text: text ?? '{"content":"修订后正文","appliedObligationIds":["R1"]}',
@@ -69,7 +73,7 @@ describe('Phase 5 — Revision Trigger Contract (compact ONE-QA Standard path)',
 
   test('info-only finding → Revision is skipped (severity gate)', async () => {
     const { result, callStage } = await runRevision({
-      verdict: 'revise',
+      verdict: 'needs_revision',
       findings: [{ issue: '可更生动', severity: 'info', target: '第2段', instruction: '再润色' }],
     }, undefined, 'compact_standard');
     expect(result.status).toBe('skipped');
@@ -87,7 +91,7 @@ describe('Phase 5 — Revision Trigger Contract (compact ONE-QA Standard path)',
 
   test('generic non-locatable suggestion → Revision is skipped (executable gate)', async () => {
     const { result, callStage } = await runRevision({
-      verdict: 'revise',
+      verdict: 'needs_revision',
       findings: [{ issue: '总体不错，略显平淡', severity: 'blocking' }],
     }, undefined, 'compact_standard');
     expect(result.status).toBe('skipped');
@@ -96,16 +100,16 @@ describe('Phase 5 — Revision Trigger Contract (compact ONE-QA Standard path)',
 
   test('blocking finding with empty issue → Revision is skipped', async () => {
     const { result, callStage } = await runRevision({
-      verdict: 'revise',
+      verdict: 'needs_revision',
       findings: [{ severity: 'blocking', target: '第2段', instruction: '补充铺垫' }],
     }, undefined, 'compact_standard');
     expect(result.status).toBe('skipped');
     expect(callStage).not.toHaveBeenCalled();
   });
 
-  test('blocking executable finding (verdict revise) → Revision executes', async () => {
+  test('blocking executable finding (verdict needs_revision) → Revision executes', async () => {
     const { result, callStage } = await runRevision({
-      verdict: 'revise',
+      verdict: 'needs_revision',
       findings: [
         { issue: '人物动机与前文冲突', severity: 'blocking', target: '第3段', instruction: '补一句话', requirementIds: ['R1'] },
       ],
@@ -114,8 +118,9 @@ describe('Phase 5 — Revision Trigger Contract (compact ONE-QA Standard path)',
     expect(callStage).toHaveBeenCalledTimes(1);
   });
 
-  test('warning executable finding (verdict absent) → Revision executes', async () => {
+  test('warning executable finding (verdict needs_revision) → Revision executes', async () => {
     const { result, callStage } = await runRevision({
+      verdict: 'needs_revision',
       findings: [
         { issue: '这句太简短', severity: 'warning', instruction: '扩写这句', requirementIds: ['R2'] },
       ],

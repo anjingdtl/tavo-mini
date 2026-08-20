@@ -18,6 +18,18 @@ function failureMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error || '阶段失败');
 }
 
+function persistedStageText(
+  stage: SharedWritingStageName,
+  artifact: SharedWritingArtifact,
+): string {
+  // QA's body is only its human summary. Preserve the validated envelope at
+  // the action boundary so a later run_brief can preload structured findings.
+  if (stage === 'qa' && artifact.structured) {
+    return JSON.stringify(artifact.structured);
+  }
+  return artifact.body || '';
+}
+
 export function createOutlineDurableAdapter(input: {
   taskId: string;
   chapter: Chapter;
@@ -32,6 +44,29 @@ export function createOutlineDurableAdapter(input: {
         item => item.stage === mapped && item.status === 'success' && item.text,
       );
       if (row?.text) {
+        if (stage === 'qa') {
+          try {
+            const structured = JSON.parse(row.text);
+            if (
+              structured &&
+              typeof structured === 'object' &&
+              !Array.isArray(structured)
+            ) {
+              return {
+                stage,
+                body:
+                  typeof structured.content === 'string' &&
+                  structured.content.trim()
+                    ? structured.content
+                    : row.text,
+                structured,
+              };
+            }
+          } catch {
+            // Historical QA rows stored only the human summary; keep them
+            // visible but let strict admission/aggregation fail closed.
+          }
+        }
         return { stage, body: row.text };
       }
       if (stage === 'finalValidate' || stage === 'persist') {
@@ -53,10 +88,11 @@ export function createOutlineDurableAdapter(input: {
       // an empty revision-trigger source.
       if ((stage === 'qa' || stage === 'audit') && !artifact.body.trim()) return;
       const store = usePipelineTaskStore.getState();
+      const text = persistedStageText(stage, artifact);
       const result = {
         stage: pipelineStageName(stage),
-        text: artifact.body || '',
-        status: artifact.body.trim() ? 'success' : 'skipped',
+        text,
+        status: text.trim() ? 'success' : 'skipped',
         durationMs: 0,
         inputTokens: artifact.usage?.inputTokens,
         outputTokens: artifact.usage?.outputTokens,

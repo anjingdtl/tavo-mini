@@ -23,6 +23,7 @@ export { runDraftStage } from './draft';
 // / runAuditStage / runFactCheckStage remain exported only so the legacy
 // resume path can re-feed historical artifacts through the same compiler.
 export { runQaStage } from './qa';
+export { validateQaStructuredContract } from './writerRecovery';
 export { runReviewStage } from './review';
 export { runAuditStage } from './audit';
 export { runFactCheckStage } from './factCheck';

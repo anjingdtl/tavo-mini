@@ -9,6 +9,113 @@ import type { ChatMessage } from '../../llm/types';
 import { selectStructuredCandidate } from '../../pipeline/structuredCandidate';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 
+export interface QaStructuredContractValidation {
+  valid: boolean;
+  reason: string | null;
+}
+
+/**
+ * The compact QA admission contract is intentionally stricter than the
+ * historical Review/Audit adapters.  Revision must only see findings that
+ * already carry the complete structured semantics; this validator never
+ * infers them from natural-language content.
+ */
+export function validateQaStructuredContract(
+  parsed: Record<string, unknown> | undefined,
+): QaStructuredContractValidation {
+  const invalid = (reason: string): QaStructuredContractValidation => ({
+    valid: false,
+    reason,
+  });
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return invalid('root_not_object');
+  }
+
+  const verdict = parsed.verdict;
+  if (verdict !== 'pass' && verdict !== 'needs_revision') {
+    return invalid('verdict');
+  }
+  if (!Array.isArray(parsed.findings)) {
+    return invalid('findings_not_array');
+  }
+  if (verdict === 'pass' && parsed.findings.length !== 0) {
+    return invalid('pass_findings_not_empty');
+  }
+  if (verdict === 'needs_revision' && parsed.findings.length === 0) {
+    return invalid('needs_revision_findings_empty');
+  }
+
+  for (let index = 0; index < parsed.findings.length; index += 1) {
+    const raw = parsed.findings[index];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return invalid(`finding[${index}]_not_object`);
+    }
+    const finding = raw as Record<string, unknown>;
+    const issue = nonEmptyString(finding.issue);
+    if (!issue) return invalid(`finding[${index}]_issue`);
+
+    if (finding.severity !== 'blocking' && finding.severity !== 'warning') {
+      return invalid(`finding[${index}]_severity`);
+    }
+
+    const targetResult = optionalStringField(finding, 'target');
+    if (!targetResult.valid) return invalid(`finding[${index}]_target_type`);
+    const requirementIdsResult = optionalRequirementIds(
+      finding,
+      'requirementIds',
+    );
+    if (!requirementIdsResult.valid) {
+      return invalid(`finding[${index}]_requirementIds_type`);
+    }
+    const target = targetResult.value;
+    const requirementIds = requirementIdsResult.value;
+    if (!target && requirementIds.length === 0) {
+      return invalid(`finding[${index}]_location`);
+    }
+    const instructionResult = optionalStringField(finding, 'instruction');
+    if (!instructionResult.valid) {
+      return invalid(`finding[${index}]_instruction_type`);
+    }
+    const instruction = instructionResult.value;
+    if (!instruction && !target) {
+      return invalid(`finding[${index}]_instruction`);
+    }
+  }
+
+  return { valid: true, reason: null };
+}
+
+function nonEmptyString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function optionalStringField(
+  row: Record<string, unknown>,
+  key: string,
+): { valid: boolean; value: string } {
+  if (!Object.prototype.hasOwnProperty.call(row, key)) {
+    return { valid: true, value: '' };
+  }
+  return typeof row[key] === 'string'
+    ? { valid: true, value: row[key].trim() }
+    : { valid: false, value: '' };
+}
+
+function optionalRequirementIds(
+  row: Record<string, unknown>,
+  key: string,
+): { valid: boolean; value: string[] } {
+  if (!Object.prototype.hasOwnProperty.call(row, key)) {
+    return { valid: true, value: [] };
+  }
+  if (!Array.isArray(row[key])) return { valid: false, value: [] };
+  const values = row[key] as unknown[];
+  if (values.some(item => typeof item !== 'string' || !item.trim())) {
+    return { valid: false, value: [] };
+  }
+  return { valid: true, value: values.map(item => (item as string).trim()) };
+}
+
 export function isStructuredWriterStage(stage: SharedWritingStageName): boolean {
   // Phase 4 (二 §7.2): the unified `qa` stage is structurally identical to
   // the legacy review/audit/factCheck trio for adoption purposes (json
@@ -64,19 +171,7 @@ export function isAdoptableStructuredReport(
   // structural field) so historical resume does not silently swallow empty
   // reviews.
   if (stage === 'qa') {
-    return Boolean(
-      parsed.verdict ||
-        parsed.outlineAssessment ||
-        parsed.coverage ||
-        parsed.checked ||
-        parsed.content ||
-        parsed.errors ||
-        parsed.warnings ||
-        parsed.confirmed ||
-        parsed.issues ||
-        parsed.strengths ||
-        parsed.suggestions,
-    );
+    return validateQaStructuredContract(parsed).valid;
   }
   if (stage === 'review') {
     return Boolean(
@@ -163,6 +258,8 @@ export function compileSharedWriterFormatterPrompt(input: {
         '禁止只输出 reasoning_content、Markdown 围栏或解释。',
         input.stage === 'revision'
           ? 'JSON 必须包含 strategy、actions、preserve、ending；如候选已有正文则放入 content。'
+          : input.stage === 'qa'
+          ? 'QA JSON 必须包含 verdict（只能是 pass 或 needs_revision）和 findings 数组；pass 必须 findings=[]，needs_revision 必须至少一条完整 finding。每条 finding 必须有非空 issue、severity（blocking 或 warning）、target 或 requirementIds，以及 instruction 或 target。只能整理候选已有语义，不得猜测或补造字段。'
           : 'JSON 必须包含 content、verdict、findings；没有问题时 findings 必须是 []。',
       ]
         .filter(Boolean)

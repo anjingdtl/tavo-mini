@@ -410,7 +410,28 @@ export const App: React.FC = () => {
       // screen the user navigates to, which made the prompt feel like it
       // was re-firing on every navigation. A controlled modal can be
       // dismissed in lockstep with the result-screen navigation.
-      setPendingPrompt(task);
+      // Summary-list rows intentionally keep large TEXT columns lazy. A
+      // cold-start terminal task therefore has finalText=null until its
+      // narrow detail reader runs; showing the empty-result copy at that
+      // point hides a perfectly valid generated result. Hydrate before
+      // rendering the prompt, while preserving the user's dismissal during
+      // the async read.
+      void (async () => {
+        let promptTask = task;
+        if (task.finalText == null) {
+          try {
+            await usePipelineTaskStore.getState().loadTaskDetails(task.id);
+            const hydrated = usePipelineTaskStore
+              .getState()
+              .tasks.find(candidate => candidate.id === task.id);
+            if (hydrated) promptTask = hydrated;
+          } catch (error) {
+            console.warn('[pipeline] failed to hydrate terminal prompt:', error);
+          }
+        }
+        if (pendingPromptIdRef.current !== task.id) return;
+        setPendingPrompt(promptTask);
+      })();
     });
 
     // 回前台时的恢复策略：

@@ -80,6 +80,7 @@ jobs:
           __tests__/writingQaConsolidationContract.test.ts
           __tests__/outlineStageRuntimeRunQaDispatch.test.ts
           __tests__/writingQaDurablePreloadContract.test.ts
+          __tests__/writingQaStructuredContractAdmission.test.ts
           __tests__/writingCompactSemanticApplyContract.test.ts
           __tests__/writingOneShotCompactQaSkip.test.ts
           __tests__/writingRevisionTriggerContract.test.ts

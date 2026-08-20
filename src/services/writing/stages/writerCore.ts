@@ -413,7 +413,8 @@ function finalizeWriterArtifact(
     throw emptyWriterError(stage, { text, emptyReason: 'empty' });
   }
   if (
-    (stage === 'review' ||
+    (stage === 'qa' ||
+      stage === 'review' ||
       stage === 'audit' ||
       stage === 'factCheck' ||
       stage === 'revision') &&

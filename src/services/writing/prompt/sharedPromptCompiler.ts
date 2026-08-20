@@ -54,9 +54,10 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '请基于冻结上下文与已冻结需求，按当前场景（Outline vs Continuation）',
     '    一次给出 verdict 与可定位、可执行的问题清单。',
     '只报告当前正文中确凿、可定位的问题，禁止“总体不错 / 略显平淡 / 可以更生动”等无据建议。',
-    'Phase 5：输出必须紧凑。verdict=pass 时 findings 必须为 []，content 仅一句话；',
+    'Phase 5：输出必须紧凑。verdict 只能是 pass 或 needs_revision；findings 必须是数组。',
+    '    verdict=pass 时 findings 必须为 []；verdict=needs_revision 时 findings 至少一条；',
     '    禁止默认输出 strengths、长篇摘要、文学点评、正文复述、大段 suggestions 或思维过程。',
-    '    每条 finding 必须给出可定位的 target / requirementIds 和可执行的 instruction，severity 仅用 blocking / warning（info 不触发修订）。',
+    '    每条 finding 必须有非空 issue，severity 仅用 blocking / warning，且有 target 或 requirementIds 定位，以及 instruction 或 target 执行；不得用自然语言猜测补字段。',
   ].join('\n'),
   review: [
     '你是小说终审前的审阅编辑，也是唯一的 Shared Reviewer。',
@@ -111,6 +112,14 @@ const STRUCTURED_REPORT_CONTRACT = [
   '可按当前检查重点补充 issues、errors、warnings、confirmed、checked、strengths 或 suggestions，但不能省略 findings。',
 ].join('\n');
 
+const QA_STRUCTURED_REPORT_CONTRACT = [
+  '【Compact QA 输出契约】只输出一个 JSON object，禁止 Markdown 围栏、正文复述和解释文字。',
+  '必须包含 verdict（只能是 pass 或 needs_revision）和 findings（必须是数组）。content 如输出只能是一句简短摘要。',
+  'verdict=pass 时 findings 必须为 []；verdict=needs_revision 时 findings 至少有一条。',
+  '每条 finding 必须包含非空 issue、severity（只能是 blocking 或 warning），并且 target 或 requirementIds 至少有一个可定位值，以及 instruction 或 target 至少有一个可执行值。',
+  '不得从普通 content、自然语言或正则猜测、自动补造 severity、target、requirementIds 或 instruction；无法完整表达时必须使用 pass 与 findings=[]。',
+].join('\n');
+
 const PROSE_CONTRACT =
   '【输出契约】直接输出本章完整正文。不要输出标题、分析、JSON 或过程说明。';
 
@@ -154,6 +163,8 @@ export function compileSharedWritingPrompt(
   const contract =
     input.stage === 'revision'
       ? REVISION_BRIEF_CONTRACT
+      : input.stage === 'qa'
+      ? QA_STRUCTURED_REPORT_CONTRACT
       : isStructuredReportStage(input.stage)
       ? STRUCTURED_REPORT_CONTRACT
       : outputContract === 'json_envelope'
