@@ -5,16 +5,38 @@
  * Frozen One-Shot / scenario skipRules still win first.
  */
 import { aggregateStageFindings } from '../context/findingsAggregator';
+import { isCompactPipelineTopology } from '../../pipeline/outlineWorkflowVersion';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
-import type { WritingStageArtifacts } from '../contracts/writingStage';
+import type {
+  SharedWritingArtifact,
+  WritingStageArtifacts,
+} from '../contracts/writingStage';
 
 export const CONDITIONAL_REVISION_RULE_ID =
   'policy.one_pipeline.conditional_revision_no_findings';
 export const CONDITIONAL_PROOF_RULE_ID =
   'policy.one_pipeline.conditional_proof_no_residual';
 
-const EMPTY_ISSUE = /^(未发现|没有必须|无需修改|pass|ok|无问题)/i;
+const EMPTY_ISSUE = /^(未发现|没有必须|无需修改|pass|ok|无问题|总体不错|略显平淡|可以更生动|建议加强)/i;
 
+// Phase 5 §5.1: QA verdict that authoritatively says "no change needed".
+const PASS_VERDICTS = new Set([
+  'pass',
+  'ok',
+  'clean',
+  'clear',
+  'nochange',
+  'no_change',
+  'keep',
+  'accept',
+  'accepted',
+  'good',
+  'fine',
+]);
+
+const REPORT_STAGES = ['qa', 'review', 'audit', 'factCheck'] as const;
+
+/** Loose gate (legacy proof / one-flow): any non-empty, non-void issue. */
 export function hasExecutableFindings(
   artifacts: WritingStageArtifacts,
 ): boolean {
@@ -26,20 +48,105 @@ export function hasExecutableFindings(
   });
 }
 
+/**
+ * Phase 5 §5.1 / §5.2 — the Revision trigger contract.
+ *
+ * Revision may dispatch only when:
+ *   - no report stage carries a pass-like verdict (authoritative "no change"),
+ *     AND
+ *   - at least one Executable Finding exists:
+ *       issue non-empty (not generic / void)
+ *       && severity ∈ {blocking, warning}          (info never triggers)
+ *       && (target OR requirementIds) non-empty    (locatable)
+ *       && (instruction OR target) non-empty       (actionable / fix target)
+ *
+ * A missing verdict is treated as "review findings", not "no change", so a
+ * blocking executable finding still triggers even if the model omitted
+ * `verdict`. This keeps production behavior while failing closed on any
+ * explicit pass verdict or on non-executable / info / generic input.
+ */
+export function hasExecutableRevisionFindings(
+  artifacts: WritingStageArtifacts,
+): boolean {
+  if (readPassVerdict(artifacts)) return false;
+  return aggregateStageFindings(artifacts).some(isExecutableRevisionFinding);
+}
+
+function isExecutableRevisionFinding(finding: {
+  issue: string;
+  severity: string;
+  target: string;
+  instruction: string;
+  requirementIds: string[];
+}): boolean {
+  const issue = finding.issue.trim();
+  if (!issue || issue === '（无摘要）') return false;
+  if (EMPTY_ISSUE.test(issue)) return false;
+  if (finding.severity !== 'blocking' && finding.severity !== 'warning') {
+    return false;
+  }
+  const locatable =
+    Boolean(finding.target.trim()) || finding.requirementIds.length > 0;
+  const actionable =
+    Boolean(finding.instruction.trim()) || Boolean(finding.target.trim());
+  return locatable && actionable;
+}
+
+function readPassVerdict(artifacts: WritingStageArtifacts): boolean {
+  for (const stage of REPORT_STAGES) {
+    const value = artifacts[stage];
+    if (!value || typeof value !== 'object') continue;
+    const artifact = value as SharedWritingArtifact;
+    const verdict = readArtifactVerdict(artifact);
+    if (verdict && PASS_VERDICTS.has(verdict.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function readArtifactVerdict(artifact: SharedWritingArtifact): string | null {
+  const structured =
+    artifact.structured && typeof artifact.structured === 'object'
+      ? (artifact.structured as Record<string, unknown>)
+      : null;
+  if (structured && typeof structured.verdict === 'string') {
+    return structured.verdict;
+  }
+  const body =
+    typeof artifact.body === 'string' && artifact.body.trim() ? artifact.body : '';
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const verdict = (parsed as Record<string, unknown>).verdict;
+      return typeof verdict === 'string' ? verdict : null;
+    }
+  } catch {
+    /* not JSON — no verdict */
+  }
+  return null;
+}
+
 export function evaluateRuntimeStageSkip(input: {
   stage: SharedWritingStageName;
   artifacts: WritingStageArtifacts;
   proofPolicy?: unknown;
+  pipelineTopologyVersion?: unknown;
 }): { skip: false } | { skip: true; skipReason: string; policyRuleId: string } {
   if (input.stage === 'revision') {
-    // Phase 4 §7.2: ONE QA is the unique findings source. The Revision
-    // trigger looks at `qa` artifacts (plus any legacy review/audit/factCheck
-    // artifacts carried by legacy resume).
-    if (hasExecutableFindings(input.artifacts)) return { skip: false };
+    // Phase 5 §5.1/§5.2: the stricter Revision Trigger contract applies to the
+    // compact ONE-QA Standard path only (verdict gate + severity ∈ {blocking,
+    // warning} + locatable/actionable). Legacy topologies keep the historical
+    // loose Review/Audit/FactCheck-driven brief so legacy resume semantics
+    // (§2.3 / §4.2C) are never altered.
+    const executable = isCompactPipelineTopology(input.pipelineTopologyVersion)
+      ? hasExecutableRevisionFindings(input.artifacts)
+      : hasExecutableFindings(input.artifacts);
+    if (executable) return { skip: false };
     return {
       skip: true,
-      skipReason:
-        'QA 没有可定位、可执行的问题（Review / Audit / FactCheck 同样汇总于此）',
+      skipReason: isCompactPipelineTopology(input.pipelineTopologyVersion)
+        ? 'QA 无可执行问题（verdict=pass 或无 blocking/warning 可定位修订项：info/generic 不触发）'
+        : 'QA 没有可定位、可执行的问题（Review / Audit / FactCheck 同样汇总于此）',
       policyRuleId: CONDITIONAL_REVISION_RULE_ID,
     };
   }

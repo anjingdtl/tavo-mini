@@ -31,6 +31,8 @@ export async function runRevisionStage(
   const runtimeSkip = evaluateRuntimeStageSkip({
     stage: 'revision',
     artifacts: input.artifacts,
+    pipelineTopologyVersion:
+      input.frozenContext.stagePolicy?.values?.pipelineTopologyVersion,
   });
   if (runtimeSkip.skip) {
     return skippedStageResult(

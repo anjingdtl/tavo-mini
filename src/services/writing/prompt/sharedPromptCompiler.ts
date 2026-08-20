@@ -54,6 +54,9 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '请基于冻结上下文与已冻结需求，按当前场景（Outline vs Continuation）',
     '    一次给出 verdict 与可定位、可执行的问题清单。',
     '只报告当前正文中确凿、可定位的问题，禁止“总体不错 / 略显平淡 / 可以更生动”等无据建议。',
+    'Phase 5：输出必须紧凑。verdict=pass 时 findings 必须为 []，content 仅一句话；',
+    '    禁止默认输出 strengths、长篇摘要、文学点评、正文复述、大段 suggestions 或思维过程。',
+    '    每条 finding 必须给出可定位的 target / requirementIds 和可执行的 instruction，severity 仅用 blocking / warning（info 不触发修订）。',
   ].join('\n'),
   review: [
     '你是小说终审前的审阅编辑，也是唯一的 Shared Reviewer。',
