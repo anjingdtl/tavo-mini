@@ -1,226 +1,184 @@
-# TAVO-MINI 第二期 Final-Seal 实际测试报告（停止收尾版）
+# TAVO-MINI 第二期 Final-Seal 最终封板报告
 
 日期：2026-08-21（Asia/Shanghai）
 施工基线：`F:\\ClaudeWorkSpace\\projects\\TAVO-MINI`
-报告性质：真实实机证据记录，不是 GO 宣告
+报告性质：P0 修复、真实失败 fixture 验收、Debug APK 回归、受限真实 LLM smoke 与远端 CI 的最终封板记录
 
-## 结论
-
-```text
-PHASE 2 PRE-SEAL / NO-GO
-```
-本轮在 Final Production Code 上完成了真实 Standard 实机穿测，但没有自然获得正式的：
+## 最终结论
 
 ```text
-QA executable finding → Revision=1
+PHASE 2 FINAL SEALED / GO
 ```
 
-多次 QA 正文已经指出明显的硬约束违反，但实际落库的 QA 结果是普通文本摘要，不是带 `verdict/findings/severity/target/instruction` 的可执行 finding；运行时因此按当前契约跳过 Brief/Revision。不能把这些样本伪装成 Needs-Revision live，也不能宣布 `PHASE 2 FINAL SEALED / GO`。
+本轮只修复一个 P0：`QA Structured Contract Admission Gap`。旧 C1“持续跑真实章节直到自然触发 Revision”的概率型测试已取消：真实章节已经证明模型可能在自然语言中识别硬性违规，却不稳定地产生可执行结构化 finding；继续追加章节只会浪费 LLM 调用，不能构成确定性验收。Needs-Revision 主验收已改为真实失败输出 fixture 穿透 production path，并由一次受控真实 Continuation Standard smoke 做兼容性确认。
 
-## 1. HEAD 身份与代码边界
+## 1. 基线、提交与边界
 
-| 字段 | 实际值 | 说明 |
-|---|---|---|
-| `remoteMainBeforeWork` | `7713c81c68203d8dcb61515b150606ba23d02ea0` | C0 fetch 后的远端 `main` |
-| `finalRepositoryHead` | `7713c81c68203d8dcb61515b150606ba23d02ea0` | 本轮实机证据绑定的仓库 HEAD |
-| `finalProductionCodeHead` | `d9b603df81006e417a24890a3665911fe196d135` | 实际生产代码 HEAD |
-| `realLlmValidatedHead` | `d9b603df81006e417a24890a3665911fe196d135` | App 从 `7713c81` 构建；相对该生产 SHA 只有 docs 差异 |
-| `ciValidatedHead` | `NOT VALIDATED` | C2 未进入；没有远端 GitHub Actions SUCCESS 证据 |
+| 项目 | 实际值 |
+|---|---|
+| `remoteMainBeforeWork` | `2b2973902e198f440f61b914d1a3d6b3c1520290` |
+| fetch 审计 | `origin/main` 无新增提交；fetch 后仍为上述 SHA |
+| P0 production fix | `2ab07dd7a2b2d85588d2735528ad438181294b67` |
+| 工作分支 | `codex/qa-contract-p0-final-seal` |
+| PR | [#23](https://github.com/anjingdtl/tavo-mini/pull/23)（保留 Draft，未合并） |
 
-已核实：
+本轮没有修改 One-Shot、Context、Memory、Legacy topology，也没有新增 QA2、Proof 或 Judge。Revision Trigger 没有放松；中文正则没有被用于自动制造 blocking finding。测试数据库在模拟器回归结束后恢复到测试前快照，未使用 `pm clear`、`uninstall` 或人工写入生产结果。
 
-```text
-HEAD == origin/main == 7713c81c68203d8dcb61515b150606ba23d02ea0
-git diff d9b603d..7713c81 --name-only：仅 docs/ 路径
-非 docs 生产路径差异：0
-```
+## 2. P0：真实失败 fixture → Red → Root Cause → Minimal Fix → Focused Green
 
-本轮没有修改主流水线、QA/Revision Prompt、Context、Memory、One-Shot 或 Legacy topology；没有生产代码修复，没有人工写数据库，没有清 App 数据。
+### 2.1 真实失败 fixture
 
-## 2. 实机与安装证据
-
-设备与应用：
-
-```text
-device: emulator-5554
-API: 37
-package: com.shinewriter
-activity: com.shinewriter/.MainActivity
-versionName: V2.11.54
-versionCode: 2115400
-```
-
-构建与安装：
-
-```text
-npm run apk:debug                 BUILD SUCCESSFUL
-APK: dist/apk/debug/ShineWriter-V2.11.54-debug.apk
-bytes: 53880682
-SHA256: 921D6C69A89BB085DC3700BA5D8EDB8B5B6CD947CA11A30437BBA807C20E7186
-adb -s emulator-5554 install -r  Success
-```
-
-只执行了 `adb install -r`；未执行 `pm clear`、`uninstall` 或任何 App 数据清除。实机使用现有真实 OpenAI-compatible 配置，Standard 设置经 UI 保存并由数据库独立核验为：
-
-```text
-pipeline_mode: full
-pipeline_execution_profile: standard
-pipeline_reasoning_effort: low
-provider: openai_compatible
-base_url: https://api.deepseek.com
-model: deepseek-v4-flash
-```
-
-密钥未写入本报告。
-
-## 3. Final HEAD 真实 Standard 穿测
-
-测试项目为 UI 创建的 Outline 项目 `tavo final seal natural standard`（project 26）。共完成 15 个真实 Standard 章节任务，章节 254–268 均通过 UI 采纳并最终定稿；没有人工改动任何任务结果。
-
-所有 15 个任务的共同结果：
-
-```text
-Draft = 1
-QA = 1
-Revision = 0
-Review/Audit/FactCheck/Proof = 0 paid call / 无对应旧 stage row
-pipeline_tasks.status = completed
-resolved_action = accept
-```
-
-章节 254–268 的最终快照中，`chapters.status=final`、`finalized_at` 非空且正文长度大于 0。代表性 clean trace 显示 `FinalValidate=completed`、`Persist=completed`，Story Memory 代表性快照为 clean；这些只能证明 Clean 路径持久化正常，不能替代缺失的 Needs-Revision 证据。
-
-### 3.1 任务与 QA 实际结果
-
-| chapter | task | QA 实际输出摘要 | 实际 Revision |
-|---:|---|---|---:|
-| 254 | `pt_mt1n0yc9_239` | 符合梗概、无确凿问题 | 0 |
-| 255 | `pt_mt1ng20o_240` | 覆盖要点、无确凿问题 | 0 |
-| 256 | `pt_mt1nnarq_241` | 符合硬性要求 | 0 |
-| 257 | `pt_mt1ntde7_242` | 指出视觉描述、人物说话、未归还地图 | 0 |
-| 258 | `pt_mt1o017y_243` | 判定三只瓶子设定符合 | 0 |
-| 259 | `pt_mt1okyhj_244` | 指出未明确埃利安柑橘过敏 | 0 |
-| 260 | `pt_mt1ortsq_245` | 指出声音描述及蜡封位置错误 | 0 |
-| 261 | `pt_mt1oyuqp_246` | 指出未明确印章且水位超过第一级台阶 | 0 |
-| 262 | `pt_mt1p43wg_247` | 指出多处颜色描述违反色盲设定 | 0 |
-| 263 | `pt_mt1p90db_248` | 指出密封信封未取走及试图开封 | 0 |
-| 264 | `pt_mt1pd54y_249` | 判定符合大纲 | 0 |
-| 265 | `pt_mt1qckad_250` | 明确指出水到第一步后才完成交付的阻塞问题 | 0 |
-| 266 | `pt_mt1qhy9n_251` | 判定四个动作顺序符合 | 0 |
-| 267 | `pt_mt1qncnd_252` | 指出摘下头盔并说话违反硬约束 | 0 |
-| 268 | `pt_mt1qxwl9_253` | 判定密封罗盘章节符合指令 | 0 |
-
-### 3.2 关键失败证据
-
-例如 task `pt_mt1qckad_250` 的 QA 正文实际为：
+fixture 来源于 Final-Seal Standard 任务 `pt_mt1qckad_250`（chapter 265）的真实 QA 输出：
 
 ```text
 发现一个阻塞性问题：水漫上第一步后才完成交付，不符合“before water reaches the first step”的硬性要求。
 ```
 
-但同一任务的实际阶段结果为：
+模型识别了硬性违规，但只返回自然语言 `content`，缺少 `verdict/findings` 结构，因此是“内容上失败、Admission 上非法”的真实失败样本。fixture：`src/services/writing/fixtures/qa-content-only-failure.ts`。
+
+### 2.2 Red 与根因
+
+新增 `__tests__/writingQaStructuredContractAdmission.test.ts` 先固定以下失败事实：
+
+- content-only QA 不能被当作可执行 finding，也不能触发 Revision；
+- `pass` 携带 findings、`needs_revision` 无 findings、非法 verdict、`info` severity、无定位或无行动指令的 finding 均非法；
+- Primary 与 Formatter 都非法时，不能持久化 QA，必须 fail-closed。
+
+根因是 QA 的自然语言正文曾经能够落库和展示，但没有经过严格的结构化 Admission；而 Revision Trigger 只应消费带有可定位目标与可执行行动的 structured finding。于是“QA 文本识别到违规”与“Revision 合法触发条件”发生断裂，真实结果为 `Revision=0`。
+
+### 2.3 最小修复
+
+- `validateQaStructuredContract` 严格限定 `verdict` 为 `pass | needs_revision`。
+- `pass` 必须 `findings=[]`；`needs_revision` 必须至少一个 finding。
+- 每个 finding 必须有 `blocking | warning`、非空 `issue`、可定位的 `target` 或 `requirementIds`，以及可执行的 `instruction` 或 `target`。
+- 非法 Primary QA 最多调用一次现有 Formatter；Formatter 输出再次走同一严格校验；仍非法立即 `SHARED_WRITER_INVALID_REPORT` fail-closed。
+- QA finding 聚合、durable adapter 与 prompt contract 统一使用同一 Admission Contract；QA 不再从正文、`info` 或 generic 文本制造 blocking finding。
+
+### 2.4 Focused Green 验收
+
+`writingQaStructuredContractAdmission.test.ts` 四项测试全部通过，核心链路为：
 
 ```text
-draft: success, attempt=1
-qa: success, attempt=1
-brief: skipped
-brief reason: QA 无可执行问题（verdict=pass 或无 blocking/warning 可定位修订项：info/generic 不触发）
-revision paid call: 0
+invalid QA fixture
+  → Formatter（恰好一次）
+  → valid needs_revision finding
+  → durable QA structured envelope
+  → Revision=1
+  → FinalValidate PASS
+  → Persist PASS
 ```
 
-另一个 task `pt_mt1qncnd_252` 明确输出“摘下头盔并说话”违反硬约束，但同样被判定为 `brief skipped`，没有 Revision stage row，也没有 Revision paid call。
+测试同时核验了 Formatter 调用最多一次、durable QA 可重新加载、Revision brief 只有一个、Revision paid call 恰好一个；Primary 与 Formatter 都非法的路径无 QA 持久化并 fail-closed。
 
-这说明本轮真实问题不是“没有任何内容违规”，而是：
+## 3. Full Verify
 
-```text
-模型 QA 文本可以识别违规
-但没有产生正式可定位 executable finding
-→ 运行时无法合法触发 Revision
-```
+本地门禁全部通过：
 
-因此 C1 必须 NO-GO。不能用人工补 finding、人工改 severity 或人工写 Revision 来掩盖该问题。
+| 门禁 | 结果 |
+|---|---|
+| `npm run verify` | PASS；lint 0 errors，typecheck PASS，Jest `488 passed / 491 suites`、`3777 passed / 3785 tests` |
+| Generation Stability | PASS；Phase 1 `35 suites / 227 tests`，Phase 2 `13 suites / 93 tests` |
+| Migration | PASS；`44 suites / 211 tests` |
+| Debug APK | PASS；`npm run apk:debug` |
+| APK | `dist/apk/debug/ShineWriter-V2.11.54-debug.apk`，53,880,682 bytes |
+| SHA256 | `4ffce30a95e0d938fd172718d71900aec2be34e1355e4fc94ae02c4771d05e4b` |
+| 安装 | `adb -s emulator-5554 install -r` → `Success` |
 
-### 3.3 调用与 token 证据
+### 3.1 Debug APK 模拟器 8 章回归
 
-每个任务都只观察到一次 Draft 和一次 QA 主阶段调用；所有任务 Revision=0。`pipeline_stage_attempts` 显示大多数 Draft/QA 的 `formatter_used=0`；chapter 265 的 Draft 记录出现 `formatter_used=1`，该异常已如实保留，未被隐藏或改写。
+设备：`emulator-5554`，API 37，包名 `com.shinewriter`，版本 `V2.11.54 / 2115400`。使用确定性本地 mock writing server 驱动 Debug APK，避免新增真实 LLM 消耗；每章完成后均检查 UI、pipeline task、stage attempts、SQLite 结果及 logcat，并在发现阻滞点后做精准修复。
 
-代表性 task `pt_mt1qxwl9_253` 的 token 记录：
+#### 大纲创作模式：4 个 Pipeline 档次各 1 章
 
-```text
-Draft: input=9135, output=2674, total=11809
-QA:    input=8817, output=423,  total=9240
-Revision: no paid call
-```
+| 档次 | chapter / task | 实际阶段 | 结果 |
+|---|---|---|---|
+| One-Shot / fast | 269 / `pt_mt1tvxug_254` | Draft 1，QA 0；Brief/Revision/FinalValidate/Persist 按 clean 路径跳过 | completed，accept，已采纳 |
+| Low | 270 / `pt_mt1u0jkk_255` | Draft 1，QA 1 pass；Brief 跳过 | completed，accept，已采纳 |
+| Medium | 271 / `pt_mt1u4fon_256` | Draft 1，QA 1 pass；Brief 跳过 | completed，accept，已采纳 |
+| High | 272 / `pt_mt1u8t08_257` | Draft 1，QA 1 pass；Brief 跳过 | completed，accept，已采纳 |
 
-完整阶段原始结果和逐章数据库快照保存在本报告对应证据目录。
+#### 原著续写模式：4 个实际可选配置各 1 章
 
-## 4. Continuation 探索结果（不计入封板样本）
+Continuation 不消费 Outline 的全局四档开关，因此按其现有 `loose / balanced / strict / custom` 配置覆盖四章；这不是拓扑变更。
 
-为验证真实 Continuation 入口，曾通过 UI 导入本地 TXT 并启动 Canon quick analysis。该输入只有一个短章节，最终自然失败：
+| 配置 | chapter / run | 实际阶段 | 结果 |
+|---|---|---|---|
+| Balanced（证据文件名 `fast`） | 273 / `ct_812378a7af454165a90629cf6f1c38ca` | Draft 1，Unified QA 1，Revision skipped，FinalValidate PASS | completed，adopted |
+| Loose | 274 / `ct_1e391e6ac92141a29ce81289281ddc0f` | Draft 1，Unified QA 1，Revision skipped，FinalValidate PASS | completed，adopted |
+| Strict | 275 / `ct_ae80e13e00a6453db328199e7a0246c4` | Draft 1，Unified QA 1，Revision skipped，FinalValidate PASS | completed，adopted |
+| Custom | 276 / `ct_01528d458b364240a2abec5a57a4f5d0` | Draft 1，Unified QA 1，Revision skipped，FinalValidate PASS | completed，adopted |
 
-```text
-state=failed
-error_code=analysis_minimum_coverage_not_met
-```
+8/8 章节均穿透实际生产流水线并成功采纳。逐章证据、数据库快照、UI XML/PNG、pipeline 文本及 logcat 均保存在 `test-logs/qa-contract-p0-20260821/`。
 
-该尝试未进入写作 Draft/QA/Revision，不能计入任何 live gate；没有人工补齐覆盖率，也没有修改数据库。
+### 3.2 逐章阻滞点与精准修复
 
-## 5. C0–C4 Gate 实际状态
+- Continuation Canon extraction 首次被 mock 响应的 evidence quote 不接受：将 fixture 改为与原著 source 的精确引文，重新穿透 production path。
+- Continuation Style Profile 首次返回 prose 而非 V2 schema：改为完整合法 Style Profile V2 fixture，未放松生产校验。
+- 冷启动时 terminal task summary 的 `finalText` 延迟加载，UI 误报“流水线已完成但本次生成内容为空”：在 `src/main/index.tsx` 对 terminal task 触发 detail hydration 后再判断 prompt；针对性 UI 回归 `4 suites / 13 tests` 全部通过。
 
-| 阶段 | 结果 | 实际事实 |
+## 4. 受限真实 LLM smoke（严格最多 2 章）
+
+旧 C1 已停止，没有继续跑章节等待概率触发 Revision。真实 LLM 仅执行 Outline Standard 1 章与 Continuation Standard 1 章：
+
+### 4.1 Outline Standard：1 章
+
+- task：`pt_mt1vx7ch_254`；同一章节首次遇到一次暂时性网络失败后，仅对同一任务做一次受控 retry。
+- 最终：Draft success（attempt 2）、QA success（attempt 1）、Brief success、Revision 0；task completed / accept，UI 采纳并保存。
+- 这次 retry 没有新增章节，也没有恢复旧 C1 概率型循环。
+
+### 4.2 Continuation Standard：1 章
+
+- run：`ct_ae2ba743d4904b639031f4ec615276ca`。
+- 阶段：Draft success 1、Unified QA success 1（自然 `needs_revision`）、Revision success 1、FinalValidate success、Persist/采纳 PASS。
+- durable QA 的 structured finding 穿透 Revision Trigger，证明真实生产链路得到 `Revision=1`，最终正文已保存。
+
+两章 smoke 均已完成后立即停止真实 LLM；没有追加测试、没有恢复 C1。
+
+## 5. 远端验证
+
+PR #23 的远端验证均为 SUCCESS，且均针对 P0 production fix commit `2ab07dd7a2b2d85588d2735528ad438181294b67`：
+
+| 远端门禁 | 结果 | 证据 |
 |---|---|---|
-| C0 | GO | HEAD 已锁定；生产代码 SHA 为 `d9b603d`，当前仓库相对它仅 docs 差异 |
-| C1 | **NO-GO** | 15 个真实 Standard 任务全部 `Draft=1 / QA=1 / Revision=0`；无正式 Needs-Revision live |
-| C2 | 未进入 | 未查询或声称远端 Verify / Generation Stability SUCCESS |
-| C3 | 未进入 | 本报告只记录 NO-GO 事实，不写虚假的远端 CI PASS |
-| C4 | 未进入 | 本次提交是测试报告状态更新，不是 Final Seal GO 提交 |
+| Verify / JavaScript validation | SUCCESS | [job 96556660705](https://github.com/anjingdtl/tavo-mini/actions/runs/32409594808/job/96556660705) |
+| Verify / Android Debug build | SUCCESS | [job 96556660631](https://github.com/anjingdtl/tavo-mini/actions/runs/32409594808/job/96556660631) |
+| Verify / Migration matrix | SUCCESS | [job 96556660864](https://github.com/anjingdtl/tavo-mini/actions/runs/32409594808/job/96556660864) |
+| Generation Stability | SUCCESS | [job 96556661177](https://github.com/anjingdtl/tavo-mini/actions/runs/32409594880/job/96556661177) |
 
-## 6. Remote CI 状态
-
-本轮因为 C1 未 GO，未进入 C2；因此：
+因此：
 
 ```text
-Remote Verify: NOT RUN / NOT VALIDATED
-Remote Generation Stability: NOT RUN / NOT VALIDATED
-Phase 2 Final Seal Gate: NOT RUN / NOT VALIDATED
-ciValidatedHead: NOT VALIDATED
+Remote Verify: SUCCESS
+Remote Generation Stability: SUCCESS
 ```
 
-任何本地 workflow-equivalent 或历史 CI 记录都不能在本轮被写成远端 SUCCESS。
+## 6. 证据索引
 
-## 7. 证据索引
+完整本轮证据目录：`test-logs/qa-contract-p0-20260821/`
 
-主要证据目录：
+关键本地证据包括：
 
-```text
-test-logs/emulator-qa-20260820-final-seal-needs-revision/
-```
+- `flow-fast-outline-final.sqlite`、`flow-low-outline-final.sqlite`、`flow-mid-outline-final.sqlite`、`flow-high-outline-final.sqlite`
+- `flow-cont-fast-final.sqlite`、`flow-cont-loose-final.sqlite`、`flow-cont-strict-final.sqlite`、`flow-cont-custom-final.sqlite`
+- `real-outline-smoke-final.sqlite`、`real-outline-smoke-final.png`
+- `real-cont-smoke-final.sqlite`、`real-cont-smoke-final.png`
+- `emulator-qa-all-logcat.txt`
+- `db-before-flows.sqlite`、`db-restored-final.sqlite`
 
-关键证据：
-
-```text
-apk-debug-build.log
-adb-install-r.log
-pipeline-config-standard.txt
-db-after-user-stop.sqlite
-db-chapter-15-final.sqlite
-chapter-2-stage-results-raw.json … chapter-15-stage-results-raw.json
-clean-pipeline-context.json
-clean-story-memory.txt
-logcat-app-errors-after-ai-safe.txt
-```
-
-这些证据保留了真实 UI、数据库状态、阶段结果和设备日志；报告不包含 API key、完整 Prompt 或完整 Draft 正文。
+报告不包含 API key、完整 Prompt 或完整 Draft 正文；测试 log 目录保持本地忽略状态。
 
 ## 最终判定
 
 ```text
-Clean Standard live: 已观察到并持久化
-Needs-Revision live: FAIL（未获得正式 finding → Revision=1）
-One-Shot live: 本轮未重新执行，不得宣称本轮已闭环
-Remote Verify: 未验证
-Remote Generation Stability: 未验证
-HEAD/报告: 已按本轮真实 NO-GO 状态修正
+QA Structured Contract Admission: PASS
+Invalid QA → Formatter≤1 → strict revalidate → fail-closed: PASS
+Needs-Revision fixture → valid finding → durable QA → Revision=1 → FinalValidate/Persist: PASS
+Debug APK 8 章回归: PASS（大纲 4 + 续写 4）
+真实 LLM smoke: PASS（大纲 1 + 续写 1；无额外章节）
+Local Verify / Generation Stability / Migration / Android Debug: PASS
+Remote Verify: SUCCESS
+Remote Generation Stability: SUCCESS
+旧 C1 概率型测试: 已取消，原因已记录
 
-PHASE 2 PRE-SEAL / NO-GO
+PHASE 2 FINAL SEALED / GO
 ```
