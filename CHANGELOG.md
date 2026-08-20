@@ -2,17 +2,28 @@
 
 ## [2.11.54] - 2026-08-20
 
-### ONE QA Closure（Phase 4R FINAL SEALED）
+### ONE QA Closure 与二期工程收束（Phase 4R / 5 / 6 / 7 FINAL GATES）
 
+**Phase 4R（ONE QA Closure）**
 - P0-1 修复：`writingStageRunner` durable preload 白名单补入 `'qa'`，Outline QA artifact 跨 action/resume 可正确 preload，QA 已成功时 Revision 不再因 findings 丢失被误跳过。
 - P0-2 修复：Continuation Compact 的 Semantic Apply 改为读取真实 Final Candidate / Draft / Revision metadata（`resolveCompactSemanticApplyMetadata`），不再依赖已退出生产路径的 `final_reviser` 空证据通过。
-- 续写生产 freeze 注入 `pipelineTopologyVersion=compact_standard`，激活生产 Compact ONE-QA DAG；One-Shot 档 `oneShotSkipRules` 补 `'qa'` skip，保持“1 次正文调用”。
-- 真实 LLM 调用图实证：Outline Standard 2/2、Continuation Standard 2/2（Draft×1 + QA×1 + Revision×1）、One-Shot 1+1（正文×1）；Review/Audit/FactCheck/Proof 生产调用=0。
+- 续写生产 freeze 注入 `pipelineTopologyVersion=compact_standard`；One-Shot 档 `oneShotSkipRules` 补 `'qa'` skip，保持“1 次正文调用”。
+
+**Phase 5（Revision Trigger / API / Token）**
+- Revision 触发契约（compact）：仅无 pass 类 verdict 且存在可执行 finding（severity∈{blocking,warning} + 可定位 + 可执行）才派发；QA pass+[]、info-only、generic 不再触发修订（2-call Clean 成常态）。
+
+**Phase 6（Batch/UI/Ledger 收束）**
+- compact 续写 ledger 只建 `draft_writer/revision_writer/unified_qa/final_validate`，不再预建 `narrative_architect/adversarial_auditor/final_reviser` 的 queued/0 fake 行；legacy 保留完整 V5 ledger。
+- UI 用户语义补齐修订/校验/保存标签。
+
+**Phase 7（Exact HEAD / CI / Stability 锁定）**
+- 新增二期 Generation Stability 门禁，锁关键套件集并禁止 `.skip/.only/allow-failure`。
 
 ### Validation
 
-- `npm run verify` 全绿（484 套件 / 3755 用例，0 failed）。
-- 模拟器真实 LLM：Outline/Continuation Compact DAG 与 One-Shot 档位调用图闭环，logcat 零新增异常。
+- `npm run verify` 全绿（**487 套件 / 3772 用例**，0 failed）。
+- Android Debug（final HEAD）：`apk:debug` BUILD SUCCESSFUL，`adb install -r` Success（保留 LLM 配置）。
+- 真实 LLM Compact 调用图（Outline Standard 2/2、Continuation Standard 2/2、One-Shot 1+1，Draft×1+QA×1+Revision×1/正文×1；Review/Audit/FactCheck/Proof=0）已于 HEAD 7fbefc43 采集。
 
 ## [Unreleased]
 

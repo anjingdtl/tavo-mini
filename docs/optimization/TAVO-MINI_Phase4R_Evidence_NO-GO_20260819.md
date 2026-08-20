@@ -200,3 +200,35 @@ Phase 4R 三个 P0/修复（QA durable preload、Compact Semantic Apply、One-Sh
 - Exact HEAD 全门禁（verify / verify:version / Full Jest）通过；未新增自动 LLM Stage、未重建双流水线、未新增第二套 Writer/QA/Context/Prompt Compiler/Memory、未固定 Token cap，Freeze / Resume / Semantic Apply / Canon / ONE Context / ONE Memory / One-Shot 均未破坏。✅
 
 **判定：`PHASE 4R GO`（关闭 NO-GO），`PHASE 2 FINAL SEALED / GO`。**
+
+---
+
+## 11. 追加：Phase 5 / Phase 6 / Phase 7 收束（2026-08-20 续）
+
+### 11.1 Phase 5 — Revision Trigger / API / Token（commit `5746c3c`）
+
+- **Red→Green**：`__tests__/writingRevisionTriggerContract.test.ts`（12 用例）。
+- §5.1/§5.2 在 **compact 拓扑**生效：Revision 仅当「无 pass 类 verdict」AND「存在可执行 finding：issue 非空 + severity∈{blocking,warning} + (target|requirementIds) 可定位 + (instruction|target) 可执行」才派发；
+  - QA pass+[]、info-only、pass+warning、generic 无定位、empty-issue → **Revision=0**；
+  - blocking/warning 可执行 finding → **Revision=1**。
+- legacy 拓扑保留旧 loose Review/Audit/FactCheck→brief 语义（§2.3/§4.2C），回归全绿（pipelineRunner 41/41）。
+- §5.3 QA 输出紧凑：pass 时 findings=[]（content 一句话），禁默认 strengths/长篇摘要/文学点评/正文复述/大段 suggestions/思维过程；finding 必须带 target/requirementIds + instruction。
+- §5.5 Revision 上下文只带 Draft + 聚合 findings + 按白名单收窄的冻结投影，不堆旧报告/完整冻结上下文。
+
+### 11.2 Phase 6 — Batch/Single/Resume/UI/Ledger/Trace 收束（commit `6d44ce4`）
+
+- **Red→Green**：`__tests__/continuationCompactLedgerContract.test.ts`（2 用例）。
+- §6.2 compact 续写 ledger 只建 `draft_writer / revision_writer / unified_qa / final_validate`，**不再预建 `narrative_architect / adversarial_auditor / final_reviser` 的 queued/0 fake 行**；legacy 保持完整 V5 ledger。
+- §6.3 PipelineProgress 用户语义补齐 revision/finalValidate/persist（修订/校验/保存），共享 `PipelineStageName` 不发生 legacy exhaustive map 动荡。
+
+### 11.3 Phase 7 — Exact HEAD / CI / Stability 锁定（commit `97f5417`）
+
+- §7.1 新增 `__tests__/phaseTwoGenerationStabilityGate.test.ts`（3 用例）：锁定二期 Generation Stability 套件集，并禁止 `.skip/.only/xdescribe/xit/fit/fdescribe/allow-failure`，杜绝「未跑测试混过关」。
+- §7.2 Exact Final HEAD 全量 verify = **487 suites / 3772 tests，0 failed**；Stability 集 11 suites / 87 tests 全绿；typecheck/lint/version PASS。
+- Android Debug 门禁：final HEAD `apk:debug` BUILD SUCCESSFUL（50.11MB），`adb install -r` Success（保留 LLM 配置）。
+
+### 11.4 真实 LLM 2+2+1+1（§7.3 live 刷新）状态
+
+- 2+2 Standard + One-Shot 1+1 共 6 章的真实 LLM 调用图已在 **HEAD `7fbefc43`（Phase4R 端）** 采集：Outline Standard 2/2（pt_mt0bh9z9_231 等）、Continuation Standard 2/2（ct_b0704/ct_0cb7，Draft=1 QA=1 Revision=1）、One-Shot 2/2（Outline 1 + ct_db86de）。
+- 说明：**final HEAD（Phase5/6/7 叠加后，即 `97f5417`）的 live 6 章刷新**属于需要模拟器 UI 逐步驱动的物理门禁，未在本次会话内以脚本重新跑全 6 章；自动化门禁（verify/稳定性/Android 构建安装）已在 final HEAD 全绿。
+- 严谨处置：「PHASE 2 FINAL SEALED」以 **自动化全门禁 + 既有 live 2+2+1+1 证据（HEAD 7fbefc43）** 为依据；final HEAD 的 live 逐章刷新作为后续 device-time 的收尾项，不被静默宣称已重跑。各项工程与门禁均按方案 §10 独立提交，未横跨 Phase 合并 Commit。
