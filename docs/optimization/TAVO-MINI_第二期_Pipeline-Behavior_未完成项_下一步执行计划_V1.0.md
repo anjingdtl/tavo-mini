@@ -1,5 +1,16 @@
 # TAVO-MINI 第二期 Pipeline-Behavior 未完成项下一步执行计划 V1.0
 
+> **SUPERSEDED / HISTORICAL**
+>
+> 本文档是 2026-08-22 收口复审期间的历史 NO-GO 执行计划，**不再代表当前项目结论**。
+>
+> - 被哪一份 Final Seal 报告取代：`docs/optimization/TAVO-MINI_第二期_Pipeline-Behavior_Final-Seal_验收报告_20260821.md`
+> - 对应最终 Production SHA：`6d389f8da48cf7a61d810246ef9e4a71d7e3fc18`（`fix(writing): close pipeline behavior persistence loop`）
+> - 当前结论以 Final Seal 报告为准：`PHASE 2 FINAL SEALED / GO`
+> - 脱敏最终证据：`docs/optimization/evidence/PHASE2_PIPELINE_BEHAVIOR_EVIDENCE_FINAL.md`
+>
+> 下文整篇保留为历史记录，避免丢失当时的未完成项与 Gate 串行约束。阅读时不得把它当成与 Final Seal 并存的「当前 NO-GO」。
+
 ## 0. 执行状态
 
 - 项目：TAVO-MINI / ShineWriter
