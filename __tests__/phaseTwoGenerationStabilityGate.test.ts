@@ -28,6 +28,16 @@ const STABILITY_SUITES = [
   'writingRevisionTriggerContract.test.ts',
   // Phase 6
   'continuationCompactLedgerContract.test.ts',
+  // Pipeline Behavior final seal — must be explicit in generation-stability.yml,
+  // not only covered indirectly by npm run test:ci.
+  'continuationPipelineDagContract.test.ts',
+  'continuationPipelinePostWritingClosure.test.ts',
+  'outlineFinalizePostWritingIntegration.test.ts',
+  'outlinePostWritingOutbox.test.ts',
+  'writingPipelinePostWritingClosure.test.ts',
+  'writingCompactFormatterPolicy.test.ts',
+  'writingStageBudgetBinding.test.ts',
+  'writingTokenLedger.test.ts',
   // The lock itself is part of the explicitly executed final gate.
   'phaseTwoGenerationStabilityGate.test.ts',
 ];
@@ -92,6 +102,21 @@ describe('Phase 7 §7.1 — Generation Stability locked in the gate', () => {
         'writingCompactSemanticApplyContract.test.ts',
         'writingRevisionTriggerContract.test.ts',
         'continuationCompactLedgerContract.test.ts',
+      ]),
+    );
+  });
+
+  test('the pipeline behavior final-seal suites are all part of the suite set', () => {
+    expect(STABILITY_SUITES).toEqual(
+      expect.arrayContaining([
+        'continuationPipelineDagContract.test.ts',
+        'continuationPipelinePostWritingClosure.test.ts',
+        'outlineFinalizePostWritingIntegration.test.ts',
+        'outlinePostWritingOutbox.test.ts',
+        'writingPipelinePostWritingClosure.test.ts',
+        'writingCompactFormatterPolicy.test.ts',
+        'writingStageBudgetBinding.test.ts',
+        'writingTokenLedger.test.ts',
       ]),
     );
   });

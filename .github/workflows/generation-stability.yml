@@ -85,4 +85,12 @@ jobs:
           __tests__/writingOneShotCompactQaSkip.test.ts
           __tests__/writingRevisionTriggerContract.test.ts
           __tests__/continuationCompactLedgerContract.test.ts
+          __tests__/continuationPipelineDagContract.test.ts
+          __tests__/continuationPipelinePostWritingClosure.test.ts
+          __tests__/outlineFinalizePostWritingIntegration.test.ts
+          __tests__/outlinePostWritingOutbox.test.ts
+          __tests__/writingPipelinePostWritingClosure.test.ts
+          __tests__/writingCompactFormatterPolicy.test.ts
+          __tests__/writingStageBudgetBinding.test.ts
+          __tests__/writingTokenLedger.test.ts
           __tests__/phaseTwoGenerationStabilityGate.test.ts
