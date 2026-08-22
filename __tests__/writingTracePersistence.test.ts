@@ -204,4 +204,30 @@ describe('Writing Trace persistence', () => {
       context().writingKernelTrace,
     );
   });
+
+  test('accepts the unified QA stage when resuming a frozen trace', () => {
+    const draft = context();
+    draft.writingKernelTrace = {
+      ...draft.writingKernelTrace!,
+      events: [
+        ...draft.writingKernelTrace!.events,
+        { stage: 'qa', status: 'started' },
+        { stage: 'qa', status: 'completed' },
+      ],
+    };
+    const serialized = serializePipelineTaskContext({
+      draftContext: draft,
+      execution: execution(),
+      createdAt: 1,
+    });
+
+    const parsed = parsePersistedPipelineTaskContext(serialized);
+
+    expect(
+      parsed.draftContext.writingKernelTrace?.events.slice(-2),
+    ).toEqual([
+      { stage: 'qa', status: 'started' },
+      { stage: 'qa', status: 'completed' },
+    ]);
+  });
 });

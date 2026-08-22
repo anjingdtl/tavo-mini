@@ -59,7 +59,7 @@ describe('PipelineProgress', () => {
     expect(getByText('打磨中...')).toBeTruthy();
   });
 
-  it('shows distinct Writer, Checker, and Repair messages for continuation runs', () => {
+  it('uses the shared stage vocabulary for continuation runs', () => {
     const { getByText, rerender } = render(
       <PipelineProgress
         stage="draft"
@@ -68,7 +68,7 @@ describe('PipelineProgress', () => {
         visible={true}
       />,
     );
-    expect(getByText('正在生成章节草稿…')).toBeTruthy();
+    expect(getByText('正在生成…')).toBeTruthy();
     rerender(
       <PipelineProgress
         stage="draft"
@@ -77,7 +77,7 @@ describe('PipelineProgress', () => {
         visible={true}
       />,
     );
-    expect(getByText('正在进行一致性检查…')).toBeTruthy();
+    expect(getByText('正在检查…')).toBeTruthy();
     rerender(
       <PipelineProgress
         stage="draft"
@@ -86,6 +86,6 @@ describe('PipelineProgress', () => {
         visible={true}
       />,
     );
-    expect(getByText('正在修复冲突并生成终稿…')).toBeTruthy();
+    expect(getByText('正在修订…')).toBeTruthy();
   });
 });

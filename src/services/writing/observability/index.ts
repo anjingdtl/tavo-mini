@@ -27,6 +27,14 @@ export type {
 } from './writingChapterObservability';
 export { createWritingPhysicalRequestAccounting } from './writingPhysicalRequestAccounting';
 export {
+  mergeWritingTokenLedger,
+} from './writingTokenLedger';
+export type {
+  WritingTokenLedger,
+  WritingTokenLedgerCall,
+  WritingTokenLedgerStage,
+} from './writingTokenLedger';
+export {
   addWritingStagePersistMs,
   beginWritingStageTiming,
   bindWritingObservabilityCollector,

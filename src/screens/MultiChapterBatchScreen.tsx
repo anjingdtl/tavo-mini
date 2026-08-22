@@ -154,28 +154,31 @@ export function hydratePersistedBatchPlan(
   return isCompleteBatchPlan(fromItems) ? fromItems : [];
 }
 
-/** Continuation V5 sub-stage labels (doc §32). */
+/**
+ * The batch progress view uses the same user-facing stage vocabulary as the
+ * unified result view. Legacy round names remain accepted as compatibility
+ * inputs, but they must never leak into the production UI.
+ */
 const CONTINUATION_STAGE_LABELS: Record<string, string> = {
-  round1: '第一轮生成',
-  round2: '第二轮修订',
-  round3: '第三轮终稿',
-  draft_writer: '初稿写作',
-  narrative_architect: '情节架构',
-  revision_writer: '修订写作',
-  adversarial_auditor: '对抗审计',
-  final_reviser: '终稿修订',
-  final_validate: '终稿校验',
-  adoption: '采纳',
-  finalize: '定稿',
-  state_sync: '状态同步',
+  round1: 'Draft',
+  round2: 'ONE QA / Conditional Revision',
+  round3: 'FinalValidate',
+  draft_writer: 'Draft',
+  unified_qa: 'ONE QA',
+  narrative_architect: 'ONE QA',
+  revision_writer: 'Conditional Revision',
+  adversarial_auditor: 'ONE QA',
+  final_reviser: 'Conditional Revision',
+  final_validate: 'FinalValidate',
+  adoption: 'Persist',
+  finalize: 'Persist',
+  state_sync: 'PostWriting / ONE Memory',
 };
 
 const CONTINUATION_STAGE_ORDER = [
   'draft_writer',
-  'narrative_architect',
+  'unified_qa',
   'revision_writer',
-  'adversarial_auditor',
-  'final_reviser',
   'final_validate',
   'adoption',
   'finalize',
@@ -853,7 +856,7 @@ function RunningView(props: {
           ) : null}
           {isContinuation ? (
             <Text style={[styles.mt4, { color: theme.colors.textSecondary }]}>
-              随后：采纳 → 定稿 → 状态同步，全部完成后才进入下一章
+              随后：FinalValidate → Persist → PostWriting / ONE Memory，全部完成后才进入下一章
             </Text>
           ) : null}
           {current?.errorCode === 'BATCH_CONTINUATION_STATE_SYNC_WAIT' ? (

@@ -38,6 +38,7 @@ import type {
 } from '../../continuation/generation/types';
 import type { WritingKernelStage } from '../contracts/frozenWritingContext';
 import type {
+  SharedWritingStage,
   SharedWritingStageResult,
   WritingStageDriver,
   WritingStepOutcome,
@@ -137,6 +138,16 @@ function stageOutcome(
   action: string,
 ): WritingStepOutcome {
   return { kind: 'stage', stage, action, status };
+}
+
+/** Compact round2 exposes one Kernel boundary per shared stage. */
+export function continuationRound2StageForIndex(input: {
+  compactTopology: boolean;
+  stages: readonly SharedWritingStage[];
+  index: number;
+}): SharedWritingStage | undefined {
+  if (!input.compactTopology) return undefined;
+  return input.stages[input.index];
 }
 
 /**
@@ -274,6 +285,7 @@ export async function createContinuationStageDriver(
   let armed: RoundName | null = null;
   let freezeEmitted = false;
   let done = false;
+  let round2StageIndex = 0;
   let terminal: WritingStepOutcome | null = null;
   let settleResult: ContinuationGenerationRun | null = null;
   let pendingOutcomes: WritingStepOutcome[] = [];
@@ -330,6 +342,38 @@ export async function createContinuationStageDriver(
           armed = null;
           if (!kernelFreeze.frozenContext) {
             throw new Error('WRITING_FROZEN_CONTEXT_MISSING: continuation shared stage input');
+          }
+          if (compactTopology) {
+            // Compact Standard keeps one shared dispatcher, but each stage
+            // gets its own Kernel start/completion boundary. The previous
+            // batch call surfaced `revision started` before executing the
+            // whole [qa, revision] array, leaving QA without a started event
+            // and making the durable DAG claim Revision ran before QA.
+            const stage = continuationRound2StageForIndex({
+              compactTopology,
+              stages: round2Stages,
+              index: round2StageIndex,
+            });
+            if (!stage) {
+              throw new Error('WRITING_STAGE_DAG_DEADLOCK: compact round2 exhausted');
+            }
+            const results = await runWritingStages({
+              frozenContext: kernelFreeze.frozenContext,
+              trace: kernelFreeze.trace,
+              stages: [stage],
+              persistAdapter: createContinuationDurableAdapter({
+                run,
+                snapshot: snapshotWithTraceId,
+              }),
+              callStage: options.callStage,
+              abortSignal: options.signal,
+            });
+            round2StageIndex += 1;
+            if (round2StageIndex >= round2Stages.length) {
+              round = 'round3';
+            }
+            pendingOutcomes = outcomesFromResults(results, 'round2');
+            return pendingOutcomes.shift()!;
           }
           const results = await runWritingStages({
             frozenContext: kernelFreeze.frozenContext,
@@ -462,7 +506,14 @@ export async function createContinuationStageDriver(
           }
           case 'round2': {
             armed = 'round2';
-            return stageOutcome('revision', 'started', 'round2');
+            const nextStage = compactTopology
+              ? continuationRound2StageForIndex({
+                  compactTopology,
+                  stages: round2Stages,
+                  index: round2StageIndex,
+                })
+              : 'revision';
+            return stageOutcome(nextStage as WritingKernelStage, 'started', 'round2');
           }
           case 'round3': {
             armed = 'round3';

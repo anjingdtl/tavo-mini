@@ -10,7 +10,7 @@ import type {
 } from '../contracts/writingStage';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 import { resolveSharedStageSkip } from '../contracts/writingPolicy';
-import { allowsFormatterCall } from '../contracts/executionProfile';
+import { allowsFormatterCallForStage } from '../contracts/executionProfile';
 import { evaluateWritingRequirements } from '../contracts/writingRequirement';
 import { resolveFrozenStageReasoning } from '../contracts/stageReasoning';
 import { callWritingStageLLM } from './stageLlmCall';
@@ -289,7 +289,7 @@ export async function executeSharedWriterStage(input: {
     // One-Shot hard gate: the Formatter would be a SECOND physical request
     // for the same stage. Under the one_shot profile the chapter fails
     // closed instead — no automatic rescue call is ever issued.
-    allowsFormatterCall(stageInput.stagePolicy) &&
+    allowsFormatterCallForStage(stageInput.stagePolicy, stage) &&
     shouldRunWriterFormatter({
       stage,
       outputContract: compiled.outputContract,

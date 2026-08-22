@@ -29,14 +29,17 @@ import {
 } from '../src/data/repositories/multiChapterBatchRepository';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import { adoptPipelineTaskResultAtomic } from '../src/services/multiChapterBatch/batchAdoption';
+import { adoptPipelineTaskResult } from '../src/services/multiChapterBatch/batchAdoption';
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';
 import * as storyMemoryRepo from '../src/data/repositories/storyMemoryRepository';
+import * as storyMemoryService from '../src/services/storyMemory/storyMemoryService';
 import { createEmptyStoryMemory } from '../src/services/storyMemory/storyMemoryDefaults';
 import { canonicalStringify } from '../src/services/storyMemory/storyMemoryFingerprint';
 
 let testDb: InMemorySqliteDb | null = null;
 let resolveTaskSpy: jest.SpyInstance | null = null;
 let markDirtySpy: jest.SpyInstance | null = null;
+let enqueueMaintenanceSpy: jest.SpyInstance | null = null;
 
 async function resetDb() {
   __resetForTest();
@@ -50,11 +53,15 @@ async function resetDb() {
     .mockImplementation(async () => {
       throw new Error('POST_COMMIT_CRASH_SIMULATED');
     });
+  enqueueMaintenanceSpy = jest
+    .spyOn(storyMemoryService, 'enqueueStoryMemoryMaintenance')
+    .mockImplementation(() => undefined);
 }
 
 afterEach(async () => {
   resolveTaskSpy?.mockRestore();
   markDirtySpy?.mockRestore();
+  enqueueMaintenanceSpy?.mockRestore();
   __resetForTest();
   delete process.env.FAIL_ADOPTION_AT_STATEMENT;
   if (testDb) {
@@ -70,6 +77,7 @@ afterEach(async () => {
 async function seedAdoptionState(options: {
   oldContent?: string;
   position?: number;
+  finalized?: boolean;
   storyMemory?: { throughPosition: number; status?: string };
 } = {}): Promise<number> {
   await execute(
@@ -105,6 +113,13 @@ async function seedAdoptionState(options: {
       await openDatabase(),
       `UPDATE chapters SET content = ? WHERE id = ?`,
       [options.oldContent, chapterId],
+    );
+  }
+  if (options.finalized) {
+    await execute(
+      await openDatabase(),
+      `UPDATE chapters SET status = 'final', finalized_at = 't' WHERE id = ?`,
+      [chapterId],
     );
   }
   if (options.storyMemory) {
@@ -179,6 +194,7 @@ describe('F2-02: Adoption durable close-loop（post-commit 崩溃模拟）', () 
     await resetDb();
     const chapterId = await seedAdoptionState({
       oldContent: '旧正文',
+      finalized: true,
       storyMemory: { throughPosition: 0 },
     });
 
@@ -211,6 +227,7 @@ describe('F2-02: Adoption durable close-loop（post-commit 崩溃模拟）', () 
     const chapterId = await seedAdoptionState({
       oldContent: '旧正文',
       position: 5,
+      finalized: true,
       storyMemory: { throughPosition: 0 },
     });
     // 预置一条覆盖该位置的 generated batch。
@@ -248,6 +265,7 @@ describe('F2-02: Adoption durable close-loop（post-commit 崩溃模拟）', () 
     await resetDb();
     const chapterId = await seedAdoptionState({
       oldContent: '旧正文',
+      finalized: true,
       storyMemory: { throughPosition: 0 },
     });
 
@@ -344,5 +362,32 @@ describe('F2-02: Adoption durable close-loop（post-commit 崩溃模拟）', () 
 
     const rows = await all(`SELECT COUNT(*) AS c FROM project_story_memory WHERE project_id = 1`);
     expect(Number(rows[0]?.c ?? 0)).toBe(0);
+  });
+
+  it('已覆盖章节的手动采纳必须续接唯一 Story Memory 维护队列', async () => {
+    await resetDb();
+    const chapterId = await seedAdoptionState({
+      oldContent: '旧正文',
+      storyMemory: { throughPosition: 0 },
+    });
+    await execute(
+      await openDatabase(),
+      `UPDATE chapters SET status = 'final', finalized_at = 't' WHERE id = ?`,
+      [chapterId],
+    );
+
+    await adoptPipelineTaskResult({
+      taskId: 't1',
+      chapterId,
+      source: 'manual',
+    });
+
+    expect(enqueueMaintenanceSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 1,
+        reason: 'dirty',
+        priority: 'background',
+      }),
+    );
   });
 });

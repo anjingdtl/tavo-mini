@@ -20,7 +20,8 @@ export type ContinuationPipelineStage =
   | 'auditing'
   | 'checker'
   | 'repair'
-  // V5 physical + local nodes
+  // Durable continuation records keep these internal node ids; the live UI
+  // projects them onto the same shared stage vocabulary as Outline.
   | 'draft_writer'
   | 'narrative_architect'
   | 'revision_writer'
@@ -33,17 +34,16 @@ export const CONTINUATION_STAGE_LABELS: Record<
   string
 > = {
   context: '正在准备续写上下文…',
-  writer: '正在生成章节草稿…',
-  auditing: '正在并行进行一致性审查与篇幅控制…',
-  checker: '正在进行一致性检查…',
-  repair: '正在修复冲突并生成终稿…',
-  // V5
-  draft_writer: '正在生成初稿 V1…',
-  narrative_architect: '正在规划叙事架构 A1…',
-  revision_writer: '正在扩写修订 V2…',
-  adversarial_auditor: '正在审阅 V2 并生成润色任务…',
-  final_reviser: '正在润色终稿 V3…',
-  final_validate: '正在校验终稿…',
+  writer: '正在生成…',
+  auditing: '正在检查…',
+  checker: '正在检查…',
+  repair: '正在修订…',
+  draft_writer: '正在生成…',
+  narrative_architect: '正在生成…',
+  revision_writer: '正在修订…',
+  adversarial_auditor: '正在检查…',
+  final_reviser: '正在校验…',
+  final_validate: '正在校验…',
 };
 
 export const CONTINUATION_STAGE_PROGRESS: Record<
@@ -55,7 +55,6 @@ export const CONTINUATION_STAGE_PROGRESS: Record<
   auditing: 60,
   checker: 60,
   repair: 85,
-  // V5
   draft_writer: 20,
   narrative_architect: 20,
   revision_writer: 45,

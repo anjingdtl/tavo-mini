@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, EmptyState, Header, Screen, SegmentedControl, spacing } from '../components/ui';
+import { useNavigation } from '@react-navigation/native';
 import { useThemeStore } from '../store/themeStore';
 import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
@@ -32,6 +33,8 @@ const DEFAULT_CONFIG: PipelineConfig = {
 export const PipelineConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
+  const navigation = useNavigation<any>();
+  const isContinuation = currentProject?.mode === 'continuation';
   const [presets, setPresets] = useState<Preset[]>([]);
   const [config, setConfig] = useState<PipelineConfig>(DEFAULT_CONFIG);
   const [saving, setSaving] = useState(false);
@@ -143,23 +146,25 @@ export const PipelineConfigScreen: React.FC = () => {
                 )?.description}
             {config.executionProfile === 'one_shot'
               ? `\n${PIPELINE_ONE_SHOT_TIER_PRESET.subLabel}`
-              : ' Draft、Review、Brief、Final 跟随用户档位；FactCheck 固定使用 low Thinking。'}
+              : ' 生成、检查、修订、校验跟随用户档位；具体启用环节由冻结 Policy 决定。'}
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
           >
             {config.executionProfile === 'one_shot'
-              ? '极速档每章仅一次模型调用，生成失败不会自动重试，可手动重新生成或切换低/中/高档。'
-              : '新任务统一执行 Draft → Review 与 FactCheck → Brief → Final；历史已完成任务仍可查看，旧未完成任务需按新版重新生成。'}
+              ? 'One-Shot 仍使用同一套阶段视图：Draft 执行一次，QA/Revision 正式跳过，随后进入 FinalValidate → Persist；Formatter、Retry、Fallback 均不启用。'
+              : 'Standard 统一执行 Freeze → Draft → ONE QA → Conditional Revision → FinalValidate → Persist；PostWriting 与 ONE Memory 由同一闭环接续。'}
           </Text>
         </View>
 
         <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-          新任务只绑定一个项目级当前作家风格；任务启动时冻结五阶段 Projection，历史任务继续使用自己的旧快照。
+          {isContinuation
+            ? '续写模式只在 Freeze 前补充 Canon、接缝、状态和原著文风资料；Freeze 后与大纲共用同一 Writer、QA、Context、Final Candidate、PostWriting 与 ONE Memory。'
+            : '新任务只绑定一个项目级当前作家风格；任务启动时冻结统一 Context Projection，历史任务继续使用自己的旧快照。'}
         </Text>
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
           <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>当前作家风格</Text>
-          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>统一用于 Draft、Review、FactCheck、Brief、Proof；Sampler 中的 max_tokens 不会覆盖阶段输出预算。</Text>
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>统一用于生成、检查、修订与校验的共享 Context Projection；Sampler 中的 max_tokens 不会覆盖冻结阶段输出预算。</Text>
           <View style={styles.presetList}>
             <Button
               testID="pipeline-writer-style-baseline"
@@ -181,6 +186,13 @@ export const PipelineConfigScreen: React.FC = () => {
           </View>
         </View>
         <Button testID="pipeline-config-save" label={saving ? '保存中...' : '保存配置'} onPress={save} disabled={saving} />
+        {isContinuation ? (
+          <Button
+            label="续写资料（Freeze 前）"
+            variant="secondary"
+            onPress={() => navigation.navigate('ContinuationGenerationConfig')}
+          />
+        ) : null}
       </ScrollView>
     </Screen>
   );

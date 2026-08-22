@@ -490,6 +490,7 @@ const WRITING_KERNEL_STAGES = new Set([
   'render',
   'freeze',
   'draft',
+  'qa',
   'review',
   'audit',
   'factCheck',
@@ -542,6 +543,9 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
     );
   }
   const observability = observabilityFromRaw(raw.observability);
+  const writingPersistedEvent = isPlainObject(raw.writingPersistedEvent)
+    ? (raw.writingPersistedEvent as unknown as WritingKernelTrace['writingPersistedEvent'])
+    : undefined;
   const events = raw.events.map((event, index) => {
     if (
       !isPlainObject(event) ||
@@ -591,6 +595,7 @@ function parseWritingKernelTrace(raw: unknown): WritingKernelTrace | undefined {
       ? { stagePolicyFingerprint: raw.stagePolicyFingerprint }
       : {}),
     ...(observability ? { observability } : {}),
+    ...(writingPersistedEvent ? { writingPersistedEvent } : {}),
     events,
     silentContextLossCount: parseTraceCounter(
       raw.silentContextLossCount,
@@ -1117,6 +1122,12 @@ export function parsePipelineContextSnapshotStrict(
       : {}),
     ...(raw.writingKernelTrace != null
       ? { writingKernelTrace: parseWritingKernelTrace(raw.writingKernelTrace) }
+      : {}),
+    ...(isPlainObject(raw.writingPersistedEvent)
+      ? {
+          writingPersistedEvent:
+            raw.writingPersistedEvent as unknown as PipelineContextSnapshot['writingPersistedEvent'],
+        }
       : {}),
     ...(raw.frozenWritingContext != null
       ? {

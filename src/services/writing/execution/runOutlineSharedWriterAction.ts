@@ -10,8 +10,57 @@ import {
 } from '../../../data/repositories/pipelineStageAttemptRepository';
 import type { FrozenWritingContext } from '../contracts/frozenWritingContext';
 import type { SharedWritingStage } from '../contracts/writingStage';
+import type {
+  WritingDurablePersistAdapter,
+  WritingStageArtifacts,
+} from '../contracts/writingStage';
 import { createOutlineDurableAdapter } from '../persistence/outlineDurableAdapter';
 import { runWritingStages } from '../stages/writingStageRunner';
+import { evaluateRuntimeStageSkip } from '../stages/evaluateRuntimeStageSkip';
+import { resolveSharedStageSkip } from '../contracts/writingPolicy';
+import { isCompactPipelineTopology } from '../../pipeline/outlineWorkflowVersion';
+
+/**
+ * Reserve billing/attempt bookkeeping only for a stage that can actually
+ * issue a physical request. Runtime Revision skips depend on the already
+ * persisted QA artifact, so they must be decided before createStageAttempt.
+ */
+export async function shouldReserveOutlineStageAttempt(input: {
+  stage: SharedWritingStage;
+  frozenContext: FrozenWritingContext;
+  adapter: WritingDurablePersistAdapter;
+}): Promise<boolean> {
+  const policySkip = resolveSharedStageSkip(
+    input.frozenContext.stagePolicy,
+    input.stage,
+  );
+  if (policySkip.skip) return false;
+  // Historical legacy Resume keeps its pre-compact attempt ledger shape. The
+  // zero-token reservation bug is a Compact Standard defect; do not rewrite
+  // legacy task accounting while repairing the active topology.
+  if (
+    input.stage !== 'revision' ||
+    !isCompactPipelineTopology(
+      input.frozenContext.stagePolicy.values?.pipelineTopologyVersion,
+    ) ||
+    !input.adapter.loadExisting
+  ) {
+    return true;
+  }
+
+  const artifacts: WritingStageArtifacts = {};
+  for (const stage of ['qa', 'review', 'audit', 'factCheck'] as const) {
+    const existing = await input.adapter.loadExisting(stage);
+    if (existing) artifacts[stage] = existing;
+  }
+  const runtimeSkip = evaluateRuntimeStageSkip({
+    stage: input.stage,
+    artifacts,
+    pipelineTopologyVersion:
+      input.frozenContext.stagePolicy.values?.pipelineTopologyVersion,
+  });
+  return !runtimeSkip.skip;
+}
 
 const ACTION_TO_STAGES: Partial<Record<PipelineAction['type'], SharedWritingStage[]>> = {
   run_draft: ['draft'],
@@ -52,6 +101,10 @@ export async function runSharedOutlineWriterAction(input: {
   if (!frozenContext?.freezeFingerprint || !trace?.freezeFingerprint) {
     throw new Error('WRITING_FROZEN_CONTEXT_MISSING: outline shared writer');
   }
+  const persistAdapter = createOutlineDurableAdapter({
+    taskId: input.taskId,
+    chapter: input.chapter,
+  });
   const claim = await executeClaimedStage({
     taskId: input.taskId,
     stage: stages[0] === 'revision' ? 'brief' : (stages[0] as any),
@@ -77,6 +130,12 @@ export async function runSharedOutlineWriterAction(input: {
           : 1;
       for (const stage of stages) {
         const recordedStage = stage === 'revision' ? 'brief' : stage;
+        const reserveAttempt = await shouldReserveOutlineStageAttempt({
+          stage,
+          frozenContext,
+          adapter: persistAdapter,
+        });
+        if (!reserveAttempt) continue;
         const previous = await getStageAttempts(input.taskId, recordedStage);
         const attemptNo = previous.length + 1;
         const attemptId = `att_${input.taskId}_${recordedStage}_${attemptNo}_${Date.now()}`;
@@ -97,10 +156,7 @@ export async function runSharedOutlineWriterAction(input: {
           frozenContext,
           trace,
           stages,
-          persistAdapter: createOutlineDurableAdapter({
-            taskId: input.taskId,
-            chapter: input.chapter,
-          }),
+          persistAdapter,
           abortSignal: input.abortSignal,
         });
         await Promise.all(

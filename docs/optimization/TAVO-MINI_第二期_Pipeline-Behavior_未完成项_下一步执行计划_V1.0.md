@@ -12,16 +12,25 @@
 
 此前验收报告中的 PHASE 2 PIPELINE BEHAVIOR FINAL SEALED / GO 结论不再作为当前结论。原因是复审发现部分证据只证明了阶段队列或历史测试结果，尚未证明当前 Production SHA 下的完整 Android、Resume、PostWriting、ONE Memory 和远端 CI 闭环。
 
+### 0.1 本轮推进记录（2026-08-22）
+
+- C0：已重新 fetch 并锁定当前边界；本地 HEAD 为 `5284c1a3e75eef5c368c6e0d35083ccd55ffd792`，`origin/main` 为 `0148c4a25145e1876d9387bd936d5f3d8e5910b0`，工作区仍 dirty，因此尚无唯一 Production commit。
+- C1：当前 dirty 源码通过 `npm run lint`（0 errors / 211 warnings）、`npm run typecheck`、`npm run verify:version` 和 `npm run test:ci`（497/500 suites、3802/3810 tests；3 suites / 8 tests skipped）。
+- C2：Outline PostWriting → ONE Memory 已选择真实 outbox 路径；已补充稳定 event/dedupe key、WritingPersistedEvent 校验、revision drift fail-closed、trace/freeze 绑定、结果页真实 outbox 状态读取和幂等测试。R1–R5 当前 SHA 的完整崩溃矩阵证据仍未封板。
+- C3：已用当前源码重新构建并 `adb install -r` 到 `emulator-5554`，最终 APK SHA-256 为 `69C20D1C48AD06B85F6250EFF03335DA1295BFE8488CB778C32A8449C915B1D9`；安装前后 DB SHA-256 均为 `3a71873ab2c4676219af6fb1d080347d55d0ef8a987fbef04a60cd475d586ec4`。已完成启动、UI XML、截图、作品库/构建/大纲/章节编辑视图烟测；设备已有失败任务提示“draft 未返回正文（empty）”，未执行真实 LLM 重试，也未完成完整档位/结果页操作矩阵。
+- C4/C5：尚未执行当前 SHA 的真实 LLM 2+2+1+1，也未固化 commit、推送或绑定远端 CI；当前结论继续为 NO-GO。
+- 本轮证据目录：`test-logs\pipeline-behavior-c3-20260822-2325`。
+
 ## 1. 当前基线与证据边界
 
 ### 1.1 已确认基线
 
-- 本地 HEAD：0148c4a25145e1876d9387bd936d5f3d8e5910b0
+- 本地 HEAD：5284c1a3e75eef5c368c6e0d35083ccd55ffd792
 - origin/main：0148c4a25145e1876d9387bd936d5f3d8e5910b0
-- C0 fetch 结果：HEAD 与 origin/main 一致
-- 当前 Production APK：dist\apk\debug\ShineWriter-V2.11.54-debug.apk
-- 当前 APK SHA-256：9FFBE113B9DAFF5A914618741F5177396067E0BDCD702D57E627D211D21EC8AC
-- 当前 Android 证据目录：test-logs\emulator-qa-final-20260822-9FFBE1
+- C0 fetch 结果：HEAD 在 origin/main 之上 1 个文档提交，且工作区存在大量既有 dirty changes；不能把当前状态视为唯一 Production SHA
+- 当前验证 APK：dist\apk\debug\ShineWriter-V2.11.54-debug.apk
+- 当前 APK SHA-256：69C20D1C48AD06B85F6250EFF03335DA1295BFE8488CB778C32A8449C915B1D9
+- 当前 Android 证据目录：test-logs\pipeline-behavior-c3-20260822-2325
 - 当前安装规则：仅 adb install -r；禁止 adb uninstall、pm clear、清 App 数据
 
 ### 1.2 证据使用规则
@@ -398,4 +407,3 @@ PHASE 2 PIPELINE BEHAVIOR NO-GO
 - 不清 App 数据；Android 仅 adb install -r。
 - 不直接编辑 DB、ledger 或 trace 伪造测试前置条件和结果。
 - 不在所有 Gate 全绿、Pipeline Divergence=0 之前宣布 GO。
-

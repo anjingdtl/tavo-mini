@@ -210,16 +210,23 @@ function resolveMaxTokens(
   stage: SharedWritingStageName,
 ): number {
   const modelMax = Math.max(256, Number(frozen.model.maxOutputTokens) || 1024);
+  const frozenStageBudgets = frozen.stagePolicy.values
+    ?.sharedStageMaxOutputTokens as Record<string, unknown> | undefined;
+  const stageMax = Number(frozenStageBudgets?.[stage]);
+  const effectiveMax =
+    Number.isFinite(stageMax) && stageMax > 0
+      ? Math.min(modelMax, stageMax)
+      : modelMax;
   if (
     stage === 'qa' ||
     stage === 'review' ||
     stage === 'audit' ||
     stage === 'factCheck'
   ) {
-    return Math.min(modelMax, Math.max(768, Math.floor(modelMax * 0.45)));
+    return Math.min(effectiveMax, Math.max(768, Math.floor(effectiveMax * 0.45)));
   }
   if (stage === 'revision') {
-    return Math.min(modelMax, 8192);
+    return Math.min(effectiveMax, 8192);
   }
-  return modelMax;
+  return effectiveMax;
 }

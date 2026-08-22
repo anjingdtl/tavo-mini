@@ -104,14 +104,14 @@ type ModelStage =
   | 'stateExtractionLlmConfigId';
 
 const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
-  { key: 'writerLlmConfigId', label: '正文生成' },
-  { key: 'checkerLlmConfigId', label: '一致性检查' },
-  { key: 'controlLlmConfigId', label: '篇幅与结构控制' },
-  { key: 'repairLlmConfigId', label: '自动修复' },
-  { key: 'stateExtractionLlmConfigId', label: '采纳后状态提取（不计入四请求）' },
+  { key: 'writerLlmConfigId', label: 'Draft Writer' },
+  { key: 'checkerLlmConfigId', label: '统一 QA' },
+  { key: 'controlLlmConfigId', label: 'QA 备用模型' },
+  { key: 'repairLlmConfigId', label: 'Revision Writer / Final Candidate' },
+  { key: 'stateExtractionLlmConfigId', label: 'PostWriting 状态提取（ONE Memory）' },
 ];
 
-/** Dedicated configuration for the independent continuation runner. */
+/** Continuation-only pre-Freeze inputs; PipelineConfig owns the shared profile. */
 export const ContinuationGenerationConfigScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { currentProject } = useProjectStore();
@@ -156,14 +156,14 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
     try {
       const saved = await updateGenerationSettings(currentProject.id, {
         ...settings,
-        // New runs always use the standard checker and one possible Repair.
-        // The legacy columns remain in the row for old snapshots/backups.
+        // Continuation-specific source/Canon settings remain pre-Freeze only.
+        // Post-Freeze execution is owned by the shared Writing Kernel.
         checkerEnabled: true,
         maxRepairRounds: 1,
         plannerConfirmationPolicy: 'never',
       });
       setSettings(saved);
-      Alert.alert('保存成功', '续写生成流水线配置已更新。');
+      Alert.alert('保存成功', '续写 Freeze 前资料配置已更新。');
     } catch (error: any) {
       Alert.alert('保存失败', error?.message || '无法保存续写生成配置。');
     } finally {
@@ -174,7 +174,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
   if (!currentProject || currentProject.mode !== 'continuation') {
     return (
       <Screen>
-        <Header title="续写生成配置" />
+        <Header title="续写资料（Freeze 前）" />
         <EmptyState
           title="请先选择原著续写项目"
           description="在「项目」中切换到原著续写项目后，再配置续写生成流水线。"
@@ -186,7 +186,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
   if (!settings) {
     return (
       <Screen>
-        <Header title="续写生成配置" />
+        <Header title="续写资料（Freeze 前）" />
         <LoadingState label="加载续写生成配置..." />
       </Screen>
     );
@@ -196,8 +196,8 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
     <Screen>
       <Header
         testID="continuation-generation-config"
-        title="续写生成配置"
-        subtitle={`${currentProject.name} · 独立于大纲创作流水线`}
+        title="续写资料（Freeze 前）"
+        subtitle={`${currentProject.name} · 执行档位统一由流水线配置管理`}
       />
       <ScrollView contentContainerStyle={styles.content}>
         <Card>
@@ -205,10 +205,9 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             生成与一致性
           </Text>
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            续写会基于
-            Canon、接缝和状态事件生成；此处不会修改大纲创作的四阶段流水线。
-            V4 固定最多 4 次物理请求：Writer →（Checker 与 Control 并行）→ Repair，最后只做本地 Final Gate。
-            不自动重试，不提供额外 Repair；每个阶段按照上下文自动化策略、所选模型能力和本次正文实测需求动态计算预算。
+            续写在 Freeze 前收集 Canon、接缝、状态事件和用户指令；Freeze 后与大纲共用同一个
+            Writing Kernel、Writer、QA、Context、Final Candidate、PostWriting 与 ONE Memory。
+            此页只维护续写资料与模型快照；执行档位、阶段启用状态和统一阶段视图由「流水线配置」管理。
           </Text>
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
             校验严格度方案
@@ -251,7 +250,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
               始终严格遵循原著画风画像；未完成或未启用画像时，续写将被阻断。
             </Text>
           </View>
-          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>Control 的汉字数和段落指标由本地计算；Repair 输出完整终稿，之后不再调用第二次 LLM Checker。</Text>
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>FinalValidate 的汉字数、段落和语义门禁由共享 Kernel 负责；Revision 只消费正式 QA findings，One-Shot 不执行 Revision，不会偷偷重试。</Text>
           <Field
             label="目标章节字数"
             value={String(settings.targetChapterChars)}
@@ -266,7 +265,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             }
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            目标和合法区间会进入 Writer/Control/Repair 的冻结上下文；最终是否可采纳由本地 Final Gate 决定，不会偷偷重试。
+            目标和合法区间进入共享 Draft/QA/Revision 的 Frozen Context；最终候选由统一 Final Candidate Contract 选择，FinalValidate 通过后才可 Persist。
           </Text>
         </Card>
 
@@ -275,7 +274,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
             阶段模型
           </Text>
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            未指定时使用当前启用模型。Writer、Checker、Control、Repair 分别冻结自己的 context window/max output；预览页会展示模拟预算。
+            未指定时使用当前启用模型。这里的模型只在 Freeze 前形成统一 Kernel 的冻结模型投影；Post-Freeze 不再读取 live 配置，Context 也不会按阶段重新构建。
           </Text>
           {MODEL_STAGES.map(stage => (
             <View key={stage.key} style={styles.stageRow}>
@@ -335,7 +334,7 @@ export const ContinuationGenerationConfigScreen: React.FC = () => {
           onPress={() => navigation.navigate('ContinuationPipelineTask')}
         />
         <Button
-          label={saving ? '保存中...' : '保存续写配置'}
+          label={saving ? '保存中...' : '保存续写资料'}
           icon={Save}
           onPress={save}
           disabled={saving}

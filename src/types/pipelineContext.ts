@@ -16,6 +16,7 @@ import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
 import type { GenerationStageTimings } from '../services/context/generationStageContracts';
 import type { WritingSourceTrace } from '../services/writing/contracts/writingSource';
 import type { WritingKernelTrace } from '../services/writing/contracts/frozenWritingContext';
+import type { WritingPersistedEvent } from '../services/writing/flow/writingPersistedEvent';
 
 /** Historical V3 snapshot written by Context Budget V6 tasks. */
 export const PIPELINE_CONTEXT_SNAPSHOT_VERSION = 3 as const;
@@ -205,6 +206,8 @@ export interface PipelineContextSnapshot {
   /** Phase I: normalized pre-kernel source boundary and fingerprint. */
   writingSourceTrace?: WritingSourceTrace;
   writingKernelTrace?: WritingKernelTrace;
+  /** Durable Persist → PostWriting handoff for outline tasks. */
+  writingPersistedEvent?: WritingPersistedEvent;
   /** Kernel Final Closure: the authoritative frozen context object bound to
    * writingKernelTrace. Loaded by the Writing Kernel engine on resume; never
    * rebuilt from live data once present. */

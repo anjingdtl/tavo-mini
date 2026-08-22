@@ -63,6 +63,27 @@ export function allowsFormatterCall(policy: {
   return true;
 }
 
+/**
+ * Compact Standard has one bounded Formatter escape hatch: an invalid
+ * structured ONE QA response. Draft and Revision are prose/contract stages;
+ * rescuing either with another paid request would silently change the
+ * Standard DAG and its logical/physical budget. Legacy frozen topologies keep
+ * their historical compatibility behavior.
+ */
+export function allowsFormatterCallForStage(
+  policy: {
+    reviewMode?: string;
+    values?: Record<string, unknown>;
+  } | null | undefined,
+  stage: string,
+): boolean {
+  if (!allowsFormatterCall(policy)) return false;
+  if (policy?.values?.pipelineTopologyVersion === 'compact_standard') {
+    return stage === 'qa';
+  }
+  return true;
+}
+
 /** True when the frozen policy forbids an automatic Primary retry. */
 export function allowsPrimaryRetry(policy: {
   values?: Record<string, unknown>;

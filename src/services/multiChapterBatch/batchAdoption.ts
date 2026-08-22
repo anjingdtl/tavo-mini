@@ -7,7 +7,8 @@
  *   - chapter.content written (status stays 'draft' — batch never finalizes)
  *   - updated_at bumped
  *   - pipeline task resolved (accept)
- *   - story memory dirty mark (from adopted chapter position)
+ *   - Story Memory invalidation only when replacing an already-finalized body;
+ *     a newly adopted draft waits for the explicit finalize/PostWriting boundary
  *   - store refresh handled by the caller (store layer)
  *
  * Idempotency: the adoption fingerprint
@@ -33,6 +34,19 @@ import { sha256Hex } from '../continuation/hashUtils';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { MultiChapterBatchError } from './errors';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
+import { enqueueStoryMemoryMaintenance } from '../storyMemory/storyMemoryService';
+
+function enqueueDirtyStoryMemoryMaintenance(
+  projectId: number,
+  outcome: 'dirty' | 'pending_invalidated' | 'none',
+): void {
+  if (outcome !== 'dirty') return;
+  enqueueStoryMemoryMaintenance({
+    projectId,
+    reason: 'dirty',
+    priority: 'background',
+  });
+}
 
 export interface AdoptPipelineTaskResultInput {
   taskId: string;
@@ -138,6 +152,14 @@ export async function adoptPipelineTaskResult(
     }
   }
 
+  // Outline adoption writes a reviewable draft. Story Memory must not read or
+  // invalidate its durable truth until the editor explicitly finalizes this
+  // chapter; that finalization is the single PostWriting boundary.
+  const chapterWasFinalized =
+    chapter.status === 'final' ||
+    String(chapter.status) === 'finalized' ||
+    chapter.finalized_at != null;
+
   // 1. Save the OLD body as a revision (content history preservation).
   const oldContent = String(chapter.content || '');
   if (oldContent.trim()) {
@@ -179,14 +201,31 @@ export async function adoptPipelineTaskResult(
   }
 
   // 5. Story memory / downstream invalidation mark.
-  try {
-    await db.markStoryMemoryDirtyIfCovered?.(
-      chapter.project_id,
-      chapter.position,
-      `pipeline_adopt:${input.taskId}`,
-    );
-  } catch {
-    // non-fatal
+  let outcome: 'dirty' | 'pending_invalidated' | 'none' = 'none';
+  if (chapterWasFinalized) {
+    try {
+      outcome =
+        (await db.markStoryMemoryDirtyIfCovered?.(
+          chapter.project_id,
+          chapter.position,
+          `pipeline_adopt:${input.taskId}`,
+        )) || 'none';
+    } catch {
+      // non-fatal
+    }
+    // If the idempotent backstop itself is interrupted after the chapter write,
+    // the transaction in updateChapter has already persisted the dirty intent.
+    // Read that durable state before deciding whether to drop the handoff.
+    if (outcome === 'none') {
+      try {
+        const currentMemory = await getProjectStoryMemory(chapter.project_id);
+        if (currentMemory?.status === 'dirty') outcome = 'dirty';
+      } catch {
+        // Adoption remains committed; the next explicit maintenance/readiness
+        // path can still recover if this diagnostic read is unavailable.
+      }
+    }
+    enqueueDirtyStoryMemoryMaintenance(chapter.project_id, outcome);
   }
 
   return {
@@ -204,9 +243,11 @@ export async function adoptPipelineTaskResult(
  *   → item adoptionFingerprint / adoptedRevisionId → batch counters
  *
  * No half-committed windows: a crash or fault mid-transaction rolls back
- * EVERYTHING (body, revisions, item, counters). Story-memory dirty marking
- * stays POST-transaction best-effort (idempotent SET semantics — a repeated
- * adoption re-marks the same state) and the store resolve is in-memory
+ * EVERYTHING (body, revisions, item, counters). Story-memory invalidation for
+ * an already-finalized chapter stays POST-transaction best-effort (idempotent
+ * SET semantics — a repeated adoption re-marks the same state); a draft
+ * adoption intentionally has no Memory side effect until finalize/PostWriting.
+ * The store resolve is in-memory
  * best-effort (the DB row persists via the store's own write).
  *
  * Returns the same shape as adoptPipelineTaskResult. `alreadyAdopted` is set
@@ -266,6 +307,14 @@ export async function adoptPipelineTaskResultAtomic(
       };
     }
   }
+
+  // Batch adoption writes a draft. Only a pre-existing finalized chapter may
+  // invalidate the durable Story Memory truth; a newly adopted draft must wait
+  // for the editor's explicit finalize/PostWriting boundary.
+  const chapterWasFinalized =
+    chapter.status === 'final' ||
+    String(chapter.status) === 'finalized' ||
+    chapter.finalized_at != null;
 
   const oldContent = String(chapter.content || '');
   const previousAlreadyRecorded =
@@ -341,14 +390,15 @@ export async function adoptPipelineTaskResultAtomic(
   // durable before the transaction returns. The post-commit store refresh and
   // best-effort mark remain only as idempotent in-memory/backstop calls.
   const nowIso = new Date().toISOString();
-  const smRecord = await getProjectStoryMemory(chapter.project_id);
-  const smSideEffects = buildStoryMemoryContinuitySideEffects(
-    smRecord,
-    chapter.project_id,
-    chapter.position,
-    `pipeline_adopt:${input.taskId}`,
-    nowIso,
-  );
+  const smSideEffects = chapterWasFinalized
+    ? buildStoryMemoryContinuitySideEffects(
+        await getProjectStoryMemory(chapter.project_id),
+        chapter.project_id,
+        chapter.position,
+        `pipeline_adopt:${input.taskId}`,
+        nowIso,
+      )
+    : { outcome: 'none' as const, statements: [] as SqlStatement[] };
   statements.push(
     {
       sql: `UPDATE pipeline_tasks SET resolved_at = ?, resolved_action = 'accept', updated_at = ? WHERE id = ?`,
@@ -383,14 +433,22 @@ export async function adoptPipelineTaskResultAtomic(
   } catch {
     // store resolution is best-effort; the DB row persists via persistTask
   }
-  try {
-    await db.markStoryMemoryDirtyIfCovered?.(
+  let backstopOutcome = smSideEffects.outcome;
+  if (chapterWasFinalized) {
+    try {
+      backstopOutcome =
+        (await db.markStoryMemoryDirtyIfCovered?.(
+          chapter.project_id,
+          chapter.position,
+          `pipeline_adopt:${input.taskId}`,
+        )) || backstopOutcome;
+    } catch {
+      // non-fatal
+    }
+    enqueueDirtyStoryMemoryMaintenance(
       chapter.project_id,
-      chapter.position,
-      `pipeline_adopt:${input.taskId}`,
+      backstopOutcome,
     );
-  } catch {
-    // non-fatal
   }
 
   return {

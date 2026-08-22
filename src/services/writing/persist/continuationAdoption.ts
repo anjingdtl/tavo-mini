@@ -95,6 +95,7 @@ import {
   assertWritingPersistedEventAllowsMemoryUpdate,
   buildWritingPersistedEvent,
 } from '../flow/writingPersistedEvent';
+import { closeContinuationPostWritingSnapshot } from '../flow/continuationPostWritingClosure';
 import {
   countHanCharacters,
   evaluateContinuationLength,
@@ -1596,6 +1597,9 @@ export async function finalizeContinuationChapter(input: {
   content: string;
   sourceRunId?: string | null;
 }): Promise<{ revisionHash: string; outboxDedupeKey: string }> {
+  if (!input.content.trim()) {
+    throw new Error('章节正文为空，无法定稿。请先采纳或写入正文。');
+  }
   const revisionHash = contentRevisionHash(input.content);
   const db = await openDatabase();
   const [ch] = await db.executeSql(
@@ -1696,6 +1700,34 @@ export async function finalizeContinuationChapter(input: {
         },
       })
     : null;
+  let finalizedKernelSnapshotJson: string | null = null;
+  if (sourceRun?.contextSnapshotJson) {
+    let snapshot: Record<string, any>;
+    try {
+      snapshot = JSON.parse(sourceRun.contextSnapshotJson);
+    } catch {
+      throw new Error('Continuation Kernel snapshot 无法解析，禁止进入 PostWriting');
+    }
+    const topology =
+      snapshot?.frozenWritingContext?.stagePolicy?.values
+        ?.pipelineTopologyVersion;
+    if (topology === 'compact_standard' && !snapshot.writingKernelTrace) {
+      throw new Error(
+        'WRITING_POST_WRITING_TRACE_MISSING: Compact Continuation snapshot has no durable Kernel trace',
+      );
+    }
+    if (snapshot.writingKernelTrace) {
+      finalizedKernelSnapshotJson = JSON.stringify(
+        closeContinuationPostWritingSnapshot({
+          snapshot,
+          persistedEvent,
+          // Story Memory and state extraction are queued after the atomic
+          // finalize boundary; the trace still records the handoff itself.
+          durationMs: 0,
+        }),
+      );
+    }
+  }
 
   const statements: Array<{ sql: string; params?: any[] }> = [
     {
@@ -1726,9 +1758,16 @@ export async function finalizeContinuationChapter(input: {
     statements.push({
       sql: `UPDATE continuation_generation_runs
         SET finalized_revision_hash = ?,
+            context_snapshot_json = COALESCE(?, context_snapshot_json),
             context_trace_json = COALESCE(?, context_trace_json), updated_at = ?
         WHERE id = ? AND state IN ('completed', 'awaiting_user', 'interrupted')`,
-      params: [revisionHash, finalizedTraceJson, ts, resolvedSourceRunId],
+      params: [
+        revisionHash,
+        finalizedKernelSnapshotJson,
+        finalizedTraceJson,
+        ts,
+        resolvedSourceRunId,
+      ],
     });
   }
 

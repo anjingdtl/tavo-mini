@@ -69,6 +69,87 @@ import {
   updateStoryMemoryForeground,
 } from './storyMemoryForeground';
 import { recordPostWritingObservability } from '../writing/observability/writingObservabilityCollector';
+import { getLatestContentRevision } from '../../data/repositories/contentRepository';
+import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
+import {
+  enqueueOutlineStoryMemoryPostWriting,
+  persistOutlinePostWritingClosure,
+} from '../writing/flow/outlinePostWritingClosure';
+
+interface OutlinePostWritingTraceBinding {
+  taskId: string;
+  generationTraceId?: string;
+  freezeFingerprint?: string;
+  executionProfile?: 'standard' | 'one_shot';
+}
+
+/**
+ * Resolve the durable Pipeline identity before building the finalize event.
+ * Outline adoption stores a `pipeline` content revision with the originating
+ * task id; current tasks also carry the authoritative Kernel trace. Keeping
+ * this lookup before event construction makes the PostWriting event point at
+ * the same Freeze/run identity as the body that was adopted.
+ */
+async function resolveOutlinePostWritingTraceBinding(
+  chapterId: number,
+): Promise<OutlinePostWritingTraceBinding | null> {
+  let latestRevision: any | null = null;
+  try {
+    latestRevision = await getLatestContentRevision('chapter', chapterId);
+  } catch (error) {
+    console.warn(
+      '[story-memory] OUTLINE_POST_WRITING_SOURCE_LOOKUP_FAILED:',
+      chapterId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+
+  if (
+    latestRevision?.source !== 'pipeline' ||
+    typeof latestRevision.source_ref !== 'string' ||
+    !latestRevision.source_ref.trim()
+  ) {
+    return null;
+  }
+
+  const binding: OutlinePostWritingTraceBinding = {
+    taskId: latestRevision.source_ref.trim(),
+  };
+  try {
+    const task = await getPipelineTaskById(binding.taskId);
+    if (!task?.pipelineContextJson) return binding;
+    const envelope = JSON.parse(task.pipelineContextJson);
+    const trace = [envelope?.draftContext, envelope?.auditContext]
+      .map(context => context?.writingKernelTrace)
+      .find(
+        candidate =>
+          candidate?.scenario === 'outline' &&
+          Array.isArray(candidate?.events) &&
+          typeof candidate?.generationTraceId === 'string' &&
+          typeof candidate?.freezeFingerprint === 'string',
+      );
+    if (!trace) return binding;
+    binding.generationTraceId = trace.generationTraceId;
+    binding.freezeFingerprint = trace.freezeFingerprint;
+    if (
+      trace.observability?.executionProfile === 'one_shot' ||
+      trace.observability?.executionProfile === 'standard'
+    ) {
+      binding.executionProfile = trace.observability.executionProfile;
+    }
+  } catch (error) {
+    // Keep the task id so the later closure can still fail closed if a current
+    // task has an invalid/missing trace; handwritten chapters never enter this
+    // branch because they have no pipeline content revision.
+    console.warn(
+      '[story-memory] OUTLINE_POST_WRITING_TRACE_LOOKUP_FAILED:',
+      binding.taskId,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return binding;
+}
 
 /**
  * Resolve a display-number mapper for user-visible Story Memory text (Spec §11.3).
@@ -987,16 +1068,21 @@ export async function finalizeChapterMemory(
   if (!chapter) throw new Error('章节不存在。');
   if (!chapter.content.trim())
     throw new Error('章节正文为空，无法更新故事记忆。');
+  const outlineBinding = await resolveOutlinePostWritingTraceBinding(chapterId);
   const writingPersistedEvent = buildWritingPersistedEvent({
     generationTraceId:
       options.generationTraceId ||
+      outlineBinding?.generationTraceId ||
       `outline-finalize:${chapter.project_id}:${chapter.id}`,
-    freezeFingerprint: options.freezeFingerprint || 'outline-local-finalize',
+    freezeFingerprint:
+      options.freezeFingerprint ||
+      outlineBinding?.freezeFingerprint ||
+      'outline-local-finalize',
     projectId: chapter.project_id,
     chapterId: chapter.id,
     chapterPosition: Number(chapter.position) || 0,
     finalBody: chapter.content,
-    executionProfile: options.executionProfile,
+    executionProfile: options.executionProfile || outlineBinding?.executionProfile,
     appliedRequirementIds: options.appliedRequirementIds,
     scenario: 'outline',
   });
@@ -1203,11 +1289,56 @@ export async function finalizeChapterMemory(
     };
   });
 
-  if (maintenance) enqueueStoryMemoryMaintenance(maintenance);
-  if (backgroundJob) {
-    setTimeout(() => {
-      void backgroundJob!().catch(() => undefined);
-    }, 0);
+  // Outline adoption intentionally writes a draft first. The editor's local
+  // finalize is the single PostWriting boundary; bind that boundary back to
+  // the originating pipeline task and enqueue the same durable ONE Memory
+  // outbox used by Continuation. Hand-written chapters have no pipeline
+  // revision and remain on the existing local maintenance path.
+  const pipelineTaskId = outlineBinding?.taskId || null;
+
+  if (pipelineTaskId) {
+    // Do not run the old in-process maintenance job as well: that would create
+    // a second Memory execution beside the canonical outbox consumer.
+    maintenance = null;
+    backgroundJob = null;
+    try {
+      await enqueueOutlineStoryMemoryPostWriting({
+        persistedEvent: writingPersistedEvent,
+        taskId: pipelineTaskId,
+      });
+      await persistOutlinePostWritingClosure({
+        taskId: pipelineTaskId,
+        persistedEvent: writingPersistedEvent,
+        durationMs: Date.now() - startedAt,
+      });
+
+      // Cold-start processing is the reliable delivery path. This import is
+      // only a best-effort acceleration while the app remains open.
+      void import('../continuation/generation/continuationStateOutboxWorker')
+        .then(({ processContinuationOutbox }) =>
+          processContinuationOutbox({ limit: 10 }),
+        )
+        .catch(() => undefined);
+    } catch (error) {
+      // The chapter itself is already durable. Do not claim a successful
+      // PostWriting handoff when the outbox/trace transaction failed; the next
+      // finalize/resume can retry the idempotent boundary.
+      console.warn(
+        '[story-memory] OUTLINE_POST_WRITING_CLOSURE_FAILED:',
+        chapterId,
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  if (!pipelineTaskId) {
+    if (maintenance) enqueueStoryMemoryMaintenance(maintenance);
+    if (backgroundJob) {
+      setTimeout(() => {
+        void backgroundJob!().catch(() => undefined);
+      }, 0);
+    }
   }
   if (options.generationTraceId) {
     const durationMs = Date.now() - startedAt;

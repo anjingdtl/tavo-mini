@@ -36,6 +36,7 @@ jest.mock('../src/services/continuation/generation', () => ({
       stages: { repair: { requestCount: 1 } },
     }),
   })),
+  getRunContextSnapshotJson: jest.fn(async () => null),
   listChecksForArtifact: jest.fn(async () => [] as any[]),
   listStageResults: jest.fn(async () => [] as any[]),
   resumeInterruptedRun: jest.fn(),
@@ -56,6 +57,7 @@ import {
   getLatestArtifactForStage,
   getLatestEligibleArtifact,
   getRunById,
+  getRunContextSnapshotJson,
   listChecksForArtifact,
   listStageResults,
 } from '../src/services/continuation/generation';
@@ -70,6 +72,7 @@ const mockGetArtifactForRun = getArtifactForRun as jest.Mock;
 const mockGetLatestArtifactForStage = getLatestArtifactForStage as jest.Mock;
 const mockGetLatestEligibleArtifact = getLatestEligibleArtifact as jest.Mock;
 const mockGetRunById = getRunById as jest.Mock;
+const mockGetRunContextSnapshotJson = getRunContextSnapshotJson as jest.Mock;
 const mockAdoptArtifactAsDraft = adoptArtifactAsDraft as jest.Mock;
 const mockRepairContinuationArtifactOnce = repairContinuationArtifactOnce as jest.Mock;
 const mockListStageResults = listStageResults as jest.Mock;
@@ -90,6 +93,7 @@ describe('ContinuationResultScreen adoption decision', () => {
         stages: { repair: { requestCount: 1 } },
       }),
     });
+    mockGetRunContextSnapshotJson.mockResolvedValue(null);
     mockGetLatestArtifact.mockResolvedValue({ id: 'artifact-1', content: '续写正文' });
     mockGetLatestEligibleArtifact.mockResolvedValue({ id: 'artifact-1', stage: 'writer', content: '续写正文' });
     mockGetArtifactForRun.mockResolvedValue(null);
@@ -131,6 +135,30 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(queryByText('采纳为草稿')).toBeNull();
     const labels = getAllByRole('button').map(button => button.props.accessibilityLabel);
     expect(labels).not.toContain('采纳为草稿');
+  });
+
+  it('gives an outdated unified result an explicit latest-context retry action', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-outdated',
+      state: 'outdated',
+      stage: 'awaiting_user',
+      workflowVersion: 5,
+      canonSnapshotId: 'snapshot-old',
+      canonRevision: 1,
+      contextTraceJson: null,
+      tokenUsageJson: JSON.stringify({ workflowVersion: 5, stages: {} }),
+    });
+    mockGetLatestEligibleArtifact.mockResolvedValue(null);
+    mockGetLatestArtifactForStage.mockResolvedValue(null);
+
+    const { getAllByText, getByText, queryByText } = render(
+      <ContinuationResultScreen runId="run-outdated" onClose={jest.fn()} />,
+    );
+
+    await waitFor(() => expect(getByText('续写已过期')).toBeTruthy());
+    expect(getByText('按最新资料重试')).toBeTruthy();
+    expect(getAllByText('返回').length).toBeGreaterThan(1);
+    expect(queryByText('采纳')).toBeNull();
   });
 
   it('offers explicit risk adoption or one additional Repair after a local overlap failure', async () => {
@@ -353,7 +381,7 @@ describe('ContinuationResultScreen adoption decision', () => {
     expect(getByText(/篇幅偏差仅供参考，未因此触发自动 Repair。/)).toBeTruthy();
   });
 
-  it('shows V5 V1/V2/V3 row titles with tokens and Han count, without bodies', async () => {
+  it('shows the shared stage topology with tokens and no stage-specific draft versions', async () => {
     mockGetRunById.mockResolvedValue({
       id: 'run-v5',
       state: 'awaiting_user',
@@ -434,21 +462,105 @@ describe('ContinuationResultScreen adoption decision', () => {
     );
 
     await waitFor(() =>
-      expect(getByText(/V1 · 生成 Tokens 200 · 汉字/)).toBeTruthy(),
+      expect(getByText('共享 Writing Kernel · Standard')).toBeTruthy(),
     );
-    expect(getByText(/V2 · 生成 Tokens 400 · 汉字/)).toBeTruthy();
-    expect(getByText(/V3 · 生成 Tokens 600 · 汉字/)).toBeTruthy();
+    expect(
+      getByText('Freeze → 生成 → 检查 → 修订 → 校验 → 保存 → PostWriting → ONE Memory'),
+    ).toBeTruthy();
+    expect(getByText(/生成 · 成功/)).toBeTruthy();
+    expect(getByText(/修订 · 成功/)).toBeTruthy();
     // Bodies are intentionally not shown on the result screen — they add no
     // value for the user and rendering 3000+ chars x3 caused scroll jank.
     expect(queryByText(draftBody)).toBeNull();
     expect(queryByText(revisionBody)).toBeNull();
     expect(queryByText(finalBody)).toBeNull();
-    // No old multi-stage audit rows
+    // No old multi-stage audit rows or V1/V2/V3 surface
     expect(queryByText(/Narrative Architect/)).toBeNull();
     expect(queryByText(/Adversarial Auditor/)).toBeNull();
     expect(queryByText(/Final Artifact Validator/)).toBeNull();
+    expect(queryByText(/V1|V2|V3|三稿/)).toBeNull();
     // Adoption controls remain available
     expect(getByText('采纳')).toBeTruthy();
     expect(getByText('放弃')).toBeTruthy();
+  });
+
+  it('renders frozen One-Shot as the unified single-draft UI, not the retired V5 three-draft UI', async () => {
+    mockGetRunById.mockResolvedValue({
+      id: 'run-v5-one-shot',
+      state: 'awaiting_user',
+      stage: 'awaiting_user',
+      workflowVersion: 5,
+      canonSnapshotId: 'snapshot-1234567890',
+      canonRevision: 1,
+      contextTraceJson: null,
+      settingsSnapshotJson: JSON.stringify({ values: { targetChapterChars: 3000 } }),
+      tokenUsageJson: JSON.stringify({ workflowVersion: 5, physicalRequestCount: 1 }),
+    });
+    mockGetRunContextSnapshotJson.mockResolvedValue(
+      JSON.stringify({
+        frozenWritingContext: {
+          stagePolicy: { values: { executionProfile: 'one_shot' } },
+        },
+      }),
+    );
+    mockGetLatestEligibleArtifact.mockResolvedValue({
+      id: 'final-one-shot',
+      stage: 'final',
+      content: '单稿正文',
+      eligibilityStatus: 'eligible',
+    });
+    mockGetLatestArtifactForStage.mockResolvedValue({
+      id: 'draft-one-shot',
+      stage: 'draft',
+      content: '单稿正文',
+    });
+    mockListStageResults.mockResolvedValue([
+      {
+        stage: 'draft_writer',
+        status: 'success',
+        requestCount: 1,
+        inputTokens: 100,
+        outputTokens: 200,
+        outputJson: null,
+      },
+      {
+        stage: 'unified_qa',
+        status: 'skipped',
+        requestCount: 0,
+        outputJson: JSON.stringify({
+          envelope: { skipReason: 'One-Shot formal skip' },
+        }),
+      },
+      {
+        stage: 'revision_writer',
+        status: 'skipped',
+        requestCount: 0,
+        outputJson: JSON.stringify({
+          envelope: { skipReason: 'One-Shot formal skip' },
+        }),
+      },
+      {
+        stage: 'final_validate',
+        status: 'success',
+        requestCount: 0,
+        outputJson: null,
+      },
+    ] as any);
+
+    const { getByText, queryByText } = render(
+      <ContinuationResultScreen runId="run-v5-one-shot" onClose={jest.fn()} />,
+    );
+
+    await waitFor(() =>
+      expect(getByText('共享 Writing Kernel · One-Shot')).toBeTruthy(),
+    );
+    expect(getByText(/生成 · 成功/)).toBeTruthy();
+    expect(getByText(/检查 · 正式跳过/)).toBeTruthy();
+    expect(getByText(/修订 · 正式跳过/)).toBeTruthy();
+    expect(getByText(/校验 · 成功/)).toBeTruthy();
+    expect(queryByText('V5 · 三稿')).toBeNull();
+    expect(queryByText(/V1 · 生成 Tokens/)).toBeNull();
+    expect(queryByText(/V2 · 生成 Tokens/)).toBeNull();
+    expect(queryByText(/V3 · 生成 Tokens/)).toBeNull();
   });
 });

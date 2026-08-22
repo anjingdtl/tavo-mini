@@ -10,6 +10,7 @@
 import { determineNextPipelineAction } from '../src/services/pipeline/determineNextPipelineAction';
 import { runWritingStages } from '../src/services/writing/stages/writingStageRunner';
 import { buildWritingStagePolicy } from '../src/services/writing/contracts/writingPolicy';
+import { oneShotOutlineSkipStages } from '../src/services/pipeline/outlineStageRuntime';
 import type { PersistedPipelineTaskView } from '../src/services/pipeline/types';
 import type { PersistedStageCheckpoint } from '../src/services/pipeline/types';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
@@ -38,6 +39,27 @@ function view(overrides: Partial<PersistedPipelineTaskView>) {
 }
 
 describe('One-Shot outline state machine', () => {
+  test('outline One-Shot formalizes the compact ONE QA skip in the durable ledger', () => {
+    expect(oneShotOutlineSkipStages()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'qa',
+          policyRuleId: 'profile.one_shot.skip_qa',
+        }),
+      ]),
+    );
+  });
+
+  test('compact One-Shot formal skip contains QA + Revision only', () => {
+    expect(oneShotOutlineSkipStages({ compact: true })).toEqual([
+      expect.objectContaining({ stage: 'qa' }),
+      expect.objectContaining({ stage: 'brief' }),
+    ]);
+    expect(oneShotOutlineSkipStages({ compact: true }).map(item => item.stage)).not.toEqual(
+      expect.arrayContaining(['review', 'factCheck', 'proof']),
+    );
+  });
+
   test('one_shot: draft open → run_draft; after draft success → finalize_from_draft (not review)', () => {
     const pending = [
       checkpoint('draft', 'pending'),

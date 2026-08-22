@@ -11,6 +11,24 @@ jest.mock('@react-navigation/native', () => ({
 
 jest.mock('../src/services/database', () => ({
   getLLMConfigs: jest.fn(() => Promise.resolve([])),
+  getPipelineConfig: jest.fn(() =>
+    Promise.resolve({
+      pipelineMode: 'full',
+      reasoningEffort: 'low',
+      executionProfile: 'standard',
+      reasoningProfileVersion: 5,
+      activeWriterStyleId: null,
+      draftPresetId: null,
+      reviewPresetId: null,
+      factCheckPresetId: null,
+      proofPresetId: null,
+      draftMaxTokens: 4000,
+      reviewMaxTokens: 1500,
+      factCheckMaxTokens: 1500,
+      proofMaxTokens: 4000,
+    }),
+  ),
+  setPipelineConfig: jest.fn(() => Promise.resolve()),
 }));
 
 jest.mock('../src/services/continuation/generation', () => ({
@@ -70,13 +88,17 @@ describe('ContinuationGenerationConfigScreen', () => {
     });
   });
 
-  it('renders dedicated continuation settings instead of the outline four-stage pipeline', async () => {
+  it('renders continuation pre-Freeze settings while keeping the shared profile in PipelineConfig', async () => {
     const { getByText, queryByText } = render(
       <ContinuationGenerationConfigScreen />,
     );
 
     await waitFor(() => expect(getByText('生成与一致性')).toBeTruthy());
     expect(getByText('阶段模型')).toBeTruthy();
+    expect(getByText(/执行档位统一由流水线配置管理/)).toBeTruthy();
+    expect(getByText(/执行档位、阶段启用状态和统一阶段视图由「流水线配置」管理/)).toBeTruthy();
+    expect(queryByText(/独立于大纲创作流水线/)).toBeNull();
+    expect(queryByText(/V4 固定最多 4 次物理请求/)).toBeNull();
     expect(queryByText('规划与风险确认')).toBeNull();
     expect(queryByText('规划')).toBeNull();
     expect(getByText('原著文风')).toBeTruthy();

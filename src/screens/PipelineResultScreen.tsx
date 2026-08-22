@@ -1,6 +1,11 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Alert, BackHandler, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
+import {
+  UnifiedPipelineStageView,
+  type UnifiedPipelineStageItem,
+  type UnifiedPipelineStageStatus,
+} from '../components/UnifiedPipelineStageView';
 import { useThemeStore } from '../store/themeStore';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import {
@@ -22,13 +27,20 @@ import {
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
+  isCompactPipelineTopology,
   isCurrentOutlinePipelineContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
 import {
   resetFailedStageCheckpointsForResume,
 } from '../data/repositories/pipelineStageCheckpointRepository';
+import { getOutboxByDedupe } from '../services/continuation/generation/generationRepository';
 import { createDerivedFinalRewriteTask } from '../services/pipeline/derivedFinalRewrite';
-import type { PipelineStageResult } from '../types/pipeline';
+import type { PipelineStageResult, PipelineTask } from '../types/pipeline';
+import type {
+  WritingKernelStage,
+  WritingKernelStageEvent,
+  WritingKernelTrace,
+} from '../services/writing/contracts/frozenWritingContext';
 
 type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
 
@@ -133,7 +145,7 @@ export function uniqueStageResults(
       map.set(row.stage, row);
     }
   }
-  return ['draft', 'review', 'factCheck', 'brief', 'proof']
+  return ['draft', 'qa', 'review', 'factCheck', 'brief', 'proof']
     .map(s => map.get(s))
     .filter(Boolean) as PipelineStageResult[];
 }
@@ -197,6 +209,254 @@ export function formatStageText(stage: PipelineStageResult): string {
   }
 }
 
+function parseOutlineKernelTrace(
+  pipelineContextJson: string | null | undefined,
+): WritingKernelTrace | null {
+  if (!pipelineContextJson) return null;
+  try {
+    const parsed = JSON.parse(pipelineContextJson);
+    const trace =
+      parsed?.draftContext?.writingKernelTrace || parsed?.writingKernelTrace;
+    return trace && Array.isArray(trace.events)
+      ? (trace as WritingKernelTrace)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function latestKernelEvent(
+  trace: WritingKernelTrace | null,
+  stage: WritingKernelStage,
+): WritingKernelStageEvent | null {
+  if (!trace) return null;
+  for (let index = trace.events.length - 1; index >= 0; index -= 1) {
+    const event = trace.events[index];
+    if (event.stage === stage) return event;
+  }
+  return null;
+}
+
+function mapKernelStatus(
+  event: WritingKernelStageEvent | null,
+): UnifiedPipelineStageStatus {
+  if (!event) return 'pending';
+  if (event.status === 'completed') return 'success';
+  if (event.status === 'skipped') return 'skipped';
+  if (event.status === 'blocked') return 'failed';
+  return 'running';
+}
+
+function mapPipelineStageStatus(
+  result: PipelineStageResult | null,
+): UnifiedPipelineStageStatus {
+  if (!result) return 'pending';
+  if (result.status === 'success') return 'success';
+  if (result.status === 'skipped') return 'skipped';
+  return 'failed';
+}
+
+function readOutlineExecutionProfile(
+  task: Pick<PipelineTask, 'pipelineContextJson'>,
+): 'standard' | 'one_shot' {
+  const trace = parseOutlineKernelTrace(task.pipelineContextJson);
+  const frozenProfile = (trace as any)?.observability?.executionProfile;
+  if (frozenProfile === 'one_shot') return 'one_shot';
+  try {
+    const parsed = task.pipelineContextJson
+      ? JSON.parse(task.pipelineContextJson)
+      : null;
+    const profile =
+      parsed?.execution?.executionProfile ||
+      parsed?.draftContext?.frozenWritingContext?.stagePolicy?.values
+        ?.executionProfile ||
+      parsed?.frozenWritingContext?.stagePolicy?.values?.executionProfile;
+    return profile === 'one_shot' ? 'one_shot' : 'standard';
+  } catch {
+    return 'standard';
+  }
+}
+
+export function isUnifiedOutlinePipelineTask(
+  task: Pick<PipelineTask, 'pipelineTopologyVersion' | 'pipelineContextJson'>,
+): boolean {
+  if (isCompactPipelineTopology(task.pipelineTopologyVersion)) return true;
+  const trace = parseOutlineKernelTrace(task.pipelineContextJson);
+  const topology = (trace as any)?.frozenWritingContext?.stagePolicy?.values
+    ?.pipelineTopologyVersion;
+  if (topology === 'compact_standard') return true;
+  try {
+    const parsed = task.pipelineContextJson
+      ? JSON.parse(task.pipelineContextJson)
+      : null;
+    return (
+      parsed?.execution?.pipelineTopologyVersion === 'compact_standard' ||
+      parsed?.draftContext?.frozenWritingContext?.stagePolicy?.values
+        ?.pipelineTopologyVersion === 'compact_standard'
+    );
+  } catch {
+    return false;
+  }
+}
+
+export type OutlineMemoryOutboxState = 'pending' | 'running' | 'completed' | 'failed';
+
+function outlineMemoryOutboxDedupeKey(
+  trace: WritingKernelTrace | null,
+): string | null {
+  const event = trace?.writingPersistedEvent;
+  if (!event || event.scenario !== 'outline') return null;
+  return `rebuild_story_memory:outline:${event.projectId}:${event.chapterId}:${event.finalBodyFingerprint}`;
+}
+
+/** Build the shared current-task view; Legacy task rows keep their audit UI. */
+export function buildUnifiedOutlineStageItems(
+  task: Pick<
+    PipelineTask,
+    | 'stageResults'
+    | 'pipelineContextJson'
+    | 'status'
+    | 'finalText'
+    | 'resolvedAction'
+    | 'error'
+  >,
+  options: { memoryOutboxState?: OutlineMemoryOutboxState | null } = {},
+  ): UnifiedPipelineStageItem[] {
+  const trace = parseOutlineKernelTrace(task.pipelineContextJson);
+  const resultFor = (stage: PipelineStageResult['stage']) =>
+    uniqueStageResults(task.stageResults).find(row => row.stage === stage) ||
+    null;
+  const resultItem = (
+    id: UnifiedPipelineStageItem['id'],
+    result: PipelineStageResult | null,
+    eventStage: WritingKernelStage,
+  ): UnifiedPipelineStageItem => {
+    const event = latestKernelEvent(trace, eventStage);
+    const status = result ? mapPipelineStageStatus(result) : mapKernelStatus(event);
+    const observed = trace?.observability?.stages.find(
+      row => row.stage === eventStage,
+    );
+    const detail =
+      result?.error ||
+      result?.errorCode ||
+      event?.skipReason ||
+      event?.detail ||
+      (status === 'pending' ? '尚未进入该阶段。' : undefined);
+    const meta = observed
+      ? `逻辑 ${observed.logicalStageCallCount} · Formatter ${observed.formatterCallCount} · 物理 ${observed.physicalRequestCount} · Fallback ${observed.protocolFallbackCount} · ${(observed.inputTokens + observed.outputTokens).toLocaleString()} tokens`
+      : result?.tokens
+      ? `逻辑调用 ${result.status === 'skipped' ? 0 : 1} 次 · ${result.tokens.total.toLocaleString()} tokens`
+      : event?.status === 'skipped'
+        ? '0 次付费调用'
+        : undefined;
+    return {
+      id,
+      status,
+      detail,
+      meta,
+      body: result?.text ? formatStageText(result) : undefined,
+    };
+  };
+
+  const freezeEvent = latestKernelEvent(trace, 'freeze');
+  const finalValidateEvent = latestKernelEvent(trace, 'finalValidate');
+  const persistEvent = latestKernelEvent(trace, 'persist');
+  const postWritingEvent = latestKernelEvent(trace, 'postWritingUpdate');
+  const adopted = task.resolvedAction === 'accept';
+  const postWritingClosed = postWritingEvent?.status === 'completed';
+  const memoryOutboxState = options.memoryOutboxState ?? null;
+  const finalTextAvailable = Boolean(task.finalText?.trim());
+
+  return [
+    {
+      id: 'freeze',
+      status: mapKernelStatus(freezeEvent),
+      detail:
+        freezeEvent?.detail ||
+        (freezeEvent ? undefined : '等待共享 Context Freeze。'),
+      meta: freezeEvent?.status === 'completed' ? 'Frozen Context 已绑定' : undefined,
+    },
+    resultItem('draft', resultFor('draft'), 'draft'),
+    resultItem('qa', resultFor('qa'), 'qa'),
+    resultItem('revision', resultFor('brief'), 'revision'),
+    {
+      id: 'finalValidate',
+      status:
+        finalValidateEvent
+          ? mapKernelStatus(finalValidateEvent)
+          : task.status === 'completed' && finalTextAvailable
+            ? 'success'
+            : task.status === 'failed'
+              ? 'failed'
+              : 'pending',
+      detail:
+        finalValidateEvent?.detail ||
+        (task.status === 'failed' ? task.error || 'FinalValidate 未通过。' : undefined),
+      meta: finalValidateEvent?.status === 'completed' ? 'Local Gate' : undefined,
+    },
+    {
+      id: 'persist',
+      status:
+        persistEvent
+          ? mapKernelStatus(persistEvent)
+          : task.status === 'completed' && finalTextAvailable
+            ? 'success'
+            : task.status === 'failed'
+              ? 'failed'
+              : 'pending',
+      detail:
+        persistEvent?.detail ||
+        (adopted
+          ? '生成账本已交由采纳闭环处理。'
+          : '终稿通过后生成账本等待采纳。'),
+      meta: persistEvent?.status === 'completed' ? '统一 Persist' : undefined,
+    },
+    {
+      id: 'postWriting',
+      status: postWritingEvent
+        ? mapKernelStatus(postWritingEvent)
+        : 'pending',
+      detail:
+        postWritingEvent?.detail ||
+        (adopted
+          ? '正文已采纳但仍为草稿；定稿后才启用唯一 PostWriting 闭环。'
+          : '采纳后才启用 PostWriting。'),
+      meta: postWritingEvent?.status === 'completed' ? '已完成' : undefined,
+    },
+    {
+      id: 'memory',
+      status: !postWritingClosed
+        ? 'pending'
+        : memoryOutboxState === 'completed'
+          ? 'success'
+          : memoryOutboxState === 'failed'
+            ? 'failed'
+            : 'running',
+      detail: !postWritingClosed
+        ? adopted
+          ? '正文仍为草稿；定稿后的 PostWriting 才会创建 ONE Memory outbox。'
+          : '采纳并定稿后由唯一 ONE Memory outbox 接续。'
+        : memoryOutboxState === 'completed'
+          ? 'ONE Memory outbox 已完成；最终 through_chapter 以只读 DB 为准。'
+          : memoryOutboxState === 'failed'
+            ? 'ONE Memory outbox 失败；可通过冷启动/显式重试恢复，未伪报完成。'
+            : memoryOutboxState === 'pending'
+              ? 'WritingPersistedEvent 已闭合，ONE Memory outbox 等待消费。'
+              : memoryOutboxState === 'running'
+                ? 'ONE Memory outbox 正在消费。'
+                : 'PostWriting 已闭合，正在读取唯一 ONE Memory outbox 状态。',
+      meta:
+        memoryOutboxState === 'completed'
+          ? '已完成'
+          : memoryOutboxState === 'failed'
+            ? '失败'
+            : postWritingClosed
+              ? '等待结算'
+              : undefined,
+    },
+  ];
+}
+
 export function summarizePipelineTokens(stageResults: PipelineStageResult[]): { inputTokens: number; totalTokens: number } {
   return stageResults.reduce(
     (summary, stage) => ({
@@ -258,6 +518,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const [adopting, setAdopting] = useState(false);
   const [rewriteVisible, setRewriteVisible] = useState(false);
   const [rewriteInstruction, setRewriteInstruction] = useState('');
+  const [outlineMemoryOutboxState, setOutlineMemoryOutboxState] =
+    useState<OutlineMemoryOutboxState | null>(null);
   const detailLoadAttemptedRef = useRef<Set<string>>(new Set());
   // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
@@ -292,6 +554,46 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     }
   }, [loadTaskDetails, taskId, tasks]);
 
+  useEffect(() => {
+    const current = tasks.find(item => item.id === taskId);
+    const trace = current ? parseOutlineKernelTrace(current.pipelineContextJson) : null;
+    const postWritingEvent = latestKernelEvent(trace, 'postWritingUpdate');
+    const dedupeKey = outlineMemoryOutboxDedupeKey(trace);
+    if (
+      !current ||
+      !isUnifiedOutlinePipelineTask(current) ||
+      postWritingEvent?.status !== 'completed' ||
+      !dedupeKey
+    ) {
+      setOutlineMemoryOutboxState(null);
+      return;
+    }
+
+    let cancelled = false;
+    setOutlineMemoryOutboxState(null);
+    getOutboxByDedupe(dedupeKey)
+      .then(outbox => {
+        if (cancelled) return;
+        const state = String(outbox?.state || '');
+        setOutlineMemoryOutboxState(
+          state === 'pending' ||
+            state === 'running' ||
+            state === 'completed' ||
+            state === 'failed'
+            ? state
+            : null,
+        );
+      })
+      .catch(() => {
+        // A read failure keeps the UI in the explicit unknown/waiting state;
+        // it must never be rendered as Memory success.
+        if (!cancelled) setOutlineMemoryOutboxState(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, tasks]);
+
   const task = tasks.find((t) => t.id === taskId);
 
   // Closing this screen means “look at it later”, not “discard the result”.
@@ -308,7 +610,25 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     );
   }
 
-  const { inputTokens, totalTokens } = summarizePipelineTokens(task.stageResults);
+  const isUnifiedTask = isUnifiedOutlinePipelineTask(task);
+  const unifiedProfile = readOutlineExecutionProfile(task);
+  const unifiedTrace = isUnifiedTask
+    ? parseOutlineKernelTrace(task.pipelineContextJson)
+    : null;
+  const unifiedStageItems = isUnifiedTask
+    ? buildUnifiedOutlineStageItems(task, {
+        memoryOutboxState: outlineMemoryOutboxState,
+      })
+    : [];
+  const observedLlm = unifiedTrace?.observability?.llm;
+  const tokenSummary = summarizePipelineTokens(task.stageResults);
+  const inputTokens = observedLlm?.inputTokens ?? tokenSummary.inputTokens;
+  const totalTokens = observedLlm
+    ? observedLlm.inputTokens + observedLlm.outputTokens
+    : tokenSummary.totalTokens;
+  const unifiedCallSummary = observedLlm
+    ? `逻辑 ${observedLlm.logicalStageCallCount} · Formatter ${observedLlm.formatterCallCount} · 物理 ${observedLlm.physicalRequestCount} · Fallback ${observedLlm.protocolFallbackCount} · Retry 0`
+    : null;
   const skippedCount = task.stageResults.filter((stage) => stage.status === 'skipped').length;
   const failedAuditCount = task.stageResults.filter(
     (stage) =>
@@ -339,11 +659,11 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const RUNNING_STAGE_LABEL: Record<string, string> = {
     idle: '准备中',
     queued: '排队中',
-    drafting: '初稿生成',
-    reviewing: '审阅/评估',
-    factChecking: '事实核查',
-    briefing: 'Brief 编译',
-    proofing: '终审',
+    drafting: isUnifiedTask ? '生成' : '初稿生成',
+    reviewing: isUnifiedTask ? '检查/修订' : '审阅/评估',
+    factChecking: isUnifiedTask ? '检查' : '事实核查',
+    briefing: isUnifiedTask ? '修订' : 'Brief 编译',
+    proofing: isUnifiedTask ? '校验' : '终审',
   };
   const statusSummary =
     task.status === 'completed'
@@ -506,8 +826,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       .join('、');
     const proceedCopy =
       succeededStages.length > 0
-        ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查/Brief）将直接复用，不会重复计费。确定继续？`
-        : `从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？`;
+        ? isUnifiedTask
+          ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的生成/检查/修订/校验阶段将直接复用，不会重复计费。确定继续？`
+          : `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查/Brief）将直接复用，不会重复计费。确定继续？`
+        : isUnifiedTask
+          ? '从共享 Freeze 后的生成阶段重新运行，不会重复计费已完成的请求。确定继续？'
+          : '从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？';
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
         succeededStages.length > 0 ? '从失败节点重试' : '重新尝试',
@@ -716,12 +1040,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
         </Text>
-        {!isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
+        {!isUnifiedTask && !isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             审核未通过，未执行终审，已保留初稿
           </Text>
         ) : null}
-        {!isRunning && proofStage?.status === 'failed' ? (
+        {!isUnifiedTask && !isRunning && proofStage?.status === 'failed' ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             {proofStage.error || '终稿失败，请从失败节点重试'}
           </Text>
@@ -735,49 +1059,88 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           本次输入上下文 tokens：{inputTokens.toLocaleString()}
         </Text>
-        {(() => {
-          const assessment = parseOutlineAssessmentFromReview(task.stageResults);
-          if (!assessment) return null;
-          const list = (title: string, items: string[]) =>
-            items.length > 0 ? (
-              <View key={title} style={{ marginTop: spacing.sm }}>
-                <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
-                  {title}
-                </Text>
-                {items.map((item, idx) => (
-                  <Text
-                    key={`${title}-${idx}`}
-                    style={[styles.stageText, { color: theme.colors.textPrimary }]}
-                  >
-                    · {item}
+        {!isUnifiedTask
+          ? (() => {
+              const assessment = parseOutlineAssessmentFromReview(task.stageResults);
+              if (!assessment) return null;
+              const list = (title: string, items: string[]) =>
+                items.length > 0 ? (
+                  <View key={title} style={{ marginTop: spacing.sm }}>
+                    <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                      {title}
+                    </Text>
+                    {items.map((item, idx) => (
+                      <Text
+                        key={`${title}-${idx}`}
+                        style={[styles.stageText, { color: theme.colors.textPrimary }]}
+                      >
+                        · {item}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null;
+              return (
+                <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+                  <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
+                    大纲执行报告 ·{' '}
+                    {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
                   </Text>
-                ))}
-              </View>
-            ) : null;
-          return (
-            <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-              <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
-                大纲执行报告 ·{' '}
-                {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
-              </Text>
-              {list('已完成节点', assessment.fulfilledBeats)}
-              {list('遗漏节点', assessment.missingBeats)}
-              {list('主线偏离', assessment.deviations)}
-              {list('提前发生节点', assessment.prematureBeats)}
-              {list('历史回滚风险', assessment.factRollbackRisks)}
-              {!assessment.fulfilledBeats.length &&
-              !assessment.missingBeats.length &&
-              !assessment.deviations.length &&
-              !assessment.prematureBeats.length &&
-              !assessment.factRollbackRisks.length ? (
-                <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
-                  未发现额外的大纲节点问题。
-                </Text>
-              ) : null}
-            </View>
-          );
-        })()}
-        {uniqueStageResults(task.stageResults).map(renderStageCard)}
+                  {list('已完成节点', assessment.fulfilledBeats)}
+                  {list('遗漏节点', assessment.missingBeats)}
+                  {list('主线偏离', assessment.deviations)}
+                  {list('提前发生节点', assessment.prematureBeats)}
+                  {list('历史回滚风险', assessment.factRollbackRisks)}
+                  {!assessment.fulfilledBeats.length &&
+                  !assessment.missingBeats.length &&
+                  !assessment.deviations.length &&
+                  !assessment.prematureBeats.length &&
+                  !assessment.factRollbackRisks.length ? (
+                    <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
+                      未发现额外的大纲节点问题。
+                    </Text>
+                  ) : null}
+                </View>
+              );
+            })()
+          : null}
+        {(task.finalText && !isRunning) || canResumeFailed || legacyIncomplete ? (
+          <View testID="pipeline-result-actions" style={[styles.actions, styles.topActions]}>
+            {legacyIncomplete ? (
+              <Button
+                label="按新版重新生成"
+                variant="ghost"
+                compact
+                onPress={handleRestartLegacy}
+                disabled={adopting}
+              />
+            ) : null}
+            {canResumeFailed ? (
+              <Button
+                label={resumeLabel}
+                variant="ghost"
+                compact
+                onPress={handleResumeFailed}
+                disabled={adopting}
+              />
+            ) : null}
+            {task.finalText && !isRunning ? (
+              <>
+                <Button label="放弃" variant="ghost" compact onPress={handleReject} disabled={adopting} />
+                <Button label={adopting ? '采纳中…' : '采纳'} compact onPress={handleAccept} disabled={adopting} />
+              </>
+            ) : null}
+          </View>
+        ) : null}
+        {isUnifiedTask ? (
+          <UnifiedPipelineStageView
+            profile={unifiedProfile}
+            compact
+            items={unifiedStageItems}
+            summary={`${statusSummary} · ${unifiedCallSummary || `${totalTokens.toLocaleString()} tokens`} · 正式跳过 ${skippedCount} 阶段`}
+          />
+        ) : (
+          uniqueStageResults(task.stageResults).map(renderStageCard)
+        )}
         {canRewriteFinal ? (
           <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
@@ -821,44 +1184,19 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             )}
           </View>
         ) : null}
-        {(task.finalText && !isRunning) || canResumeFailed || legacyIncomplete ? (
-          <View style={styles.actions}>
-            {legacyIncomplete ? (
-              <Button
-                label="按新版重新生成"
-                variant="ghost"
-                onPress={handleRestartLegacy}
-                disabled={adopting}
-              />
-            ) : null}
-            {canResumeFailed ? (
-              <Button
-                label={resumeLabel}
-                variant="ghost"
-                onPress={handleResumeFailed}
-                disabled={adopting}
-              />
-            ) : null}
-            {task.finalText && !isRunning ? (
-              <>
-                <Button label="放弃" variant="ghost" onPress={handleReject} disabled={adopting} />
-                <Button label={adopting ? '采纳中…' : '采纳'} onPress={handleAccept} disabled={adopting} />
-              </>
-            ) : null}
-          </View>
-        ) : null}
       </ScrollView>
     </Screen>
   );
 };
 
 const styles = StyleSheet.create({
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: 120 },
+  content: { padding: spacing.md, gap: spacing.sm, paddingBottom: 72 },
   summary: { fontSize: 13, fontWeight: '700' },
   card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md, marginTop: spacing.lg },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.sm },
+  topActions: { justifyContent: 'flex-start', marginTop: 0, marginBottom: spacing.xs, flexWrap: 'wrap' },
   rewriteInput: { minHeight: 96, textAlignVertical: 'top' },
   rewriteActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
 });

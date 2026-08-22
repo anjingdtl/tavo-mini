@@ -153,8 +153,8 @@ describe('ContinuationPipelineTaskScreen', () => {
     );
 
     expect((await findAllByText('第二十一章')).length).toBe(2);
-    expect(getByText('生成中 · 当前阶段：正文生成')).toBeTruthy();
-    expect(getByText('等待确认/采纳 · 当前阶段：正文生成')).toBeTruthy();
+    expect(getByText('生成中 · 当前阶段：生成')).toBeTruthy();
+    expect(getByText('等待确认/采纳 · 当前阶段：生成')).toBeTruthy();
     expect(queryByText('已完成')).toBeNull();
     expect(queryByText('已取消')).toBeNull();
 

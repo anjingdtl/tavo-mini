@@ -47,6 +47,30 @@ function formatUpdatedAt(value: string): string {
   })}`;
 }
 
+function currentStageLabel(run: ContinuationGenerationRun): string {
+  if (run.workflowVersion !== 5) {
+    return CONTINUATION_STAGE_LABEL[run.stage];
+  }
+  switch (run.stage) {
+    case 'round1':
+    case 'writer':
+    case 'draft_writer':
+      return '生成';
+    case 'round2':
+      return '检查';
+    case 'revision_writer':
+    case 'round3':
+    case 'round4':
+      return '修订';
+    case 'final_validate':
+      return '校验';
+    case 'awaiting_user':
+      return '保存 / 等待采纳';
+    default:
+      return '共享 Writing Kernel';
+  }
+}
+
 /** Continuation counterpart of the outline-mode PipelineTaskScreen. */
 export const ContinuationPipelineTaskScreen: React.FC = () => {
   const { theme } = useThemeStore();
@@ -140,7 +164,7 @@ export const ContinuationPipelineTaskScreen: React.FC = () => {
   if (!currentProject || currentProject.mode !== 'continuation') {
     return (
       <Screen>
-        <Header testID="continuation-pipeline-tasks" title="续写流水线执行情况" />
+        <Header testID="continuation-pipeline-tasks" title="流水线执行情况" />
         <EmptyState
           title="请先选择原著续写项目"
           description="切换到原著续写项目后，这里会显示该项目未完成的续写流水线。"
@@ -155,7 +179,7 @@ export const ContinuationPipelineTaskScreen: React.FC = () => {
     <Screen>
       <Header
         testID="continuation-pipeline-tasks"
-        title="续写流水线执行情况"
+        title="流水线执行情况"
         subtitle={
           liveCount > 0
             ? `运行中 ${liveCount} 项 · 未完成 ${runs.length} 项`
@@ -192,7 +216,7 @@ export const ContinuationPipelineTaskScreen: React.FC = () => {
             const title =
               chapterTitles[item.chapterId] || `续写章节 #${item.chapterId}`;
             const stateLabel = CONTINUATION_RUN_STATE_LABEL[item.state];
-            const stageLabel = CONTINUATION_STAGE_LABEL[item.stage];
+            const stageLabel = currentStageLabel(item);
             return (
               <Card>
                 <View style={styles.row}>

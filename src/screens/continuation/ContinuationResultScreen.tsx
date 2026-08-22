@@ -10,7 +10,7 @@
  *  - outdated (Source/Canon changed) → adoption blocked, re-launch against latest
  *  - awaiting_user with an artifact → adopt as draft / abandon (original path)
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,6 +21,11 @@ import {
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Header, Screen, spacing } from '../../components/ui';
+import {
+  UnifiedPipelineStageView,
+  type UnifiedPipelineStageItem,
+  type UnifiedPipelineStageStatus,
+} from '../../components/UnifiedPipelineStageView';
 import { useThemeStore } from '../../store/themeStore';
 import {
   abandonRun,
@@ -35,6 +40,7 @@ import {
   getLatestEligibleArtifact,
   getPlan,
   getRunById,
+  getRunContextSnapshotJson,
   listStageResults,
   listChecksForArtifact,
   type ContinuationArtifact,
@@ -49,7 +55,11 @@ import {
   ContinuationConflictError,
   ContinuationOutdatedError,
 } from '../../services/continuation/generation/types';
-import { countHanCharacters } from '../../services/continuation/generation/continuationLengthContract';
+import type {
+  WritingKernelStage,
+  WritingKernelStageEvent,
+  WritingKernelTrace,
+} from '../../services/writing/contracts/frozenWritingContext';
 
 interface Props {
   runId: string;
@@ -75,55 +85,221 @@ function parseStageJson(value: string | null | undefined): any | null {
 }
 
 /**
- * Han-character-level change ratio between V2 and V3, via longest common
- * subsequence. Returns a fraction in [0, 1] where 0 = identical and 1 = no
- * shared Han characters. A small per-segment rewrite still produces a low
- * ratio because most of the chapter is preserved verbatim by V3; this is the
- * intended V5 behavior (定点润色, not full rewrite).
+ * The persisted workflowVersion is a continuation contract version, not the
+ * active execution profile.  The old result page used workflowVersion=5 as a
+ * proxy for the V1/V2/V3 three-draft UI, which made a unified One-Shot run
+ * look like the retired V5 route.  Read the frozen profile instead.
  */
-function computeV3ChangeRatio(v2Content: string, v3Content: string): number {
-  const v2 = countHanCharacters(v2Content);
-  const v3 = countHanCharacters(v3Content);
-  if (v2 === 0 && v3 === 0) return 0;
-  // Extract Han-character sequences once for both sides.
-  const left = hanSequence(v2Content);
-  const right = hanSequence(v3Content);
-  const common = lcsLength(left, right);
-  return 1 - common / Math.max(left.length, right.length);
+export function readContinuationExecutionProfile(
+  contextSnapshotJson: string | null | undefined,
+): 'standard' | 'one_shot' {
+  if (!contextSnapshotJson) return 'standard';
+  try {
+    const snapshot = JSON.parse(contextSnapshotJson);
+    return snapshot?.frozenWritingContext?.stagePolicy?.values
+      ?.executionProfile === 'one_shot'
+      ? 'one_shot'
+      : 'standard';
+  } catch {
+    return 'standard';
+  }
 }
 
-function hanSequence(text: string): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < text.length; ) {
-    const code = text.codePointAt(i) ?? 0;
-    if (
-      (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0x3400 && code <= 0x4dbf) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0x20000 && code <= 0x2fa1f) ||
-      code === 0x3007
-    ) {
-      out.push(code);
-    }
-    i += code > 0xffff ? 2 : 1;
+function latestKernelEvent(
+  trace: WritingKernelTrace | null,
+  stage: WritingKernelStage,
+): WritingKernelStageEvent | null {
+  if (!trace) return null;
+  for (let index = trace.events.length - 1; index >= 0; index -= 1) {
+    const event = trace.events[index];
+    if (event.stage === stage) return event;
   }
-  return out;
+  return null;
 }
 
-function lcsLength(left: number[], right: number[]): number {
-  if (left.length === 0 || right.length === 0) return 0;
-  let previous = new Array<number>(right.length + 1).fill(0);
-  for (let i = 1; i <= left.length; i += 1) {
-    const current = new Array<number>(right.length + 1).fill(0);
-    for (let j = 1; j <= right.length; j += 1) {
-      current[j] =
-        left[i - 1] === right[j - 1]
-          ? previous[j - 1] + 1
-          : Math.max(previous[j], current[j - 1]);
-    }
-    previous = current;
+function mapKernelStatus(
+  event: WritingKernelStageEvent | null,
+): UnifiedPipelineStageStatus {
+  if (!event) return 'pending';
+  if (event.status === 'completed') return 'success';
+  if (event.status === 'skipped') return 'skipped';
+  if (event.status === 'blocked') return 'failed';
+  return 'running';
+}
+
+function mapContinuationStageStatus(
+  result: ContinuationGenerationStageResult | null,
+): UnifiedPipelineStageStatus {
+  if (!result) return 'pending';
+  if (result.status === 'success') return 'success';
+  if (result.status === 'skipped') return 'skipped';
+  if (result.status === 'running' || result.status === 'queued') {
+    return 'running';
   }
-  return previous[right.length];
+  return 'failed';
+}
+
+function chooseContinuationStageResult(
+  rows: ContinuationGenerationStageResult[],
+  stage: ContinuationGenerationStageResult['stage'],
+): ContinuationGenerationStageResult | null {
+  const priority: Record<string, number> = {
+    success: 50,
+    skipped: 40,
+    running: 30,
+    queued: 20,
+    failed: 10,
+    interrupted: 10,
+  };
+  return rows
+    .filter(row => row.stage === stage)
+    .sort(
+      (left, right) =>
+        (priority[right.status] ?? 0) - (priority[left.status] ?? 0) ||
+        String(right.updatedAt).localeCompare(String(left.updatedAt)),
+    )[0] ?? null;
+}
+
+function continuationStageDetail(
+  result: ContinuationGenerationStageResult | null,
+  event: WritingKernelStageEvent | null,
+): string | undefined {
+  const parsed = parseStageJson(result?.outputJson);
+  return (
+    result?.errorMessage ||
+    result?.errorCode ||
+    event?.skipReason ||
+    parsed?.envelope?.skipReason ||
+    event?.detail ||
+    (result?.status === 'skipped' ? '正式跳过' : undefined)
+  );
+}
+
+function continuationStageMeta(
+  result: ContinuationGenerationStageResult | null,
+  trace: WritingKernelTrace | null,
+  stage: UnifiedPipelineStageItem['id'],
+): string | undefined {
+  const kernelStage =
+    stage === 'draft'
+      ? 'draft'
+      : stage === 'qa'
+        ? 'qa'
+        : stage === 'revision'
+          ? 'revision'
+          : stage === 'finalValidate'
+            ? 'finalValidate'
+            : null;
+  const observed = kernelStage
+    ? trace?.observability?.stages.find(row => row.stage === kernelStage)
+    : null;
+  if (observed) {
+    const tokens = observed.inputTokens + observed.outputTokens;
+    return `逻辑 ${observed.logicalStageCallCount} · Formatter ${observed.formatterCallCount} · 物理 ${observed.physicalRequestCount} · Fallback ${observed.protocolFallbackCount} · ${tokens} tokens`;
+  }
+  if (!result) return undefined;
+  const tokens =
+    result.inputTokens != null || result.outputTokens != null
+      ? ` · ${(result.inputTokens ?? 0) + (result.outputTokens ?? 0)} tokens`
+      : '';
+  return `${result.requestCount} 次物理请求${tokens}`;
+}
+
+function continuationStageBody(
+  result: ContinuationGenerationStageResult | null,
+  artifact?: ContinuationArtifact | null,
+): string | undefined {
+  if (artifact?.content) return artifact.content;
+  const parsed = parseStageJson(result?.outputJson);
+  if (!parsed) return undefined;
+  return JSON.stringify(parsed, null, 2);
+}
+
+export function buildUnifiedContinuationStageItems(input: {
+  run: Pick<
+    ContinuationGenerationRun,
+    'state' | 'completionReason' | 'finalizedRevisionHash'
+  >;
+  stageResults: ContinuationGenerationStageResult[];
+  kernelTrace: WritingKernelTrace | null;
+  draftArtifact?: ContinuationArtifact | null;
+  revisionArtifact?: ContinuationArtifact | null;
+  finalArtifact?: ContinuationArtifact | null;
+}): UnifiedPipelineStageItem[] {
+  const { run, stageResults, kernelTrace } = input;
+  const resultFor = (stage: ContinuationGenerationStageResult['stage']) =>
+    chooseContinuationStageResult(stageResults, stage);
+  const eventFor = (stage: WritingKernelStage) =>
+    latestKernelEvent(kernelTrace, stage);
+  const resultItem = (
+    id: UnifiedPipelineStageItem['id'],
+    result: ContinuationGenerationStageResult | null,
+    eventStage: WritingKernelStage,
+    artifact?: ContinuationArtifact | null,
+  ): UnifiedPipelineStageItem => {
+    const event = eventFor(eventStage);
+    const status = result
+      ? mapContinuationStageStatus(result)
+      : mapKernelStatus(event);
+    return {
+      id,
+      status,
+      detail: continuationStageDetail(result, event),
+      meta: continuationStageMeta(result, kernelTrace, id),
+      body: continuationStageBody(result, artifact),
+    };
+  };
+
+  const adopted =
+    run.state === 'completed' &&
+    (run.completionReason === 'adopted' || Boolean(run.finalizedRevisionHash));
+  const postWriting = eventFor('postWritingUpdate');
+  return [
+    {
+      id: 'freeze',
+      status: mapKernelStatus(eventFor('freeze')),
+      detail: eventFor('freeze')?.detail || 'Frozen Context 已绑定。',
+      meta: eventFor('freeze')?.status === 'completed' ? 'Context immutable' : undefined,
+    },
+    resultItem('draft', resultFor('draft_writer'), 'draft', input.draftArtifact),
+    resultItem('qa', resultFor('unified_qa'), 'qa'),
+    resultItem(
+      'revision',
+      resultFor('revision_writer'),
+      'revision',
+      input.revisionArtifact,
+    ),
+    resultItem('finalValidate', resultFor('final_validate'), 'finalValidate'),
+    {
+      id: 'persist',
+      status: mapKernelStatus(eventFor('persist')),
+      detail: eventFor('persist')?.detail || '统一 Persist 只保存 Final Candidate。',
+      meta: eventFor('persist')?.status === 'completed' ? '已写入生成账本' : undefined,
+      body: continuationStageBody(resultFor('final_validate'), input.finalArtifact),
+    },
+    {
+      id: 'postWriting',
+      status: postWriting
+        ? mapKernelStatus(postWriting)
+        : adopted
+          ? 'running'
+          : 'pending',
+      detail:
+        postWriting?.detail ||
+        (adopted
+          ? '采纳后由唯一 PostWriting 闭环接续。'
+          : '采纳后才启用 PostWriting。'),
+      meta: postWriting?.status === 'completed' ? '已完成' : undefined,
+    },
+    {
+      id: 'memory',
+      status: adopted ? 'running' : 'pending',
+      detail: adopted
+        ? '由唯一 ONE Memory outbox 接续；最终状态以账本与 outbox 为准。'
+        : '采纳后由唯一 ONE Memory outbox 接续。',
+      meta: adopted ? '等待 Memory 结算' : undefined,
+    },
+  ];
 }
 
 export const ContinuationResultScreen: React.FC<Props> = ({
@@ -140,6 +316,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
   const [stageTelemetry, setStageTelemetry] = useState<Record<string, any>>({});
+  const [executionProfile, setExecutionProfile] = useState<
+    'standard' | 'one_shot'
+  >('standard');
+  const [kernelTrace, setKernelTrace] = useState<WritingKernelTrace | null>(
+    null,
+  );
   const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
   const [v5DraftArtifact, setV5DraftArtifact] =
     useState<ContinuationArtifact | null>(null);
@@ -158,6 +340,21 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       const r = await getRunById(runId);
       setRun(r);
       if (!r) return;
+      let frozenSnapshot: string | null = null;
+      try {
+        frozenSnapshot = await getRunContextSnapshotJson(r.id);
+      } catch {
+        // Historical rows may not have a readable snapshot; keep the safe
+        // Standard display rather than making the result screen fail closed.
+      }
+      setExecutionProfile(readContinuationExecutionProfile(frozenSnapshot));
+      const parsedSnapshot = parseStageJson(frozenSnapshot);
+      setKernelTrace(
+        parsedSnapshot?.writingKernelTrace &&
+          Array.isArray(parsedSnapshot.writingKernelTrace.events)
+          ? (parsedSnapshot.writingKernelTrace as WritingKernelTrace)
+          : null,
+      );
       try {
         const usage = JSON.parse(r.tokenUsageJson || '{}');
         setStageTelemetry(usage.stages ?? {});
@@ -237,26 +434,6 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   useEffect(() => {
     reload().catch(() => setLoading(false));
   }, [reload]);
-
-  // Memoized V3-vs-V2 change ratio. The underlying computeV3ChangeRatio runs a
-  // full Han-character LCS (O(N×M) dynamic programming) over both chapter
-  // bodies, which is far too expensive to recompute on every re-render (e.g.
-  // toggling expand/collapse or busy state). Lock the dependencies to the two
-  // bodies and their hashes so the LCS only re-runs when the content actually
-  // changes.
-  const v3ChangeRatio = useMemo<{ ratio: number; sameHash: boolean } | null>(() => {
-    const v2Content = v5RevisionArtifact?.content ?? '';
-    const v3Content = v5FinalArtifact?.content ?? '';
-    if (!v2Content || !v3Content) return null;
-    const sameHash =
-      v5RevisionArtifact?.contentHash === v5FinalArtifact?.contentHash;
-    return { ratio: sameHash ? 0 : computeV3ChangeRatio(v2Content, v3Content), sameHash };
-  }, [
-    v5RevisionArtifact?.content,
-    v5FinalArtifact?.content,
-    v5RevisionArtifact?.contentHash,
-    v5FinalArtifact?.contentHash,
-  ]);
 
   const doAdopt = async (
     options: { forceOverwrite?: boolean; allowOpenChecks?: boolean } = {},
@@ -981,9 +1158,23 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           </Text>
           <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
             原著源或 Canon 快照已更新，本次生成的上下文不再有效，无法采纳。
-            请按最新的原著与 Canon 重新发起续写。
+            请按最新的原著与 Canon 重新发起续写；旧执行不会被恢复或重复计费。
           </Text>
-          <Button label="返回" variant="secondary" onPress={onClose} disabled={busy} />
+          <View style={styles.decisionActions}>
+            <Button
+              label={busy ? '处理中…' : '按最新资料重试'}
+              compact
+              onPress={doResume}
+              disabled={busy}
+            />
+            <Button
+              label="返回"
+              variant="secondary"
+              compact
+              onPress={onClose}
+              disabled={busy}
+            />
+          </View>
         </Card>
       );
     }
@@ -1130,14 +1321,16 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       }
       return (
         <View style={styles.decisionActions}>
-          <Button
+        <Button
             label="放弃"
             variant="ghost"
+            compact
             onPress={doAbandon}
             disabled={busy}
           />
           <Button
             label={busy ? '采纳中…' : '采纳'}
+            compact
             onPress={() => doAdopt()}
             disabled={busy || !body}
           />
@@ -1149,6 +1342,47 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   };
 
   const renderV5StageCards = () => {
+    const observed = kernelTrace?.observability?.llm;
+    const physical = observed?.physicalRequestCount ?? stageResults.reduce(
+      (sum, item) => sum + item.requestCount,
+      0,
+    );
+    const logical = observed?.logicalStageCallCount ?? physical;
+    const formatter = observed?.formatterCallCount ?? 0;
+    const fallback = observed?.protocolFallbackCount ?? 0;
+    const retry = Number(stageTelemetry.primaryRetryCount ?? 0);
+    const totalTokens = observed
+      ? observed.inputTokens + observed.outputTokens
+      : stageResults.reduce(
+          (sum, item) => sum + (item.inputTokens ?? 0) + (item.outputTokens ?? 0),
+          0,
+        );
+    const targetHan = (() => {
+      try {
+        return JSON.parse(run.settingsSnapshotJson || '{}')?.values
+          ?.targetChapterChars;
+      } catch {
+        return null;
+      }
+    })();
+    return (
+      <UnifiedPipelineStageView
+        profile={executionProfile}
+        compact
+        items={buildUnifiedContinuationStageItems({
+          run,
+          stageResults,
+          kernelTrace,
+          draftArtifact: v5DraftArtifact,
+          revisionArtifact: v5RevisionArtifact,
+          finalArtifact: v5FinalArtifact,
+        })}
+        summary={`阶段视图统一；逻辑 ${logical} · Formatter ${formatter} · 物理 ${physical} · Fallback ${fallback} · Retry ${retry} · ${totalTokens} tokens${
+          targetHan != null ? ` · 目标 ${targetHan} 字` : ''
+        }`}
+      />
+    );
+    /*
     const usage = (() => {
       try {
         return JSON.parse(run.tokenUsageJson || '{}');
@@ -1172,6 +1406,86 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
     const v5Stage = (id: ContinuationGenerationStageResult['stage']) =>
       stageResults.find(item => item.stage === id) ?? null;
+
+    if (executionProfile === 'one_shot') {
+      const draftResult = v5Stage('draft_writer');
+      const qaResult = v5Stage('unified_qa');
+      const revisionResult = v5Stage('revision_writer');
+      const finalValidateResult = v5Stage('final_validate');
+      const draftContent = v5DraftArtifact?.content ?? '';
+      const draftTokens =
+        draftResult?.outputTokens ??
+        parseStageJson(draftResult?.outputJson)?.length?.completionTokens ??
+        null;
+      const draftHan =
+        draftContent.length > 0
+          ? countHanCharacters(draftContent)
+          : parseStageJson(draftResult?.outputJson)?.length?.actualHan ?? null;
+      const skipReason = (result: ContinuationGenerationStageResult | null) =>
+        parseStageJson(result?.outputJson)?.envelope?.skipReason || '正式跳过';
+      const oneShotRows = [
+        {
+          key: 'draft',
+          label: `Draft · 生成 Tokens ${draftTokens ?? '—'} · 汉字 ${
+            draftHan ?? '—'
+          }`,
+          detail: draftResult?.status === 'success' ? '逻辑调用 1 次' : '未完成',
+        },
+        {
+          key: 'qa',
+          label: 'QA · 0 次付费调用',
+          detail: `${qaResult?.status === 'skipped' ? skipReason(qaResult) : '正式状态缺失'}`,
+        },
+        {
+          key: 'revision',
+          label: 'Revision · 0 次付费调用',
+          detail: `${
+            revisionResult?.status === 'skipped'
+              ? skipReason(revisionResult)
+              : '正式状态缺失'
+          }`,
+        },
+        {
+          key: 'final-validate',
+          label: `FinalValidate · ${
+            finalValidateResult?.status === 'success' ? '已完成' : '未完成'
+          }`,
+          detail: 'Local Gate',
+        },
+        {
+          key: 'persist',
+          label: `Persist · ${run.state === 'completed' ? '已完成' : '等待采纳'}`,
+          detail: '统一 Kernel',
+        },
+      ];
+      return (
+        <>
+          <Text style={[styles.summary, { color: colors.textSecondary }]}>
+            One-Shot · 单稿
+            {physical > 0 ? ` · 请求 ${physical}/1` : ''}
+            {targetHan != null ? ` · 目标 ${targetHan} 字` : ''}
+          </Text>
+          {oneShotRows.map(row => (
+            <View
+              key={row.key}
+              style={[styles.resultCard, { backgroundColor: colors.card }]}
+            >
+              <Text style={[styles.stageMeta, { color: colors.textPrimary }]}>
+                {row.label}
+              </Text>
+              <Text
+                style={[
+                  styles.stageMeta,
+                  { color: colors.textMuted, marginTop: spacing.xs },
+                ]}
+              >
+                {row.detail}
+              </Text>
+            </View>
+          ))}
+        </>
+      );
+    }
 
     const rows: Array<{
       key: 'v1' | 'v2' | 'v3';
@@ -1284,6 +1598,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         })}
       </>
     );
+    */
   };
 
   const renderV5StateBranch = () => {
@@ -1294,8 +1609,39 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             生成进行中
           </Text>
           <Text style={{ color: colors.textSecondary }}>
-            当前：{stageLabel(run.stage)}。完成后将展示 V1 / V2 / V3 三稿。
+            当前：{continuationRunStageLabel(run)}。
+            {executionProfile === 'one_shot'
+              ? '完成后将在同一阶段视图中标记 QA/Revision 的正式跳过。'
+              : '完成后将在同一阶段视图中展示生成、检查、修订与校验结果。'}
           </Text>
+        </Card>
+      );
+    }
+    if (run.state === 'outdated') {
+      return (
+        <Card>
+          <Text style={[styles.h, { color: colors.danger }]}>续写已过期</Text>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            原著源或 Canon 快照已更新，本次生成的上下文不再有效，无法采纳。
+            请按最新的原著与 Canon 重新发起续写；旧执行不会被恢复或重复计费。
+          </Text>
+          <View style={styles.decisionActions}>
+            <Button
+              label={busy ? '处理中…' : '按最新资料重试'}
+              compact
+              onPress={doResume}
+              disabled={busy}
+            />
+            <Button
+              label="返回"
+              variant="secondary"
+              compact
+              onPress={onClose}
+              disabled={busy}
+            />
+          </View>
         </Card>
       );
     }
@@ -1317,7 +1663,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             style={{ color: colors.textSecondary, marginBottom: spacing.md }}
           >
             {run.errorMessage ||
-              `当前阶段：${stageLabel(run.stage)}。可从已保存进度继续，或放弃。`}
+              `当前阶段：${continuationRunStageLabel(run)}。可从已保存进度继续，或放弃。`}
           </Text>
           <View style={styles.actions}>
             <Button
@@ -1389,13 +1735,13 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       <ScrollView contentContainerStyle={styles.pad}>
         {run.workflowVersion === 5 ? (
           <>
-            {renderV5StageCards()}
             {renderV5StateBranch()}
+            {renderV5StageCards()}
           </>
         ) : run.workflowVersion === 4 ? (
           <>
-            {renderV4StageCards()}
             {renderV4StateBranch()}
+            {renderV4StageCards()}
           </>
         ) : (
           <>
@@ -1428,6 +1774,30 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     </Screen>
   );
 };
+
+function continuationRunStageLabel(run: Pick<ContinuationGenerationRun, 'workflowVersion' | 'stage'>): string {
+  if (run.workflowVersion === 5) {
+    switch (run.stage) {
+      case 'round1':
+      case 'writer':
+      case 'draft_writer':
+        return '生成';
+      case 'round2':
+        return '检查';
+      case 'revision_writer':
+      case 'round3':
+      case 'round4':
+        return '修订';
+      case 'final_validate':
+        return '校验';
+      case 'awaiting_user':
+        return '保存 / 等待采纳';
+      default:
+        return '共享 Writing Kernel';
+    }
+  }
+  return stageLabel(run.stage);
+}
 
 function stageLabel(stage: string): string {
   switch (stage) {
@@ -1500,6 +1870,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: spacing.md,
-    marginTop: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
   },
 });

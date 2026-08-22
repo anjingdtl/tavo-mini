@@ -8,6 +8,7 @@ import type {
 } from './writingSource';
 import type { WritingRequirements } from './writingRequirement';
 import type { WritingStagePolicy } from './writingPolicy';
+import type { WritingPersistedEvent } from '../flow/writingPersistedEvent';
 
 export interface WritingMaterialCandidate {
   source: WritingSource;
@@ -136,6 +137,8 @@ export interface WritingKernelTrace {
   unexpectedLiveReadCount: number;
   fatalCount: number;
   falseAppliedRequirementCount: number;
+  /** Durable Persist → PostWriting handoff for the trace's final body. */
+  writingPersistedEvent?: WritingPersistedEvent;
   /**
    * Phase 0 chapter observability. Optional so historical traces keep parsing.
    * Never participates in freezeFingerprint.

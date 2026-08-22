@@ -145,6 +145,19 @@ export async function prepareContinuationRun(
       values: {
         workflowVersion: 5,
         targetPosition: snapshot.targetPosition,
+        // The continuation context allocator already froze a per-stage
+        // output ceiling. Keep that ceiling on the ONE Writing Kernel policy
+        // so the shared Writer cannot accidentally fall back to the provider
+        // model's much larger account ceiling (for example 200k tokens).
+        sharedStageMaxOutputTokens: {
+          draft: snapshot.stageBudgets.draft_writer.maximumOutputTokens,
+          qa: snapshot.stageBudgets.unified_qa.maximumOutputTokens,
+          review: snapshot.stageBudgets.adversarial_auditor.maximumOutputTokens,
+          audit: snapshot.stageBudgets.adversarial_auditor.maximumOutputTokens,
+          factCheck: snapshot.stageBudgets.adversarial_auditor.maximumOutputTokens,
+          revision: snapshot.stageBudgets.revision_writer.maximumOutputTokens,
+          proof: snapshot.stageBudgets.final_reviser.maximumOutputTokens,
+        },
         // Phase 4R: the production Continuation path is frozen onto the SAME
         // compact Standard topology as new Outline tasks (single upstream
         // freeze source). Without this, `finalCandidateModeForPolicy` folds

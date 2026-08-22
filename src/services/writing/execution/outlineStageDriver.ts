@@ -74,8 +74,10 @@ import type {
 } from '../contracts/frozenWritingContext';
 import type {
   WritingStageDriver,
+  WritingStageNotification,
   WritingStepOutcome,
 } from '../contracts/writingStage';
+import type { SharedWritingStageResult } from '../contracts/writingStage';
 
 /** Same iteration bound as the legacy loop. */
 const MAX_STEPS = 32;
@@ -94,8 +96,33 @@ const ACTION_STAGES: Partial<Record<PipelineAction['type'], WritingKernelStage[]
   run_proof: ['proof'],
   finalize_from_draft: ['finalValidate', 'persist'],
   finalize_from_proof: ['finalValidate', 'persist'],
-  complete: ['postWritingUpdate'],
+  // Outline PostWriting starts at the persisted chapter-finalize boundary
+  // (adoption/editor finalization), not when the draft task merely reaches
+  // completed. The durable closure appends this stage later.
+  complete: [],
 };
+
+function isOneShotFrozenContext(
+  frozenContext: FrozenWritingContext | null | undefined,
+): boolean {
+  return frozenContext?.stagePolicy?.values?.executionProfile === 'one_shot';
+}
+
+function notificationStagesForAction(
+  action: PipelineAction,
+  frozenContext: FrozenWritingContext | null | undefined,
+): WritingKernelStage[] {
+  if (
+    (action.type === 'finalize_from_draft' ||
+      action.type === 'finalize_from_proof') &&
+    isOneShotFrozenContext(frozenContext)
+  ) {
+    // One-Shot uses the same Kernel with formal QA / Revision skips. Do not
+    // manufacture legacy Review/Audit/FactCheck/Proof rows for a compact task.
+    return ['qa', 'revision', 'finalValidate', 'persist'];
+  }
+  return ACTION_STAGES[action.type] ?? [];
+}
 
 export interface OutlineStageDriverInput {
   taskId: string;
@@ -485,7 +512,64 @@ export async function createOutlineStageDriver(
     return { kind: 'terminal', reason: 'failed' };
   }
 
-  async function runOneAction(action: PipelineAction): Promise<WritingStepOutcome> {
+  async function buildNotifications(
+    action: PipelineAction,
+    sharedResults?: SharedWritingStageResult[],
+  ): Promise<WritingStageNotification[]> {
+    const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
+    const stages = notificationStagesForAction(
+      action,
+      authoritativeFreeze?.frozenContext,
+    );
+    const checkpointRows = await db.getStageCheckpoints(taskId);
+    return Promise.all(
+      stages.map(async (stage, index) => {
+        const shared = sharedResults?.[index];
+        if (shared?.status === 'skipped') {
+          return {
+            stage,
+            action: action.type,
+            status: 'skipped' as const,
+            detail: shared.skipReason,
+            skipReason: shared.skipReason,
+            policyRuleId: shared.policyRuleId,
+          };
+        }
+        if (shared) {
+          return {
+            stage,
+            action: action.type,
+            status: shared.status === 'failed' ? ('blocked' as const) : ('completed' as const),
+          };
+        }
+        const persistedStage = stage === 'revision' ? 'brief' : stage;
+        const row = checkpointRows.find(item => item.stage === persistedStage);
+        if (row?.status === 'skipped') {
+          return {
+            stage,
+            action: action.type,
+            status: 'skipped' as const,
+            detail: row.errorMessage || 'policy_skipped',
+            skipReason: row.errorMessage || 'policy_skipped',
+            policyRuleId: row.errorCode || undefined,
+          };
+        }
+        void task;
+        return {
+          stage,
+          action: action.type,
+          status: 'completed' as const,
+        };
+      }),
+    );
+  }
+
+  interface RunOneActionResult {
+    outcome: WritingStepOutcome;
+    notifications: WritingStageNotification[];
+  }
+
+  async function runOneAction(action: PipelineAction): Promise<RunOneActionResult> {
     const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
     if (!task) {
       throw new Error('找不到管线任务');
@@ -501,15 +585,19 @@ export async function createOutlineStageDriver(
     const isFinalize =
       action.type === 'finalize_from_draft' ||
       action.type === 'finalize_from_proof';
+    let sharedResults: SharedWritingStageResult[] | undefined;
     reconcileOptions.frozenWritingContext =
       authoritativeFreeze?.frozenContext || null;
     reconcileOptions.writingKernelTrace = authoritativeFreeze?.trace;
     if (isFinalize && authoritativeFreeze?.frozenContext) {
       const frozenContext = authoritativeFreeze.frozenContext;
-      await runWritingStages({
+      const finalizeStages = isOneShotFrozenContext(frozenContext)
+        ? (['qa', 'revision', 'finalValidate', 'persist'] as const)
+        : (['finalValidate', 'persist'] as const);
+      sharedResults = await runWritingStages({
         frozenContext,
         trace: authoritativeFreeze.trace,
-        stages: ['finalValidate', 'persist'],
+        stages: [...finalizeStages],
         persistAdapter: createOutlineDurableAdapter({ taskId, chapter }),
         abortSignal,
         semanticApply: async () => {
@@ -541,9 +629,15 @@ export async function createOutlineStageDriver(
       options: reconcileOptions,
     });
     if (action.type === 'complete') {
-      return { kind: 'terminal', reason: 'completed' };
+      return {
+        outcome: { kind: 'terminal', reason: 'completed' },
+        notifications: [],
+      };
     }
-    return { kind: 'progress', detail: action.type };
+    return {
+      outcome: { kind: 'progress', detail: action.type },
+      notifications: await buildNotifications(action, sharedResults),
+    };
   }
 
   return {
@@ -572,24 +666,21 @@ export async function createOutlineStageDriver(
         const { action, stage } = armed;
         armed = null;
         try {
-          const result = await runOneAction(action);
-          const notifications = ACTION_STAGES[action.type] ?? [];
-          pendingOutcomes = notifications.map(s => ({
+          const actionResult = await runOneAction(action);
+          pendingOutcomes = actionResult.notifications.map(notification => ({
             kind: 'stage' as const,
-            stage: s,
-            action: action.type,
-            status: 'completed' as const,
+            ...notification,
           }));
-          if (result.kind === 'terminal') {
+          if (actionResult.outcome.kind === 'terminal') {
             done = true;
-            terminal = result;
+            terminal = actionResult.outcome;
           }
           void stage;
           if (pendingOutcomes.length > 0) {
             return pendingOutcomes.shift()!;
           }
-          return result.kind === 'terminal'
-            ? result
+          return actionResult.outcome.kind === 'terminal'
+            ? actionResult.outcome
             : { kind: 'progress', detail: action.type };
         } catch (error) {
           const outcome = await handleLoopError(error);
@@ -712,7 +803,10 @@ export async function createOutlineStageDriver(
           return { kind: 'freeze', ...freeze };
         }
 
-        const notifications = ACTION_STAGES[action.type] ?? [];
+        const notifications = notificationStagesForAction(
+          action,
+          authoritativeFreeze?.frozenContext,
+        );
         if (notifications.length > 0) {
           armed = { action, stage: notifications[0] };
           return {
@@ -722,12 +816,12 @@ export async function createOutlineStageDriver(
             status: 'started',
           };
         }
-        const result = await runOneAction(action);
-        if (result.kind === 'terminal') {
+        const actionResult = await runOneAction(action);
+        if (actionResult.outcome.kind === 'terminal') {
           done = true;
-          terminal = result;
+          terminal = actionResult.outcome;
         }
-        return result;
+        return actionResult.outcome;
       } catch (error) {
         const outcome = await handleLoopError(error);
         done = true;

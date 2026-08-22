@@ -29,6 +29,7 @@ import type {
 import { runWritingKernel } from './unifiedWritingKernel';
 import type { WritingKernelTrace } from './contracts/frozenWritingContext';
 import { mergeWritingChapterObservability } from './observability/writingChapterObservability';
+import { mergeWritingTokenLedger } from './observability/writingTokenLedger';
 import { createOutlineStageDriver } from './execution/outlineStageDriver';
 import {
   createContinuationStageDriver,
@@ -276,12 +277,18 @@ export async function persistWritingKernelTraceForContinuationRun(
     );
   }
   const merged = mergePostFreezeKernelTrace(existing, completedTrace);
-  if (merged === existing) {
-    return; // nothing to append
+  const nextTokenUsageJson = merged.observability
+    ? JSON.stringify(mergeWritingTokenLedger(run.tokenUsageJson, merged.observability))
+    : run.tokenUsageJson;
+  const traceChanged = merged !== existing;
+  const tokenLedgerChanged = nextTokenUsageJson !== run.tokenUsageJson;
+  if (!traceChanged && !tokenLedgerChanged) {
+    return; // nothing to append or reconcile
   }
-  snapshot.writingKernelTrace = merged;
+  if (traceChanged) snapshot.writingKernelTrace = merged;
   const changed = await casUpdateRunState(runId, ALL_RUN_STATES, {
-    contextSnapshotJson: JSON.stringify(snapshot),
+    ...(traceChanged ? { contextSnapshotJson: JSON.stringify(snapshot) } : {}),
+    ...(tokenLedgerChanged ? { tokenUsageJson: nextTokenUsageJson } : {}),
   });
   if (!changed) {
     throw new Error(

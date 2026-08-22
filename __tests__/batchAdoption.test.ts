@@ -36,6 +36,7 @@ import {
 } from '../src/data/connection/openDatabase';
 import { execute } from '../src/data/connection/execute';
 import { openDatabase } from '../src/data/connection/openDatabase';
+import { one } from '../src/data/connection/query';
 import {
   createBatch,
   createBatchItem,
@@ -57,6 +58,9 @@ import {
 } from '../src/services/multiChapterBatch/batchAdoption';
 import { MultiChapterBatchError } from '../src/services/multiChapterBatch/errors';
 import { reconcileMultiChapterBatch } from '../src/services/multiChapterBatch/reconcileMultiChapterBatch';
+import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
+import { emptyWritingChapterObservability } from '../src/services/writing/observability/writingChapterObservability';
+import { outlineRequest } from './helpers/oneShotFixtures';
 
 let testDb: InMemorySqliteDb | null = null;
 
@@ -205,6 +209,62 @@ describe('adoptPipelineTaskResult — side effects', () => {
     expect((await getContentRevisions('chapter', chapterId)).length).toBe(
       revisionsAfterFirst,
     );
+  });
+
+  it('does not close Outline PostWriting before chapter finalization', async () => {
+    await resetDb();
+    await seedProject();
+    const chapterId = await seedChapter(1, 0, '旧正文');
+    const taskId = await seedCompletedTask(chapterId, '新正文内容');
+    const kernel = buildWritingKernelFreezeTrace({
+      request: outlineRequest({ pipelineTopologyVersion: 'compact_standard' }),
+    });
+    const trace = {
+      ...kernel.trace,
+      observability: emptyWritingChapterObservability({
+        generationTraceId: kernel.trace.generationTraceId,
+        freezeFingerprint: kernel.trace.freezeFingerprint,
+        scenario: 'outline',
+        executionProfile: 'standard',
+      }),
+    };
+    await execute(
+      await openDatabase(),
+      `UPDATE pipeline_tasks
+          SET pipeline_context_json = ?, pipeline_topology_version = 2
+        WHERE id = ?`,
+      [
+        JSON.stringify({
+          version: 4,
+          draftContext: {
+            frozenWritingContext: kernel.frozenContext,
+            writingKernelTrace: trace,
+          },
+        }),
+        taskId,
+      ],
+    );
+
+    await adoptPipelineTaskResult({
+      taskId,
+      chapterId,
+      source: 'manual',
+    });
+
+    const row = await one<{ pipeline_context_json: string }>(
+      'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
+      [taskId],
+    );
+    const persisted = JSON.parse(String(row?.pipeline_context_json || '{}'));
+    const closedTrace = persisted.draftContext.writingKernelTrace;
+    expect(
+      closedTrace.events.filter(
+        (event: { stage: string; status: string }) =>
+          event.stage === 'postWritingUpdate' && event.status === 'completed',
+      ),
+    ).toHaveLength(0);
+    expect(closedTrace.writingPersistedEvent).toBeUndefined();
+    expect((await getChapterById(chapterId))?.status).toBe('draft');
   });
 
   it('fails closed when the task is missing', async () => {

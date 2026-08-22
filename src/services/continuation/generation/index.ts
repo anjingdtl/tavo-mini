@@ -6,6 +6,7 @@ export {
   ensureGenerationSettings,
   updateGenerationSettings,
   getRunById,
+  getRunContextSnapshotJson,
   findLatestAdoptedRunForChapter,
   findLatestPendingReviewRunForChapter,
   listPendingReviewRunsForProject,

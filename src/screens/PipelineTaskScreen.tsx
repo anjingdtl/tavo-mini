@@ -21,6 +21,7 @@ import { getPipelineStageOrder } from '../utils/stages';
 import {
   CURRENT_OUTLINE_WORKFLOW_VERSION,
   CURRENT_PIPELINE_TOPOLOGY_VERSION,
+  isCompactPipelineTopology,
   isCurrentOutlinePipelineContextBudgetVersion,
   PHASE2_CONTEXT_BUDGET_VERSION,
 } from '../services/pipeline/outlineWorkflowVersion';
@@ -59,6 +60,26 @@ const STATUS_LABEL: Record<string, string> = {
   failed: '已失败',
   interrupted: '已中断（可继续）',
 };
+
+function statusLabelForTask(task: PipelineTask): string {
+  if (isCompactPipelineTopology(task.pipelineTopologyVersion)) {
+    const compact: Record<string, string> = {
+      idle: '等待中',
+      queued: '排队中',
+      drafting: '生成中',
+      reviewing: '检查/修订中',
+      factChecking: '检查中',
+      briefing: '修订中',
+      proofing: '校验中',
+      completed: '已完成',
+      cancelled: '已取消',
+      failed: '已失败',
+      interrupted: '已中断（可继续）',
+    };
+    return compact[task.status] || task.status;
+  }
+  return STATUS_LABEL[task.status] || task.status;
+}
 
 function isRecoverable(task: PipelineTask): boolean {
   if (
@@ -325,7 +346,7 @@ export const PipelineTaskScreen: React.FC = () => {
                 : '自由写作'}
             </Text>
             <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
-              {STATUS_LABEL[item.status] || item.status} · {stageCount}/
+              {statusLabelForTask(item)} · {stageCount}/
               {totalStages} 阶段 · 跳过 {skippedCount} · {durationText}
             </Text>
             {item.error ? (

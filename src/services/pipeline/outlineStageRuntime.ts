@@ -86,6 +86,7 @@ import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
   isCurrentOutlinePipelineContextBudgetVersion,
+  isCompactPipelineTopology,
   isStructuredContextBudgetVersion,
   isStructuredOutlineWorkflowVersion,
   normalizePersistedContextBudgetVersion,
@@ -656,6 +657,56 @@ export async function settleInterruptedTask(
   }
 }
 
+
+export function oneShotOutlineSkipStages(options?: {
+  compact?: boolean;
+}): Array<{
+  stage: PipelineStageName;
+  text: string;
+  policyRuleId: string;
+}> {
+  if (options?.compact) {
+    return [
+      {
+        stage: 'qa',
+        text: '极速模式已跳过 ONE QA（profile.one_shot.skip_qa）',
+        policyRuleId: 'profile.one_shot.skip_qa',
+      },
+      {
+        stage: 'brief',
+        text: '极速模式已跳过条件 Revision（profile.one_shot.skip_revision）',
+        policyRuleId: 'profile.one_shot.skip_revision',
+      },
+    ];
+  }
+  return [
+    {
+      stage: 'qa',
+      text: '极速模式已跳过 ONE QA（profile.one_shot.skip_qa）',
+      policyRuleId: 'profile.one_shot.skip_qa',
+    },
+    {
+      stage: 'review',
+      text: '极速模式已跳过 AI 审阅（profile.one_shot.skip_review）',
+      policyRuleId: 'profile.one_shot.skip_review',
+    },
+    {
+      stage: 'factCheck',
+      text: '极速模式已跳过 AI 事实核查（profile.one_shot.skip_factCheck）',
+      policyRuleId: 'profile.one_shot.skip_factCheck',
+    },
+    {
+      stage: 'brief',
+      text: '极速模式已跳过 Brief 修订（profile.one_shot.skip_revision）',
+      policyRuleId: 'profile.one_shot.skip_revision',
+    },
+    {
+      stage: 'proof',
+      text: '极速模式已跳过终审润色（profile.one_shot.skip_proof）',
+      policyRuleId: 'profile.one_shot.skip_proof',
+    },
+  ];
+}
 
 async function persistSkipped(
   taskId: string,
@@ -1262,26 +1313,12 @@ async function actionFinalizeFromDraft(
   // formal skips here with the profile rule ids (no fake completed stages).
   const oneShot = runtime.parsed?.execution?.executionProfile === 'one_shot';
   if (oneShot) {
-    await persistSkipped(
-      taskId,
-      'review',
-      '极速模式已跳过 AI 审阅（profile.one_shot.skip_review）',
+    const compact = isCompactPipelineTopology(
+      store.tasks.find(item => item.id === taskId)?.pipelineTopologyVersion,
     );
-    await persistSkipped(
-      taskId,
-      'factCheck',
-      '极速模式已跳过 AI 事实核查（profile.one_shot.skip_factCheck）',
-    );
-    await persistSkipped(
-      taskId,
-      'brief',
-      '极速模式已跳过 Brief 修订（profile.one_shot.skip_revision）',
-    );
-    await persistSkipped(
-      taskId,
-      'proof',
-      '极速模式已跳过终审润色（profile.one_shot.skip_proof）',
-    );
+    for (const skip of oneShotOutlineSkipStages({ compact })) {
+      await persistSkipped(taskId, skip.stage, skip.text);
+    }
   } else if (mode === 'noReview') {
     await persistSkipped(taskId, 'review', '无审核模式已跳过审阅/评估');
     await persistSkipped(taskId, 'factCheck', '无审核模式已跳过事实核查');
@@ -1365,21 +1402,9 @@ async function actionFinalizeFromDraft(
   } else {
     store.setTaskFinalText(taskId, draftText);
   }
-  // complete happens in next reconcile step (or we can complete now)
-  if (store.persistCompleteTask) {
-    await store.persistCompleteTask(taskId, draftText);
-  } else {
-    store.completeTask(taskId, draftText);
-  }
   if (emitForeground) {
-    await PipelineForeground.updateProgress(taskId, '已完成', 100);
-    await PipelineForeground.notifyComplete(
-      taskId,
-      chapter.title || '流水线',
-      '已写完，点击查看',
-    );
+    await PipelineForeground.updateProgress(taskId, '已完成校验，准备保存', 98);
   }
-  await PipelineForeground.stop(taskId);
 }
 
 async function actionFinalizeFromProof(
@@ -1403,21 +1428,14 @@ async function actionFinalizeFromProof(
   const proofText = await getStageText(taskId, 'proof');
   const text = proofText || (await getDraftText(taskId));
   await saveDraftBody(taskId, chapter, text);
-  // Atomically complete with final text (one durable transition).
-  if (store.persistCompleteTask) {
-    await store.persistCompleteTask(taskId, text);
+  if (store.persistTaskFinalText) {
+    await store.persistTaskFinalText(taskId, text);
   } else {
-    store.completeTask(taskId, text);
+    store.setTaskFinalText(taskId, text);
   }
   if (emitForeground) {
-    await PipelineForeground.updateProgress(taskId, '已完成', 100);
-    await PipelineForeground.notifyComplete(
-      taskId,
-      chapter.title || '流水线',
-      '已写完，点击查看',
-    );
+    await PipelineForeground.updateProgress(taskId, '已完成校验，准备保存', 98);
   }
-  await PipelineForeground.stop(taskId);
 }
 
 async function actionComplete(
@@ -1755,6 +1773,14 @@ export async function reconcilePipelineTask(
   } catch (error: any) {
     if (isAbortError(error, abortSignal) || cancelled(taskId, options)) {
       await settleInterruptedTask(taskId, options);
+      await PipelineForeground.stop(taskId);
+      return;
+    }
+    // A failed CAS claim means another executor owns the stage. It is a
+    // non-terminal handoff, not a pipeline failure: marking the task failed
+    // here would poison a cold-start resume and force the next finalization
+    // path to treat an otherwise clean draft as permanently degraded.
+    if (error?.code === 'TASK_ALREADY_RUNNING') {
       await PipelineForeground.stop(taskId);
       return;
     }

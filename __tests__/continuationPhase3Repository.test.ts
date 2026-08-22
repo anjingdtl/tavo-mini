@@ -1585,6 +1585,23 @@ describe('continuation Phase 3 repository coverage', () => {
       );
     });
 
+    test('empty body is rejected before finalization side effects', async () => {
+      store.runs.push(frozenRun());
+
+      await expect(
+        finalizeContinuationChapter({
+          projectId: 1,
+          chapterId: 10,
+          content: ' \n\t',
+          sourceRunId: 'ct_fin1',
+        }),
+      ).rejects.toThrow('章节正文为空');
+
+      expect(store.chapters[0].status).toBe('planned');
+      expect(store.storyMemory[0].status).toBe('ready');
+      expect(store.outbox).toHaveLength(0);
+    });
+
     test('re-finalizing the same chapter content is idempotent (one outbox)', async () => {
       store.runs.push(frozenRun());
       store.chapters[0].content = '定稿正文B';

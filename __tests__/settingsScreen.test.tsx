@@ -88,4 +88,14 @@ describe('SettingsScreen', () => {
     fireEvent.press(getByTestId('settings-continuation-pipeline-tasks'));
     expect(mockNavigate).toHaveBeenCalledWith('ContinuationPipelineTask');
   });
+
+  it('uses the same PipelineConfig entry for outline and continuation modes', () => {
+    mockWorkspaceMode = 'continuation';
+    mockCurrentProject = { id: 3, mode: 'continuation' };
+
+    const { getByTestId } = render(<SettingsScreen />);
+    fireEvent.press(getByTestId('settings-pipeline-config'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('PipelineConfig');
+  });
 });

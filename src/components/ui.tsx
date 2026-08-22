@@ -145,6 +145,7 @@ export function Button({
   disabled = false,
   icon: Icon,
   compact = false,
+  dense = false,
   flex = false,
   minWidth = 0,
   testID,
@@ -155,6 +156,8 @@ export function Button({
   disabled?: boolean;
   icon?: LucideIcon;
   compact?: boolean;
+  /** Result-page strip button: compact enough to keep the primary action visible. */
+  dense?: boolean;
   flex?: boolean;
   minWidth?: number;
   testID?: string;
@@ -182,12 +185,13 @@ export function Button({
         disabled && styles.buttonDisabled,
         variant === 'ghost' && { borderColor: theme.colors.accent },
         compact && styles.buttonCompact,
+        dense && styles.buttonDense,
         flex && styles.buttonFlex,
         minWidth > 0 && { minWidth },
       ]}
     >
-      {Icon ? <Icon size={compact ? 14 : 16} color={foreground} /> : null}
-      <Text style={[styles.buttonText, { color: foreground }, compact && styles.buttonTextCompact]} numberOfLines={1}>{label}</Text>
+      {Icon ? <Icon size={dense ? 12 : compact ? 14 : 16} color={foreground} /> : null}
+      <Text style={[styles.buttonText, { color: foreground }, compact && styles.buttonTextCompact, dense && styles.buttonTextDense]} numberOfLines={1}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -354,8 +358,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     gap: 4,
   },
+  buttonDense: {
+    minHeight: 30,
+    paddingHorizontal: 6,
+    gap: 3,
+    borderRadius: 5,
+  },
   buttonTextCompact: {
     fontSize: 12,
+  },
+  buttonTextDense: {
+    fontSize: 11,
   },
   buttonFlex: {
     flex: 1,

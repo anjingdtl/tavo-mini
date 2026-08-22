@@ -114,28 +114,19 @@ export const SettingsScreen: React.FC = () => {
             <Text
               style={[styles.cardTitle, { color: theme.colors.textPrimary }]}
             >
-              {workspaceMode === 'continuation'
-                ? '续写生成流水线'
-                : '多角色流水线'}
+              统一 Writing Kernel 流水线
             </Text>
             <Text
               style={[styles.cardMeta, { color: theme.colors.textSecondary }]}
             >
-              {workspaceMode === 'continuation'
-                ? '配置续写的规划、生成、一致性检查、修复和状态提取规则。'
-                : '统一完整协作写作流水线：初稿 → 审阅/事实核查 → Brief → 终稿；失败节点可精确重试。'}
+              所有模式共用 Freeze → 生成 → 检查 → 修订 → 校验 → 保存 →
+              PostWriting → ONE Memory；模式只决定环节是否正式启用。
             </Text>
             <Button
               testID="settings-pipeline-config"
               label="流水线配置"
               icon={Factory}
-              onPress={() =>
-                navigation.navigate(
-                  workspaceMode === 'continuation'
-                    ? 'ContinuationGenerationConfig'
-                    : 'PipelineConfig',
-                )
-              }
+              onPress={() => navigation.navigate('PipelineConfig')}
             />
             {workspaceMode === 'continuation' ? null : (
               <Button

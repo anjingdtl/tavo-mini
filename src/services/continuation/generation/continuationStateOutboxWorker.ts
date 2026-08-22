@@ -13,8 +13,11 @@ import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from '../../writing/postWritingUpdate/stateExtractionPrompt';
 import { planStageCapacity } from '../../writing/scenario/continuationStageCapacity';
 import {
+  casUpdateRunState,
   casOutboxState,
   contentRevisionHash,
+  getRunById,
+  getRunContextSnapshotJson,
   getRunGenerationTraceId,
   insertProposals,
   ensureGenerationSettings,
@@ -25,6 +28,13 @@ import {
 } from './generationRepository';
 import { recordPostWritingObservability } from '../../writing/observability/writingObservabilityCollector';
 import { autoCommitRoutineContinuityProposals } from '../../writing/memory/continuityStateAutoCommit';
+import {
+  appendContinuationPostWritingObservability,
+} from '../../writing/flow/continuationPostWritingClosure';
+import {
+  assertWritingPersistedEventAllowsMemoryUpdate,
+} from '../../writing/flow/writingPersistedEvent';
+import { mergeWritingTokenLedger } from '../../writing/observability/writingTokenLedger';
 import type { ProposalType } from './types';
 
 /**
@@ -203,7 +213,12 @@ export async function processContinuationOutbox(options?: {
       } else if (item.operation === 'rebuild_story_memory') {
         const payload = JSON.parse(item.payloadJson) as {
           fromPosition?: number;
+          writingPersistedEvent?: unknown;
         };
+        await validateWritingPersistedEventForMemoryRebuild(
+          item.projectId,
+          payload,
+        );
         if (options?.rebuildStoryMemory) {
           await options.rebuildStoryMemory(
             item.projectId,
@@ -232,6 +247,57 @@ export async function processContinuationOutbox(options?: {
   }
 
   return { processed, failed };
+}
+
+/**
+ * Outline PostWriting rows carry the exact persisted-body event that caused
+ * the rebuild. Validate it before consuming the outbox so a stale retry can
+ * never rebuild Memory for a newer body under the old event key. Historical
+ * Continuation rebuild rows do not carry this field and retain their legacy
+ * behavior.
+ */
+async function validateWritingPersistedEventForMemoryRebuild(
+  projectId: number,
+  payload: {
+    fromPosition?: number;
+    writingPersistedEvent?: unknown;
+  },
+): Promise<void> {
+  if (payload.writingPersistedEvent == null) return;
+  const event = payload.writingPersistedEvent as any;
+  assertWritingPersistedEventAllowsMemoryUpdate(event);
+  if (
+    event.projectId !== projectId ||
+    event.scenario !== 'outline' ||
+    (payload.fromPosition != null &&
+      Number(payload.fromPosition) !== event.chapterPosition)
+  ) {
+    throw new Error(
+      'WRITING_POST_WRITING_EVENT_INVALID: Story Memory outbox event binding mismatch',
+    );
+  }
+
+  const db = await openDatabase();
+  const [chapter] = await db.executeSql(
+    'SELECT project_id, position, content FROM chapters WHERE id = ?',
+    [event.chapterId],
+  );
+  if (chapter.rows.length === 0) {
+    throw new Error(
+      'WRITING_POST_WRITING_CHAPTER_MISSING: Story Memory outbox chapter is missing',
+    );
+  }
+  const row = chapter.rows.item(0);
+  if (
+    Number(row.project_id) !== projectId ||
+    Number(row.position) !== event.chapterPosition ||
+    contentRevisionHash(String(row.content ?? '')) !==
+      event.finalBodyFingerprint
+  ) {
+    throw new Error(
+      'WRITING_POST_WRITING_REVISION_DRIFT: Story Memory outbox body no longer matches the persisted event',
+    );
+  }
 }
 
 async function handleExtractState(
@@ -364,9 +430,49 @@ async function recordStateExtractionObservability(
       outputTokens: usage.outputTokens,
       physicalRequestCount: 1,
     });
+    await persistContinuationStateExtractionObservability(payload.sourceRunId, {
+      durationMs: usage.durationMs,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    });
   } catch {
     // Observability must never fail state extraction.
   }
+}
+
+async function persistContinuationStateExtractionObservability(
+  runId: string | null | undefined,
+  usage: { durationMs: number; inputTokens?: number; outputTokens?: number },
+): Promise<void> {
+  if (!runId) return;
+  const run = await getRunById(runId);
+  if (!run) return;
+  const snapshotJson = await getRunContextSnapshotJson(runId);
+  if (!snapshotJson) return;
+  const snapshot = JSON.parse(snapshotJson) as Record<string, any>;
+  const trace = snapshot.writingKernelTrace;
+  if (!trace?.observability) return;
+  const nextTrace = appendContinuationPostWritingObservability({
+    trace,
+    kind: 'state_extraction',
+    durationMs: usage.durationMs,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    physicalRequestCount: 1,
+    blockingMs: 0,
+  });
+  if (!nextTrace.observability) return;
+  const nextTokenUsageJson = mergeWritingTokenLedger(
+    run.tokenUsageJson,
+    nextTrace.observability,
+  );
+  await casUpdateRunState(runId, ['completed'], {
+    contextSnapshotJson: JSON.stringify({
+      ...snapshot,
+      writingKernelTrace: nextTrace,
+    }),
+    tokenUsageJson: JSON.stringify(nextTokenUsageJson),
+  });
 }
 
 /** Diagnostic metadata for parseExtraction error messages. */
