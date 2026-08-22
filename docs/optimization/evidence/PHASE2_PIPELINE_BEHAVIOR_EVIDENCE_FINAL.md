@@ -1,3 +1,7 @@
+> SUPERSEDED / HISTORICAL
+>
+> 本文件采集于最终 Production SHA 锁定前，所引用的 APK、live evidence 与样本不得用于最终封板，也不得重新绑定到 `6d389f8d…`。当前最终真实证据以 [PHASE2_PIPELINE_BEHAVIOR_EVIDENCE_FINAL_V2.md](PHASE2_PIPELINE_BEHAVIOR_EVIDENCE_FINAL_V2.md) 为准。
+
 # PHASE 2 Pipeline Behavior 最终证据（脱敏）
 
 本文件是进入远端、可供审计的最终证据。它只记录身份、DAG、ledger、hash 与终态，不包含 API Key、Prompt 全文、小说完整正文、SQLite 数据库或隐私数据。
