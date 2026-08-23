@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.21.1] - 2026-08-23
+
+### Fixed — Revision 结构化报告恢复
+
+- 完善 revision brief 的结构化报告接纳条件，正确识别 `content`、`strategy`、`verdict`、`actions`、`instructions`、`preserve` 与 `ending`。
+- 支持无正文 `content` 的合法 revision 报告，并继续继承原 draft；`actions=[]`、仅 `preserve+ending` 的无需改写报告均可正常进入后续校验与保存。
+- 继续拒绝只有 `schemaVersion` 等无实际语义的空对象，并保持 QA、audit、factCheck、review 等其他阶段的结构校验不变。
+
 ## [2.21.0] - 2026-08-23
 
 ### 统一写作核心：全上下文接入分层弹性（系统借调）
