@@ -199,7 +199,9 @@ export function isAdoptableStructuredReport(
         parsed.strategy ||
         parsed.verdict ||
         parsed.actions ||
-        parsed.instructions,
+        parsed.instructions ||
+        parsed.preserve ||
+        parsed.ending,
     );
   }
   return true;

@@ -3,6 +3,7 @@ import {
   executeSharedWriterStage,
   parseSharedWriterOutput,
 } from '../src/services/writing/stages/writerCore';
+import { isAdoptableStructuredReport } from '../src/services/writing/stages/writerRecovery';
 
 function stageInput(outputContract: 'prose' | 'json_envelope' = 'prose') {
   const requirements = { items: [], fingerprint: 'requirements-fingerprint' };
@@ -112,5 +113,70 @@ describe('Shared Writer report contract', () => {
     );
     expect(parseSharedWriterOutput('review', JSON.stringify(artifact.structured)))
       .toEqual(expect.objectContaining({ body: '未发现需要修改的问题' }));
+  });
+});
+
+describe('Shared Writer revision brief contract', () => {
+  it('adopts a full revision brief with strategy/actions/preserve/ending', () => {
+    expect(
+      isAdoptableStructuredReport('revision', {
+        strategy: '受控修订',
+        actions: [{ covers: 'x', instruction: 'y' }],
+        preserve: ['人物设定'],
+        ending: '保持原结尾',
+      }),
+    ).toBe(true);
+  });
+
+  it('adopts a no-op brief (empty actions, no content)', () => {
+    expect(
+      isAdoptableStructuredReport('revision', {
+        strategy: '无需改写',
+        actions: [],
+        preserve: ['人物设定'],
+        ending: '保持原结尾',
+      }),
+    ).toBe(true);
+  });
+
+  it('adopts a brief whose only populated fields are preserve/ending', () => {
+    expect(
+      isAdoptableStructuredReport('revision', {
+        preserve: ['人物设定', '因果'],
+        ending: '保持原结尾',
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects a bare prose object with no brief signal', () => {
+    expect(isAdoptableStructuredReport('revision', { schemaVersion: 1 })).toBe(
+      false,
+    );
+  });
+
+  it('end-to-end revision stage accepts a brief without content', async () => {
+    const input = stageInput('prose');
+    input.artifacts = {
+      draft: { stage: 'draft', body: '初稿正文' },
+    } as any;
+    input.callStage = async () => ({
+      text: JSON.stringify({
+        schemaVersion: 1,
+        strategy: '局部修订',
+        actions: [],
+        preserve: ['保留节奏'],
+        ending: '维持原结尾',
+      }),
+    });
+
+    const artifact = await executeSharedWriterStage({
+      stage: 'revision',
+      stageInput: input,
+    });
+
+    expect(artifact.structured).toEqual(
+      expect.objectContaining({ preserve: ['保留节奏'], ending: '维持原结尾' }),
+    );
+    expect(artifact.body).toBe('初稿正文');
   });
 });
