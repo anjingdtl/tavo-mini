@@ -333,7 +333,10 @@ describe('Context Budget V3 — buildContext integration', () => {
     }
   });
 
-  test('V2 path (no contextBudgetVersion) leaves hierarchicalBudgetTrace undefined', async () => {
+  test('unified engine: window-carrying call without a version still runs hierarchical', async () => {
+    // 统一写作核心：版本号不再选择预算引擎。带窗口信息的调用（即使没有
+    // contextBudgetVersion / elasticBudget 标志）一律走分层弹性分配器；
+    // V2 单层 elastic 分支已移除。
     (dbMock as any).__setCharacters([makeLargeCharacter(60, '戊', 1000)]);
     const result = await buildContext(
       BASE_CHAPTER as any,
@@ -346,8 +349,9 @@ describe('Context Budget V3 — buildContext integration', () => {
         elasticBudget: true,
       },
     );
-    expect(result.hierarchicalBudgetTrace).toBeUndefined();
-    expect(result.elasticBudgetTrace).toBeDefined();
+    expect(result.hierarchicalBudgetTrace).toBeDefined();
+    expect(result.hierarchicalBudgetTrace!.boardAllocations.resources).toBeDefined();
+    expect(result.elasticBudgetTrace).toBeUndefined();
   });
 
   test('V6 ignores poisoned legacy strategy and budget fields', async () => {

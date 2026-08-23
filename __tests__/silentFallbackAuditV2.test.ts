@@ -109,23 +109,18 @@ test('source capture failures are visible on the Generation semantic path', asyn
   });
 
   const diagnostics = result.stabilityDiagnostics;
+  // 统一写作核心：有窗口信息的调用走候选采集路径，失败经
+  // resourcePreparation / resourceContextCandidates.* 诊断暴露（可观测性
+  // 契约不变：code 必须出现，source 指向统一引擎的采集层）。
   expect(diagnostics).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         code: 'RESOURCE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.characters',
-      }),
-      expect.objectContaining({
-        code: 'RESOURCE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.notes',
-      }),
-      expect.objectContaining({
-        code: 'RESOURCE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.worldbook',
+        source: 'collectGenerationMaterials.resourcePreparation',
       }),
       expect.objectContaining({
         code: 'NOTE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.noteConfig',
+        source: 'resourceContextCandidates.noteConfig',
       }),
     ]),
   );
@@ -155,11 +150,7 @@ test('note body and retrieval failures are separately visible', async () => {
     expect.arrayContaining([
       expect.objectContaining({
         code: 'NOTE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.noteContents',
-      }),
-      expect.objectContaining({
-        code: 'NOTE_RETRIEVAL_FAILED',
-        source: 'collectGenerationMaterials.resourceSources.noteRetrieval',
+        source: 'resourceContextCandidates.noteRetrieval',
       }),
     ]),
   );

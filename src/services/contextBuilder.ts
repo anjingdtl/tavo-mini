@@ -95,7 +95,6 @@ import {
 import { normalizeGenerationMaterials } from './context/generation/normalizeGenerationMaterials';
 import { allocateGenerationContextBudget } from './context/generation/allocateGenerationContextBudget';
 import type {
-  GenerationBudgetDemand,
   GenerationBudgetAllocation,
   GenerationResourceSources,
 } from './context/generation/generationContracts';
@@ -130,7 +129,7 @@ export interface BuildContextResult {
   pipelineContext: PipelineContextSnapshot;
   /** Local readiness warnings; safe coverage never blocks the request. */
   storyMemoryWarnings: StoryMemoryPrepareWarning[];
-  /** Phase 2+ elastic budget trace when options.elasticBudget is enabled. */
+  /** @deprecated 统一写作核心后不再产生 V2 单层弹性 trace；保留字段兼容旧快照读取。 */
   elasticBudgetTrace?: import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
   /**
    * Context Budget V3 hierarchical allocator trace when
@@ -463,8 +462,20 @@ export async function buildContext(
   const trace: ContextTraceItem[] = [];
   const budgetVersion = Number(options.contextBudgetVersion) || 0;
   const useV7 = budgetVersion >= 7;
-  const useV3Hierarchical = budgetVersion === 6;
-  const useHierarchicalBoards = budgetVersion >= 6;
+  // 统一写作核心（Context-Budget unified engine）：只要调用方提供了模型窗口
+  // 与预留输出，所有任务（大纲 / 续写单章 / 自由写作 / 历史版本恢复）一律走
+  // 分层弹性分配器；旧的 legacy 固定比例与 V2 单层弹性分支已移除。预算版本号
+  // 仅决定 V7 专属冻结细节（awareness/detail/preset 冻结），不再选择预算引擎。
+  // 无窗口信息的调用方保持配置直通兜底。
+  const resolvedContextWindow =
+    options.contextWindow != null && options.contextWindow > 0
+      ? Number(options.contextWindow)
+      : 0;
+  const reservedOut =
+    options.reservedOutputTokens != null && options.reservedOutputTokens > 0
+      ? Number(options.reservedOutputTokens)
+      : 0;
+  const useHierarchicalBoards = resolvedContextWindow > 0 && reservedOut > 0;
 
   // Phase 2 Layer 2: source IO / checkpoint preparation / outline capture /
   // episodic query capture now live behind the real Collect stage.
@@ -579,14 +590,6 @@ export async function buildContext(
   let effectiveEpisodicBudget = useHierarchicalBoards
     ? V3_DEMAND_PROBE_BUDGET
     : config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
-  const resolvedContextWindow =
-    options.contextWindow != null && options.contextWindow > 0
-      ? Number(options.contextWindow)
-      : 0;
-  const reservedOut =
-    options.reservedOutputTokens != null && options.reservedOutputTokens > 0
-      ? Number(options.reservedOutputTokens)
-      : 0;
   stageWatch.mark('allocate');
   if (resolvedContextWindow > 0 && reservedOut > 0) {
     const safety = deriveContextSafetyMargin(resolvedContextWindow);
@@ -719,7 +722,7 @@ export async function buildContext(
           // the allocator still enforces the hard context envelope.
           v7Resources.detailDemandTokens * intensity,
         );
-      } else if (useV3Hierarchical || config.includeResources) {
+      } else if (config.includeResources) {
         resourcesActualDemand = v3ResourceCandidates.reduce(
           (sum, candidate) => sum + candidate.actualTokens,
           0,
@@ -799,165 +802,6 @@ export async function buildContext(
       } else if (remainingAfterOutline < 4000) {
         effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
       }
-    } else if (options.elasticBudget) {
-      // Elastic budget pool (Phase 2): protocol + full outline are mandatory;
-      // story state / resources / sliding window / episodic compete in the
-      // 80% soft pool and may borrow the 95% burst band by priority×relevance.
-      // Blocked (mandatory > hard limit) zeroes soft budgets; the final fits
-      // check in the draft compiler then blocks the LLM call (call count 0).
-      const storyStateAvailable = config.storyStateBudgetTokens ?? 8000;
-      const episodicAvailable =
-        config.episodicMemoryBudgetTokens ?? config.summaryBudgetTokens ?? 20000;
-      const elasticDemands: GenerationBudgetDemand[] = [
-          {
-            candidateId: 'protocol',
-            demandTokens: fixedProtocol,
-            minTokens: fixedProtocol,
-            targetTokens: fixedProtocol,
-            maxTokens: fixedProtocol,
-            priority: 10,
-            relevance: 1,
-            requirement: 'mandatory',
-            selectionBoost: 1,
-          },
-          {
-            candidateId: 'outline',
-            demandTokens: outlineTokens,
-            minTokens: outlineTokens,
-            targetTokens: outlineTokens,
-            maxTokens: outlineTokens,
-            priority: 10,
-            relevance: 1,
-            requirement: 'mandatory',
-            selectionBoost: 1,
-          },
-          ...(Number(options.protectedWriterStyleTokens) > 0
-            ? [{
-                candidateId: 'writerStyle',
-                demandTokens: Math.floor(
-                  Number(options.protectedWriterStyleTokens),
-                ),
-                minTokens: Math.floor(
-                  Number(options.protectedWriterStyleTokens),
-                ),
-                targetTokens: Math.floor(
-                  Number(options.protectedWriterStyleTokens),
-                ),
-                maxTokens: Math.floor(
-                  Number(options.protectedWriterStyleTokens),
-                ),
-                priority: 10,
-                relevance: 1,
-                requirement: 'mandatory' as const,
-                selectionBoost: 1,
-              }]
-            : []),
-          {
-            candidateId: 'storyState',
-            demandTokens: storyStateAvailable,
-            minTokens: Math.floor(storyStateAvailable * 0.3),
-            targetTokens: storyStateAvailable,
-            maxTokens: storyStateAvailable,
-            priority: 5,
-            relevance: 0.8,
-            requirement: 'preferred',
-            selectionBoost: 1,
-          },
-          {
-            candidateId: 'resources',
-            demandTokens: config.resourceBudget,
-            minTokens: Math.floor(config.resourceBudget * 0.3),
-            targetTokens: config.resourceBudget,
-            maxTokens: config.resourceBudget,
-            priority: 4,
-            relevance: 0.75,
-            requirement: 'preferred',
-            selectionBoost: 1,
-          },
-          {
-            candidateId: 'slidingWindow',
-            demandTokens: config.slidingWindowSize,
-            minTokens: Math.floor(config.slidingWindowSize * 0.2),
-            targetTokens: config.slidingWindowSize,
-            maxTokens: config.slidingWindowSize,
-            priority: 3,
-            relevance: 0.6,
-            requirement: 'optional',
-            selectionBoost: 1,
-          },
-          {
-            candidateId: 'episodic',
-            demandTokens: episodicAvailable,
-            minTokens: Math.floor(episodicAvailable * 0.3),
-            targetTokens: episodicAvailable,
-            maxTokens: episodicAvailable,
-            priority: 4,
-            relevance: 0.7,
-            requirement: 'optional',
-            selectionBoost: 1,
-          },
-        ];
-      const allocationContract = allocateGenerationContextBudget({
-        plan: generationPlan,
-        demands: elasticDemands,
-        contextWindow: resolvedContextWindow,
-        reservedOutputTokens: reservedOut,
-        safetyMargin: safety,
-        mode: 'elastic',
-      });
-      generationAllocation = allocationContract;
-      elasticBudgetTrace = allocationContract.trace as import('./pipeline/elasticBudgetAllocator').ElasticBudgetTrace;
-      const allocationById = new Map(
-        allocationContract.items.map(item => [item.candidateId, item.allocatedTokens]),
-      );
-      if (allocationContract.ok) {
-        effectiveStoryStateBudget = allocationById.get('storyState') || 0;
-        effectiveResourceBudget = allocationById.get('resources') || 0;
-        effectiveSlidingWindow = allocationById.get('slidingWindow') || 0;
-        effectiveEpisodicBudget = allocationById.get('episodic') || 0;
-        if (remainingAfterOutline < 1500) {
-          effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
-        } else if (remainingAfterOutline < 4000) {
-          effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
-        }
-      } else {
-        // Mandatory (protocol + outline) exceeds the hard limit — zero all
-        // soft budgets; the draft fits check blocks the LLM call.
-        effectiveStoryStateBudget = 0;
-        effectiveResourceBudget = 0;
-        effectiveSlidingWindow = 0;
-        effectiveMemoryTopK = 0;
-        effectiveEpisodicBudget = 0;
-      }
-    } else if (remainingAfterOutline > 0) {
-      const softCap = remainingAfterOutline;
-      effectiveStoryStateBudget = Math.min(
-        effectiveStoryStateBudget,
-        Math.floor(softCap * 0.35),
-      );
-      effectiveResourceBudget = Math.min(
-        effectiveResourceBudget,
-        Math.floor(softCap * 0.4),
-      );
-      effectiveSlidingWindow = Math.min(
-        effectiveSlidingWindow,
-        Math.floor(softCap * 0.2),
-      );
-      effectiveEpisodicBudget = Math.min(
-        effectiveEpisodicBudget,
-        Math.floor(softCap * 0.25),
-      );
-      if (softCap < 1500) {
-        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 2);
-      } else if (softCap < 4000) {
-        effectiveMemoryTopK = Math.min(effectiveMemoryTopK, 3);
-      }
-    } else if (outlineTokens > 0) {
-      effectiveStoryStateBudget = 0;
-      effectiveResourceBudget = 0;
-      effectiveSlidingWindow = 0;
-      effectiveMemoryTopK = 0;
-      effectiveEpisodicBudget = 0;
     }
   }
 
@@ -1313,8 +1157,8 @@ export async function buildContext(
       messages: v7ResourceMessages,
       traceItems: v7ResourceTraceItems,
     };
-  } else if ((useV3Hierarchical || config.includeResources) && effectiveResourceBudget > 0) {
-    if (useV3Hierarchical && v3ResourceCandidates.length > 0) {
+  } else if (config.includeResources && effectiveResourceBudget > 0) {
+    if (v3ResourceCandidates.length > 0 && v3ResourceItemAllocations) {
       // ----- V3 candidate-first resource rendering (Plan §6 / §15) ----------
       // Each candidate is clipped to its item-allocator grant; no fixed
       // 35/20/45 split, no `remaining` order bias. Trace items carry demand /
@@ -1611,10 +1455,9 @@ export async function buildContext(
     stabilityDiagnostics:
       diagnostics.list().length > 0 ? diagnostics.list() : undefined,
     stageTimings: stageWatch.result(),
-    contextBudgetV3Summary:
-      hierarchicalBudgetTrace && useV3Hierarchical
-        ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
-        : undefined,
+    contextBudgetV3Summary: hierarchicalBudgetTrace
+      ? buildV3Summary(hierarchicalBudgetTrace, options.contextAutomationPolicyV3)
+      : undefined,
     ...(useV7
       ? {
           resourceContextVersion: 2 as const,
@@ -1946,6 +1789,30 @@ async function buildResourceContext(
   };
 }
 
+/** Deterministic character-card render shared by include/trace paths. */
+function renderCharacterCard(
+  character: any,
+  onDiagnostic?: DiagnosticSink,
+): { charName: string; text: string } {
+  const data = safeJson(character.data_json, onDiagnostic);
+  const card = data.data || data;
+  const charName = character.name || card.name || '未命名角色';
+  const text = [
+    `角色「${charName}」`,
+    card.system_prompt && `角色系统提示：${card.system_prompt}`,
+    card.description && `描述：${card.description}`,
+    card.personality && `性格：${card.personality}`,
+    card.scenario && `场景：${card.scenario}`,
+    card.first_mes && `开场消息：${card.first_mes}`,
+    card.mes_example && `对话示例：${card.mes_example}`,
+    card.post_history_instructions &&
+      `后置指令：${card.post_history_instructions}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return { charName, text };
+}
+
 export async function buildCharacterContext(
   projectId: number,
   budget: number,
@@ -1956,29 +1823,25 @@ export async function buildCharacterContext(
     capturedCharacters ?? (await db.getCharactersByProject(projectId));
   const parts: string[] = [];
   const items: ContextTraceItem[] = [];
-  let remaining = budget;
 
-  for (const character of characters as any[]) {
-    const data = safeJson(character.data_json, onDiagnostic);
-    const card = data.data || data;
-    const charName = character.name || card.name || '未命名角色';
-    const text = [
-      `角色「${charName}」`,
-      card.system_prompt && `角色系统提示：${card.system_prompt}`,
-      card.description && `描述：${card.description}`,
-      card.personality && `性格：${card.personality}`,
-      card.scenario && `场景：${card.scenario}`,
-      card.first_mes && `开场消息：${card.first_mes}`,
-      card.mes_example && `对话示例：${card.mes_example}`,
-      card.post_history_instructions &&
-        `后置指令：${card.post_history_instructions}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-    const charBudget = Math.min(
-      remaining,
-      Number(character.max_tokens ?? 50000),
-    );
+  const rendered = (characters as any[]).map(character =>
+    renderCharacterCard(character, onDiagnostic),
+  );
+  // Elastic full-fit borrowing: when the section budget covers the natural
+  // size of every card, inject them whole. The per-card `max_tokens` is a
+  // SOFT cap that only binds when the budget is tight — the section grant,
+  // not the per-item config, is the clip authority (same semantics as the
+  // V3/V7 item allocator).
+  const fullFit =
+    rendered.reduce((sum, card) => sum + estimateTokens(card.text), 0) <=
+    budget;
+
+  let remaining = budget;
+  for (let i = 0; i < rendered.length; i++) {
+    const character = (characters as any[])[i];
+    const { charName, text } = rendered[i];
+    const softCap = Number(character.max_tokens ?? 50000);
+    const charBudget = fullFit ? remaining : Math.min(remaining, softCap);
     const clipped = clipTextToTokenBudget(text, charBudget);
     const wasClipped = clipped !== text && clipped.length < text.length;
     const included = clipped.length > 0;
@@ -1988,11 +1851,14 @@ export async function buildCharacterContext(
       remaining -= estimateTokens(clipped);
     }
 
+    const borrowed = fullFit && softCap < estimateTokens(text);
     items.push({
       kind: 'character',
       sourceId: Number(character.id) || null,
       title: charName,
-      reason: `角色设定：${charName}`,
+      reason: borrowed
+        ? `角色设定：${charName}｜弹性借调（上下文充足，超出单项软上限全量注入）`
+        : `角色设定：${charName}`,
       estimatedTokens: included
         ? estimateTokens(clipped)
         : estimateTokens(text),
@@ -2005,37 +1871,20 @@ export async function buildCharacterContext(
   }
 
   // Mark characters that weren't processed due to budget as clipped
-  for (let i = 0; i < (characters as any[]).length; i++) {
+  for (let i = 0; i < rendered.length; i++) {
     const character = (characters as any[])[i];
-    const existingItem = items.find(it => it.sourceId === Number(character.id));
-    if (!existingItem) {
-      const data = safeJson(character.data_json, onDiagnostic);
-      const card = data.data || data;
-      const charName = character.name || card.name || '未命名角色';
-      const text = [
-        `角色「${charName}」`,
-        card.system_prompt && `角色系统提示：${card.system_prompt}`,
-        card.description && `描述：${card.description}`,
-        card.personality && `性格：${card.personality}`,
-        card.scenario && `场景：${card.scenario}`,
-        card.first_mes && `开场消息：${card.first_mes}`,
-        card.mes_example && `对话示例：${card.mes_example}`,
-        card.post_history_instructions &&
-          `后置指令：${card.post_history_instructions}`,
-      ]
-        .filter(Boolean)
-        .join('\n');
-      items.push({
-        kind: 'character',
-        sourceId: Number(character.id) || null,
-        title: charName,
-        reason: `角色设定：${charName}`,
-        estimatedTokens: estimateTokens(text),
-        included: false,
-        clipped: true,
-        preview: text.slice(0, 500),
-      });
-    }
+    if (items.some(it => it.sourceId === Number(character.id))) continue;
+    const { charName, text } = rendered[i];
+    items.push({
+      kind: 'character',
+      sourceId: Number(character.id) || null,
+      title: charName,
+      reason: `角色设定：${charName}`,
+      estimatedTokens: estimateTokens(text),
+      included: false,
+      clipped: true,
+      preview: text.slice(0, 500),
+    });
   }
 
   return { text: parts.join('\n\n'), items };
@@ -2326,12 +2175,24 @@ async function buildNoteContextOriginal(
       }
     }
   }
+  const naturalNoteTokens = notes.reduce(
+    (sum, note) =>
+      sum +
+      estimateTokens(`笔记「${note.title || '无标题'}」：${contents[Number(note.id)] ?? ''}`),
+    0,
+  );
 
   for (const note of notes) {
     const content = contents[Number(note.id)] ?? '';
     const noteTitle = note.title || '无标题';
     const text = `笔记「${noteTitle}」：${content}`;
-    const noteBudget = Math.min(remaining, note.max_tokens ?? 30000);
+    // Elastic full-fit borrowing (same semantics as buildCharacterContext):
+    // per-note max_tokens is a soft cap; a plentiful section budget injects
+    // the note whole even beyond it.
+    const fullFit = naturalNoteTokens <= budget;
+    const noteBudget = fullFit
+      ? remaining
+      : Math.min(remaining, note.max_tokens ?? 30000);
     const clipped = clipTextToTokenBudget(text, noteBudget);
     const wasClipped = clipped !== text && clipped.length < text.length;
     const included = clipped.length > 0;
@@ -2341,11 +2202,15 @@ async function buildNoteContextOriginal(
       remaining -= estimateTokens(clipped);
     }
 
+    const borrowed =
+      fullFit && Number(note.max_tokens ?? 30000) < estimateTokens(text);
     items.push({
       kind: 'note',
       sourceId: Number(note.id) || null,
       title: noteTitle,
-      reason: `项目笔记：${noteTitle}`,
+      reason: borrowed
+        ? `项目笔记：${noteTitle}｜弹性借调（上下文充足，超出单项软上限全量注入）`
+        : `项目笔记：${noteTitle}`,
       estimatedTokens: included
         ? estimateTokens(clipped)
         : estimateTokens(text),
@@ -2452,6 +2317,21 @@ export async function buildWorldbookContext(
   const lines: string[] = [];
   const items: ContextTraceItem[] = [];
   let remaining = budget;
+  // Elastic full-fit borrowing (same semantics as buildCharacterContext):
+  // when the section budget covers the natural size of every activated
+  // entry, inject them whole — per-entry max_tokens and per-collection
+  // caps only bind when the budget is tight.
+  const naturalWorldbookTokens = Array.from(activated.values()).reduce(
+    (sum, entry) => {
+      const entryContent = String(entry.content || '');
+      const label = normalizeKeys(
+        entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
+      )[0];
+      return sum + estimateTokens(label ? `关键词「${label}」：${entryContent}` : entryContent);
+    },
+    0,
+  );
+  const fullFit = naturalWorldbookTokens <= budget;
   for (const entry of activated.values()) {
     const id = Number(entry.id);
     const entryContent = String(entry.content || '');
@@ -2459,10 +2339,13 @@ export async function buildWorldbookContext(
       entry.keyword_primary ?? entry.key ?? entry.keys ?? entry.keyword,
     )[0];
     const reason = activationReason.get(id) || '主关键词命中';
-    const entryBudget = Math.min(remaining, Number(entry.max_tokens ?? 2000));
+    const softCap = Number(entry.max_tokens ?? 2000);
+    const entryBudget = fullFit ? remaining : Math.min(remaining, softCap);
 
     const collectionId = Number(entry.collection_id || 0);
-    const collectionBudget = Number(entry.collection_max_tokens ?? 50000);
+    const collectionBudget = fullFit
+      ? Number.MAX_SAFE_INTEGER
+      : Number(entry.collection_max_tokens ?? 50000);
     const used = collectionUsage.get(collectionId) || 0;
     const remainingForCollection = Math.max(0, collectionBudget - used);
 
@@ -2494,11 +2377,15 @@ export async function buildWorldbookContext(
       remaining -= tokenCost;
     }
 
+    const naturalLine = label ? `关键词「${label}」：${entryContent}` : entryContent;
+    const borrowed = fullFit && softCap < estimateTokens(naturalLine);
     items.push({
       kind: 'worldbook',
       sourceId: id || null,
       title: label || `条目#${id}`,
-      reason,
+      reason: borrowed
+        ? `${reason}｜弹性借调（上下文充足，超出单项软上限全量注入）`
+        : reason,
       estimatedTokens: included
         ? estimateTokens(body)
         : estimateTokens(entryContent),

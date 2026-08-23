@@ -481,7 +481,7 @@ describe('writing context enhancements', () => {
     expect(text).toContain('WB_KEEP_THIS');
   });
 
-  test('clips character and worldbook collection context by per-resource token budgets', async () => {
+  test('injects character/worldbook resources whole via elastic borrowing when the budget is plentiful', async () => {
     jest.doMock('../src/services/database', () => ({
       getCharactersByProject: jest.fn(async () => [
         {
@@ -521,6 +521,61 @@ describe('writing context enhancements', () => {
     );
     const text = messages.map((message: any) => message.content).join('\n');
 
+    // Elastic semantics: with a plentiful section budget the per-resource
+    // max_tokens / collection caps are soft — the library borrows context and
+    // injects the whole card/entry instead of truncating at the configured cap.
+    expect(text).toContain('雨夜');
+    expect(text).toContain('过长内容');
+  });
+
+  test('still clips by per-resource soft caps when the resource budget is tight', async () => {
+    jest.doMock('../src/services/database', () => ({
+      getCharactersByProject: jest.fn(async () => [
+        {
+          name: 'Budgeted Character',
+          max_tokens: 4,
+          data_json: JSON.stringify({
+            data: {
+              description: `垫场`.repeat(400) + '雨夜过长内容',
+              personality: '冷静',
+            },
+          }),
+        },
+      ]),
+      getWorldbookEntriesByProject: jest.fn(async () => [
+        {
+          collection_id: 9,
+          collection_enabled: 1,
+          collection_max_tokens: 4,
+          enabled: 1,
+          max_tokens: 20,
+          keyword_primary: '钟楼',
+          content: '雨夜钟楼' + '垫'.repeat(1000) + '过长内容',
+        },
+      ]),
+      getNotesByProject: jest.fn(async () => []),
+      getChaptersByProject: jest.fn(async () => []),
+    }));
+    jest.doMock('../src/services/macroReplace', () => ({ processMacros: jest.fn(async (text: string) => text) }));
+
+    const { buildContext } = require('../src/services/contextBuilder');
+    const { messages } = await buildContext(
+      { id: 1, project_id: 7, position: 0, title: 'Chapter', synopsis: 'return to 钟楼', content: '', status: 'planned' },
+      {
+        includeResources: true,
+        resourceBudget: 2000,
+        strategy: 'sliding',
+        slidingWindowSize: 4000,
+        customRangeStart: 0,
+        customRangeEnd: -1,
+      },
+      7,
+    );
+    const text = messages.map((message: any) => message.content).join('\n');
+
+    // Natural demand (≈800/≈1000 tokens) exceeds the 35%/45% section splits,
+    // so full-fit borrowing does not apply and the per-resource soft caps
+    // (character max_tokens=4, collection_max_tokens=4) bind again.
     expect(text).toContain('雨夜');
     expect(text).not.toContain('过长内容');
   });

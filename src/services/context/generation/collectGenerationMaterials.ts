@@ -373,7 +373,12 @@ export async function collectGenerationMaterials(
 ): Promise<CollectedGenerationMaterials> {
   const options = input.options || {};
   const budgetVersion = Number(options.contextBudgetVersion) || 0;
-  const useHierarchicalBoards = budgetVersion >= 6;
+  // 统一写作核心：候选采集不再按预算版本分流。与 buildContext 同源的窗口
+  // 判定决定采集形态——有窗口信息：V3/V7 候选 + episodic 探针；无窗口信息：
+  // 保留原始 resourceSources 直通兜底（V7 专属资源仅 version >= 7 采集）。
+  const useHierarchicalBoards =
+    Number(options.contextWindow) > 0 &&
+    Number(options.reservedOutputTokens) > 0;
   let chapters = await db.getChaptersByProject(input.projectId);
   const prepared = await prepareStoryMemoryForGeneration(
     input.projectId,
@@ -475,11 +480,7 @@ export async function collectGenerationMaterials(
     }
   }
   let resourcePreparation: CollectedGenerationMaterials['resourcePreparation'];
-  if (
-    useHierarchicalBoards &&
-    Number(options.contextWindow) > 0 &&
-    Number(options.reservedOutputTokens) > 0
-  ) {
+  if (useHierarchicalBoards) {
     const episodicProbe = input.measureEpisodicDemand
       ? await input.measureEpisodicDemand({
           projectId: input.projectId,

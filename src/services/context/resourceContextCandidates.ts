@@ -199,9 +199,10 @@ export async function collectCharacterCandidates(
 
 /**
  * Note candidates — mode-aware dispatch matching `buildNoteContext`:
+ *   - none: disabled → NO candidates (same as the legacy builder)
  *   - style: merged style profile → ONE candidate
  *   - retrieval: each retrieved fragment → one candidate with retrievalScore
- *   - original / none: each enabled note → one candidate
+ *   - original / unset: each enabled note → one candidate
  */
 export async function collectNoteCandidates(
   projectId: number,
@@ -220,7 +221,12 @@ export async function collectNoteCandidates(
     });
     config = null;
   }
-  const mode = config?.mode || 'none';
+  // 与 buildNoteContext 完全同源：null 配置 = original（全量注入）；
+  // 显式 mode='none' = 笔记关闭，不产生任何候选。
+  const mode = config?.mode ?? 'original';
+  if (mode === 'none') {
+    return { candidates: [], totalActualTokens: 0 };
+  }
   if (mode === 'style') {
     return collectStyleNoteCandidates(projectId, config, options);
   }

@@ -1,8 +1,7 @@
 /**
- * Phase 2: elastic budget integration in the Draft context builder.
- * Verifies that options.elasticBudget switches the fixed-ratio soft caps to
- * the elastic allocator and surfaces an ElasticBudgetTrace, while the flag
- * OFF path keeps the legacy behavior untouched.
+ * 统一写作核心：buildContext 只保留一条分层弹性预算路径。
+ * 有窗口信息（contextWindow + reservedOutputTokens）→ hierarchical 分配器，
+ * 无窗口信息 → 配置直通兜底。旧 V2 单层 elastic 分支与 legacy 固定比例分支已移除。
  */
 jest.mock('../src/services/macroReplace', () => ({
   processMacros: jest.fn(async (text: string) => text),
@@ -73,8 +72,8 @@ const baseConfig = {
 const WINDOW = 16_000;
 const RESERVED = 2_000;
 
-describe('buildContext elastic budget (Phase 2)', () => {
-  it('attaches an elasticBudgetTrace when enabled', async () => {
+describe('buildContext unified hierarchical budget (统一写作核心)', () => {
+  it('routes every window-carrying call through the hierarchical allocator', async () => {
     const result = await buildContext(
       baseChapter as any,
       baseConfig as any,
@@ -84,31 +83,20 @@ describe('buildContext elastic budget (Phase 2)', () => {
         retrievalUserPrompt: '继续推进调查',
         contextWindow: WINDOW,
         reservedOutputTokens: RESERVED,
+        // 弹性标志已不再选择引擎：有窗口信息即分层弹性。
         elasticBudget: true,
       },
     );
-    expect(result.elasticBudgetTrace).toBeDefined();
-    expect(result.elasticBudgetTrace!.contextWindow).toBe(WINDOW);
-    expect(result.elasticBudgetTrace!.softInputLimit).toBeGreaterThan(0);
-    expect(result.elasticBudgetTrace!.riskLevel).toBeDefined();
-  });
-
-  it('keeps the trace undefined when the flag is off (legacy path)', async () => {
-    const result = await buildContext(
-      baseChapter as any,
-      baseConfig as any,
-      7,
-      undefined,
-      {
-        retrievalUserPrompt: '继续推进调查',
-        contextWindow: WINDOW,
-        reservedOutputTokens: RESERVED,
-      },
+    expect(result.hierarchicalBudgetTrace).toBeDefined();
+    const boards = result.hierarchicalBudgetTrace!.boardAllocations;
+    expect(Object.keys(boards).sort()).toEqual(
+      ['episodic', 'resources', 'slidingWindow', 'storyState'].sort(),
     );
     expect(result.elasticBudgetTrace).toBeUndefined();
+    expect(result.pipelineContext.outlineText).toBe('');
   });
 
-  it('allocates soft budgets inside the 80% soft pool', async () => {
+  it('no-window callers keep the legacy config passthrough (no traces)', async () => {
     const result = await buildContext(
       baseChapter as any,
       baseConfig as any,
@@ -116,25 +104,9 @@ describe('buildContext elastic budget (Phase 2)', () => {
       undefined,
       {
         retrievalUserPrompt: '继续推进调查',
-        contextWindow: WINDOW,
-        reservedOutputTokens: RESERVED,
-        elasticBudget: true,
       },
     );
-    const trace = result.elasticBudgetTrace!;
-    expect(trace.finalEstimatedInputTokens).toBeLessThanOrEqual(
-      trace.burstInputLimit,
-    );
-    // protocol is mandatory (256) and gets its full allocation
-    const protocol = trace.modules.find(m => m.id === 'protocol')!;
-    expect(protocol.finalAllocatedTokens).toBe(protocol.availableTokens);
-    // high-value story state is preferred and receives more than sliding window
-    const storyState = trace.modules.find(m => m.id === 'storyState')!;
-    const sliding = trace.modules.find(m => m.id === 'slidingWindow')!;
-    expect(storyState.finalAllocatedTokens).toBeGreaterThan(
-      sliding.finalAllocatedTokens,
-    );
-    // empty modules (no outlines here) still allocate to available content
-    expect(result.pipelineContext.outlineText).toBe('');
+    expect(result.hierarchicalBudgetTrace).toBeUndefined();
+    expect(result.elasticBudgetTrace).toBeUndefined();
   });
 });

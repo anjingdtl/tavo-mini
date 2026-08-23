@@ -25,46 +25,19 @@ export async function buildContinuationSupplementContext(input: {
   const selected: ContinuationSupplementBundle['selected'] = [];
   const excluded: ContinuationSupplementBundle['excluded'] = [];
   let remaining = Math.max(0, input.tokenBudget);
-  const take = (
-    kind: 'character' | 'worldbook' | 'note' | 'preset',
-    id: number,
-    title: string,
-    raw: string,
-    maxTokens?: number,
-  ) => {
-    if (remaining <= 0) {
-      excluded.push({ resourceKind: kind, resourceId: id, title, reason: '外部补充预算不足' });
-      return '';
-    }
-    const resourceBudget =
-      typeof maxTokens === 'number' && Number.isFinite(maxTokens) && maxTokens > 0
-        ? Math.min(remaining, Math.floor(maxTokens))
-        : remaining;
-    const text = clipTextToTokenBudget(raw, resourceBudget);
-    if (!text) {
-      excluded.push({ resourceKind: kind, resourceId: id, title, reason: '内容为空或预算不足' });
-      return '';
-    }
-    remaining -= estimateTokens(text);
-    selected.push({
-      resourceKind: kind,
-      resourceId: id,
-      title,
-      estimatedTokens: estimateTokens(text),
-      contentHash: sha256Hex(text),
-      constraintKind:
-        kind === 'worldbook'
-          ? 'factual'
-          : kind === 'preset'
-          ? 'stylistic'
-          : kind === 'note'
-          ? 'instruction'
-          : 'creative',
-      stageEligibility: ['writer', 'checker', 'repair'],
-      selectionReason: 'external_supplement_enabled_and_within_stage_budget',
-    });
-    return text;
-  };
+  // Two-phase elastic allocation (Context-Budget elastic semantics): the
+  // per-resource `max_tokens` is a SOFT cap. When the supplement budget
+  // covers the natural size of every opted-in resource, inject them whole —
+  // the resource library borrows the plentiful context instead of being
+  // truncated by a fixed per-item injection ceiling.
+  interface PendingSupplement {
+    kind: 'character' | 'worldbook' | 'note' | 'preset';
+    id: number;
+    title: string;
+    raw: string;
+    maxTokens?: number;
+  }
+  const pending: PendingSupplement[] = [];
   const ids = (kind: string) => bindings.filter(b => b.resource_kind === kind).map(b => b.resource_id);
   const readRows = async (table: string, resourceIds: number[]) => {
     if (!resourceIds.length) return [] as any[];
@@ -76,60 +49,108 @@ export async function buildContinuationSupplementContext(input: {
       (a, b) => resourceIds.indexOf(a.id) - resourceIds.indexOf(b.id),
     );
   };
-  const characterLines: string[] = [];
   for (const row of await readRows('characters', ids('character'))) {
     let card: any = {};
     try { card = JSON.parse(row.data_json || '{}').data || JSON.parse(row.data_json || '{}'); } catch {}
     const title = row.name || card.name || '未命名角色';
-    const text = take(
-      'character',
-      row.id,
+    pending.push({
+      kind: 'character',
+      id: row.id,
       title,
-      `角色「${title}」\n描述：${card.description || ''}\n性格：${card.personality || ''}\n场景：${card.scenario || ''}`,
-      row.max_tokens,
-    );
-    if (text) characterLines.push(text);
+      raw: `角色「${title}」\n描述：${card.description || ''}\n性格：${card.personality || ''}\n场景：${card.scenario || ''}`,
+      maxTokens: row.max_tokens,
+    });
   }
-  const worldbookLines: string[] = [];
   for (const row of await readRows('worldbook_entries', ids('worldbook'))) {
     const title = row.keyword_primary || '未命名世界书条目';
-    const text = take(
-      'worldbook',
-      row.id,
+    pending.push({
+      kind: 'worldbook',
+      id: row.id,
       title,
-      `世界书「${title}」\n${row.content || ''}`,
-      row.max_tokens,
-    );
-    if (text) worldbookLines.push(text);
+      raw: `世界书「${title}」\n${row.content || ''}`,
+      maxTokens: row.max_tokens,
+    });
   }
-  const noteLines: string[] = [];
   for (const row of await readRows('notes', ids('note'))) {
     const title = row.title || '无标题笔记';
-    const text = take(
-      'note',
-      row.id,
+    pending.push({
+      kind: 'note',
+      id: row.id,
       title,
-      `笔记「${title}」\n${row.content || ''}`,
-      row.max_tokens,
-    );
-    if (text) noteLines.push(text);
+      raw: `笔记「${title}」\n${row.content || ''}`,
+      maxTokens: row.max_tokens,
+    });
   }
   const presetRows = await readRows('presets', ids('preset'));
   const preset = presetRows[0];
-  const presetText = preset
-    ? take(
-        'preset',
-        preset.id,
-        preset.name || '续写补充作家风格',
-        [
-          preset.system_prompt,
-          preset.writing_style && `写作风格：${preset.writing_style}`,
-          preset.extra_instructions && `附加要求：${preset.extra_instructions}`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        preset.max_tokens,
-      )
-    : '';
+  if (preset) {
+    pending.push({
+      kind: 'preset',
+      id: preset.id,
+      title: preset.name || '续写补充作家风格',
+      raw: [
+        preset.system_prompt,
+        preset.writing_style && `写作风格：${preset.writing_style}`,
+        preset.extra_instructions && `附加要求：${preset.extra_instructions}`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      maxTokens: preset.max_tokens,
+    });
+  }
+  const naturalTotal = pending.reduce(
+    (sum, item) => sum + estimateTokens(item.raw),
+    0,
+  );
+  const fullFit = remaining > 0 && naturalTotal <= remaining;
+  const take = (item: PendingSupplement) => {
+    if (remaining <= 0) {
+      excluded.push({ resourceKind: item.kind, resourceId: item.id, title: item.title, reason: '外部补充预算不足' });
+      return '';
+    }
+    const resourceBudget = fullFit
+      ? remaining
+      : typeof item.maxTokens === 'number' && Number.isFinite(item.maxTokens) && item.maxTokens > 0
+        ? Math.min(remaining, Math.floor(item.maxTokens))
+        : remaining;
+    const text = clipTextToTokenBudget(item.raw, resourceBudget);
+    if (!text) {
+      excluded.push({ resourceKind: item.kind, resourceId: item.id, title: item.title, reason: '内容为空或预算不足' });
+      return '';
+    }
+    remaining -= estimateTokens(text);
+    selected.push({
+      resourceKind: item.kind,
+      resourceId: item.id,
+      title: item.title,
+      estimatedTokens: estimateTokens(text),
+      contentHash: sha256Hex(text),
+      constraintKind:
+        item.kind === 'worldbook'
+          ? 'factual'
+          : item.kind === 'preset'
+          ? 'stylistic'
+          : item.kind === 'note'
+          ? 'instruction'
+          : 'creative',
+      stageEligibility: ['writer', 'checker', 'repair'],
+      selectionReason: fullFit
+        ? 'external_supplement_elastic_full_fit'
+        : 'external_supplement_enabled_and_within_stage_budget',
+    });
+    return text;
+  };
+  const characterLines: string[] = [];
+  const worldbookLines: string[] = [];
+  const noteLines: string[] = [];
+  let presetText = '';
+  for (const item of pending) {
+    const text = take(item);
+    if (!text) continue;
+    if (item.kind === 'character') characterLines.push(text);
+    else if (item.kind === 'worldbook') worldbookLines.push(text);
+    else if (item.kind === 'note') noteLines.push(text);
+    else presetText = text;
+  }
   return { characterText: characterLines.join('\n\n'), worldbookText: worldbookLines.join('\n\n'), noteText: noteLines.join('\n\n'), presetText, selected, excluded };
 }
