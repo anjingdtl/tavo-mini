@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.20.0] - 2026-08-23
+
+### 二期工程收束正式发版（Compact Standard Pipeline FINAL SEALED）
+
+V2.20.0 是二期写作管线收束后的首个正式发版。V2.11.54 构建之后合入的 Phase 5/6/7 收束与收尾修复随本版本首次进入正式 APK（Phase 4R ONE QA Closure 细节见 [2.11.54]）：
+
+- **Phase 5（Revision Trigger / API / Token）**：compact Revision 触发契约收紧——仅无 pass 类 verdict 且存在可执行 finding（severity∈{blocking,warning} + 可定位 + 可执行）才派发修订，QA pass+[]、info-only、generic 不再触发（2-call Clean 成常态）；阶段级 token 成本核算同步收紧。
+- **Phase 6（Batch/UI/Ledger 收束）**：批量/单章/Resume/UI/Trace 与 compact standard 全面对齐；UI 用户语义补齐修订/校验/保存标签。
+- **Phase 7（Exact HEAD / CI / Stability 锁定）**：`phaseTwoGenerationStabilityGate` 锁定二期 Generation Stability 关键套件集并禁止 `.skip/.only/allow-failure`；Pipeline Behavior Red Tests 接入 generation-stability CI 工作流。
+- **收尾修复**：compact QA admission contract 强制执行；pipeline behavior 持久化闭环；writerRecovery 恢复路径强化。
+
+### Fixed / Added — 资料库 token 预估与项目重命名（原 Unreleased 收录，随 V2.11.54 构建先行合入）
+
+- 修复作家风格卡片「预估占用」恒为 0：presets 表并无 `content`/`data_json` 列，估算改用与运行时注入完全一致的口径（`system_prompt` + 写作风格 + 附加要求），编辑器内估算同步修正（不再依赖保存前恒为空的 `semanticJson`）。
+- 新增项目重命名：项目卡片新增铅笔按钮，弹窗改名（`renameProject`），重命名当前项目时同步内存中的 `currentProject`，各页标题即时更新。
+
+### Fixed — 新建项目体验与作家风格 UI（原 Unreleased 收录）
+
+- 新建「大纲创作/原著续写」项目不再自动种子空「第 1 章」：一键 N 章从第 1 章开始（此前种子空章导致批量从第 2 章起跳），JSON 项目导入也不再出现 position 0 冲突的多余空章。
+- 资料页顶部 Segment 标签行按内容比例分配宽度并强制单行，「作家风格」等 4 字标签不再换行错位。
+- 作家风格卡片（含内置目录）的「来源：旧版」等徽章移入标题下方可换行标签行，不再溢出卡片边框；补充 `default_runtime_baseline → 内置` 来源映射。
+
+### Added — TXT 小说导入为项目（原 Unreleased 收录）
+
+- 项目页「导入」支持 TXT：原生编码识别（UTF-8/UTF-16/GBK/GB18030）→ 复用原著解析器按 第X章/节/回、Chapter N 切章 → 序章/楔子/番外等宽松标题兜底 → 未识别时可选「智能分章（LLM）」。
+- 导入为大纲创作项目（≤20MB），标题前正文收进「开篇」章，章节完全可编辑、可跑管线、可一键 N 章；新增 `createChaptersBulk` 单事务批量建章，失败整体回滚。
+
+### Validation
+
+- `npm run verify` 全绿（**497 套件 / 3803 用例**，0 failed；3 套件 / 8 用例按计划 skip）。
+- 模拟器实测（随先行合入验证）：作家风格卡片预估 0 → 120/157（符合默认基线注入量）；当前项目改名后列表、DB、续写工作台标题三处同步；新大纲/续写项目零种子章、一键续写锚点「本批将从第 1 章开始」；UTF-8/GBK TXT 导入 4 章正确入库且编辑器可改；作家风格 tab 单行对齐与徽章无溢出；logcat 零新增异常。
+- 正式 APK 硬验收通过：v2 签名、证书 SHA-256、zipalign、包名与版本元数据一致（详见发版记录）。
+- 模拟器安装 + 冷启动通过：主界面「作品库」正常渲染，logcat 零 FATAL EXCEPTION（本机 QA 模拟器原为 debug 签名构建，跨签名升级按 Android 规则先卸载再安装正式包；release→release 覆盖升级保留数据的验收沿用既有路径）。
+
 ## [2.11.54] - 2026-08-20
 
 ### ONE QA Closure 与二期工程收束（Phase 4R / 5 / 6 / 7 FINAL GATES）
@@ -25,33 +59,6 @@
 - Android Debug（final HEAD）：`apk:debug` BUILD SUCCESSFUL，`adb install -r` Success（保留 LLM 配置）。
 - 真实 LLM Compact 调用图（Outline Standard 2/2、Continuation Standard 2/2、One-Shot 1+1，Draft×1+QA×1+Revision×1/正文×1；Review/Audit/FactCheck/Proof=0）已于 HEAD 7fbefc43 采集。
 
-## [Unreleased]
-
-### Fixed / Added — 资料库 token 预估与项目重命名
-
-- 修复作家风格卡片「预估占用」恒为 0：presets 表并无 `content`/`data_json` 列，估算改用与运行时注入完全一致的口径（`system_prompt` + 写作风格 + 附加要求），编辑器内估算同步修正（不再依赖保存前恒为空的 `semanticJson`）。
-- 新增项目重命名：项目卡片新增铅笔按钮，弹窗改名（`renameProject`），重命名当前项目时同步内存中的 `currentProject`，各页标题即时更新。
-
-### Validation
-
-- `npm run verify` 全绿（463 套件 / 3579 用例）。
-- 模拟器实测：作家风格卡片预估 0 → 120/157（符合默认基线注入量）；当前项目改名后列表、DB、续写工作台标题三处同步，logcat 零新增异常。
-
-### Fixed — 新建项目体验与作家风格 UI
-
-- 新建「大纲创作/原著续写」项目不再自动种子空「第 1 章」：一键 N 章从第 1 章开始（此前种子空章导致批量从第 2 章起跳），JSON 项目导入也不再出现 position 0 冲突的多余空章。
-- 资料页顶部 Segment 标签行按内容比例分配宽度并强制单行，「作家风格」等 4 字标签不再换行错位。
-- 作家风格卡片（含内置目录）的「来源：旧版」等徽章移入标题下方可换行标签行，不再溢出卡片边框；补充 `default_runtime_baseline → 内置` 来源映射。
-
-### Added — TXT 小说导入为项目
-
-- 项目页「导入」支持 TXT：原生编码识别（UTF-8/UTF-16/GBK/GB18030）→ 复用原著解析器按 第X章/节/回、Chapter N 切章 → 序章/楔子/番外等宽松标题兜底 → 未识别时可选「智能分章（LLM）」。
-- 导入为大纲创作项目（≤20MB），标题前正文收进「开篇」章，章节完全可编辑、可跑管线、可一键 N 章；新增 `createChaptersBulk` 单事务批量建章，失败整体回滚。
-
-### Validation
-
-- `npm run verify` 全绿（463 套件 / 3579 用例，含新增 projectTxtImport 14 用例）。
-- 模拟器实测：新大纲/续写项目零种子章、一键续写锚点「本批将从第 1 章开始」、UTF-8/GBK TXT 导入 4 章正确入库且编辑器可改、作家风格 tab 单行对齐与徽章无溢出，logcat 零新增异常。
 
 ## [2.11.53] - 2026-08-15
 
