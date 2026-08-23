@@ -59,12 +59,14 @@ export function resolveWriterStyleSelection(params: {
     const writerStyle = freezeDefaultWriterStyleBaseline();
     return { activeStyleId: null, writerStyle, draftPreset: null };
   }
+  // presets 是全局资料库行（project_id=0，历史遗留列）；项目亲和只由
+  // project_resources 的 JOIN 表达。asset 为 null 即覆盖"悬空/未启用"两态，
+  // 这里不得再断言 asset.project_id === projectId，否则全部库内风格绑定失败。
   if (
     !Number.isInteger(activeStyleId) ||
     activeStyleId <= 0 ||
     !params.asset ||
-    Number(params.asset.id) !== activeStyleId ||
-    Number(params.asset.project_id) !== Number(params.projectId)
+    Number(params.asset.id) !== activeStyleId
   ) {
     throw missingActiveWriterStyle();
   }

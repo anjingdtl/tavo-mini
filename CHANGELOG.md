@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — 作家风格绑定误报「已失去项目归属」阻断全部新任务
+
+- 修复 V2.20.0 引入的回归：`resolveWriterStyleSelection` 新增的 `presets.project_id === projectId` 归属断言与全局资料库不变量冲突——所有入库路径（手动添加/内置目录/JSON 导入/构建写入）均落 `project_id=0` 的全局行，真实项目 id ≥ 1 永不相等，导致「设为当前作家风格」与「流水线配置保存」必然抛 `ACTIVE_WRITER_STYLE_MISSING`（"当前项目绑定的作家风格不存在或已失去项目归属，已阻断新任务"）。项目亲和本就由 `project_resources` JOIN 唯一表达（悬空/未启用两态已覆盖），移除该冗余断言；补充全局资产（`project_id=0`）可正常决议的回归测试。
+- 模拟器实测（release 覆盖升级保留数据）：资料库「设为当前作家风格」成功并显示「当前项目正在使用」徽标；流水线配置保存弹出「保存成功」；JSON 导入新风格后设为当前同样生效；logcat 零新增异常。
+
 ## [2.20.0] - 2026-08-23
 
 ### 二期工程收束正式发版（Compact Standard Pipeline FINAL SEALED）

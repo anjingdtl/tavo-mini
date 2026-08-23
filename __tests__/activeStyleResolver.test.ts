@@ -41,3 +41,23 @@ test('active writer style resolver has one decision for empty, missing and norma
   expect(normal.draftPreset?.id).toBe(7);
   expect(normal.draftPreset?.system_prompt).toContain('WRITER_STYLE_PROTECTED_V5');
 });
+
+test('global library asset (project_id=0) stays resolvable for a real project', () => {
+  // 回归防线：createPreset 等入库路径全部写 project_id=0（全局资料库），
+  // 项目亲和由 project_resources 表达；若在此断言 asset.project_id ===
+  // projectId，所有"设为当前作家风格 / 流水线保存"都会误判为悬空绑定。
+  const global = resolveWriterStyleSelection({
+    projectId: 3,
+    activeStyleId: 7,
+    asset: { ...asset(), project_id: 0 },
+  });
+  expect(global.writerStyle.assetId).toBe(7);
+  expect(global.draftPreset?.id).toBe(7);
+
+  try {
+    resolveWriterStyleSelection({ projectId: 3, activeStyleId: 8, asset: asset() });
+    throw new Error('expected id mismatch to throw');
+  } catch (error) {
+    expect(error).toMatchObject({ code: ACTIVE_WRITER_STYLE_ERROR_CODE });
+  }
+});
