@@ -26,6 +26,7 @@ import {
 import {
   getContextAutoInput,
   getContextAutoLastApplied,
+  setContextAutoLastApplied,
   ensureContextAutomationPolicyV3,
   type ContextAutoAppliedRecord,
 } from '../data/repositories/contextAutoRepository';
@@ -118,57 +119,107 @@ export const ContextAutoConfigScreen: React.FC = () => {
       return;
     }
     const previewEnvelope = deriveLLMCapabilityFromAutoWindow(numericInput);
+    // Fail-closed sync target: only a preferred id that is already saved can
+    // receive the real-window write; unsaved drafts never mutate any row.
+    const syncConfigId = db.resolveLLMConfigIdForContextSync(
+      llmConfigs,
+      preferredLlmConfigId,
+    );
+    const syncTarget = syncConfigId != null
+      ? llmConfigs.find(config => Number(config.id) === syncConfigId)
+      : undefined;
+    const runApply = async (syncToModel: boolean) => {
+      setApplying(true);
+      try {
+        const v3Record = await applyContextAutoAllocationV3(numericInput);
+        let synced: {
+          configId: number;
+          contextWindow: number;
+          maxOutputTokens: number;
+        } | null = null;
+        if (syncToModel) {
+          if (syncConfigId == null) {
+            throw new Error('未找到已保存的参考模型配置，无法同步模型窗口');
+          }
+          // Full 80/20 envelope sync: the output ceiling rides along with
+          // the window. A stale small max_output_tokens silently breaks
+          // reasoning models (reasoning consumes the whole output budget
+          // before any content, finishReason=length).
+          await db.updateLLMCapabilityWindow(
+            syncConfigId,
+            numericInput,
+            previewEnvelope.maxOutputTokens,
+          );
+          synced = {
+            configId: syncConfigId,
+            contextWindow: numericInput,
+            maxOutputTokens: previewEnvelope.maxOutputTokens,
+          };
+          // Persist the sync marker onto the applied record so the
+          // "上次应用记录" card keeps showing it after navigation.
+          const persisted = await getContextAutoLastApplied();
+          if (persisted) {
+            await setContextAutoLastApplied({
+              ...persisted,
+              syncedContextWindow: synced,
+            });
+          }
+        }
+        await loadSettings();
+        setLastApplied({
+          maxContextTokens: v3Record.maxContextTokens,
+          appliedAt: v3Record.appliedAt,
+          allocation: undefined as any,
+          policySchemaVersion: 3,
+          policyVersion: v3Record.policy.allocatorVersion,
+          policyHash: v3Record.policyHash,
+          syncedContextWindow: synced,
+          affectedCounts: {
+            llmConfigs: v3Record.affectedCounts.llmConfigs,
+            presets: v3Record.affectedCounts.presets,
+            characters: 0,
+            notes: 0,
+            worldbookEntries: 0,
+            worldbookCollections: 0,
+          },
+        });
+        setPolicyV3(v3Record.policy);
+        setLlmConfigs(await db.getLLMConfigs());
+        Toast.show({
+          type: 'success',
+          text1: synced
+            ? `已同步模型真实能力：${formatNumber(numericInput)} / ${formatNumber(previewEnvelope.maxOutputTokens)} tokens`
+            : `已保存 ${formatNumber(numericInput)} tokens 的 V3 模拟窗口`,
+        });
+      } catch (e: any) {
+        Toast.show({
+          type: 'error',
+          text1: '应用失败',
+          text2: e?.message,
+        });
+      } finally {
+        setApplying(false);
+      }
+    };
     Alert.alert(
       '确认保存 V3 预算模拟窗口',
       `将保存 ${formatNumber(
         numericInput,
-      )} tokens 作为预算模拟窗口（仅 Preview / 预览）。\n\n` +
-        `按该模拟窗口预览 80/20 包络时，输出上限约为 ${formatNumber(
-          previewEnvelope.maxOutputTokens,
-        )} tokens。此预览不会写入任何 LLM 的 context_window / max_output_tokens。\n\n` +
-        '模型真实能力只能在 LLM 设置页点「保存配置」后改变。',
+      )} tokens 作为预算模拟窗口（用于 Preview / 预览）。\n\n` +
+        (syncConfigId != null
+          ? `「应用并同步模型窗口」会把参考模型「${syncTarget?.name || syncTarget?.model_name || `LLM #${syncConfigId}`}」的真实 context_window / max_output_tokens 一并写为 ${formatNumber(
+              numericInput,
+            )} / ${formatNumber(
+              previewEnvelope.maxOutputTokens,
+            )}（80/20 弹性包络），此后新生成任务的弹性预算立即按该能力计算。\n\n`
+          : '当前没有已保存的参考模型配置，本次仅保存模拟值。\n\n') +
+        '选择「仅保存模拟」则不改动任何 LLM 的真实 context_window / max_output_tokens。',
       [
         { text: '取消', style: 'cancel' },
+        { text: '仅保存模拟', onPress: () => { runApply(false); } },
         {
-          text: '应用',
-          style: 'destructive',
-          onPress: async () => {
-            setApplying(true);
-            try {
-              const v3Record = await applyContextAutoAllocationV3(numericInput);
-              await loadSettings();
-              setLastApplied({
-                maxContextTokens: v3Record.maxContextTokens,
-                appliedAt: v3Record.appliedAt,
-                allocation: undefined as any,
-                policySchemaVersion: 3,
-                policyVersion: v3Record.policy.allocatorVersion,
-                policyHash: v3Record.policyHash,
-                affectedCounts: {
-                  llmConfigs: v3Record.affectedCounts.llmConfigs,
-                  presets: v3Record.affectedCounts.presets,
-                  characters: 0,
-                  notes: 0,
-                  worldbookEntries: 0,
-                  worldbookCollections: 0,
-                },
-              });
-              setPolicyV3(v3Record.policy);
-              setLlmConfigs(await db.getLLMConfigs());
-              Toast.show({
-                type: 'success',
-                text1: `已保存 ${formatNumber(numericInput)} tokens 的 V3 模拟窗口`,
-              });
-            } catch (e: any) {
-              Toast.show({
-                type: 'error',
-                text1: '应用失败',
-                text2: e?.message,
-              });
-            } finally {
-              setApplying(false);
-            }
-          },
+          text: syncConfigId != null ? '应用并同步模型窗口' : '应用',
+          onPress: () => { runApply(syncConfigId != null); },
         },
       ],
     );
@@ -214,7 +265,7 @@ export const ContextAutoConfigScreen: React.FC = () => {
       <Header
         testID="context-auto-screen"
         title="上下文自动化配置"
-        subtitle="V3 策略与预算模拟（不修改模型真实能力）"
+        subtitle="V3 策略与预算模拟（可选同步模型真实窗口）"
       />
       <ScrollView contentContainerStyle={styles.content}>
         {isUnsavedDraft ? (
@@ -243,9 +294,20 @@ export const ContextAutoConfigScreen: React.FC = () => {
             </Text>
             <Text style={[styles.metaText, { color: theme.colors.textSecondary }]}>
               {lastApplied.policySchemaVersion === 3
-                ? 'V3 模式：只写入策略、模式与模拟窗口，保留每个模型的真实能力与资料上限不变'
+                ? 'V3 模式：只写入策略、模式与模拟窗口；除非你选择同步，模型真实能力与资料上限保持不变'
                 : '历史兼容记录：不参与新 V3 任务，也不会覆盖当前模型真实能力'}
             </Text>
+            {lastApplied.syncedContextWindow ? (
+              <Text style={[styles.metaText, { color: theme.colors.accent }]}>
+                已同步模型真实能力：配置 #{lastApplied.syncedContextWindow.configId} →{' '}
+                {formatNumber(lastApplied.syncedContextWindow.contextWindow)} /{' '}
+                {formatNumber(
+                  lastApplied.syncedContextWindow.maxOutputTokens ??
+                    lastApplied.syncedContextWindow.contextWindow * 0.2,
+                )}{' '}
+                tokens（context_window / max_output_tokens）
+              </Text>
+            ) : null}
             {lastApplied.policyVersion ? (
               <Text
                 style={[styles.metaText, { color: theme.colors.textSecondary }]}
@@ -294,7 +356,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
             </Text>
           )}
           <Text style={[styles.footnote, { color: theme.colors.textMuted }]}>
-            右侧依次为模型真实 context_window / max_output_tokens。这两个值只在 LLM 设置页保存时改变，本页的模拟窗口不能覆盖它们。
+            右侧依次为模型真实 context_window / max_output_tokens。除在 LLM 设置页保存外，本页「应用并同步模型窗口」会把参考模型这两个值写为
+            80/20 弹性包络（窗口 = 模拟窗口，输出上限 = 20%）。
           </Text>
         </Card>
 
@@ -321,8 +384,8 @@ export const ContextAutoConfigScreen: React.FC = () => {
             预算模拟窗口
           </Text>
           <Text style={[styles.cardMeta, { color: theme.colors.textSecondary }]}>
-            这是 Preview / 预算模拟值，不是模型真实能力。可读取上方参考模型的
-            context_window 作为默认模拟值，但模拟值不会反向覆盖任何 LLM 配置。
+            这是 Preview / 预算模拟值，默认读取上方参考模型的
+            context_window。如需让模型真实窗口与之一致，请在应用时选择「应用并同步模型窗口」。
           </Text>
           <View style={styles.quickRow}>
             {QUICK_PRESETS.map((p) => {

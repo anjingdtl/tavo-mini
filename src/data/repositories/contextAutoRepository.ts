@@ -44,6 +44,18 @@ export interface ContextAutoAppliedRecord {
   policyHash?: string;
   policy?: ContextAutomationPolicyV2;
   continuationPreview?: ContinuationPolicyPreview;
+  /**
+   * Present when the user chose "apply and sync model window": the saved
+   * LLM config whose real context_window / max_output_tokens were written
+   * to the 80/20 elastic envelope of maxContextTokens.
+   * Absent for simulation-only applies. `maxOutputTokens` is optional for
+   * records written before the envelope sync existed.
+   */
+  syncedContextWindow?: {
+    configId: number;
+    contextWindow: number;
+    maxOutputTokens?: number;
+  } | null;
   affectedCounts: {
     llmConfigs: number;
     presets: number;

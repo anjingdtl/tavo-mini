@@ -191,8 +191,10 @@ export function resolveLLMConfigIdForContextSync(
 /**
  * Explicit capability write for a saved LLM config.
  *
- * Context Auto must never call this — simulation windows stay in
- * `context_auto_input`. LLM Settings save is the only user-facing writer.
+ * Writers: the LLM Settings page save, or the user-confirmed
+ * "apply and sync model window" action on the Context Auto screen.
+ * `applyContextAutoAllocationV3` itself stays simulation-only and never
+ * calls this — simulation windows stay in `context_auto_input`.
  * Unknown / unsaved ids fail closed and do not touch any other row.
  */
 export async function updateLLMCapabilityWindow(

@@ -234,3 +234,74 @@ describe('Context Auto must not write LLM capability (NG-LLM-01 / NG-LLM-02)', (
     expect(await snapshotCapabilities()).toEqual(before);
   });
 });
+
+describe('explicit user sync — apply and sync model window', () => {
+  test('resolveLLMConfigIdForContextSync accepts only saved preferred ids', async () => {
+    await resetDb();
+    const idA = await seedModel({
+      name: 'A',
+      context_window: 32_768,
+      max_output_tokens: 4_000,
+      is_active: 1,
+    });
+    await seedModel({
+      name: 'B',
+      context_window: 128_000,
+      max_output_tokens: 8_000,
+      is_active: 0,
+    });
+    const configs = (await all<any>(
+      'SELECT id, is_active FROM llm_config ORDER BY id',
+    )).map(row => ({ id: Number(row.id), is_active: Number(row.is_active) }));
+
+    expect(resolveLLMConfigIdForContextSync(configs, idA)).toBe(idA);
+    // Unsaved draft ids / unknown ids fail closed to null.
+    expect(resolveLLMConfigIdForContextSync(configs, 0)).toBeNull();
+    expect(resolveLLMConfigIdForContextSync(configs, null)).toBeNull();
+    expect(resolveLLMConfigIdForContextSync(configs, 99)).toBeNull();
+  });
+
+  test('user-confirmed sync writes the full 80/20 envelope, leaves others alone', async () => {
+    await resetDb();
+    const idA = await seedModel({
+      name: 'A',
+      context_window: 32_768,
+      max_output_tokens: 4_000,
+      is_active: 1,
+    });
+    const idB = await seedModel({
+      name: 'B',
+      context_window: 128_000,
+      max_output_tokens: 8_000,
+      is_active: 0,
+    });
+    // The user flow: simulation apply (must not touch capability)…
+    await applyContextAutoAllocationV3(1_000_000);
+    expect((await resolveLLMRequestConfig()).context_window).toBe(32_768);
+    // …followed by the explicit, user-confirmed capability sync.
+    const syncId = resolveLLMConfigIdForContextSync(
+      (await all<any>('SELECT id, is_active FROM llm_config ORDER BY id')).map(
+        row => ({ id: Number(row.id), is_active: Number(row.is_active) }),
+      ),
+      idA,
+    );
+    expect(syncId).toBe(idA);
+    // 80/20 envelope: window 1M, output ceiling 20% = 200K.
+    await updateLLMCapabilityWindow(syncId!, 1_000_000, 200_000);
+
+    const rows = await snapshotCapabilities();
+    expect(rows.find(row => row.id === idA)).toMatchObject({
+      context_window: 1_000_000,
+      max_output_tokens: 200_000,
+    });
+    expect(rows.find(row => row.id === idB)).toMatchObject({
+      context_window: 128_000,
+      max_output_tokens: 8_000,
+    });
+    const live = await resolveLLMRequestConfig();
+    expect(live.context_window).toBe(1_000_000);
+    expect(live.max_output_tokens).toBe(200_000);
+    // The simulation input is untouched by the capability write.
+    expect(await getContextAutoInput()).toBe(1_000_000);
+  });
+});

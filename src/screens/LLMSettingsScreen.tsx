@@ -516,8 +516,9 @@ export const LLMSettingsScreen: React.FC = () => {
                   { color: theme.colors.textSecondary },
                 ]}
               >
-                打开预算模拟窗口。模拟值只用于 Preview，不会改写本页保存的模型真实
-                context_window / max_output_tokens。
+                打开预算模拟窗口。模拟值用于 Preview；在模拟窗口页选择
+                「应用并同步模型窗口」时，会把当前保存模型的
+                context_window / max_output_tokens 一并写为 80/20 弹性包络。
               </Text>
             </View>
             <Button
