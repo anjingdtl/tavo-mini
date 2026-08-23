@@ -777,27 +777,12 @@ export const ContextPreviewScreen: React.FC<Props> = ({
       ? continuationStageBudgets[selectedContinuationStage]
       : null;
 
-  return (
-    <Screen>
-      <Header
-        testID="context-preview"
-        title="上下文预览"
-        subtitle={`${
-          continuationPreview
-            ? `续写 draft_writer（V5 冻结视图）· ${continuationBudgetSummary} · `
-            : ''
-        }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
-        action={
-          <Button
-            testID="context-preview-close"
-            label="关闭"
-            variant="ghost"
-            icon={X}
-            onPress={onClose}
-            compact
-          />
-        }
-      />
+  // The summary cards live INSIDE the scrolling list header: the budget
+  // panel can grow taller than the screen (board details, per-resource
+  // rows), and cards outside the FlatList made everything below them
+  // unreachable (the list itself was squeezed to zero height).
+  const listHeader = (
+    <>
       {outlineBlock ? (
         <View
           style={[
@@ -1107,6 +1092,30 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           ) : null}
         </Card>
       ) : null}
+    </>
+  );
+
+  return (
+    <Screen>
+      <Header
+        testID="context-preview"
+        title="上下文预览"
+        subtitle={`${
+          continuationPreview
+            ? `续写 draft_writer（V5 冻结视图）· ${continuationBudgetSummary} · `
+            : ''
+        }预估 ${estimatedInputTokens.toLocaleString()} 词元`}
+        action={
+          <Button
+            testID="context-preview-close"
+            label="关闭"
+            variant="ghost"
+            icon={X}
+            onPress={onClose}
+            compact
+          />
+        }
+      />
       {showMessages ? (
         <FlatList
           data={messages}
@@ -1114,6 +1123,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           keyExtractor={(item, i) => `${i}-${item.role}`}
           renderItem={renderMessageItem}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={listHeader}
         />
       ) : (
         <FlatList
@@ -1124,6 +1134,7 @@ export const ContextPreviewScreen: React.FC<Props> = ({
           }
           renderItem={renderTraceItem}
           contentContainerStyle={styles.listContent}
+          ListHeaderComponent={listHeader}
         />
       )}
     </Screen>

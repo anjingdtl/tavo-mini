@@ -186,7 +186,7 @@ export const ContextConfigScreen: React.FC = () => {
           keyboardType="number-pad"
         />
         <Field
-          label="资料预算 tokens"
+          label="资料预算 tokens（弹性软目标，充足时借调）"
           value={String(draft.resourceBudget)}
           onChangeText={value =>
             updateDraft({ ...draft, resourceBudget: Number(value) ?? 0 })

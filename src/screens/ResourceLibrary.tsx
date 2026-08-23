@@ -1602,7 +1602,7 @@ export const ResourceLibrary: React.FC<{
                           ]}
                         >
                           {item.character_count || 0} 张 · 预估{' '}
-                          {item.estimated_tokens || 0} / Max{' '}
+                          {item.estimated_tokens || 0} / 软上限{' '}
                           {item.max_tokens || 50000} tokens
                         </Text>
                         <View style={styles.usageRow}>
@@ -1683,7 +1683,7 @@ export const ResourceLibrary: React.FC<{
                           ]}
                         >
                           {item.entry_count || 0} 条 · 预估{' '}
-                          {collectionTokenEstimate(item)} / Max{' '}
+                          {collectionTokenEstimate(item)} / 软上限{' '}
                           {item.max_tokens || 50000} tokens
                         </Text>
                         <View style={styles.usageRow}>
@@ -1771,7 +1771,7 @@ export const ResourceLibrary: React.FC<{
                           ]}
                         >
                           {item.note_count || 0} 篇分片 · 预估{' '}
-                          {item.estimated_tokens || 0} / Max{' '}
+                          {item.estimated_tokens || 0} / 软上限{' '}
                           {item.max_tokens || 50000} tokens
                         </Text>
                         <View style={styles.usageRow}>
@@ -1984,7 +1984,8 @@ export const ResourceLibrary: React.FC<{
                             : estimateTokens(
                                 item.content || item.data_json || '',
                               ))}{' '}
-                        / Max {item.max_tokens ?? defaultMaxTokens(tab)} tokens
+                        / 软上限 {item.max_tokens ?? defaultMaxTokens(tab)}{' '}
+                        tokens（弹性注入，上下文充足时按需借调）
                       </Text>
                       <View style={styles.usageRow}>
                         <Text
@@ -2102,7 +2103,7 @@ export const ResourceLibrary: React.FC<{
                 />
                 <Field
                   testID="resource-editor-max-tokens"
-                  label="Max Tokens"
+                  label="软上限 Max Tokens（预算紧张时生效）"
                   value={editor.maxTokens}
                   onChangeText={maxTokens =>
                     setEditor({ ...editor, maxTokens })
