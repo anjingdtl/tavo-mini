@@ -2,10 +2,36 @@
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-08-23
+
+### 统一写作核心：全上下文接入分层弹性（系统借调）
+
+- **移除旧预算流水线分叉**：`buildContext` 的 legacy 固定比例分支与 V2 单层 elastic 分支整块删除（含 `elasticResourceBudget` 辅助模块）。只要调用方提供模型窗口与预留输出，大纲、续写单章、自由写作、历史版本恢复一律走同一条分层弹性分配器；预算版本号仅决定 V7 冻结细节（awareness/detail/preset），不再选择引擎。
+- **四模块系统借调**：Story State / Resources / Sliding Window / Episodic Memory 全部按真实需求申报、按 V3 policy 同源比例（软目标 0.2/0.3/0.25/0.15，弹性上限 0.3/0.5/0.4/0.3）在 80% 软池竞争并在 burst 池借调；上下文充足时资料库按自然大小全量注入。
+- **单项 max_tokens 全部转为软上限**：角色卡/笔记/世界书条目/合集与续写外部补充在分区预算覆盖自然大小时整卡全量注入（借调），紧张时才按软上限裁剪；资料库 UI 文案同步改为「软上限（弹性注入，上下文充足时按需借调）」。
+- **续写补充两阶段注入**：补充预算覆盖需求时全量注入（`external_supplement_elastic_full_fit`），并注入全部五个阶段视图（draft/narrative/revision/auditor/final）。
+- **修复统一过程暴露的语义分歧**：V3 候选采集此前把笔记 `mode='none'` 当全量注入，已与 legacy 渲染语义对齐（null 配置=original 全量；显式 none=不注入）。
+- 自由写作入口传入真实模型窗口与预留输出，纳入弹性预算。
+
+### Added — 上下文自动化配置 80/20 包络同步
+
+- 「一键应用」新增「应用并同步模型窗口」：把参考模型的 `context_window` / `max_output_tokens` 一并写为 80/20 弹性包络（窗口=模拟窗口，输出上限=20%），持久化同步标记并在「上次应用记录」展示；`applyContextAutoAllocationV3` 保持纯模拟（隔离测试 A–F 语义不变），写入仅经 fail-closed 的 `updateLLMCapabilityWindow`。
+- 动机：推理模型（如 DeepSeek V4 flash）reasoning 会占满偏小的输出预算（finishReason=length）导致原著分析失败；包络同步后 Canon 分析 6/6 完成。
+
+### Fixed — 上下文预览页不可滚动
+
+- 预览页预算卡片原本位于 FlatList 之外，展开「详细分配」后卡片超高把列表压为零高，下方内容不可达；卡片移入 `ListHeaderComponent`，整页单列表滚动。
+
 ### Fixed — 作家风格绑定误报「已失去项目归属」阻断全部新任务
 
-- 修复 V2.20.0 引入的回归：`resolveWriterStyleSelection` 新增的 `presets.project_id === projectId` 归属断言与全局资料库不变量冲突——所有入库路径（手动添加/内置目录/JSON 导入/构建写入）均落 `project_id=0` 的全局行，真实项目 id ≥ 1 永不相等，导致「设为当前作家风格」与「流水线配置保存」必然抛 `ACTIVE_WRITER_STYLE_MISSING`（"当前项目绑定的作家风格不存在或已失去项目归属，已阻断新任务"）。项目亲和本就由 `project_resources` JOIN 唯一表达（悬空/未启用两态已覆盖），移除该冗余断言；补充全局资产（`project_id=0`）可正常决议的回归测试。
-- 模拟器实测（release 覆盖升级保留数据）：资料库「设为当前作家风格」成功并显示「当前项目正在使用」徽标；流水线配置保存弹出「保存成功」；JSON 导入新风格后设为当前同样生效；logcat 零新增异常。
+- 修复 V2.20.0 引入的回归：`resolveWriterStyleSelection` 新增的 `presets.project_id === projectId` 归属断言与全局资料库不变量冲突——所有入库路径（手动添加/内置目录/JSON 导入/构建写入）均落 `project_id=0` 的全局行，真实项目 id ≥ 1 永不相等，导致「设为当前作家风格」与「流水线配置保存」必然抛 `ACTIVE_WRITER_STYLE_MISSING`。项目亲和本就由 `project_resources` JOIN 唯一表达，移除该冗余断言；补充全局资产可正常决议的回归测试。
+
+### 模拟器全链路实测（debug + release 覆盖升级，真实 DeepSeek V4 flash / 1M 窗口）
+
+- 构建导入：备份中心跨签名迁移完整（含 keychain 密钥）；角色卡 5,880/软上限 2,947、世界书 2,451/2,000、笔记 1,518 全量导入启用。
+- 大纲流水线：Freeze/生成/检查/校验/保存全成功（17,069 tokens 输入），冻结请求含超出软上限的完整资料标记，正文实际引用注入内容。
+- 续写 V4 内核：Canon 分析 6/6、物理请求 3/3、五阶段视图 supplements 均含全量资料，awaiting_user 采纳落章；全程零崩溃。
+- gates: 全量 Jest 498 套件 / 3,812 测试通过，tsc / eslint 干净。
 
 ## [2.20.0] - 2026-08-23
 
