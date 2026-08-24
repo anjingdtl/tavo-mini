@@ -168,6 +168,11 @@ export async function runSharedOutlineWriterAction(input: {
                 totalTokens?: number;
               } } | undefined
             )?.usage;
+            const receipts = (
+              results[index]?.artifact as {
+                requestReceipts?: unknown;
+              } | undefined
+            )?.requestReceipts;
             return updateStageAttempt({
               id,
               status: 'succeeded',
@@ -179,6 +184,9 @@ export async function runSharedOutlineWriterAction(input: {
               inputTokens: Number(usage?.inputTokens || 0),
               outputTokens: Number(usage?.outputTokens || 0),
               totalTokens: Number(usage?.totalTokens || 0),
+              frozenRequestJson: Array.isArray(receipts)
+                ? JSON.stringify(receipts)
+                : null,
             });
           }),
         );

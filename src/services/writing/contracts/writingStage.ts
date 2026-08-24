@@ -122,6 +122,7 @@ export interface SharedWritingArtifact {
     physicalRequestCount?: number;
     protocolFallbackCount?: number;
   };
+  requestReceipts?: import('./writingRequestReceipt').WritingRequestReceipt[];
 }
 
 /** Durable control only. Must never compile writer prompts or call the LLM. */

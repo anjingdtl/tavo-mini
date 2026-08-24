@@ -22,6 +22,8 @@ import { projectFrozenContextForStage } from '../context/stageContextProjection'
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
 import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
 
+export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
+
 export interface SharedPromptCompileInput {
   stage: SharedWritingStageName;
   frozenContext: FrozenWritingContext;

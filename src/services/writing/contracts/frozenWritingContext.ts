@@ -146,6 +146,11 @@ export interface WritingKernelTrace {
   /** Durable Persist → PostWriting handoff for the trace's final body. */
   writingPersistedEvent?: WritingPersistedEvent;
   /**
+   * Reconstructable identities of actual model-visible requests.
+   * Optional on historical traces. Never part of freezeFingerprint.
+   */
+  requestReceipts?: import('./writingRequestReceipt').WritingRequestReceipt[];
+  /**
    * Phase 0 chapter observability. Optional so historical traces keep parsing.
    * Never participates in freezeFingerprint.
    */

@@ -44,6 +44,7 @@ export {
   recordPendingContextBuildTimings,
   recordPostWritingObservability,
   recordWritingLlmCall,
+  recordWritingRequestReceipt,
   resetWritingObservabilityForTests,
   snapshotWritingObservability,
   takePendingContextBuildTimings,

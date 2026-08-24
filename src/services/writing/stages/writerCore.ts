@@ -24,7 +24,13 @@ import {
 import {
   classifyWritingLlmCall,
   recordWritingLlmCall,
+  recordWritingRequestReceipt,
 } from '../observability';
+import {
+  buildWritingRequestReceipt,
+  completeWritingRequestReceipt,
+  type WritingRequestReceipt,
+} from '../contracts/writingRequestReceipt';
 
 export function emptyRequirementResult() {
   return {
@@ -230,6 +236,16 @@ export async function executeSharedWriterStage(input: {
       protocolFallbackCount: 0,
       durationMs: Date.now() - injectedStartedAt,
     });
+    attachRequestReceipts(artifact, stageInput, [
+      finishRequestReceipt(
+        startRequestReceipt(stage, stageInput, compiled, {
+          thinking: { type: 'enabled' },
+        }),
+        injected,
+        'succeeded',
+        stageInput,
+      ),
+    ]);
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
     return artifact;
   }
@@ -368,6 +384,33 @@ export async function executeSharedWriterStage(input: {
         protocolFallbackCount: formatted.protocolFallbackCount,
         durationMs: Date.now() - formatterStartedAt,
       });
+      attachRequestReceipts(artifact, stageInput, [
+        finishRequestReceipt(
+          startRequestReceipt(stage, stageInput, compiled, stageReasoning),
+          primary,
+          'succeeded',
+          stageInput,
+        ),
+        finishRequestReceipt(
+          startRequestReceipt(
+            stage,
+            stageInput,
+            {
+              messages: formatter.messages,
+              maxTokens: Math.min(maxTokens, 4096),
+              responseFormat:
+                compiled.outputContract === 'json_envelope'
+                  ? 'json_object'
+                  : 'text',
+            },
+            { thinking: { type: 'disabled' } },
+            'formatter',
+          ),
+          formatted,
+          'succeeded',
+          stageInput,
+        ),
+      ]);
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
       return artifact;
     } catch (error) {
@@ -392,8 +435,79 @@ export async function executeSharedWriterStage(input: {
     protocolFallbackCount: primary.protocolFallbackCount,
     durationMs: Date.now() - primaryStartedAt,
   });
+  attachRequestReceipts(artifact, stageInput, [
+    finishRequestReceipt(
+      startRequestReceipt(stage, stageInput, compiled, stageReasoning),
+      primary,
+      'succeeded',
+      stageInput,
+    ),
+  ]);
   await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
   return artifact;
+}
+
+function startRequestReceipt(
+  stage: SharedWritingStageName,
+  stageInput: SharedWritingStageInput,
+  compiled: {
+    messages: Parameters<typeof buildWritingRequestReceipt>[0]['compiled']['messages'];
+    maxTokens: number;
+    responseFormat: 'json_object' | 'text';
+  },
+  reasoning: {
+    thinking: { type: 'enabled' | 'disabled' };
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  },
+  kind: 'logical_stage' | 'formatter' = 'logical_stage',
+): WritingRequestReceipt {
+  return buildWritingRequestReceipt({
+    generationTraceId: stageInput.frozenContext.generationTraceId,
+    stage,
+    frozenContext: stageInput.frozenContext,
+    compiled,
+    thinking: reasoning.thinking,
+    reasoningEffort: reasoning.reasoningEffort,
+    kind,
+  });
+}
+
+function finishRequestReceipt(
+  receipt: WritingRequestReceipt,
+  result: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    reasoningTokens?: number | null;
+    finishReason?: string | null;
+    usage?: { prompt?: number; completion?: number; total?: number };
+  },
+  outcome: 'succeeded' | 'failed',
+  stageInput: SharedWritingStageInput,
+): WritingRequestReceipt {
+  const completed = completeWritingRequestReceipt(receipt, {
+    outcome,
+    usage: {
+      inputTokens: Number(result.inputTokens || result.usage?.prompt || 0),
+      outputTokens: Number(result.outputTokens || result.usage?.completion || 0),
+      totalTokens: Number(
+        result.totalTokens || result.usage?.total || 0,
+      ),
+      reasoningTokens: result.reasoningTokens ?? null,
+    },
+    finishReason: result.finishReason ?? null,
+    resultArtifactRef: `artifact:${stageInput.frozenContext.generationTraceId}:${receipt.stage}`,
+  });
+  recordWritingRequestReceipt(stageInput.trace, completed);
+  return completed;
+}
+
+function attachRequestReceipts(
+  artifact: SharedWritingArtifact,
+  _stageInput: SharedWritingStageInput,
+  receipts: WritingRequestReceipt[],
+): void {
+  artifact.requestReceipts = receipts;
 }
 
 function finalizeWriterArtifact(

@@ -119,6 +119,7 @@ export interface UpdateStageAttemptInput {
   // Schema 51: cache telemetry, written on the success path only.
   promptCacheHitTokens?: number | null;
   promptCacheMissTokens?: number | null;
+  frozenRequestJson?: string | null;
 }
 
 function mapRow(row: any): PipelineStageAttemptRow {
@@ -241,6 +242,7 @@ export async function updateStageAttempt(
     // the error path (caller does not pass them), leaving the column NULL.
     ['prompt_cache_hit_tokens', input.promptCacheHitTokens],
     ['prompt_cache_miss_tokens', input.promptCacheMissTokens],
+    ['frozen_request_json', input.frozenRequestJson],
   ];
   const diagnosticFields: Array<[string, unknown]> = [
     ['finish_reason', input.finishReason],

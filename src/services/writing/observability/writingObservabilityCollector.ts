@@ -12,6 +12,7 @@ import type {
 } from '../contracts/frozenWritingContext';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 import type { WritingStageArtifacts } from '../contracts/writingStage';
+import type { WritingRequestReceipt } from '../contracts/writingRequestReceipt';
 import {
   emptyWritingChapterObservability,
   measureDuplicateContext,
@@ -41,6 +42,7 @@ interface CollectorState {
   contextTimings: WritingContextBuildTimings;
   frozenContext: FrozenWritingContext | null;
   calls: WritingLlmCallRecord[];
+  receipts: WritingRequestReceipt[];
   stages: Map<string, WritingStageTimingRecord>;
   pending: Map<string, PendingStageTiming>;
   lastStageEndedAt: number | null;
@@ -80,6 +82,7 @@ export function bindWritingObservabilityCollector(
   if (existing) {
     if (frozenContext) existing.frozenContext = frozenContext;
     existing.contextTimings = contextTimings;
+    if (!existing.receipts) existing.receipts = [];
     return;
   }
   collectors.set(trace.generationTraceId, {
@@ -89,6 +92,7 @@ export function bindWritingObservabilityCollector(
     contextTimings,
     frozenContext: frozenContext ?? null,
     calls: [],
+    receipts: [],
     stages: new Map(),
     pending: new Map(),
     lastStageEndedAt: null,
@@ -101,6 +105,19 @@ export function getWritingObservabilityCollector(
 ): CollectorState | null {
   if (!generationTraceId) return null;
   return collectors.get(generationTraceId) ?? null;
+}
+
+export function recordWritingRequestReceipt(
+  trace: WritingKernelTrace | null | undefined,
+  receipt: WritingRequestReceipt,
+): void {
+  if (!trace) return;
+  trace.requestReceipts = [...(trace.requestReceipts || []), receipt];
+  const collector = getWritingObservabilityCollector(trace.generationTraceId);
+  if (collector) {
+    collector.receipts = collector.receipts || [];
+    collector.receipts.push(receipt);
+  }
 }
 
 export function recordWritingLlmCall(
@@ -264,6 +281,10 @@ export function finalizeWritingKernelObservability(
   return {
     ...trace,
     observability: snapshot,
+    requestReceipts:
+      collector.receipts.length > 0
+        ? [...collector.receipts]
+        : trace.requestReceipts,
   };
 }
 
