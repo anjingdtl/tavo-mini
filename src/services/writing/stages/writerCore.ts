@@ -11,6 +11,7 @@ import type {
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 import { resolveSharedStageSkip } from '../contracts/writingPolicy';
 import { allowsFormatterCallForStage } from '../contracts/executionProfile';
+import { chapterTruthProjectionDriftCode } from '../contracts/chapterTruthProjection';
 import { evaluateWritingRequirements } from '../contracts/writingRequirement';
 import { resolveFrozenStageReasoning } from '../contracts/stageReasoning';
 import { callWritingStageLLM } from './stageLlmCall';
@@ -53,6 +54,8 @@ export function gateSharedStageInput(input: SharedWritingStageInput): string | n
   ) {
     return 'WRITING_REQUIREMENT_FINGERPRINT_DRIFT';
   }
+  const truthDrift = chapterTruthProjectionDriftCode(input.frozenContext);
+  if (truthDrift) return truthDrift;
   return null;
 }
 

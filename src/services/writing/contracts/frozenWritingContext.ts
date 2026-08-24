@@ -9,6 +9,7 @@ import type {
 import type { WritingRequirements } from './writingRequirement';
 import type { WritingStagePolicy } from './writingPolicy';
 import type { WritingPersistedEvent } from '../flow/writingPersistedEvent';
+import type { ChapterTruthProjection } from './chapterTruthProjection';
 
 export interface WritingMaterialCandidate {
   source: WritingSource;
@@ -89,6 +90,11 @@ export interface FrozenWritingContext {
   rendered: RenderedWritingContext;
   sourceFingerprint: string;
   freezeFingerprint: string;
+  /**
+   * Fingerprint-level chapter facts reconstructed from this frozen context.
+   * Optional on historical snapshots; never participates in freezeFingerprint.
+   */
+  truthProjection?: ChapterTruthProjection;
 }
 
 export type WritingKernelStage =

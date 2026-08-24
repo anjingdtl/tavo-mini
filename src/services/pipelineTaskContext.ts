@@ -50,6 +50,7 @@ import type {
   FrozenWritingContext,
   WritingKernelTrace,
 } from './writing/contracts/frozenWritingContext';
+import { buildChapterTruthProjection } from './writing/contracts/chapterTruthProjection';
 import { parseWritingChapterObservability } from './writing/observability/writingChapterObservability';
 import type {
   WritingScenario,
@@ -676,7 +677,11 @@ function parseFrozenWritingContext(
       'restart_task',
     );
   }
-  return raw as unknown as FrozenWritingContext;
+  const frozen = raw as unknown as FrozenWritingContext;
+  if (!frozen.truthProjection) {
+    frozen.truthProjection = buildChapterTruthProjection(frozen);
+  }
+  return frozen;
 }
 
 function parseFrozenWriterStyle(

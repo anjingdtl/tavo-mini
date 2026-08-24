@@ -16,6 +16,8 @@ export {
 } from './scenario/continuationWritingAdapter';
 export { restartLegacyWritingTask } from './legacyRestart';
 export * from './contracts/frozenWritingContext';
+export * from './contracts/chapterTruthProjection';
+export * from './contracts/generationQualityProfile';
 export * from './context/collectWritingMaterials';
 export * from './context/normalizeWritingMaterials';
 export * from './context/buildWritingContextPlan';

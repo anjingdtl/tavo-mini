@@ -20,6 +20,7 @@ import {
 } from './requirementProjection';
 import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
+import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
 
 export interface SharedPromptCompileInput {
   stage: SharedWritingStageName;
@@ -140,6 +141,7 @@ const ONE_SHOT_DRAFT_PROJECTION = [
 export function compileSharedWritingPrompt(
   input: SharedPromptCompileInput,
 ): SharedPromptCompileResult {
+  resolveChapterTruthProjection(input.frozenContext, input.stage);
   const outputContract = isStructuredReportStage(input.stage)
     ? 'json_envelope'
     : input.stage === 'revision'

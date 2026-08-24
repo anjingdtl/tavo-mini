@@ -10,6 +10,7 @@ import type {
 import type { WritingRequirements } from '../contracts/writingRequirement';
 import type { WritingStagePolicy } from '../contracts/writingPolicy';
 import { fingerprintWritingSourceBundle } from '../contracts/writingFingerprint';
+import { buildChapterTruthProjection } from '../contracts/chapterTruthProjection';
 
 export function freezeWritingContext(input: {
   request: WritingRequest;
@@ -38,7 +39,7 @@ export function freezeWritingContext(input: {
       stagePolicy: input.stagePolicy,
     }),
   );
-  return {
+  const frozen: FrozenWritingContext = {
     version: 1,
     writingRunId: input.request.writingRunId,
     generationTraceId: input.request.generationTraceId,
@@ -81,4 +82,6 @@ export function freezeWritingContext(input: {
     sourceFingerprint,
     freezeFingerprint,
   };
+  frozen.truthProjection = buildChapterTruthProjection(frozen);
+  return frozen;
 }
