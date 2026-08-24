@@ -9,6 +9,7 @@ import type { PipelineReasoningTier } from '../services/pipeline/reasoningPolicy
 import type { ContextAutomationPolicyV3 } from '../services/contextAutomationPolicy';
 import type { FrozenWriterStyleV1 } from '../services/writerStyle/types';
 import type { WritingExecutionProfile } from '../services/writing/contracts/executionProfile';
+import type { GenerationQualityProfile } from '../services/writing/contracts/generationQualityProfile';
 
 export type FinalReviserReasoningPolicyVersion = 1 | 2 | 3;
 
@@ -113,6 +114,11 @@ export interface PipelineExecutionSnapshot {
    * revision stages. Resume must never re-read the live setting.
    */
   executionProfile?: WritingExecutionProfile;
+  /**
+   * User-facing 极速 / 标准 / 质量 frozen at task start. Missing on
+   * historical snapshots; Resume uses executionProfile + stageReasoning.
+   */
+  generationQualityProfile?: GenerationQualityProfile;
 
   /** V3 product profile and per-stage frozen effective tiers. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;

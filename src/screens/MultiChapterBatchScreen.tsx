@@ -39,7 +39,7 @@ import type {
   MultiChapterWritingMode,
 } from '../types/multiChapterBatch';
 import type { PipelineReasoningEffort } from '../types/pipeline';
-import { PIPELINE_REASONING_EFFORT_OPTIONS } from '../services/pipeline/reasoningPolicy';
+import { generationQualityLabel, deriveGenerationQualityProfile } from '../services/writing/contracts/generationQualityProfile';
 import {
   getPipelineStageOrder,
   STAGE_LABELS,
@@ -747,8 +747,12 @@ function reasoningEffortLabel(
   value: PipelineReasoningEffort,
   executionProfile?: 'standard' | 'one_shot' | null,
 ): string {
-  if (executionProfile === 'one_shot') return '极速';
-  return PIPELINE_REASONING_EFFORT_OPTIONS.find(option => option.value === value)?.label || value;
+  return generationQualityLabel(
+    deriveGenerationQualityProfile({
+      executionProfile,
+      reasoningEffort: value,
+    }),
+  );
 }
 
 function RunningView(props: {

@@ -4,6 +4,12 @@ import {
   isPipelineReasoningTier,
   normalizePipelineReasoningTier,
 } from '../../services/pipeline/reasoningPolicy';
+import {
+  deriveGenerationQualityProfile,
+  isGenerationQualityProfile,
+  mapGenerationQualityProfile,
+  type GenerationQualityProfile,
+} from '../../services/writing/contracts/generationQualityProfile';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
@@ -38,6 +44,7 @@ export async function getPipelineConfig(options?: {
     'pipeline_mode',
     'pipeline_reasoning_effort',
     'pipeline_execution_profile',
+    'pipeline_generation_quality_profile',
     'pipeline_reasoning_profile_version',
     'pipeline_brief_visible_output_floor',
     'pipeline_brief_reasoning_headroom',
@@ -117,6 +124,13 @@ export async function getPipelineConfig(options?: {
       get('pipeline_execution_profile') === 'one_shot'
         ? ('one_shot' as const)
         : ('standard' as const),
+    generationQualityProfile: deriveGenerationQualityProfile({
+      qualityProfile: get('pipeline_generation_quality_profile'),
+      executionProfile: get('pipeline_execution_profile'),
+      reasoningEffort: isPipelineReasoningTier(normalizedTier)
+        ? normalizedTier
+        : DEFAULT_PIPELINE_REASONING_EFFORT,
+    }),
     reasoningProfileVersion: 5,
     activeWriterStyleId,
     draftPresetId: presetId('pipeline_draft_preset_id'),
@@ -151,6 +165,23 @@ export async function getStoredWritingExecutionProfile(): Promise<
   return rows[0]?.value === 'one_shot' ? 'one_shot' : 'standard';
 }
 
+export async function getStoredGenerationQualityProfile(): Promise<GenerationQualityProfile> {
+  const rows = await all<{ key: string; value: string }>(
+    `SELECT key, value FROM settings WHERE key IN (?, ?, ?)`,
+    [
+      'pipeline_generation_quality_profile',
+      'pipeline_execution_profile',
+      'pipeline_reasoning_effort',
+    ],
+  );
+  const settingsMap = new Map(rows.map(row => [row.key, row.value]));
+  return deriveGenerationQualityProfile({
+    qualityProfile: settingsMap.get('pipeline_generation_quality_profile'),
+    executionProfile: settingsMap.get('pipeline_execution_profile'),
+    reasoningEffort: settingsMap.get('pipeline_reasoning_effort'),
+  });
+}
+
 export async function setPipelineConfig(  config: PipelineConfig,
   projectId?: number,
 ): Promise<void> {
@@ -163,9 +194,30 @@ export async function setPipelineConfig(  config: PipelineConfig,
       [config.activeWriterStyleId, new Date().toISOString(), projectId],
     );
   }
-  const tier = isPipelineReasoningTier(config.reasoningEffort)
+  const explicitQuality = isGenerationQualityProfile(
+    config.generationQualityProfile,
+  )
+    ? config.generationQualityProfile
+    : null;
+  const mapped = explicitQuality
+    ? mapGenerationQualityProfile(explicitQuality)
+    : null;
+  const tier = mapped
+    ? mapped.reasoningEffort
+    : isPipelineReasoningTier(config.reasoningEffort)
     ? config.reasoningEffort
     : normalizePipelineReasoningTier(config.reasoningEffort);
+  const executionProfile = mapped
+    ? mapped.executionProfile
+    : config.executionProfile === 'one_shot'
+    ? 'one_shot'
+    : 'standard';
+  const qualityProfile =
+    explicitQuality ||
+    deriveGenerationQualityProfile({
+      executionProfile,
+      reasoningEffort: tier,
+    });
   const database = await openDatabase();
   await executeTransaction(database, [
     {
@@ -174,10 +226,11 @@ export async function setPipelineConfig(  config: PipelineConfig,
     },
     {
       sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-      params: [
-        'pipeline_execution_profile',
-        config.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
-      ],
+      params: ['pipeline_execution_profile', executionProfile],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      params: ['pipeline_generation_quality_profile', qualityProfile],
     },
     {
       sql: 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',

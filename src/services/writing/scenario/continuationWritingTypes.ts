@@ -52,4 +52,6 @@ export interface StartContinuationRunInput {
    * time. Frozen into the kernel stage policy — never re-read after Freeze.
    */
   executionProfile?: WritingExecutionProfile;
+  /** Batch-frozen reasoning tier; used only to derive qualityProfile at Freeze. */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }

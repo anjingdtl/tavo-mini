@@ -8,6 +8,10 @@ import {
   isOneShotValues,
   ONE_SHOT_EXECUTION_PROFILE_POLICY,
 } from './executionProfile';
+import {
+  isGenerationQualityProfile,
+  mapGenerationQualityProfile,
+} from './generationQualityProfile';
 
 export type SharedWritingStageName =
   | 'draft'
@@ -149,6 +153,16 @@ export function buildWritingStagePolicy(
           policyRuleId: 'policy.outline.review_covers_audit',
         },
       };
+  // Explicit GenerationQualityProfile is a Freeze-time mapping onto the
+  // existing execution profile. Requests without the key stay byte-identical
+  // so historical freeze fingerprints and Resume semantics keep validating.
+  if (isGenerationQualityProfile(values.qualityProfile)) {
+    const mapped = mapGenerationQualityProfile(values.qualityProfile);
+    values.qualityProfile = values.qualityProfile;
+    if (mapped.executionProfile === 'one_shot') {
+      values.executionProfile = 'one_shot';
+    }
+  }
   // The Execution Profile projects on top of the scenario rules and is
   // frozen into the same stagePolicy (values + skipRules). Standard tasks
   // stay byte-identical so historical freeze fingerprints keep validating.

@@ -33,6 +33,7 @@ import {
   resolveV32StageReasoning,
   resolveV33StageReasoning,
 } from './reasoningPolicy';
+import { deriveGenerationQualityProfile } from '../writing/contracts/generationQualityProfile';
 import {
   buildPostDraftAuditContextFromFrozen,
   captureFrozenAuditCandidates,
@@ -195,6 +196,7 @@ function buildExecutionSnapshot(params: {
   finalReviserReasoningPolicyVersion?: 1 | 2 | 3;
   reasoningEffort?: PipelineConfig['reasoningEffort'];
   executionProfile?: PipelineConfig['executionProfile'];
+  generationQualityProfile?: PipelineConfig['generationQualityProfile'];
 }): PipelineExecutionSnapshot {
   const contextWindow = Number(params.requestConfig.context_window) || 0;
   if (!(contextWindow > 0)) {
@@ -406,6 +408,9 @@ function buildExecutionSnapshot(params: {
     ...(params.executionProfile === 'one_shot'
       ? { executionProfile: 'one_shot' as const }
       : {}),
+    ...(params.generationQualityProfile
+      ? { generationQualityProfile: params.generationQualityProfile }
+      : {}),
     ...(isStructured
       ? {
           reasoningProfileVersion: reasoningProfileVersion as 2 | 3 | 4 | 5,
@@ -462,6 +467,7 @@ function configFromExecution(
     activeWriterStyleId: execution.writerStyle?.assetId || null,
     reasoningEffort: execution.reasoningEffort,
     executionProfile: execution.executionProfile,
+    generationQualityProfile: execution.generationQualityProfile,
     reasoningProfileVersion: execution.reasoningProfileVersion,
     draftPresetId: execution.draftPresetId,
     reviewPresetId: execution.reviewPresetId,
@@ -900,6 +906,11 @@ async function actionPersistInitialSnapshot(
     options.pipelineExecutionProfileOverride !== null
       ? options.pipelineExecutionProfileOverride
       : runtime.config.executionProfile;
+  const selectedQualityProfile = deriveGenerationQualityProfile({
+    qualityProfile: runtime.config.generationQualityProfile,
+    executionProfile: selectedExecutionProfile,
+    reasoningEffort: selectedReasoningEffort,
+  });
   const freshConfig =
     isStructured && !existingExecution && selectedReasoningEffort
       ? {
@@ -993,6 +1004,7 @@ async function actionPersistInitialSnapshot(
           : undefined,
       executionProfile:
         selectedExecutionProfile === 'one_shot' ? 'one_shot' : undefined,
+      generationQualityProfile: selectedQualityProfile,
     });
   // Batch-owned first run: the batch form's mode wins over the global
   // pipeline setting. Resume never overrides a frozen snapshot.
@@ -1123,6 +1135,9 @@ async function actionPersistInitialSnapshot(
         outlineStageReasoning: execution.stageReasoning,
         ...(execution.executionProfile === 'one_shot'
           ? { executionProfile: 'one_shot' as const }
+          : {}),
+        ...(execution.generationQualityProfile
+          ? { qualityProfile: execution.generationQualityProfile }
           : {}),
         // §5.2: freeze the topology label into the kernel freeze from the
         // TASK ROW (frozen at creation); never the live default.

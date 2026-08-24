@@ -263,6 +263,12 @@ async function backfillKernelFreezeFromEnvelope(input: {
       values: {
         contextBudgetVersion: execution.contextBudgetVersion,
         outlineStageReasoning: execution.stageReasoning,
+        ...(execution.executionProfile === 'one_shot'
+          ? { executionProfile: 'one_shot' as const }
+          : {}),
+        ...(execution.generationQualityProfile
+          ? { qualityProfile: execution.generationQualityProfile }
+          : {}),
         // §5.2: the frozen topology label joins the kernel freeze so
         // post-Freeze stages (Final Candidate / future DAG switches) read the
         // frozen value, never the live default.

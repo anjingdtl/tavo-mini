@@ -1360,6 +1360,23 @@ export function parsePipelineExecutionSnapshot(
       'restart_task',
     );
   }
+  const qualityProfileRaw = raw.generationQualityProfile;
+  let generationQualityProfile: 'fast' | 'standard' | 'quality' | undefined;
+  if (
+    qualityProfileRaw === 'fast' ||
+    qualityProfileRaw === 'standard' ||
+    qualityProfileRaw === 'quality'
+  ) {
+    generationQualityProfile = qualityProfileRaw;
+  } else if (qualityProfileRaw != null && qualityProfileRaw !== '') {
+    throw new OutlineContextError(
+      'OUTLINE_EXECUTION_CONFIG_INVALID',
+      `不支持的生成质量档 ${String(
+        qualityProfileRaw,
+      )}，已阻止恢复。请重新开始生成。`,
+      'restart_task',
+    );
+  }
   const contextBudgetRaw = raw.contextBudgetVersion;
   let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | undefined;
   if (
@@ -1695,6 +1712,7 @@ export function parsePipelineExecutionSnapshot(
     finalReviserReasoningPolicyVersion,
     reasoningEffort,
     ...(executionProfile ? { executionProfile } : {}),
+    ...(generationQualityProfile ? { generationQualityProfile } : {}),
     ...v3Fields,
     draftMaxTokens: requireNonNegativeFinite(
       raw.draftMaxTokens,

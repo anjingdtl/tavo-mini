@@ -7,17 +7,19 @@ import { useProjectStore } from '../store/projectStore';
 import * as db from '../services/database';
 import type { Preset } from '../types/novel';
 import type { PipelineConfig } from '../types/pipeline';
+import { DEFAULT_PIPELINE_REASONING_EFFORT } from '../services/pipeline/reasoningPolicy';
 import {
-  DEFAULT_PIPELINE_REASONING_EFFORT,
-  PIPELINE_ONE_SHOT_TIER_PRESET,
-  PIPELINE_REASONING_EFFORT_OPTIONS,
-  type PipelineReasoningTier,
-  type PipelineThinkingPresetValue,
-} from '../services/pipeline/reasoningPolicy';
+  GENERATION_QUALITY_PROFILE_OPTIONS,
+  deriveGenerationQualityProfile,
+  mapGenerationQualityProfile,
+  type GenerationQualityProfile,
+} from '../services/writing/contracts/generationQualityProfile';
 
 const DEFAULT_CONFIG: PipelineConfig = {
   pipelineMode: 'full',
   reasoningEffort: DEFAULT_PIPELINE_REASONING_EFFORT,
+  executionProfile: 'standard',
+  generationQualityProfile: 'standard',
   reasoningProfileVersion: 5,
   activeWriterStyleId: null,
   draftPresetId: null,
@@ -97,63 +99,60 @@ export const PipelineConfigScreen: React.FC = () => {
       <Header testID="pipeline-config" title="流水线配置" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>思考档位</Text>
+          <Text style={[styles.stageTitle, { color: theme.colors.textPrimary }]}>生成质量</Text>
           <SegmentedControl
-            value={(() => {
-              if (config.executionProfile === 'one_shot') return 'one_shot';
-              return (
-                config.reasoningEffort === 'medium'
-                  ? DEFAULT_PIPELINE_REASONING_EFFORT
-                  : config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT
-              ) as PipelineReasoningTier;
-            })() as PipelineThinkingPresetValue}
-            options={[
-              {
-                value: PIPELINE_ONE_SHOT_TIER_PRESET.value,
-                label: PIPELINE_ONE_SHOT_TIER_PRESET.label,
-              },
-              ...PIPELINE_REASONING_EFFORT_OPTIONS.map(option => ({
-                value: option.value,
-                label: option.label,
-              })),
-            ]}
-            onChange={(preset: PipelineThinkingPresetValue) => {
-              if (preset === 'one_shot') {
-                // 极速 = One-Shot Execution Profile（非 reasoningEffort），
-                // 单次 Draft 请求固定搭配 low 档思考预算。
-                setConfig({
-                  ...config,
-                  executionProfile: 'one_shot',
-                  reasoningEffort:
-                    PIPELINE_ONE_SHOT_TIER_PRESET.reasoningEffort,
-                });
-              } else {
-                setConfig({
-                  ...config,
-                  executionProfile: 'standard',
-                  reasoningEffort: preset as PipelineReasoningTier,
-                });
-              }
+            testIDPrefix="pipeline-generation-quality"
+            value={deriveGenerationQualityProfile({
+              qualityProfile: config.generationQualityProfile,
+              executionProfile: config.executionProfile,
+              reasoningEffort: config.reasoningEffort,
+            })}
+            options={GENERATION_QUALITY_PROFILE_OPTIONS.map(option => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            onChange={(preset: GenerationQualityProfile) => {
+              const mapped = mapGenerationQualityProfile(preset);
+              setConfig({
+                ...config,
+                generationQualityProfile: preset,
+                executionProfile: mapped.executionProfile,
+                reasoningEffort: mapped.reasoningEffort,
+              });
             }}
           />
           <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            {config.executionProfile === 'one_shot'
-              ? PIPELINE_ONE_SHOT_TIER_PRESET.description
-              : PIPELINE_REASONING_EFFORT_OPTIONS.find(
-                  option =>
-                    option.value ===
-                    (config.reasoningEffort || DEFAULT_PIPELINE_REASONING_EFFORT),
-                )?.description}
-            {config.executionProfile === 'one_shot'
-              ? `\n${PIPELINE_ONE_SHOT_TIER_PRESET.subLabel}`
-              : ' 生成、检查、修订、校验跟随用户档位；具体启用环节由冻结 Policy 决定。'}
+            {GENERATION_QUALITY_PROFILE_OPTIONS.find(
+              option =>
+                option.value ===
+                deriveGenerationQualityProfile({
+                  qualityProfile: config.generationQualityProfile,
+                  executionProfile: config.executionProfile,
+                  reasoningEffort: config.reasoningEffort,
+                }),
+            )?.description}
+            {`\n${
+              GENERATION_QUALITY_PROFILE_OPTIONS.find(
+                option =>
+                  option.value ===
+                  deriveGenerationQualityProfile({
+                    qualityProfile: config.generationQualityProfile,
+                    executionProfile: config.executionProfile,
+                    reasoningEffort: config.reasoningEffort,
+                  }),
+              )?.subLabel || ''
+            }`}
           </Text>
           <Text
             style={[styles.hint, { color: theme.colors.textSecondary }]}
           >
-            {config.executionProfile === 'one_shot'
-              ? 'One-Shot 仍使用同一套阶段视图：Draft 执行一次，QA/Revision 正式跳过，随后进入 FinalValidate → Persist；Formatter、Retry、Fallback 均不启用。'
-              : 'Standard 统一执行 Freeze → Draft → ONE QA → Conditional Revision → FinalValidate → Persist；PostWriting 与 ONE Memory 由同一闭环接续。'}
+            {deriveGenerationQualityProfile({
+              qualityProfile: config.generationQualityProfile,
+              executionProfile: config.executionProfile,
+              reasoningEffort: config.reasoningEffort,
+            }) === 'fast'
+              ? '极速仍使用同一套阶段视图：Draft 执行一次，QA/Revision 正式跳过，随后进入 FinalValidate → Persist；Formatter、Retry、Fallback 均不启用。'
+              : '标准与质量都执行 Freeze → Draft → ONE QA → Conditional Revision → FinalValidate → Persist；质量档不增加新 Stage，只提高思考预算。PostWriting 与 ONE Memory 由同一闭环接续。'}
           </Text>
         </View>
 

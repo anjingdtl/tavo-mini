@@ -28,7 +28,11 @@ import type {
 } from '../../continuation/generation/types';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
-import { getStoredWritingExecutionProfile } from '../../../data/repositories/pipelineTaskRepository';
+import {
+  getStoredGenerationQualityProfile,
+  getStoredWritingExecutionProfile,
+} from '../../../data/repositories/pipelineTaskRepository';
+import { deriveGenerationQualityProfile } from '../contracts/generationQualityProfile';
 import {
   CURRENT_PIPELINE_TOPOLOGY_VERSION,
   pipelineTopologyLabel,
@@ -94,6 +98,14 @@ export async function prepareContinuationRun(
       : await getStoredWritingExecutionProfile().catch(
           () => 'standard' as const,
         );
+  const storedQuality = input.executionProfile
+    ? undefined
+    : await getStoredGenerationQualityProfile().catch(() => undefined);
+  const qualityProfile = deriveGenerationQualityProfile({
+    qualityProfile: storedQuality,
+    executionProfile,
+    reasoningEffort: input.reasoningEffort,
+  });
   const { snapshot, trace } = await buildContinuationV5Context({
     projectId: input.projectId,
     targetChapterId: input.chapterId,
@@ -170,6 +182,7 @@ export async function prepareContinuationRun(
         ...(executionProfile === 'one_shot'
           ? { executionProfile: 'one_shot' as const }
           : {}),
+        qualityProfile,
         requirements: (snapshot.bundles.lockedRules || []).map(
           (text, index) => ({
             id: `obligation:locked-rule:${index + 1}`,

@@ -505,6 +505,7 @@ async function executeContinuationItemStep(params: {
         // Batch-frozen One-Shot (极速) profile (Schema 54).
         executionProfile:
           batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
+        reasoningEffort: batch.reasoningEffort || undefined,
       });
       const bound = await bindContinuationRunForItem({
         batchId,
@@ -701,6 +702,7 @@ async function driveRunToSettlement(params: {
           // the batch's frozen execution strategy.
           executionProfile:
             batch.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
+          reasoningEffort: batch.reasoningEffort || undefined,
         });
         await cancelContinuationRun(run.id).catch(() => {});
         await updateBatchItem(batchId, item.ordinal, {

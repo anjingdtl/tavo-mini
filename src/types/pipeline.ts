@@ -1,3 +1,5 @@
+import type { GenerationQualityProfile } from '../services/writing/contracts/generationQualityProfile';
+
 export type PipelineStageName =
   | 'draft'
   | 'qa'
@@ -42,6 +44,12 @@ export interface PipelineConfig {
    * many stages run, never how much context the model receives.
    */
   executionProfile?: PipelineExecutionProfile;
+  /**
+   * User-facing generation quality: 极速 / 标准 / 质量. Freeze maps this onto
+   * executionProfile + reasoningEffort. Historical configs without the key
+   * derive it; Resume never rewrites a frozen task.
+   */
+  generationQualityProfile?: GenerationQualityProfile;
   /** Product reasoning profile version; new outline tasks freeze version 5. */
   reasoningProfileVersion?: 1 | 2 | 3 | 4 | 5;
   /** New tasks use one project-scoped active Writer Style. */
