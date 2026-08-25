@@ -257,27 +257,26 @@ describe('runWritingStages DAG execution', () => {
 });
 
 describe('Outline brief formal skip is not a failed Brief', () => {
-  test('skipped brief proceeds to proof', () => {
+  test('skipped brief in the compact DAG finalizes the draft directly', () => {
     const task = {
       id: 'pt_test',
       status: 'briefing',
       pipelineMode: 'full',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
+      pipelineTopologyVersion: 2,
       hasExecutionSnapshot: true,
       hasDraftContext: true,
       hasAuditContext: true,
       finalText: '初稿',
-      outlineWorkflowVersion: 3,
-      contextBudgetVersion: 3,
       executionProfile: 'standard',
     } as PersistedPipelineTaskView;
     const checkpoints: PersistedStageCheckpoint[] = [
       { stage: 'draft', status: 'succeeded', outputText: 'draft' },
-      { stage: 'review', status: 'succeeded', outputText: 'review' },
-      { stage: 'factCheck', status: 'succeeded', outputText: 'fc' },
+      { stage: 'qa', status: 'succeeded', outputText: 'qa' },
       { stage: 'brief', status: 'skipped', outputText: null },
-      { stage: 'proof', status: 'pending', outputText: null },
     ];
     const action = determineNextPipelineAction(task, checkpoints);
-    expect(action.type).toBe('run_proof');
+    expect(action.type).toBe('complete');
   });
 });

@@ -124,21 +124,33 @@ export function buildWritingStagePolicy(
     request.policy.reviewMode,
     values,
   );
+  // Explicit GenerationQualityProfile is a Freeze-time mapping onto the ONE
+  // Kernel contracts. When the profile key is present, its mapped reasoning
+  // effort (fast→low / standard→high / quality→max) governs every paid LLM
+  // stage, so a stale per-stage reasoning snapshot from the retired 4-tier
+  // UI can never silently override the 3-level profile. Requests without the
+  // key compile from the frozen legacy fields and stay byte-identical, so
+  // historical freeze fingerprints and Resume semantics keep validating.
+  const explicitQuality = isGenerationQualityProfile(values.qualityProfile)
+    ? mapGenerationQualityProfile(values.qualityProfile)
+    : null;
   values.stageReasoning = compileKernelStageReasoning({
     scenario: continuation ? 'continuation' : 'outline',
     modelName: request.model.modelName,
-    requestedEffort: request.model.reasoningEffort,
+    requestedEffort: explicitQuality?.reasoningEffort ?? request.model.reasoningEffort,
     continuationThinking: request.model.thinking,
-    outlineStageReasoning: values.outlineStageReasoning as
-      | Record<
-          string,
-          {
-            thinking?: 'enabled' | 'disabled' | { type: 'enabled' | 'disabled' };
-            effort?: 'low' | 'medium' | 'high' | 'max' | null;
-            effectiveTier?: 'low' | 'medium' | 'high' | 'max' | null;
-          }
-        >
-      | undefined,
+    outlineStageReasoning: explicitQuality
+      ? undefined
+      : (values.outlineStageReasoning as
+          | Record<
+              string,
+              {
+                thinking?: 'enabled' | 'disabled' | { type: 'enabled' | 'disabled' };
+                effort?: 'low' | 'medium' | 'high' | 'max' | null;
+                effectiveTier?: 'low' | 'medium' | 'high' | 'max' | null;
+              }
+            >
+          | undefined),
   });
   const skipRules: WritingStagePolicy['skipRules'] = continuation
     ? {

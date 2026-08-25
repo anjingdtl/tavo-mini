@@ -2,8 +2,6 @@
  * Outline pipeline V5-Lite — workflow version routing (Phase 0).
  *
  * Covers:
- *   - shouldFreezeOutlineWorkflowV2 remains available for historical V2
- *   - shouldFreezeOutlineWorkflowV3 gating (outline/chapter/id>0/default=3)
  *   - snapshot serialize/parse round-trip of outlineWorkflowVersion
  *   - legacy tasks without the field stay V1 (undefined)
  *   - invalid version values fail closed
@@ -13,15 +11,14 @@ import {
   serializePipelineTaskContext,
 } from '../src/services/pipelineTaskContext';
 import {
-  DEFAULT_OUTLINE_WORKFLOW_VERSION,
   CURRENT_CONTEXT_BUDGET_VERSION,
   PHASE2_CONTEXT_BUDGET_VERSION,
   resolveNewChapterContextBudgetVersion,
-  shouldFreezeOutlineWorkflowV2,
-  shouldFreezeOutlineWorkflowV3,
+  shouldFreezeOutlineWorkflowV4,
   type ContextBudgetVersion,
   type OutlineWorkflowVersion,
 } from '../src/services/pipeline/outlineWorkflowVersion';
+import type { PipelineReasoningTier } from '../src/services/pipeline/reasoningPolicy';
 import type { PipelineContextSnapshot } from '../src/types/pipelineContext';
 import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 
@@ -51,8 +48,40 @@ function snap(): PipelineContextSnapshot {
 function execution(
   overrides: Partial<PipelineExecutionSnapshot> = {},
 ): PipelineExecutionSnapshot {
+  const requestedTier = 'high' as const;
+  const tiers: Record<
+    'draft' | 'review' | 'factCheck' | 'brief' | 'proof',
+    PipelineReasoningTier
+  > = {
+    draft: 'high',
+    review: 'high',
+    factCheck: 'low',
+    brief: 'high',
+    proof: 'high',
+  };
+  const stageReasoning = Object.fromEntries(
+    Object.entries(tiers).map(([stage, effectiveTier]) => [
+      stage,
+      {
+        stage,
+        requestedTier,
+        effectiveTier,
+        thinking: 'enabled' as const,
+        effort: effectiveTier,
+        supported: true,
+      },
+    ]),
+  ) as PipelineExecutionSnapshot['stageReasoning'];
   return {
     pipelineMode: 'full',
+    outlineWorkflowVersion: 4,
+    contextBudgetVersion: 5,
+    finalReviserReasoningPolicyVersion: 3,
+    reasoningEffort: 'high',
+    reasoningProfileVersion: 5,
+    requestedReasoningTier: requestedTier,
+    stageReasoning,
+    briefPolicyVersion: 4,
     draftMaxTokens: 4000,
     reviewMaxTokens: 2000,
     factCheckMaxTokens: 2000,
@@ -78,118 +107,59 @@ function execution(
   };
 }
 
-describe('shouldFreezeOutlineWorkflowV2', () => {
-  test('freezes V2 for real outline chapter when default is 2', () => {
+describe('shouldFreezeOutlineWorkflowV4', () => {
+  test('freezes V4 for real outline chapter by production default', () => {
     expect(
-      shouldFreezeOutlineWorkflowV2({
+      shouldFreezeOutlineWorkflowV4({
         projectMode: 'outline',
         chapterId: 12,
-        defaultVersion: 2,
       }),
     ).toBe(true);
   });
 
-  test('never V2 when default is 1 (production rollback)', () => {
+  test('freeform pseudo-chapter (id 0) stays out of V4', () => {
     expect(
-      shouldFreezeOutlineWorkflowV2({
-        projectMode: 'outline',
-        chapterId: 12,
-        defaultVersion: 1,
-      }),
-    ).toBe(false);
-  });
-
-  test('freeform pseudo-chapter (id 0) stays V1', () => {
-    expect(
-      shouldFreezeOutlineWorkflowV2({
+      shouldFreezeOutlineWorkflowV4({
         projectMode: 'outline',
         chapterId: 0,
-        defaultVersion: 2,
       }),
     ).toBe(false);
   });
 
-  test('continuation projects never freeze V2 via outline pipeline', () => {
+  test('non-outline project modes never freeze V4 via outline pipeline', () => {
     expect(
-      shouldFreezeOutlineWorkflowV2({
+      shouldFreezeOutlineWorkflowV4({
         projectMode: 'continuation',
         chapterId: 12,
-        defaultVersion: 2,
       }),
     ).toBe(false);
-  });
-
-  test('historical freeform project mode never V2', () => {
     expect(
-      shouldFreezeOutlineWorkflowV2({
+      shouldFreezeOutlineWorkflowV4({
         projectMode: 'freeform',
         chapterId: 12,
-        defaultVersion: 2,
-      }),
-    ).toBe(false);
-  });
-
-  test('missing project mode never V2 (unconfirmable resume path)', () => {
-    expect(
-      shouldFreezeOutlineWorkflowV2({
-        projectMode: undefined,
-        chapterId: 12,
-        defaultVersion: 2,
-      }),
-    ).toBe(false);
-  });
-
-  test('default constant is 1 until A/B passes', () => {
-    expect(DEFAULT_OUTLINE_WORKFLOW_VERSION).toBe(1);
-  });
-
-  test('freezes V3 for real outline chapter when default is 3', () => {
-    expect(
-      shouldFreezeOutlineWorkflowV3({
-        projectMode: 'outline',
-        chapterId: 12,
-        defaultVersion: 3,
-      }),
-    ).toBe(true);
-  });
-
-  test('freeform pseudo-chapter (id 0) stays out of V3', () => {
-    expect(
-      shouldFreezeOutlineWorkflowV3({
-        projectMode: 'outline',
-        chapterId: 0,
-        defaultVersion: 3,
       }),
     ).toBe(false);
   });
 });
 
 describe('snapshot outlineWorkflowVersion round-trip', () => {
-  test('serialize/parse preserves outlineWorkflowVersion=2', () => {
+  test('serialize/parse preserves outlineWorkflowVersion=4', () => {
     const ser = serializePipelineTaskContext({
       draftContext: snap(),
-      execution: execution({ outlineWorkflowVersion: 2 }),
+      execution: execution({ outlineWorkflowVersion: 4 }),
     });
     const parsed = parsePersistedPipelineTaskContext(ser);
-    expect(parsed.execution?.outlineWorkflowVersion).toBe(2);
+    expect(parsed.execution?.outlineWorkflowVersion).toBe(4);
   });
 
-  test('serialize/parse preserves outlineWorkflowVersion=1', () => {
+  test('missing workflow version is rejected as legacy (fail-closed)', () => {
     const ser = serializePipelineTaskContext({
       draftContext: snap(),
       execution: execution({ outlineWorkflowVersion: 1 }),
     });
-    const parsed = parsePersistedPipelineTaskContext(ser);
-    expect(parsed.execution?.outlineWorkflowVersion).toBe(1);
-  });
-
-  test('legacy task without the field parses as undefined (V1)', () => {
-    const ser = serializePipelineTaskContext({
-      draftContext: snap(),
-      execution: execution(),
-    });
-    const parsed = parsePersistedPipelineTaskContext(ser);
-    expect(parsed.execution?.outlineWorkflowVersion).toBeUndefined();
+    expect(() => parsePersistedPipelineTaskContext(ser)).toThrow(
+      /已下线旧版流水线/,
+    );
   });
 
   test('invalid version fails closed', () => {

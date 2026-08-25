@@ -3,7 +3,7 @@
  *
  * Each case freezes a persisted task+checkpoint snapshot as if the process
  * died at that boundary, then asserts determineNextPipelineAction never
- * re-runs a succeeded LLM stage.
+ * re-runs a succeeded LLM stage. Compact topology only (unified pipeline).
  */
 import {
   determineNextPipelineAction,
@@ -16,7 +16,7 @@ import type { PipelineMode, PipelineStageName } from '../src/types/pipeline';
 function stages(
   map: Partial<Record<PipelineStageName, StageStatus>>,
 ): PersistedStageCheckpoint[] {
-  return (['draft', 'review', 'factCheck', 'proof'] as const).map(stage => ({
+  return (['draft', 'qa', 'brief'] as const).map(stage => ({
     stage,
     status: map[stage] || 'pending',
     outputText: map[stage] === 'succeeded' ? `${stage}-out` : null,
@@ -31,9 +31,10 @@ function task(
     id: 'fault',
     status: 'interrupted',
     pipelineMode: mode,
+    pipelineTopologyVersion: 2,
     hasExecutionSnapshot: true,
     hasDraftContext: true,
-    hasAuditContext: mode === 'full',
+    hasAuditContext: true,
     finalText: null,
     ...overrides,
   };
@@ -46,87 +47,50 @@ const matrix: Array<{
   hasAudit?: boolean;
   finalText?: string | null;
   expect: string;
-  never?: string[];
+  never: string[];
 }> = [
   {
     name: 'die before snapshot',
-    mode: 'twoStage',
+    mode: 'full',
     map: {},
-    // no snapshot flags
     expect: 'blocked',
-    never: ['run_draft', 'run_review', 'run_proof'],
-  },
-  {
-    name: 'die after snapshot before draft LLM',
-    mode: 'twoStage',
-    map: { draft: 'pending' },
-    expect: 'run_draft',
-    never: ['run_review', 'run_proof'],
-  },
-  {
-    name: 'die after draft LLM before checkpoint',
-    mode: 'twoStage',
-    map: { draft: 'interrupted' },
-    expect: 'run_draft',
-  },
-  {
-    name: 'die after draft checkpoint',
-    mode: 'twoStage',
-    map: { draft: 'succeeded' },
-    expect: 'run_review',
     never: ['run_draft'],
   },
   {
-    name: 'die after audit context (full)',
+    name: 'die after draft success before qa',
     mode: 'full',
     map: { draft: 'succeeded' },
-    hasAudit: true,
-    expect: 'run_review_and_fact_check',
-    never: ['run_draft', 'build_audit_context'],
+    expect: 'run_qa',
+    never: ['run_draft'],
   },
   {
-    name: 'die after review success before proof',
-    mode: 'twoStage',
-    map: { draft: 'succeeded', review: 'succeeded' },
-    expect: 'run_proof',
-    never: ['run_draft', 'run_review'],
+    name: 'die after qa success before brief',
+    mode: 'full',
+    map: { draft: 'succeeded', qa: 'succeeded' },
+    expect: 'run_brief',
+    never: ['run_draft', 'run_qa'],
   },
   {
-    name: 'die after factCheck success',
-    mode: 'conditional',
-    map: { draft: 'succeeded', factCheck: 'succeeded' },
-    expect: 'run_proof',
-    never: ['run_draft', 'run_fact_check'],
-  },
-  {
-    name: 'die after proof success before final text',
-    mode: 'twoStage',
-    map: {
-      draft: 'succeeded',
-      review: 'succeeded',
-      proof: 'succeeded',
-    },
-    expect: 'finalize_from_proof',
-    never: ['run_proof', 'run_draft', 'run_review'],
+    name: 'die after brief success before final text',
+    mode: 'full',
+    map: { draft: 'succeeded', qa: 'succeeded', brief: 'succeeded' },
+    expect: 'finalize_from_draft',
+    never: ['run_brief', 'run_draft', 'run_qa'],
   },
   {
     name: 'die after final text before complete',
-    mode: 'twoStage',
-    map: {
-      draft: 'succeeded',
-      review: 'succeeded',
-      proof: 'succeeded',
-    },
+    mode: 'full',
+    map: { draft: 'succeeded', qa: 'succeeded', brief: 'succeeded' },
     finalText: 'done',
     expect: 'complete',
-    never: ['run_proof', 'finalize_from_proof'],
+    never: ['run_brief', 'finalize_from_draft'],
   },
   {
     name: 'die with running stage (another executor)',
-    mode: 'twoStage',
-    map: { draft: 'succeeded', review: 'running' },
+    mode: 'full',
+    map: { draft: 'succeeded', qa: 'running' },
     expect: 'blocked',
-    never: ['run_review'],
+    never: ['run_qa'],
   },
 ];
 
@@ -141,7 +105,6 @@ describe('pipeline fault injection matrix', () => {
             status: 'interrupted',
           })
         : task(c.mode, {
-            hasAuditContext: c.hasAudit ?? c.mode === 'full',
             finalText: c.finalText ?? null,
           });
 

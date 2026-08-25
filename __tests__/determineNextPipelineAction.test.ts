@@ -13,7 +13,6 @@ import {
   type StageStatus,
 } from '../src/services/pipeline';
 import type { PipelineMode, PipelineStageName } from '../src/types/pipeline';
-import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from '../src/services/pipeline/finalBriefComplianceValidator';
 
 function stage(
   name: PipelineStageName,
@@ -28,6 +27,7 @@ function stages(
 ): PersistedStageCheckpoint[] {
   const names: PipelineStageName[] = [
     'draft',
+    'qa',
     'review',
     'factCheck',
     'brief',
@@ -48,6 +48,7 @@ function task(
     hasDraftContext: true,
     hasAuditContext: false,
     finalText: null,
+    pipelineTopologyVersion: 2,
     ...overrides,
   };
 }
@@ -78,11 +79,11 @@ describe('projectStageResultsToCheckpoints', () => {
         status: 'failed',
         text: '',
         error: '终稿失败',
-        errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+        errorCode: 'FINAL_PROOF_RETRY_REQUIRED',
       },
     ]);
     expect(projected.find(s => s.stage === 'proof')?.errorCode).toBe(
-      FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
+      'FINAL_PROOF_RETRY_REQUIRED',
     );
   });
 });
@@ -196,499 +197,53 @@ describe('determineNextPipelineAction — draft', () => {
   });
 });
 
-describe('determineNextPipelineAction — noReview', () => {
-  const mode = 'noReview' as const;
-
-  test('draft succeeded → finalize_from_draft', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'drafting' }),
-      stages({ draft: 'succeeded' }),
-    );
-    expect(a).toEqual({ type: 'finalize_from_draft' });
-  });
-
-  test('finalText present, not completed → complete', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        status: 'drafting',
-        finalText: 'body',
-      }),
-      stages({ draft: 'succeeded' }),
-    );
-    expect(actionType(a)).toBe('complete');
-  });
-});
-
-describe('determineNextPipelineAction — twoStage', () => {
-  const mode = 'twoStage' as const;
-
-  test('draft ok, review pending → run_review', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'reviewing' }),
-      stages({ draft: 'succeeded', review: 'pending' }),
-    );
-    expect(actionType(a)).toBe('run_review');
-  });
-
-  test('review interrupted → run_review (no re-draft)', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'interrupted' }),
-      stages({ draft: 'succeeded', review: 'interrupted' }),
-    );
-    expect(actionType(a)).toBe('run_review');
-  });
-
-  test('review failed → finalize_from_draft degraded', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'failed' }),
-      stages({ draft: 'succeeded', review: 'failed' }),
-    );
-    expect(a).toEqual({ type: 'finalize_from_draft', degraded: true });
-  });
-
-  test('review succeeded, proof pending → run_proof', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'proofing' }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'pending',
-      }),
-    );
-    expect(actionType(a)).toBe('run_proof');
-  });
-
-  test('PROOF SUCCEEDED without final → finalize_from_proof (never re-proof)', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'proofing' }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('finalize_from_proof');
-    expect(actionType(a)).not.toBe('run_proof');
-  });
-
-  test('proof succeeded + finalText, status not completed → complete', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        status: 'proofing',
-        finalText: 'polished',
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('complete');
-  });
-
-  test('proof failed → finalize_from_draft degraded', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'failed' }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'failed',
-      }),
-    );
-    expect(a).toEqual({ type: 'finalize_from_draft', degraded: true });
-  });
-
-  test('V3 Review failure → blocked for manual retry, never draft fallback', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        status: 'failed',
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'failed',
-        factCheck: 'skipped',
-        brief: 'pending',
-        proof: 'pending',
-      }),
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {code: 'STAGE_FAILED', stage: 'review', userAction: 'retry'},
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-  });
-
-  test('V3 Proof hard-gate failure → blocked for manual retry, never draft fallback', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        status: 'failed',
-      }),
-      [
-        stage('draft', 'succeeded'),
-        stage('review', 'succeeded'),
-        stage('factCheck', 'skipped'),
-        stage('brief', 'succeeded'),
-        {
-          stage: 'proof',
-          status: 'failed',
-          outputText: null,
-          errorCode: FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE,
-          errorMessage: '终稿连续性硬门禁未通过，请从失败节点重试',
-        },
-      ],
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {
-        code: 'STAGE_FAILED',
-        stage: 'proof',
-        userAction: 'retry',
-      },
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-  });
-
-  test('V3 Brief failure → blocked for manual retry, never draft fallback', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        status: 'failed',
-      }),
-      [
-        stage('draft', 'succeeded'),
-        stage('review', 'succeeded'),
-        stage('factCheck', 'skipped'),
-        {
-          stage: 'brief',
-          status: 'failed',
-          outputText: null,
-          errorMessage: 'Brief 失败',
-        },
-        stage('proof', 'pending'),
-      ],
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {code: 'STAGE_FAILED', stage: 'brief', userAction: 'retry'},
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-  });
-});
-
-describe('determineNextPipelineAction — conditional', () => {
-  const mode = 'conditional' as const;
-
-  test('draft ok → run_fact_check', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode }),
-      stages({ draft: 'succeeded', factCheck: 'pending' }),
-    );
-    expect(actionType(a)).toBe('run_fact_check');
-  });
-
-  test('factCheck succeeded → run_proof', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode }),
-      stages({
-        draft: 'succeeded',
-        factCheck: 'succeeded',
-        proof: 'pending',
-      }),
-    );
-    expect(actionType(a)).toBe('run_proof');
-  });
-
-  test('proof succeeded only finalize', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, status: 'interrupted' }),
-      stages({
-        draft: 'succeeded',
-        factCheck: 'succeeded',
-        proof: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('finalize_from_proof');
-  });
-
-  test('V3 factCheck failure → blocked for manual retry, never draft fallback', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        status: 'failed',
-      }),
-      stages({draft: 'succeeded', factCheck: 'failed', proof: 'pending'}),
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {code: 'STAGE_FAILED', stage: 'factCheck', userAction: 'retry'},
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-  });
-});
-
-describe('determineNextPipelineAction — full', () => {
-  const mode = 'full' as const;
-
-  test('draft ok, no auditContext → build_audit_context', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        hasAuditContext: false,
-        status: 'reviewing',
-      }),
-      stages({ draft: 'succeeded' }),
-    );
-    expect(actionType(a)).toBe('build_audit_context');
-  });
-
-  test('audit ready, both open → run_review_and_fact_check', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        hasAuditContext: true,
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'pending',
-        factCheck: 'pending',
-      }),
-    );
-    expect(actionType(a)).toBe('run_review_and_fact_check');
-  });
-
-  test('only review missing → run_review', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, hasAuditContext: true }),
-      stages({
-        draft: 'succeeded',
-        review: 'interrupted',
-        factCheck: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('run_review');
-  });
-
-  test('only factCheck missing → run_fact_check', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, hasAuditContext: true }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'pending',
-      }),
-    );
-    expect(actionType(a)).toBe('run_fact_check');
-  });
-
-  test('both audits failed → finalize_from_draft degraded', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, hasAuditContext: true }),
-      stages({
-        draft: 'succeeded',
-        review: 'failed',
-        factCheck: 'failed',
-      }),
-    );
-    expect(a).toEqual({ type: 'finalize_from_draft', degraded: true });
-  });
-
-  test('one audit ok → run_proof', () => {
-    const a = determineNextPipelineAction(
-      task({ pipelineMode: mode, hasAuditContext: true }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'failed',
-        proof: 'pending',
-      }),
-    );
-    expect(actionType(a)).toBe('run_proof');
-  });
-
-  test('V3 failed audit → blocked for manual retry, never draft fallback', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        hasAuditContext: true,
-        status: 'failed',
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'failed',
-        brief: 'pending',
-        proof: 'pending',
-      }),
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {code: 'STAGE_FAILED', stage: 'factCheck', userAction: 'retry'},
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-  });
-
-  test('PROOF SUCCEEDED after full path → finalize_from_proof only', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        hasAuditContext: true,
-        status: 'interrupted',
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'succeeded',
-        proof: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('finalize_from_proof');
-  });
-
-  test('finalText after proof, status not completed → complete', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        hasAuditContext: true,
-        status: 'proofing',
-        finalText: 'done body',
-      }),
-      stages({
-        draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'succeeded',
-        proof: 'succeeded',
-      }),
-    );
-    expect(actionType(a)).toBe('complete');
-  });
-
-  test('V3 invalid Brief → blocked STAGE_FAILED, never finalize draft or run proof', () => {
-    const a = determineNextPipelineAction(
-      task({
-        pipelineMode: mode,
-        outlineWorkflowVersion: 3,
-        contextBudgetVersion: 3,
-        hasAuditContext: true,
-        status: 'failed',
-      }),
-      [
-        stage('draft', 'succeeded'),
-        stage('review', 'succeeded'),
-        stage('factCheck', 'succeeded'),
-        {
-          stage: 'brief',
-          status: 'failed',
-          outputText: null,
-          errorMessage: 'Brief API 输出未通过完整性门禁，已阻断终稿',
-        },
-        stage('proof', 'pending'),
-      ],
-    );
-    expect(a).toMatchObject({
-      type: 'blocked',
-      reason: {
-        code: 'STAGE_FAILED',
-        stage: 'brief',
-        userAction: 'retry',
-        message: 'Brief API 输出未通过完整性门禁，已阻断终稿',
-      },
-    });
-    expect(actionType(a)).not.toBe('finalize_from_draft');
-    expect(actionType(a)).not.toBe('run_proof');
-  });
-});
 
 describe('determineNextPipelineAction — recovery matrix (no re-LLM of succeeded)', () => {
   const cases: Array<{
     name: string;
-    mode: PipelineMode;
     map: Partial<Record<PipelineStageName, StageStatus>>;
-    hasAudit?: boolean;
     finalText?: string | null;
     status?: string;
     expect: PipelineAction['type'];
   }> = [
     {
-      name: 'twoStage: stop after draft success',
-      mode: 'twoStage',
+      name: 'compact: stop after draft success → run_qa',
       map: { draft: 'succeeded' },
-      expect: 'run_review',
+      expect: 'run_qa',
     },
     {
-      name: 'twoStage: stop after review success',
-      mode: 'twoStage',
-      map: { draft: 'succeeded', review: 'succeeded' },
-      expect: 'run_proof',
+      name: 'compact: stop after qa success → run_brief',
+      map: { draft: 'succeeded', qa: 'succeeded' },
+      expect: 'run_brief',
     },
     {
-      name: 'twoStage: stop after proof success',
-      mode: 'twoStage',
-      map: {
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'succeeded',
-      },
-      expect: 'finalize_from_proof',
-    },
-    {
-      name: 'twoStage: stop after final text save',
-      mode: 'twoStage',
-      map: {
-        draft: 'succeeded',
-        review: 'succeeded',
-        proof: 'succeeded',
-      },
-      finalText: 'x',
-      status: 'proofing',
-      expect: 'complete',
-    },
-    {
-      name: 'full: stop after draft before audit',
-      mode: 'full',
-      map: { draft: 'succeeded' },
-      hasAudit: false,
-      expect: 'build_audit_context',
-    },
-    {
-      name: 'full: stop after audit context',
-      mode: 'full',
-      map: { draft: 'succeeded' },
-      hasAudit: true,
-      expect: 'run_review_and_fact_check',
-    },
-    {
-      name: 'noReview: never re-draft',
-      mode: 'noReview',
-      map: { draft: 'succeeded' },
+      name: 'compact: stop after brief success → finalize_from_draft',
+      map: { draft: 'succeeded', qa: 'succeeded', brief: 'succeeded' },
       expect: 'finalize_from_draft',
     },
     {
-      name: 'conditional: never re-draft after factCheck',
-      mode: 'conditional',
-      map: { draft: 'succeeded', factCheck: 'succeeded' },
-      expect: 'run_proof',
+      name: 'compact: stop after final text save → complete',
+      map: { draft: 'succeeded', qa: 'succeeded', brief: 'succeeded' },
+      finalText: 'x',
+      status: 'briefing',
+      expect: 'complete',
+    },
+    {
+      name: 'compact: formally skipped qa → draft is final',
+      map: { draft: 'succeeded', qa: 'skipped' },
+      expect: 'finalize_from_draft',
+    },
+    {
+      name: 'compact: qa failure stays blocked, never degrades to draft',
+      map: { draft: 'succeeded', qa: 'failed' },
+      expect: 'blocked',
     },
   ];
 
   test.each(cases)('$name → $expect', c => {
     const a = determineNextPipelineAction(
       task({
-        pipelineMode: c.mode,
-        hasAuditContext: c.hasAudit ?? c.mode !== 'full',
+        pipelineMode: 'full',
         finalText: c.finalText ?? null,
         status: c.status || 'interrupted',
       }),
@@ -702,18 +257,18 @@ describe('determineNextPipelineAction — first-run and resume share plan', () =
   test('identical durable state yields identical action regardless of task.status label', () => {
     const s = stages({
       draft: 'succeeded',
-      review: 'succeeded',
-      proof: 'pending',
+      qa: 'succeeded',
+      brief: 'pending',
     });
     const first = determineNextPipelineAction(
-      task({ pipelineMode: 'twoStage', status: 'proofing' }),
+      task({ pipelineMode: 'full', status: 'briefing' }),
       s,
     );
     const resume = determineNextPipelineAction(
-      task({ pipelineMode: 'twoStage', status: 'interrupted' }),
+      task({ pipelineMode: 'full', status: 'interrupted' }),
       s,
     );
     expect(first).toEqual(resume);
-    expect(actionType(first)).toBe('run_proof');
+    expect(actionType(first)).toBe('run_brief');
   });
 });

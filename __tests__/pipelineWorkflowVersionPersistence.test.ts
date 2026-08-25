@@ -233,74 +233,21 @@ async function taskRow(taskId: string): Promise<Record<string, any>> {
 describe('workflow version persistence (§4.3)', () => {
   jest.setTimeout(60_000);
 
-  it('V2 task row versions are frozen into the execution snapshot', async () => {
+  it('current task row versions (4/7) are frozen into the execution snapshot', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('twoStage');
-    const taskId = 't-persist-v2';
+    const taskId = 't-persist-v4';
     await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
     });
     mockCallLLMResult = happyMock();
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
 
     const execution = await frozenExecution(taskId);
-    expect(execution?.outlineWorkflowVersion).toBe(2);
-    expect(execution?.contextBudgetVersion).toBe(2);
-  });
-
-  it('legacy task row (1) freezes Legacy semantics (no V2 fields)', async () => {
-    await resetDb();
-    const { chapterId } = await seedBaseData('twoStage');
-    const taskId = 't-persist-v1';
-    await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: 1,
-      contextBudgetVersion: 1,
-    });
-    mockCallLLMResult = jest.fn().mockImplementation(async (messages: ChatMessage[]) => {
-      const stage = stageOf(messages);
-      if (stage === 'draft') return llm(DRAFT_BODY);
-      if (stage === 'review') {
-        return llm(
-          JSON.stringify({
-            strengths: ['场景清晰'],
-            issues: [],
-            suggestions: [],
-          }),
-        );
-      }
-      if (stage === 'proof' || messages.map(m => String(m.content ?? '')).join('\n').includes('你是终审校对员')) {
-        return llm(DRAFT_BODY + '\n\n老者点了点头。');
-      }
-      throw new Error(`legacy unexpected ${stage}`);
-    });
-
-    await reconcilePipelineTask(taskId, chapterFor(chapterId));
-
-    const execution = await frozenExecution(taskId);
-    // Legacy rows freeze the version explicitly as 1 (Legacy semantics).
-    expect(execution?.outlineWorkflowVersion).toBe(1);
-    expect(execution?.contextBudgetVersion).toBe(1);
-  });
-
-  it('missing row versions fail closed to Legacy (1)', async () => {
-    await resetDb();
-    const { chapterId } = await seedBaseData('noReview');
-    const taskId = 't-persist-null';
-    // Row versions absent (NULL) — e.g. rows written by a pre-44 build.
-    await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: null,
-      contextBudgetVersion: null,
-    });
-    mockCallLLMResult = happyMock();
-
-    await reconcilePipelineTask(taskId, chapterFor(chapterId));
-
-    const execution = await frozenExecution(taskId);
-    // Missing row versions fail closed to an explicit Legacy freeze (1).
-    expect(execution?.outlineWorkflowVersion).toBe(1);
-    expect(execution?.contextBudgetVersion).toBe(1);
+    expect(execution?.outlineWorkflowVersion).toBe(4);
+    expect(execution?.contextBudgetVersion).toBe(7);
   });
 
   it('resume NEVER re-derives versions from the row after freeze', async () => {
@@ -308,14 +255,14 @@ describe('workflow version persistence (§4.3)', () => {
     const { chapterId } = await seedBaseData('twoStage');
     const taskId = 't-persist-resume';
     await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
     });
     mockCallLLMResult = happyMock();
 
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
     const execution = await frozenExecution(taskId);
-    expect(execution?.outlineWorkflowVersion).toBe(2);
+    expect(execution?.outlineWorkflowVersion).toBe(4);
 
     // Simulate a hostile drift: someone rewrites the ROW columns to 1.
     await execute(
@@ -323,20 +270,20 @@ describe('workflow version persistence (§4.3)', () => {
       `UPDATE pipeline_tasks SET outline_workflow_version = 1, context_budget_version = 1 WHERE id = ?`,
       [taskId],
     );
-    // Resume must keep the frozen snapshot (V2) — a no-op reconcile.
+    // Resume must keep the frozen snapshot (4/7) — a no-op reconcile.
     await reconcilePipelineTask(taskId, chapterFor(chapterId));
     const execution2 = await frozenExecution(taskId);
-    expect(execution2?.outlineWorkflowVersion).toBe(2);
-    expect(execution2?.contextBudgetVersion).toBe(2);
+    expect(execution2?.outlineWorkflowVersion).toBe(4);
+    expect(execution2?.contextBudgetVersion).toBe(7);
   });
 
-  it('V2 row survives a legacy-shaped full UPSERT with missing versions', async () => {
+  it('V4 row survives a legacy-shaped full UPSERT with missing versions', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('noReview');
-    const taskId = 't-persist-v2-missing-write';
+    const taskId = 't-persist-v4-missing-write';
     await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
     });
 
     await savePipelineTask({
@@ -353,18 +300,18 @@ describe('workflow version persistence (§4.3)', () => {
     });
 
     await expect(taskRow(taskId)).resolves.toMatchObject({
-      outline_workflow_version: 2,
-      context_budget_version: 2,
+      outline_workflow_version: 4,
+      context_budget_version: 7,
     });
   });
 
-  it('V2 row cannot be downgraded by an explicit 1/1 UPSERT', async () => {
+  it('V4 row cannot be downgraded by an explicit 1/1 UPSERT', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('noReview');
-    const taskId = 't-persist-v2-legacy-write';
+    const taskId = 't-persist-v4-legacy-write';
     await registerTask(taskId, chapterId, {
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
     });
 
     await savePipelineTask({
@@ -383,15 +330,15 @@ describe('workflow version persistence (§4.3)', () => {
     });
 
     await expect(taskRow(taskId)).resolves.toMatchObject({
-      outline_workflow_version: 2,
-      context_budget_version: 2,
+      outline_workflow_version: 4,
+      context_budget_version: 7,
     });
   });
 
-  it('V1 row cannot be upgraded by an erroneous V2 UPSERT', async () => {
+  it('V1 row cannot be upgraded by an erroneous higher UPSERT', async () => {
     await resetDb();
     const { chapterId } = await seedBaseData('noReview');
-    const taskId = 't-persist-v1-v2-write';
+    const taskId = 't-persist-v1-v4-write';
     await registerTask(taskId, chapterId, {
       outlineWorkflowVersion: 1,
       contextBudgetVersion: 1,
@@ -404,9 +351,9 @@ describe('workflow version persistence (§4.3)', () => {
       status: 'interrupted',
       stageResults: [],
       finalText: null,
-      error: 'wrong v2 write',
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      error: 'wrong upgrade write',
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
       createdAt: 1,
       updatedAt: 2,
       resolvedAt: null,
@@ -438,8 +385,8 @@ describe('workflow version persistence (§4.3)', () => {
       pipelineContextJson: '{"frozen":true}',
       pipelineContextVersion: 2,
       pipelineContextHash: 'context-hash-v2',
-      outlineWorkflowVersion: 2,
-      contextBudgetVersion: 2,
+      outlineWorkflowVersion: 4,
+      contextBudgetVersion: 7,
       createdAt,
       updatedAt,
       resolvedAt: 99,

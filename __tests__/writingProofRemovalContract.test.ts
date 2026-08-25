@@ -134,8 +134,8 @@ describe('Case 1 — compact Standard has no Proof node', () => {
   });
 });
 
-describe('Case 2 — legacy task still resumes Proof', () => {
-  test('legacy task with proof interrupted resumes proof', () => {
+describe('Case 2 — legacy task fails closed after the Proof stage is removed', () => {
+  test('legacy task with proof interrupted is blocked for recreation', () => {
     const view = taskView({
       pipelineTopologyVersion: LEGACY_PIPELINE_TOPOLOGY_VERSION,
     });
@@ -146,7 +146,11 @@ describe('Case 2 — legacy task still resumes Proof', () => {
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'interrupted'),
     ];
-    expect(determineNextPipelineAction(view, stages).type).toBe('run_proof');
+    const action = determineNextPipelineAction(view, stages);
+    expect(action.type).toBe('blocked');
+    if (action.type === 'blocked') {
+      expect(action.reason.code).toBe('LEGACY_PIPELINE_BLOCKED');
+    }
   });
 });
 

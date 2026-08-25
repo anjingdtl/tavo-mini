@@ -68,6 +68,19 @@ function snapshot(overrides: Partial<PipelineContextSnapshot> = {}): PipelineCon
 function execution(): PipelineExecutionSnapshot {
   return {
     pipelineMode: 'full',
+    outlineWorkflowVersion: 4,
+    contextBudgetVersion: 7,
+    finalReviserReasoningPolicyVersion: 3,
+    reasoningProfileVersion: 5,
+    requestedReasoningTier: 'high',
+    stageReasoning: {
+      draft: { stage: 'draft', requestedTier: 'high', effectiveTier: 'high', thinking: 'enabled', effort: 'high', supported: true },
+      review: { stage: 'review', requestedTier: 'high', effectiveTier: 'high', thinking: 'enabled', effort: 'high', supported: true },
+      factCheck: { stage: 'factCheck', requestedTier: 'high', effectiveTier: 'low', thinking: 'enabled', effort: 'low', supported: true },
+      brief: { stage: 'brief', requestedTier: 'high', effectiveTier: 'high', thinking: 'enabled', effort: 'high', supported: true },
+      proof: { stage: 'proof', requestedTier: 'high', effectiveTier: 'high', thinking: 'enabled', effort: 'high', supported: true },
+    } as any,
+    briefPolicyVersion: 4,
     draftMaxTokens: 1000,
     reviewMaxTokens: 500,
     factCheckMaxTokens: 500,

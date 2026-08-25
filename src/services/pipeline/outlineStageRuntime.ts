@@ -25,12 +25,7 @@ import type {
 import type { FrozenWriterStyleV1 } from '../writerStyle/types';
 import { resolveActiveWriterStyle } from '../writerStyle/activeStyleResolver';
 import {
-  applyPipelineReasoningBudget,
-  normalizePipelineReasoningEffort,
   normalizePipelineReasoningTier,
-  resolveV3StageReasoning,
-  resolveV31StageReasoning,
-  resolveV32StageReasoning,
   resolveV33StageReasoning,
 } from './reasoningPolicy';
 import { deriveGenerationQualityProfile } from '../writing/contracts/generationQualityProfile';
@@ -87,7 +82,6 @@ import { isOneShotStagePolicy } from '../writing/contracts/executionProfile';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
-  isCurrentOutlinePipelineContextBudgetVersion,
   isCompactPipelineTopology,
   isStructuredContextBudgetVersion,
   isStructuredOutlineWorkflowVersion,
@@ -215,35 +209,17 @@ function buildExecutionSnapshot(params: {
       'open_llm_settings',
     );
   }
-  // Structured-pipeline predicates are owned by outlineWorkflowVersion
-  // (Closure Plan §5). Version 6 (V3 hierarchical) is structured exactly like
-  // 5 (same stages / reasoning profile / Brief); only the contextBuilder
-  // budget path differs (>= 6 → hierarchical allocator).
+  // Structured-pipeline predicates are owned by outlineWorkflowVersion.
+  // Current tasks freeze workflow 4 + context budget 5/6/7; anything else is
+  // legacy and cannot resume past the resume gate.
   const isStructuredWorkflow = isStructuredOutlineWorkflowVersion(
     params.outlineWorkflowVersion,
   );
-  const isV3 =
-    isStructuredWorkflow &&
-    Number(params.outlineWorkflowVersion) === 3 &&
-    (Number(params.contextBudgetVersion) === 3 ||
-      Number(params.contextBudgetVersion) === 4);
-  const isV4 =
+  const isStructured =
     isStructuredWorkflow &&
     Number(params.outlineWorkflowVersion) === 4 &&
     isStructuredContextBudgetVersion(params.contextBudgetVersion);
-  const isCurrentElasticBudget =
-    Number(params.outlineWorkflowVersion) === 4 &&
-    isCurrentOutlinePipelineContextBudgetVersion(params.contextBudgetVersion);
-  const isStructured = isV3 || isV4;
-  const reasoningProfileVersion = isV4
-    ? 5
-    : isV3
-    ? params.contextBudgetVersion === 4 || params.reasoningProfileVersion === 4
-      ? 4
-      : params.reasoningProfileVersion === 2
-      ? 2
-      : 3
-    : undefined;
+  const reasoningProfileVersion = 5;
   const requestedTier = isStructured
     ? normalizePipelineReasoningTier(
         params.reasoningEffort ?? params.config.reasoningEffort,
@@ -254,30 +230,11 @@ function buildExecutionSnapshot(params: {
       ? (Object.fromEntries(
           (['draft', 'review', 'factCheck', 'brief', 'proof'] as const).map(
             stage => {
-              const resolved =
-                reasoningProfileVersion === 2
-                  ? resolveV3StageReasoning(
-                      requestedTier,
-                      stage,
-                      params.requestConfig,
-                    )
-                : reasoningProfileVersion === 3
-                  ? resolveV31StageReasoning(
-                      requestedTier,
-                      stage,
-                      params.requestConfig,
-                    )
-                  : reasoningProfileVersion === 4
-                  ? resolveV32StageReasoning(
-                      requestedTier,
-                      stage,
-                      params.requestConfig,
-                    )
-                  : resolveV33StageReasoning(
-                      requestedTier,
-                      stage,
-                      params.requestConfig,
-                    );
+              const resolved = resolveV33StageReasoning(
+                requestedTier,
+                stage,
+                params.requestConfig,
+              );
               return [
                 stage,
                 {
@@ -328,24 +285,13 @@ function buildExecutionSnapshot(params: {
             contextWindow,
             requestedTier,
             modelMaxOutputTokens: params.requestConfig.max_output_tokens,
-            requestMaxTokenOverrides: isCurrentElasticBudget
-              ? resolveOutlineElasticStageReservations({
-                  contextWindow,
-                  modelMaxOutputTokens: params.requestConfig.max_output_tokens,
-                })
-              : { brief: briefMaxTokens },
-            visibleOutputFloors: isCurrentElasticBudget
-              ? { brief: briefVisibleOutputFloor || 1200 }
-              : {
-                  draft: Math.max(1, params.config.draftMaxTokens),
-                  review: Math.max(1, params.config.reviewMaxTokens),
-                  factCheck: Math.max(1, params.config.factCheckMaxTokens),
-                  brief: briefVisibleOutputFloor || 1200,
-                  proof: Math.max(
-                    1024,
-                    Math.ceil(params.config.draftMaxTokens * 1.2) + 256,
-                  ),
-                },
+            requestMaxTokenOverrides: resolveOutlineElasticStageReservations({
+              contextWindow,
+              modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+            }),
+            visibleOutputFloors: {
+              brief: briefVisibleOutputFloor || 1200,
+            },
             policy: budgetPolicy,
           });
           return (
@@ -374,7 +320,7 @@ function buildExecutionSnapshot(params: {
     fallback;
   return {
     ...(params.writerStyle ? { writerStyle: params.writerStyle } : {}),
-    pipelineMode: isV4 ? 'full' : params.config.pipelineMode,
+    pipelineMode: 'full',
     ...(params.outlineWorkflowVersion
       ? { outlineWorkflowVersion: params.outlineWorkflowVersion }
       : {}),
@@ -414,16 +360,10 @@ function buildExecutionSnapshot(params: {
       : {}),
     ...(isStructured
       ? {
-          reasoningProfileVersion: reasoningProfileVersion as 2 | 3 | 4 | 5,
+          reasoningProfileVersion,
           requestedReasoningTier: requestedTier,
           stageReasoning,
-          briefPolicyVersion: (reasoningProfileVersion === 2
-            ? 1
-            : reasoningProfileVersion === 3
-            ? 2
-            : reasoningProfileVersion === 4
-            ? 3
-            : 4) as 1 | 2 | 3 | 4,
+          briefPolicyVersion: 4,
           briefVisibleOutputFloor,
           briefReasoningHeadroom,
           briefMaxTokens,
@@ -796,7 +736,6 @@ async function loadRuntime(
 
   const config = await db.getPipelineConfig({
     projectId: chapter.project_id,
-    includeHistoricalMode: Number(task?.outlineWorkflowVersion) === 2,
   });
   const presets = (await db.getPresetsByProject(
     chapter.project_id,
@@ -862,26 +801,14 @@ async function actionPersistInitialSnapshot(
   let contextBudgetVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   if (existingExecution) {
     outlineWorkflowVersion =
-      existingExecution.outlineWorkflowVersion === 4
-        ? 4
-        : existingExecution.outlineWorkflowVersion === 3
-        ? 3
-        : existingExecution.outlineWorkflowVersion === 2
-        ? 2
-        : 1;
+      existingExecution.outlineWorkflowVersion === 4 ? 4 : 1;
     contextBudgetVersion = normalizePersistedContextBudgetVersion(
       existingExecution.contextBudgetVersion,
     );
   } else {
     const taskRow = store.tasks.find(t => t.id === taskId);
     outlineWorkflowVersion =
-      Number(taskRow?.outlineWorkflowVersion) === 4
-        ? 4
-        : Number(taskRow?.outlineWorkflowVersion) === 3
-        ? 3
-        : Number(taskRow?.outlineWorkflowVersion) === 2
-        ? 2
-        : 1;
+      Number(taskRow?.outlineWorkflowVersion) === 4 ? 4 : 1;
     contextBudgetVersion = normalizePersistedContextBudgetVersion(
       taskRow?.contextBudgetVersion,
     );
@@ -890,15 +817,12 @@ async function actionPersistInitialSnapshot(
     outlineWorkflowVersion,
     contextBudgetVersion,
   });
-  // Fresh freeze from live config only when no execution yet. V2 preserves its
-  // historical multiplier; V3 stores requested/effective stage tiers and uses
-  // independent output + reasoning reservations.
+  // Fresh freeze from live config only when no execution yet. Current tasks
+  // normalize the tier to V3 semantics (medium→high, high→max).
   const selectedReasoningEffort =
     options.pipelineReasoningEffortOverride !== undefined
       ? options.pipelineReasoningEffortOverride
-      : isStructured
-      ? normalizePipelineReasoningTier(runtime.config.reasoningEffort)
-      : normalizePipelineReasoningEffort(runtime.config.reasoningEffort);
+      : normalizePipelineReasoningTier(runtime.config.reasoningEffort);
   // One-Shot (极速) profile: batch-owned first runs may freeze the batch's
   // profile; otherwise the global setting applies. Resume keeps the frozen
   // execution snapshot and never consults this selection again.
@@ -916,29 +840,12 @@ async function actionPersistInitialSnapshot(
     isStructured && !existingExecution && selectedReasoningEffort
       ? {
           ...runtime.config,
-          pipelineMode:
-            outlineWorkflowVersion === 4 ? ('full' as const) : runtime.config.pipelineMode,
+          pipelineMode: 'full' as const,
           reasoningEffort: normalizePipelineReasoningTier(
             selectedReasoningEffort,
           ),
-          reasoningProfileVersion:
-            outlineWorkflowVersion === 4
-              ? (5 as const)
-              : contextBudgetVersion === 4
-              ? (4 as const)
-              : (3 as const),
+          reasoningProfileVersion: 5 as const,
         }
-      : outlineWorkflowVersion === 2 &&
-        !existingExecution &&
-        selectedReasoningEffort
-      ? applyPipelineReasoningBudget(
-          runtime.config,
-          normalizePipelineReasoningEffort(selectedReasoningEffort),
-        )
-      : outlineWorkflowVersion === 2 &&
-        !existingExecution &&
-        options.pipelineReasoningEffortOverride === null
-      ? { ...runtime.config, reasoningEffort: undefined }
       : runtime.config;
 
   // Read the persisted V3 policy ONCE at first freeze so the actual user
@@ -983,40 +890,13 @@ async function actionPersistInitialSnapshot(
       outlineWorkflowVersion,
       contextBudgetVersion,
       contextAutomationPolicyV3: frozenV3Policy,
-      finalReviserReasoningPolicyVersion:
-        outlineWorkflowVersion === 4 || outlineWorkflowVersion === 3
-          ? 3
-          : outlineWorkflowVersion === 2
-          ? 2
-          : 1,
-      reasoningProfileVersion:
-      outlineWorkflowVersion === 4
-          ? 5
-          : outlineWorkflowVersion === 3
-          ? contextBudgetVersion === 4
-            ? 4
-            : freshConfig.reasoningProfileVersion === 2
-            ? 2
-            : 3
-          : undefined,
-      reasoningEffort:
-        outlineWorkflowVersion === 2 || outlineWorkflowVersion === 3 || outlineWorkflowVersion === 4
-          ? freshConfig.reasoningEffort
-          : undefined,
+      finalReviserReasoningPolicyVersion: 3,
+      reasoningProfileVersion: 5,
+      reasoningEffort: freshConfig.reasoningEffort,
       executionProfile:
         selectedExecutionProfile === 'one_shot' ? 'one_shot' : undefined,
       generationQualityProfile: selectedQualityProfile,
     });
-  // Batch-owned first run: the batch form's mode wins over the global
-  // pipeline setting. Resume never overrides a frozen snapshot.
-  if (
-    options.pipelineModeOverride &&
-    !runtime.parsed?.execution &&
-    outlineWorkflowVersion !== 4
-  ) {
-    execution.pipelineMode = options.pipelineModeOverride;
-  }
-
   assertProtectedWriterStyleFits(
     runtime,
     'draft',

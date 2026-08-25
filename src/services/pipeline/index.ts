@@ -44,13 +44,10 @@ export {
   compileReviewStageRequest,
   compileFactCheckStageRequest,
   compileProofStageRequest,
-  compileReviewV2StageRequest,
-  compileFactCheckV2StageRequest,
   compileFinalReviserStageRequest,
   requireReadyStageRequest,
 } from './compileStageRequest';
 export type {
-  CompiledStageRequest,
   StageCompileResult,
   ReadyStageRequest,
   ContextAllocationTrace,

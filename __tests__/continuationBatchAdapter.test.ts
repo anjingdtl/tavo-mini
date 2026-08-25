@@ -29,28 +29,6 @@ jest.mock('../src/services/continuation/generation/generationRepository', () => 
 });
 
 jest.mock(
-  '../src/services/continuation/generation/legacy/continuationGenerationRunner',
-  () => {
-    const actual = jest.requireActual(
-      '../src/services/continuation/generation/legacy/continuationGenerationRunner',
-    );
-    return {
-      ...actual,
-      startContinuationRun: (...args: any[]) =>
-        (mockRunner.startContinuationRun as any)(...args),
-      adoptArtifactAsDraft: (...args: any[]) =>
-        (mockRunner.adoptArtifactAsDraft as any)(...args),
-      finalizeContinuationChapter: (...args: any[]) =>
-        (mockRunner.finalizeContinuationChapter as any)(...args),
-      cancelContinuationRun: (...args: any[]) =>
-        (mockRunner.cancelContinuationRun as any)(...args),
-      resumeInterruptedRun: (...args: any[]) =>
-        (mockRunner.resumeInterruptedRun as any)(...args),
-    };
-  },
-);
-
-jest.mock(
   '../src/services/writing/execution/continuationStageDriver',
   () => ({
     createContinuationStageDriver: async (input: any) => {

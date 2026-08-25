@@ -119,15 +119,7 @@ export async function runSharedOutlineWriterAction(input: {
     },
     run: async () => {
       const attemptIds: string[] = [];
-      const workflowVersion = Number(task.outlineWorkflowVersion) || 1;
-      const requestVersion =
-        stages[0] === 'draft'
-          ? 1
-          : workflowVersion >= 4
-          ? 32
-          : workflowVersion >= 2
-          ? 2
-          : 1;
+      const requestVersion = stages[0] === 'draft' ? 1 : 32;
       for (const stage of stages) {
         const recordedStage = stage === 'revision' ? 'brief' : stage;
         const reserveAttempt = await shouldReserveOutlineStageAttempt({

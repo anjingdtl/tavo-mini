@@ -30,6 +30,7 @@ function view(overrides: Partial<PersistedPipelineTaskView>) {
     pipelineMode: 'full',
     outlineWorkflowVersion: 4,
     contextBudgetVersion: 7,
+    pipelineTopologyVersion: 2,
     hasExecutionSnapshot: true,
     hasDraftContext: true,
     hasAuditContext: true,
@@ -113,10 +114,8 @@ describe('One-Shot outline state machine', () => {
   test('one_shot: failed draft blocks terminally (fail closed, no auto path around)', () => {
     const draftFailed = [
       checkpoint('draft', 'failed'),
-      checkpoint('review', 'pending'),
-      checkpoint('factCheck', 'pending'),
+      checkpoint('qa', 'pending'),
       checkpoint('brief', 'pending'),
-      checkpoint('proof', 'pending'),
     ];
     const action = determineNextPipelineAction(
       view({ executionProfile: 'one_shot' } as Partial<PersistedPipelineTaskView>),
@@ -128,24 +127,16 @@ describe('One-Shot outline state machine', () => {
     }
   });
 
-  test('standard profile keeps the full V3 audit route unchanged', () => {
+  test('standard profile dispatches the compact single QA audit', () => {
     const draftDone = [
       checkpoint('draft', 'succeeded'),
-      checkpoint('review', 'pending'),
-      checkpoint('factCheck', 'pending'),
+      checkpoint('qa', 'pending'),
       checkpoint('brief', 'pending'),
-      checkpoint('proof', 'pending'),
     ];
-    // no hasAuditContext → build_audit_context first
-    expect(
-      determineNextPipelineAction(
-        view({ hasAuditContext: false }),
-        draftDone,
-      ),
-    ).toEqual({ type: 'build_audit_context' });
+    // Compact: draft succeeded → ONE run_qa (no review/factCheck split).
     expect(
       determineNextPipelineAction(view({}), draftDone),
-    ).toEqual({ type: 'run_review_and_fact_check' });
+    ).toEqual({ type: 'run_qa' });
   });
 });
 

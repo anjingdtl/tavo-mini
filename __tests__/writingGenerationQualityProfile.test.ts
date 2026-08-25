@@ -141,4 +141,81 @@ describe('GenerationQualityProfile contract', () => {
     expect(oneShot.values).not.toHaveProperty('qualityProfile');
     expect(resolveExecutionProfileFromValues(oneShot.values)).toBe('one_shot');
   });
+
+  test('explicit qualityProfile governs paid LLM stage reasoning over a stale 4-tier snapshot', () => {
+    // Residual per-stage reasoning from the retired 极速/低/中/高 UI. A
+    // quality-profile task must never inherit draft=max from it.
+    const stale = {
+      draft: { stage: 'draft', thinking: 'enabled', effectiveTier: 'max', effort: 'max' },
+      review: { stage: 'review', thinking: 'enabled', effectiveTier: 'max', effort: 'max' },
+      factCheck: { stage: 'factCheck', thinking: 'enabled', effectiveTier: 'low', effort: 'low' },
+      brief: { stage: 'brief', thinking: 'enabled', effectiveTier: 'high', effort: 'high' },
+      proof: { stage: 'proof', thinking: 'enabled', effectiveTier: 'max', effort: 'max' },
+    } as any;
+
+    // standard → the frozen mapping says high, the stale snapshot must not win.
+    const standard = buildWritingStagePolicy(
+      outlineRequest({
+        qualityProfile: 'standard',
+        executionProfile: 'standard',
+        outlineStageReasoning: stale,
+      }),
+      REQUIREMENTS,
+    );
+    const standardReasoning = standard.values.stageReasoning as Record<
+      string,
+      { reasoningEffort?: string; thinking: { type: string } }
+    >;
+    expect(standardReasoning.draft.reasoningEffort).toBe('high');
+    // Current unified semantics: Review follows the user tier; FactCheck and
+    // the compact QA stage stay low — the quality mapping only leaves
+    // factCheck/audit pinned.
+    expect(standardReasoning.review.reasoningEffort).toBe('high');
+    expect(standardReasoning.factCheck.reasoningEffort).toBe('low');
+    expect(standardReasoning.review.thinking.type).toBe('enabled');
+
+    // quality → max
+    const quality = buildWritingStagePolicy(
+      outlineRequest({
+        qualityProfile: 'quality',
+        executionProfile: 'standard',
+        outlineStageReasoning: stale,
+      }),
+      REQUIREMENTS,
+    );
+    expect(
+      (quality.values.stageReasoning as Record<string, { reasoningEffort?: string }>)
+        .draft.reasoningEffort,
+    ).toBe('max');
+
+    // fast → low and inherits One-Shot
+    const fast = buildWritingStagePolicy(
+      outlineRequest({
+        qualityProfile: 'fast',
+        executionProfile: 'standard',
+        outlineStageReasoning: stale,
+      }),
+      REQUIREMENTS,
+    );
+    expect(
+      (fast.values.stageReasoning as Record<string, { reasoningEffort?: string }>)
+        .draft.reasoningEffort,
+    ).toBe('low');
+    expect(resolveExecutionProfileFromValues(fast.values)).toBe('one_shot');
+
+    // Historical run WITHOUT the quality key keeps the frozen 4-tier result
+    // (draft=max), preserving frozen Resume semantics byte-for-byte.
+    const historical = buildWritingStagePolicy(
+      outlineRequest({
+        executionProfile: 'standard',
+        reasoningEffort: 'max',
+        outlineStageReasoning: stale,
+      }),
+      REQUIREMENTS,
+    );
+    expect(
+      (historical.values.stageReasoning as Record<string, { reasoningEffort?: string }>)
+        .draft.reasoningEffort,
+    ).toBe('max');
+  });
 });

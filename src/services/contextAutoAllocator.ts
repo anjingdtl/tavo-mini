@@ -617,8 +617,12 @@ export type SharedStageMaxOutputTokens = {
 
 /**
  * Map the frozen outline V3 stage ledger (draft/review/factCheck/brief/proof)
- * onto the ONE Kernel stage names. Missing rows fall back to the same
- * per-request elastic output reserve — never a stage-local magic cap.
+ * onto the ONE Kernel stage names. The elastic 20% reserve is the FLOOR for
+ * every stage, never just the fallback: a stale or legacy ledger row (old V3
+ * draft/review/factCheck defaults, or a pre-elastic brief row) must never
+ * under-reserve a request the provider could legitimately fill — truncating
+ * the request is what used to surface as "返回格式无效" on revision/QA JSON.
+ * A frozen row larger than the reserve is honored as-is.
  */
 export function buildSharedStageMaxOutputTokens(input: {
   contextWindow: number;
@@ -637,7 +641,7 @@ export function buildSharedStageMaxOutputTokens(input: {
     }
   }
   const pick = (outlineStage: OutlinePipelineStageV3): number =>
-    byStage[outlineStage] || elastic[outlineStage];
+    Math.max(byStage[outlineStage] || 0, elastic[outlineStage]);
   return {
     draft: pick('draft'),
     qa: pick('review'),
@@ -651,8 +655,9 @@ export function buildSharedStageMaxOutputTokens(input: {
 
 /**
  * Compile-time output ceiling for one shared Writer stage.
- * Frozen `sharedStageMaxOutputTokens` wins; otherwise the elastic 20%
- * envelope. No stage may invent a smaller absolute cap (for example 8192).
+ * `sharedStageMaxOutputTokens` is derived with the elastic reserve as its
+ * FLOOR (see buildSharedStageMaxOutputTokens), so a stage can never request
+ * below the elastic envelope; the model ceiling then caps the request.
  */
 export function resolveFrozenStageMaxOutputTokens(input: {
   stage: string;

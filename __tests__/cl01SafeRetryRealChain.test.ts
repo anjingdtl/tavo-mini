@@ -41,6 +41,7 @@ import { LLMRequestError } from '../src/services/llm/requestPolicy';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
 import type { Chapter } from '../src/types/novel';
 import {
+  COMPACT_PIPELINE_TOPOLOGY_VERSION,
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
 } from '../src/services/pipeline/outlineWorkflowVersion';
@@ -115,8 +116,9 @@ async function registerTask(
     pipelineContextJson: null,
     pipelineContextVersion: null,
     pipelineContextHash: null,
-    outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
+outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
     contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+    pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -132,6 +134,7 @@ async function registerTask(
     error: null,
     outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
     contextBudgetVersion: CURRENT_CONTEXT_BUDGET_VERSION,
+    pipelineTopologyVersion: COMPACT_PIPELINE_TOPOLOGY_VERSION,
     createdAt: now,
     updatedAt: now,
     resolvedAt: null,
@@ -193,7 +196,7 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
           emptyReason: null,
         };
       }
-      if (config.scenario === 'pipeline_review') {
+if (config.scenario === 'pipeline_qa') {
         return {
           text: JSON.stringify({
             verdict: 'pass',
@@ -213,19 +216,6 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
           totalTokens: 140,
         };
       }
-      if (config.scenario === 'pipeline_factcheck') {
-        return {
-          text: JSON.stringify({
-            verdict: 'not_applicable',
-            checked: [],
-            findings: [],
-            preserve: [],
-          }),
-          inputTokens: 100,
-          outputTokens: 30,
-          totalTokens: 130,
-        };
-      }
       if (config.scenario === 'pipeline_brief') {
         return {
           text: JSON.stringify({
@@ -237,15 +227,6 @@ describe('CL-01: safe_retry 真实 reconcile 链路（不 mock 状态机）', ()
           inputTokens: 100,
           outputTokens: 30,
           totalTokens: 130,
-        };
-      }
-      if (config.scenario === 'pipeline_proof') {
-        return {
-          text: '终稿正文',
-          inputTokens: 100,
-          outputTokens: 200,
-          totalTokens: 300,
-          emptyReason: null,
         };
       }
       throw new Error(`unexpected scenario: ${String(config.scenario)}`);

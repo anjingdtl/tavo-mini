@@ -7,8 +7,6 @@ import {
   STYLE_RENDERER_VERSION,
   renderStyleProfile,
 } from '../src/services/continuation/styleProfile/styleProfileRenderer';
-import { compileWriterMessages } from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
-import type { ContinuationPlan } from '../src/services/continuation/generation/types';
 import { ContinuationCapabilityBlockedError } from '../src/services/continuation/generation/types';
 import { makeContinuationChapterNumbering } from '../src/services/continuation/chapterNumbering/continuationChapterNumbering';
 import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
@@ -191,18 +189,6 @@ function validProfile(): OriginalStyleProfileV2 {
   };
 }
 
-const emptyPlan: ContinuationPlan = {
-  schemaVersion: 1,
-  chapterGoal: '推进',
-  centralConflict: '冲突',
-  beats: [{ order: 1, summary: '节拍' }],
-  participatingCharacterIds: [5],
-  characterActions: [],
-  plotAdvances: [],
-  foreshadowingActions: [],
-  proposedStateChanges: [],
-  risks: [],
-};
 
 const baseSettings = {
   projectId: 1,
@@ -388,10 +374,6 @@ describe('continuationStyleIntegration (WP5)', () => {
     const styleCat = trace.categories.find(c => c.name === 'originalStyle');
     expect(styleCat?.selected).toBe(1);
     expect(styleCat?.tokens).toBeGreaterThan(0);
-
-    const writer = compileWriterMessages(snapshot, emptyPlan)[0].content;
-    expect(writer).toContain('第三人称');
-    expect(writer).toContain('保持克制');
   });
 
   it('blocks when profile is missing, including legacy balanced settings', async () => {

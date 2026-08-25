@@ -117,3 +117,44 @@ A4 代码三项缺口：指纹硬定性、失败 Receipt、真实 LLM 记录，�
 - Provider 探测 `max_tokens: 16`、Tavern `openai_max_tokens: 300`。
 - Formatter 候选 `slice(0, 12000)`：整理已有语义的输入截取，不是 `max_tokens`。
 - Brief `visibleOutputFloor` 768–2048：只参与「可见输出 + thinking 是否装得下」检查；弹性模式下 `requestMaxTokens` 仍走 20% 预留。
+
+---
+
+## 9. 旧流水线兼容代码整体下线（2026-08-25）
+
+发版决策：**不再兼容任何历史流水线版本，所有任务统一走当前 Versioned Kernel（owv=4 / cbv=5/6/7 / compact topology 2 / reasoningProfile=5 / qualityProfile 三级）**。已删除全部废弃的旧流水线兼容层与配套测试，`npm run verify` 全绿（483 套件 / 3491 用例，0 失败）。
+
+### 删除的文件（24）
+
+- 续写 legacy generation：`continuation/generation/legacy/`（continuationGenerationRunner / continuationV4Runner / continuationV5Runner / continuationV5Pipeline / continuationPromptCompiler）+ `generation/continuationV5Runner.ts` shim。续写生产入口不变：`writing/productionWritingEntry → continuationStageDriver`（workflowVersion=5）。
+- 审计/Brief 合同家族（生产零调用）：`pipeline/auditFormatter`、`auditSemanticEnvelope`、`currentSemanticContract`、`briefCompilerTypes`、`briefFormatter`、`briefTriggerPolicy`、`deterministicBriefCompiler`、`briefResultValidator`、`renderFinalWritingBrief`、`revisionAuditValidator`、`revisionContract`、`finalBriefComplianceValidator`（常量 `FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE` 内联进 `determineNextPipelineAction`）、`compileBriefStageRequest`、`finalReviserReasoningPolicy`、`v31AuditCompatibility`、`v32AuditCompatibility`。
+
+### 削除的分支与导出（文件保留）
+
+- `reasoningPolicy.ts`：删 V2/V3/V3.1/V3.2 全部 profile 表与 resolver（`resolveV3/V31/V32StageReasoning`、`applyPipelineReasoningBudget`、`PipelineReasoningEffort`、`resolvePipelineReasoning` 等），只留 V33（当前）。
+- `outlineWorkflowVersion.ts`：删 `DEFAULT_OUTLINE_WORKFLOW_VERSION`、`shouldFreezeOutlineWorkflowV2/V3`；`STRUCTURED_OUTLINE_WORKFLOW_VERSIONS=[4]`、`STRUCTURED_CONTEXT_BUDGET_VERSIONS=[5,6,7]`；`normalizePersistedContextBudgetVersion` 只保留 5/6/7，其余塌缩 1。
+- `outlineStageRuntime.ts`：剪掉 V2/V3 冻结分支、rpv 2/3/4 stageReasoning 组装、非弹性 visibleOutputFloors、`applyPipelineReasoningBudget` 调用、`includeHistoricalMode`、`pipelineModeOverride`（V4 恒 full）、版本阶梯解析（4/7 否则 1）、`finalReviserReasoningPolicyVersion` 恒 3。
+- `determineNextPipelineAction.ts`：删 `decideNoReview/decideTwoStage/decideConditional/decideFull` 及全部 V3 变体与 `decideAfterProof/decideAfterBrief` legacy 侧；路由收敛为 `compact → decideCompactFull`，**非 compact 拓扑 fail-closed `LEGACY_PIPELINE_BLOCKED`**（新错误码，UI 提示按新版重建）。
+- `pipelineTaskContext.ts`：owv ≠ 4 快照一律拒绝恢复（`已下线旧版流水线`）；rpv 校验只剩 5、briefPolicyVersion 只认 4；envelope 版本只出 4。
+- `compileStageRequest.ts`：删 V2 编译器（`compileReviewV2/compileFactCheckV2StageRequest` 及 elastic 变体）与 `asLegacy`/`CompiledStageRequest` 壳。
+- `pipelineMessages.ts`：删 V31/V32 四个 builder 与 V2 repair builders；V2 base builder 仅作为 V33 内部基座保留。
+- 其他：`contextAutoAllocator`（allocateContextBudget 仍被 ContextAutoConfigScreen 使用，保留）、`runOutlineSharedWriterAction` requestVersion 恒 1/32、`writingPolicy`（显式 qualityProfile 覆盖旧快照残留——A5 第 4 项修复）、`stageReasoning.ts`（review 跟随档位，factCheck/audit/qa 恒 low——V33 语义）。
+
+### 测试（删除 25 文件 + 改造约 15 文件）
+
+- 整删：pipelineV31Contracts / pipelineV32StructuredStages / pipelineV32WorkflowIntegration / pipelineWorkflowV2Integration / pipelineReasoningBudget / pipelineFinalReviserReasoningPolicy / pipelineRevisionAuditValidator / pipelineRevisionContract / pipelineV3BriefAndBudget / goldenJourneysV2 / continuationStandardWorkflow / continuationV4Resume / continuationV4Workflow / continuationFactCheckPrompt / continuationPhase3Core / continuationPhase3Repository / continuationSequentialGeneration / pipelineSecondRoundRecovery / pipelineSqliteFaultInjection / migrations-v46-v47 相关旧断言等。
+- 改造为 compact 语义：determineNextPipelineAction.test（决策矩阵 run_qa/brief）、contextBudgetV3Closure（5/6/7 + compact 决策）、writingQaConsolidationContract / writingProofRemovalContract / pipelineTopologyContract（legacy → LEGACY_PIPELINE_BLOCKED 断言）、pipelineRunner（7 个生命周期/恢复测试 + 删除旧五阶段链路用例）、pipelineSealFreeze / pipelineContextSnapshotV5 / writingOneShotResume / pipelineFaultInjectionMatrix（seed 升级 owv4/cbv7/topology2 + V3 快照字段）、cl01 / cl06 / f301（场景名 pipeline_review→pipeline_qa、seed 补 topology、QA 载荷补五维 checked）。
+
+### 运行时语义（发版后）
+
+1. 新任务：owv=4、cbv=7（phase2）、topology=2、rpv=5、briefPolicy=4、finalReviser=3，全链路 compact（draft → qa → revision? → finalize）。
+2. 旧任务（owv<4 / cbv<5 / topology≠2）：resume 门禁 `LEGACY_PIPELINE_RESUME_BLOCKED` 或快照解析 `已下线旧版流水线` 拒绝，UI 引导用户按新版重新生成；决策层 `LEGACY_PIPELINE_BLOCKED` 兜底。
+3. reasoningEffort 三级映射：standard→high（draft/brief/proof/review 跟随档位）、quality→max、fast→low(+one_shot)；FactCheck 与 compact QA 恒 low（QA 已真机验证 low）。
+4. 弹性预算下限：`buildSharedStageMaxOutputTokens = Math.max(byStage||0, elastic 20%)`，旧账本小值永不截断输出（A5「revision 返回格式无效」根因修复）。
+
+## 10. A5 状态（承接 9 一并更新）
+
+- A5 前 5 项全部完成：Exact HEAD（e86d354）确认、旧 APK 覆盖安装（data preserved）、质量档 2+ 章 live（ch8 通过 attempt2 走通 QA→Revision→定稿；ch11/12 QA pass→revision 形式跳过；ch9 QA→revision 物理调用成功）、standard 档 reasoningEffort 冻结三级映射修复（writingPolicy 显式 qualityProfile 优先 + 测试）、legacy continuation Repair frozen resume 回归测试 —— 已随本文件第 9 节整体下线（旧流程不再保留回归测试）。
+- Debug APK 重新构建（本次大删除后），待安装复测：standard 档 receipt reasoningEffort=high（非 max）、QA=low、弹性 output 预算；旧任务点开显示「旧版流水线，按新版重新生成」提示。
+
+**状态：verify 全绿；APK 重建/安装/复测后封 PHASE III-A。**

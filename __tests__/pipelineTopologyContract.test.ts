@@ -142,8 +142,8 @@ describe('resume contract gate (§5.5/§5.6, H4/H6)', () => {
   });
 });
 
-describe('Case 1 — legacy resume per old topology (determineNextPipelineAction)', () => {
-  test('legacy task (owv=3, brief chain) with proof interrupted resumes ONLY proof', () => {
+describe('Case 1 — legacy topology fails closed (determineNextPipelineAction)', () => {
+  test('legacy task (owv=3, legacy DAG) is blocked for recreation, never resumed', () => {
     const view = taskView({
       outlineWorkflowVersion: 3,
       contextBudgetVersion: 5,
@@ -157,10 +157,14 @@ describe('Case 1 — legacy resume per old topology (determineNextPipelineAction
       checkpoint('proof', 'interrupted'),
     ];
     const action = determineNextPipelineAction(view, stages);
-    expect(action.type).toBe('run_proof');
+    expect(action.type).toBe('blocked');
+    if (action.type === 'blocked') {
+      expect(action.reason.code).toBe('LEGACY_PIPELINE_BLOCKED');
+      expect(action.reason.userAction).toBe('restart_task');
+    }
   });
 
-  test('legacy proof failed → retry proof only; succeeded stages not re-dispatched', () => {
+  test('legacy proof failed → same fail-closed gate, no legacy retry routing', () => {
     const view = taskView({
       outlineWorkflowVersion: 3,
       contextBudgetVersion: 5,
@@ -176,8 +180,7 @@ describe('Case 1 — legacy resume per old topology (determineNextPipelineAction
     const action = determineNextPipelineAction(view, stages);
     expect(action.type).toBe('blocked');
     if (action.type === 'blocked') {
-      expect(action.reason.stage).toBe('proof');
-      expect(action.reason.userAction).toBe('retry');
+      expect(action.reason.code).toBe('LEGACY_PIPELINE_BLOCKED');
     }
   });
 });

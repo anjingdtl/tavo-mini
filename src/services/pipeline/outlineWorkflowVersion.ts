@@ -67,44 +67,14 @@ export function resolveNewChapterContextBudgetVersion(input: {
 }
 
 /**
- * @deprecated Rollback-era default (Legacy 1). Kept only for callers that
- * build version-less historical records; new tasks must use the CURRENT
- * constants instead.
- */
-export const DEFAULT_OUTLINE_WORKFLOW_VERSION: OutlineWorkflowVersion = 1;
-
-/**
- * Pure eligibility check for freezing V2 on a real outline chapter task.
+ * Pure eligibility check for freezing V4 on a real outline chapter task.
  *
- * V2 enable conditions (§4.2):
+ * V4 enable conditions:
  *   - project mode === 'outline'
  *   - targetType === 'chapter' (chapter.id > 0; freeform pseudo-chapters use id 0)
- *   - default version === 2
  *
  * Project creation time and existing chapter body length never participate.
  */
-export function shouldFreezeOutlineWorkflowV2(params: {
-  projectMode: string | null | undefined;
-  chapterId: number;
-  defaultVersion?: OutlineWorkflowVersion;
-}): boolean {
-  if (params.projectMode !== 'outline') return false;
-  if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
-  return (params.defaultVersion ?? DEFAULT_OUTLINE_WORKFLOW_VERSION) === 2;
-}
-
-/** Eligibility check for the current V3 outline protocol. */
-export function shouldFreezeOutlineWorkflowV3(params: {
-  projectMode: string | null | undefined;
-  chapterId: number;
-  defaultVersion?: OutlineWorkflowVersion;
-}): boolean {
-  if (params.projectMode !== 'outline') return false;
-  if (!Number.isInteger(params.chapterId) || params.chapterId <= 0) return false;
-  return (params.defaultVersion ?? CURRENT_OUTLINE_WORKFLOW_VERSION) === 3;
-}
-
-/** Eligibility check for the current unified outline protocol. */
 export function shouldFreezeOutlineWorkflowV4(params: {
   projectMode: string | null | undefined;
   chapterId: number;
@@ -122,26 +92,17 @@ export function isCurrentOutlineWorkflowVersion(value: unknown): boolean {
 
 // ---------------------------------------------------------------------------
 // Unified context-budget version semantics (Closure Plan §5).
-//
-// The codebase previously scattered magic arrays (`[3,4].includes(owv) &&
-// [3,4,5].includes(cbv)`) across the state machine, reconciler, store and UI.
-// With context budget 6 (V3 hierarchical) those arrays silently excluded V3
-// tasks, dropping them into the legacy no-Brief branch and blocking resume.
-// The helpers below are the SINGLE source of truth; all call sites were
-// migrated to them so version 6 routes through the same structured pipeline
-// as version 5 (same stages, same reasoning profile, same Brief checkpoint),
-// differing ONLY in the contextBuilder budget path (>= 6 → hierarchical).
 // ---------------------------------------------------------------------------
 
 /** Outline workflow versions that carry the structured, Brief-bearing pipeline. */
-export const STRUCTURED_OUTLINE_WORKFLOW_VERSIONS = [3, 4] as const;
+export const STRUCTURED_OUTLINE_WORKFLOW_VERSIONS = [4] as const;
 
 /**
- * Context-budget versions that pair with a structured outline workflow to
- * produce a Brief stage checkpoint. 3/4 = historical V3.x; 5 = V2 elastic;
- * 6 = V3 hierarchical. All create the Brief checkpoint.
+ * Context-budget versions that pair with the current outline workflow (4) to
+ * produce a Brief stage checkpoint: 5 = V2 single-level elastic; 6 = V3
+ * hierarchical; 7 = Phase-2 dual-layer budget. All create the Brief checkpoint.
  */
-export const STRUCTURED_CONTEXT_BUDGET_VERSIONS = [3, 4, 5, 6, 7] as const;
+export const STRUCTURED_CONTEXT_BUDGET_VERSIONS = [5, 6, 7] as const;
 
 export function isStructuredOutlineWorkflowVersion(value: unknown): boolean {
   return (
@@ -207,9 +168,8 @@ export function isResumableContextBudgetVersion(value: unknown): boolean {
 
 /**
  * Normalize a persisted context-budget version (read from a task/batch row or
- * a parsed execution snapshot) into the typed union, PRESERVING 5 and 6
- * instead of collapsing them to the legacy fallback of 1. Unknown / legacy
- * values collapse to 1.
+ * a parsed execution snapshot) into the typed union. Current values 5/6/7 are
+ * preserved; historical / unknown values collapse to 1 (legacy, non-resumable).
  */
 export function normalizePersistedContextBudgetVersion(
   value: unknown,
@@ -218,9 +178,6 @@ export function normalizePersistedContextBudgetVersion(
   if (n === 7) return 7;
   if (n === 6) return 6;
   if (n === 5) return 5;
-  if (n === 4) return 4;
-  if (n === 3) return 3;
-  if (n === 2) return 2;
   return 1;
 }
 

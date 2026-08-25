@@ -10,12 +10,8 @@
 
 import type { PipelineMode, PipelineStageName } from '../../types/pipeline';
 import { getCheckpoint } from './projectStageCheckpoints';
-import {
-  isCompactPipelineTopology,
-  shouldIncludeBriefCheckpoint,
-} from './outlineWorkflowVersion';
+import { isCompactPipelineTopology } from './outlineWorkflowVersion';
 import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
-import { FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE } from './finalBriefComplianceValidator';
 import type {
   PersistedPipelineTaskView,
   PersistedStageCheckpoint,
@@ -183,23 +179,12 @@ export function determineNextPipelineAction(
   }
 
   const draft = getCheckpoint(stages, 'draft');
-  const review = getCheckpoint(stages, 'review');
-  const factCheck = getCheckpoint(stages, 'factCheck');
-  const brief = getCheckpoint(stages, 'brief');
-  const proof = getCheckpoint(stages, 'proof');
   // Phase 4 (二 §7.2): the unified `qa` stage for the compact Standard. The
-  // checkpoint row is named 'qa' for new runs; legacy resume keeps the old
-  // review/factCheck rows. Both shapes coexist in the durable checkpoints.
+  // checkpoint row is named 'qa' for new runs.
   const qaStage = getCheckpoint(stages, 'qa');
-  // Structured (Brief-bearing) pipeline predicate — single source of truth
-  // (Closure Plan §5). Version 6 (V3 hierarchical) routes through the same V3
-  // decide* branches as 3/4/5 so the Brief checkpoint is always created.
-  const isV3 = shouldIncludeBriefCheckpoint({
-    outlineWorkflowVersion: task.outlineWorkflowVersion,
-    contextBudgetVersion: task.contextBudgetVersion,
-  });
+  const brief = getCheckpoint(stages, 'brief');
   // Compact Standard (二 Phase §6): the frozen topology omits the Proof node.
-  // The final body is the Revision (or Draft) candidate; Legacy keeps Proof.
+  // The final body is the Revision (or Draft) candidate.
   const compact = isCompactPipelineTopology(task.pipelineTopologyVersion);
 
   // --- Draft ---------------------------------------------------------
@@ -229,60 +214,19 @@ export function determineNextPipelineAction(
     return decideOneShot(task);
   }
 
-  // --- Mode branches -------------------------------------------------
+  // --- Topology branches ---------------------------------------------
   // Phase 4 (二 §7.2): compact Standard dispatches ONE QA regardless of
-  // pipelineMode (noReview/twoStage/conditional/full all collapse to the
-  // same qa → brief? → finalize path). Legacy resume keeps the historical
-  // branches below for `compact === false` tasks.
+  // pipelineMode. Legacy topologies are offline post-release: any non-compact
+  // task fails closed so the UI prompts the user to re-create the task with
+  // the unified pipeline.
   if (compact) {
     return decideCompactFull(task, qaStage, brief);
   }
-  if (mode === 'noReview') {
-    return decideNoReview(task, proof);
-  }
-  if (mode === 'twoStage') {
-    if (isV3) return decideTwoStageV3(task, review, brief, proof, compact);
-    return decideTwoStage(task, review, proof);
-  }
-  if (mode === 'conditional') {
-    if (isV3) return decideConditionalV3(task, factCheck, brief, proof, compact);
-    return decideConditional(task, factCheck, proof);
-  }
-  if (mode === 'full') {
-    if (isV3) return decideFullV3(task, review, factCheck, brief, proof, compact);
-    return decideFull(task, review, factCheck, proof);
-  }
-
-  return blocked('UNKNOWN_STATE', `未知流水线模式: ${String(mode)}`, {
-    userAction: 'restart_task',
-  });
-}
-
-function decideTerminalOrComplete(
-  task: PersistedPipelineTaskView,
-): PipelineAction {
-  if (statusIsFailedWithFinal(task)) {
-    return blocked(
-      'TASK_TERMINAL',
-      task.finalText ? '任务已失败并保留正文' : '任务已失败',
-      {
-        userAction: 'none',
-      },
-    );
-  }
-  if (hasUsableFinalText(task)) {
-    if (String(task.status) === 'completed') {
-      return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
-    }
-    return { type: 'complete' };
-  }
-  return blocked('UNKNOWN_STATE', '无法确定下一步', {
-    userAction: 'restart_task',
-  });
-}
-
-function statusIsFailedWithFinal(task: PersistedPipelineTaskView): boolean {
-  return String(task.status) === 'failed' && hasUsableFinalText(task);
+  return blocked(
+    'LEGACY_PIPELINE_BLOCKED',
+    '该任务使用已下线旧版流水线，不能继续；请按新版流程重新开始生成。',
+    { userAction: 'restart_task' },
+  );
 }
 
 function decideOneShot(
@@ -299,211 +243,6 @@ function decideOneShot(
     return { type: 'complete' };
   }
   return { type: 'finalize_from_draft', degraded: false };
-}
-
-function decideNoReview(
-  task: PersistedPipelineTaskView,
-  proof: PersistedStageCheckpoint,
-): PipelineAction {
-  // noReview marks other stages skipped during finalize orchestration;
-  // decision only needs draft → finalize → complete.
-  if (hasUsableFinalText(task)) {
-    if (String(task.status) === 'failed') {
-      return blocked('TASK_TERMINAL', '任务已失败并保留正文', {
-        userAction: 'none',
-      });
-    }
-    if (String(task.status) === 'completed') {
-      return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
-    }
-    return { type: 'complete' };
-  }
-  // Proof should be skipped in this mode; if somehow open, ignore for finalize.
-  void proof;
-  return { type: 'finalize_from_draft' };
-}
-
-function decideAfterProof(
-  task: PersistedPipelineTaskView,
-  proof: PersistedStageCheckpoint,
-  requireManualRetry = false,
-): PipelineAction {
-  if (proof.status === 'succeeded') {
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_proof' };
-    }
-    if (String(task.status) === 'completed') {
-      return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
-    }
-    // final present but status not completed (crash after save, before complete)
-    return { type: 'complete' };
-  }
-  if (proof.status === 'failed') {
-    if (
-      requireManualRetry ||
-      proof.errorCode === FINAL_PROOF_RETRY_REQUIRED_ERROR_CODE
-    ) {
-      return blocked(
-        'STAGE_FAILED',
-        proof.errorMessage || '终稿失败，请从失败节点重试',
-        {
-          stage: 'proof',
-          userAction: 'retry',
-          diagnostics: { errorCode: proof.errorCode },
-        },
-      );
-    }
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return blocked('TASK_TERMINAL', '终审失败，已保留初稿', {
-      stage: 'proof',
-      userAction: 'none',
-    });
-  }
-  if (isOpen(proof.status)) {
-    return { type: 'run_proof' };
-  }
-  if (proof.status === 'skipped') {
-    if (requireManualRetry) {
-      return blocked(
-        'STAGE_FAILED',
-        '终稿阶段缺失，已阻断任务；请从失败节点重试',
-        {
-          stage: 'proof',
-          userAction: 'retry',
-        },
-      );
-    }
-    // Historical V1/V2 tasks may still degrade when proof was intentionally
-    // skipped. V3.1 callers always pass requireManualRetry=true.
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return decideTerminalOrComplete(task);
-  }
-  return blocked('UNKNOWN_STATE', `终审阶段状态非法: ${proof.status}`, {
-    stage: 'proof',
-    userAction: 'restart_task',
-  });
-}
-
-function decideTwoStage(
-  task: PersistedPipelineTaskView,
-  review: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-): PipelineAction {
-  if (isOpen(review.status)) {
-    return { type: 'run_review' };
-  }
-  if (review.status === 'failed') {
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return blocked('TASK_TERMINAL', '文学评估失败，已保留初稿', {
-      stage: 'review',
-      userAction: 'none',
-    });
-  }
-  if (review.status === 'skipped') {
-    // Unexpected in twoStage primary path; treat as audit absent.
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return decideTerminalOrComplete(task);
-  }
-  if (review.status !== 'succeeded') {
-    return blocked('UNKNOWN_STATE', `评估阶段状态非法: ${review.status}`, {
-      stage: 'review',
-      userAction: 'restart_task',
-    });
-  }
-  return decideAfterProof(task, proof);
-}
-
-function decideAfterBrief(
-  task: PersistedPipelineTaskView,
-  brief: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-  compact?: boolean,
-): PipelineAction {
-  if (isOpen(brief.status)) return { type: 'run_brief' };
-  if (brief.status === 'skipped') {
-    // Formal skip (no executable findings / One-Shot) is not a failed Brief.
-    if (compact) {
-      // No executable findings → no Revision → Draft is the final candidate.
-      if (hasUsableFinalText(task)) {
-        if (String(task.status) === 'completed') {
-          return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
-        }
-        return { type: 'complete' };
-      }
-      return { type: 'finalize_from_draft' };
-    }
-    return decideAfterProof(task, proof, true);
-  }
-  if (brief.status === 'failed') {
-    // V3 Final is not trustworthy without a validated Brief.  In particular,
-    // an API response that failed the Brief schema gate must never be replaced
-    // by a local success-looking fallback and allowed to reach Proof.  Keep
-    // the task failed so the UI can retry this exact stage and reuse
-    // the already successful audit checkpoints.
-    return blocked(
-      'STAGE_FAILED',
-      brief.errorMessage || 'Brief 未完成，已阻断终稿；请从 Brief 阶段重启',
-      {
-        stage: 'brief',
-        userAction: 'retry',
-      },
-    );
-  }
-  if (brief.status !== 'succeeded') {
-    return blocked('UNKNOWN_STATE', `Brief 阶段状态非法: ${brief.status}`, {
-      stage: 'brief',
-      userAction: 'restart_task',
-    });
-  }
-  // Compact Standard (二 Phase §6): no Proof node. The validated Revision
-  // (or Draft) candidate goes straight to Local FinalValidate + Persist.
-  if (compact) {
-    if (hasUsableFinalText(task)) {
-      if (String(task.status) === 'completed') {
-        return blocked('TASK_TERMINAL', '任务已完成', { userAction: 'none' });
-      }
-      return { type: 'complete' };
-    }
-    return { type: 'finalize_from_draft' };
-  }
-  return decideAfterProof(task, proof, true);
-}
-
-function decideTwoStageV3(
-  task: PersistedPipelineTaskView,
-  review: PersistedStageCheckpoint,
-  brief: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-  compact?: boolean,
-): PipelineAction {
-  if (isOpen(review.status)) return { type: 'run_review' };
-  if (review.status === 'failed') {
-    return blocked('STAGE_FAILED', '文学评估失败，请从失败节点重试', {
-      stage: 'review',
-      userAction: 'retry',
-    });
-  }
-  if (review.status === 'skipped') {
-    return blocked('STAGE_FAILED', 'V3 文学评估缺失，请从失败节点重试', {
-      stage: 'review',
-      userAction: 'retry',
-    });
-  }
-  if (review.status !== 'succeeded') {
-    return blocked('UNKNOWN_STATE', `评估阶段状态非法: ${review.status}`, {
-      stage: 'review',
-      userAction: 'restart_task',
-    });
-  }
-  return decideAfterBrief(task, brief, proof, compact);
 }
 
 /**
@@ -575,173 +314,4 @@ function decideCompactFull(
     return { type: 'complete' };
   }
   return { type: 'finalize_from_draft' };
-}
-
-function decideConditional(
-  task: PersistedPipelineTaskView,
-  factCheck: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-): PipelineAction {
-  if (isOpen(factCheck.status)) {
-    return { type: 'run_fact_check' };
-  }
-  if (factCheck.status === 'failed') {
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return blocked('TASK_TERMINAL', '事实核查失败，已保留初稿', {
-      stage: 'factCheck',
-      userAction: 'none',
-    });
-  }
-  if (factCheck.status === 'skipped') {
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return decideTerminalOrComplete(task);
-  }
-  if (factCheck.status !== 'succeeded') {
-    return blocked(
-      'UNKNOWN_STATE',
-      `事实核查阶段状态非法: ${factCheck.status}`,
-      { stage: 'factCheck', userAction: 'restart_task' },
-    );
-  }
-  return decideAfterProof(task, proof);
-}
-
-function decideConditionalV3(
-  task: PersistedPipelineTaskView,
-  factCheck: PersistedStageCheckpoint,
-  brief: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-  compact?: boolean,
-): PipelineAction {
-  if (isOpen(factCheck.status)) return { type: 'run_fact_check' };
-  if (factCheck.status === 'failed') {
-    return blocked('STAGE_FAILED', '事实核查失败，请从失败节点重试', {
-      stage: 'factCheck',
-      userAction: 'retry',
-    });
-  }
-  if (factCheck.status === 'skipped') {
-    return blocked('STAGE_FAILED', 'V3 事实核查缺失，请从失败节点重试', {
-      stage: 'factCheck',
-      userAction: 'retry',
-    });
-  }
-  if (factCheck.status !== 'succeeded') {
-    return blocked(
-      'UNKNOWN_STATE',
-      `事实核查阶段状态非法: ${factCheck.status}`,
-      {
-        stage: 'factCheck',
-        userAction: 'restart_task',
-      },
-    );
-  }
-  return decideAfterBrief(task, brief, proof, compact);
-}
-
-function auditResolved(status: StageStatus): boolean {
-  return status === 'succeeded' || status === 'failed' || status === 'skipped';
-}
-
-function decideFull(
-  task: PersistedPipelineTaskView,
-  review: PersistedStageCheckpoint,
-  factCheck: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-): PipelineAction {
-  // Audit context must exist before any review/factCheck LLM (invariant 4/5).
-  // If draft succeeded but audit never frozen, do not silent-rebuild from live data
-  // inside this pure function — action is build_audit_context (reconciler implements
-  // freeze-candidates or marks non-recoverable).
-  if (!task.hasAuditContext) {
-    // If both audits already succeeded/failed from a partial write path, still
-    // require audit context for proof fidelity when re-running audits.
-    const auditsAllResolved =
-      auditResolved(review.status) && auditResolved(factCheck.status);
-    if (!auditsAllResolved) {
-      return { type: 'build_audit_context' };
-    }
-    // Audits already done without stored auditContext (legacy): allow proof/finalize
-    // using whatever text is on checkpoints; do not rebuild.
-  }
-
-  const reviewOpen = isOpen(review.status);
-  const factOpen = isOpen(factCheck.status);
-
-  if (reviewOpen && factOpen) {
-    return { type: 'run_review_and_fact_check' };
-  }
-  if (reviewOpen) {
-    return { type: 'run_review' };
-  }
-  if (factOpen) {
-    return { type: 'run_fact_check' };
-  }
-
-  // Both resolved.
-  const reviewOk = review.status === 'succeeded';
-  const factOk = factCheck.status === 'succeeded';
-  if (!reviewOk && !factOk) {
-    if (!hasUsableFinalText(task)) {
-      return { type: 'finalize_from_draft', degraded: true };
-    }
-    return blocked('TASK_TERMINAL', '文学评估与事实核查均失败，已保留初稿', {
-      userAction: 'none',
-    });
-  }
-
-  return decideAfterProof(task, proof);
-}
-
-function decideFullV3(
-  task: PersistedPipelineTaskView,
-  review: PersistedStageCheckpoint,
-  factCheck: PersistedStageCheckpoint,
-  brief: PersistedStageCheckpoint,
-  proof: PersistedStageCheckpoint,
-  compact?: boolean,
-): PipelineAction {
-  if (!task.hasAuditContext) {
-    const auditsAllResolved =
-      auditResolved(review.status) && auditResolved(factCheck.status);
-    if (!auditsAllResolved) return { type: 'build_audit_context' };
-  }
-  const reviewOpen = isOpen(review.status);
-  const factOpen = isOpen(factCheck.status);
-  if (reviewOpen && factOpen) return { type: 'run_review_and_fact_check' };
-  if (reviewOpen) return { type: 'run_review' };
-  if (factOpen) return { type: 'run_fact_check' };
-
-  // V3 never permits a fact-only Final. Review is the authority for literary
-  // direction and continuity; a failed audit must be retried, never degraded
-  // into a Draft-only deliverable.
-  if (review.status === 'failed') {
-    return blocked('STAGE_FAILED', '文学评估失败，请从失败节点重试', {
-      stage: 'review',
-      userAction: 'retry',
-    });
-  }
-  if (review.status !== 'succeeded') {
-    return blocked('STAGE_FAILED', 'V3 文学评估缺失，请从失败节点重试', {
-      stage: 'review',
-      userAction: 'retry',
-    });
-  }
-  if (factCheck.status === 'failed') {
-    return blocked('STAGE_FAILED', '事实核查失败，请从失败节点重试', {
-      stage: 'factCheck',
-      userAction: 'retry',
-    });
-  }
-  if (factCheck.status !== 'succeeded') {
-    return blocked('STAGE_FAILED', 'V3 事实核查缺失，请从失败节点重试', {
-      stage: 'factCheck',
-      userAction: 'retry',
-    });
-  }
-  return decideAfterBrief(task, brief, proof, compact);
 }

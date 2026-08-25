@@ -233,8 +233,8 @@ describe('Phase 4 — compact decision dispatches run_qa, not run_review', () =>
   });
 });
 
-describe('Phase 4 — legacy resume still dispatches run_review / run_fact_check', () => {
-  test('legacy: review interrupted → run_review (Resume Duplicate Paid Call = 0)', () => {
+describe('Phase 4 — legacy topology fails closed post-release', () => {
+  test('legacy: legacy DAG task is blocked for recreation, never dispatches run_review', () => {
     const view = taskView({
       pipelineTopologyVersion: LEGACY_PIPELINE_TOPOLOGY_VERSION,
     });
@@ -245,10 +245,14 @@ describe('Phase 4 — legacy resume still dispatches run_review / run_fact_check
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'succeeded'),
     ];
-    expect(determineNextPipelineAction(view, stages).type).toBe('run_review');
+    const action = determineNextPipelineAction(view, stages);
+    expect(action.type).toBe('blocked');
+    if (action.type === 'blocked') {
+      expect(action.reason.code).toBe('LEGACY_PIPELINE_BLOCKED');
+    }
   });
 
-  test('legacy: factCheck interrupted → run_fact_check', () => {
+  test('legacy: long review/factCheck chains never dispatch run_fact_check', () => {
     const view = taskView({
       pipelineTopologyVersion: LEGACY_PIPELINE_TOPOLOGY_VERSION,
     });
@@ -259,9 +263,11 @@ describe('Phase 4 — legacy resume still dispatches run_review / run_fact_check
       checkpoint('brief', 'succeeded'),
       checkpoint('proof', 'succeeded'),
     ];
-    expect(determineNextPipelineAction(view, stages).type).toBe(
-      'run_fact_check',
-    );
+    const action = determineNextPipelineAction(view, stages);
+    expect(action.type).toBe('blocked');
+    if (action.type === 'blocked') {
+      expect(action.reason.code).toBe('LEGACY_PIPELINE_BLOCKED');
+    }
   });
 });
 

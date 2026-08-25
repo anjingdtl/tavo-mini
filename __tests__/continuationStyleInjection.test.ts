@@ -8,18 +8,8 @@ import {
   renderStyleProfile,
   selectStyleRenderLevel,
 } from '../src/services/continuation/styleProfile/styleProfileRenderer';
-import {
-  compilePlannerMessages,
-  compileWriterMessages,
-  compileCheckerMessages,
-  compileRepairMessages,
-} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import { buildContinuationV4Context } from '../src/services/continuation/generation/continuationContextBuilder';
 import { cloneDefaultContextAutomationPolicy } from '../src/services/contextAutomationPolicy';
-import type {
-  ContinuationContextSnapshot,
-  ContinuationPlan,
-} from '../src/services/continuation/generation/types';
 import { ContinuationCapabilityBlockedError } from '../src/services/continuation/generation/types';
 import { computeStyleProfileHash } from '../src/services/continuation/styleProfile/styleProfileHash';
 
@@ -215,178 +205,6 @@ function validProfile(): OriginalStyleProfileV2 {
   };
 }
 
-function miniSnapshot(
-  overrides: Partial<ContinuationContextSnapshot> = {},
-): ContinuationContextSnapshot {
-  const profile = validProfile();
-  return {
-    schemaVersion: 1,
-    projectId: 1,
-    targetChapterId: 10,
-    targetPosition: 0 as any,
-    source: {
-      projectId: 1,
-      sourceId: 1,
-      sourceVersion: 1,
-      normalizedSha256: 'abc',
-      parserVersion: 'v1',
-      normalizationVersion: 'v1',
-      boundary: {
-        chapterId: 5,
-        chapterPosition: 19 as any,
-        charOffsetExclusive: 1000 as any,
-      },
-    },
-    canon: {
-      snapshotId: 'snap',
-      revision: 1,
-      boundaryGlobalCharOffset: 1000,
-      capabilities: {
-        worldRules: true,
-        characterProfiles: true,
-        characterStates: true,
-        relationships: true,
-        plotThreads: true,
-        experiences: true,
-        knowledgeBoundaries: true,
-        timelineEvents: true,
-        evidenceValidated: true,
-      },
-    },
-    storyMemory: {
-      stateFingerprint: 'fp',
-      throughPosition: -1,
-      status: 'ready',
-    },
-    inputRevisionHash: 'h',
-    style: {
-      profileId: 'sp-1',
-      profileHash: 'a'.repeat(64),
-      profileSchemaVersion: 2,
-      analyzerVersion: 'style-v2-4',
-      rendererVersion: STYLE_RENDERER_VERSION,
-      sourceFingerprint: '1|1|abc|v1|v1|5|19|1000',
-      boundaryCharOffsetExclusive: 1000,
-      frozenProfile: profile,
-      userOverrides: { note: '少用感叹号' },
-      renderLevel: 'standard',
-      styleTokens: 800,
-      omitReason: null,
-    },
-    settingsSnapshot: {
-      schemaVersion: 1,
-      values: {
-        projectId: 1,
-        strictnessProfile: 'balanced',
-        worldRuleLevel: 'strict',
-        characterLevel: 'strict',
-        relationshipLevel: 'strict',
-        plotLevel: 'balanced',
-        experienceLevel: 'strict',
-        knowledgeLevel: 'strict',
-        styleLevel: 'balanced',
-        allowNewCharacters: true,
-        allowNewLocations: true,
-        allowNewOrganizations: true,
-        majorRelationshipChangePolicy: 'require_confirmation',
-        majorPowerChangePolicy: 'require_confirmation',
-        characterDeathPolicy: 'require_confirmation',
-        resurrectionPolicy: 'forbid',
-        plannerLlmConfigId: null,
-        writerLlmConfigId: null,
-        checkerLlmConfigId: null,
-        repairLlmConfigId: null,
-        stateExtractionLlmConfigId: null,
-        controlLlmConfigId: null,
-        plannerConfirmationPolicy: 'risk_only',
-        checkerEnabled: true,
-        maxRepairRounds: 1,
-        targetChapterChars: 3000,
-        customRulesJson: '[]',
-        createdAt: 't',
-        updatedAt: 't',
-      },
-      resolvedModelConfigIds: {
-        planner: 1,
-        writer: 1,
-        checker: 1,
-        repair: 1,
-        stateExtraction: 1,
-      },
-    },
-    bundles: {
-      lockedRules: [],
-      canon: {
-        snapshot: {} as any,
-        worldRules: [],
-        characters: [],
-        characterStates: [],
-        relationships: [],
-        experiences: [],
-        knowledge: [],
-        plotThreads: [],
-        timelineEvents: [],
-        evidenceRefs: [],
-        estimatedTokens: 0,
-        omittedReasonCounts: {},
-      },
-      effectiveState: {
-        schemaVersion: 1,
-        targetPosition: 0 as any,
-        characterStates: [],
-        relationships: [],
-        plotThreads: [],
-        knowledge: [],
-        experiences: [],
-        freshness: {
-          canonReady: true,
-          storyMemoryStatus: 'ready',
-          pendingStateExtractionCount: 0,
-          pendingMajorProposalCount: 0,
-          dirtyFromPosition: null,
-        },
-        appliedEventIds: [],
-        omittedReasons: [],
-      },
-      seam: { summary: '末章', excerpt: '结尾' },
-      recentChapters: [],
-      storyMemory: { summary: '', estimatedTokens: 0 },
-      episodic: [],
-      style: {
-        projectId: 1,
-        sourceId: 1,
-        canonSnapshotId: 'snap',
-        canonRevision: 1,
-        narrativePerson: '第三人称',
-        tense: '过去时',
-        averageSentenceLength: 15,
-        averageParagraphLength: 80,
-        dialogueRatio: 0.25,
-        descriptionRatio: 0.2,
-        pacingNotes: '中速',
-        lexicalNotes: '书面',
-        sampleEvidenceIds: [],
-        reviewStatus: 'confirmed',
-      },
-      userInstruction: '推进主线',
-    },
-    createdAt: 't',
-    ...overrides,
-  };
-}
-
-const emptyPlan: ContinuationPlan = {
-  schemaVersion: 1,
-  chapterGoal: '推进',
-  centralConflict: '冲突',
-  beats: [{ order: 1, summary: '节拍' }],
-  participatingCharacterIds: [5],
-  characterActions: [],
-  plotAdvances: [],
-  foreshadowingActions: [],
-  proposedStateChanges: [],
-  risks: [],
-};
 
 describe('styleProfileRenderer levels', () => {
   const profile = validProfile();
@@ -471,62 +289,6 @@ describe('selectStyleRenderLevel', () => {
     expect(r.level).toBeNull();
     expect(r.blocked).toBe(true);
     expect(r.reason).toMatch(/insufficient/);
-  });
-});
-
-describe('prompt compiler style injection', () => {
-  it('writer includes frozen style + user overrides', () => {
-    const snap = miniSnapshot();
-    const writer = compileWriterMessages(snap, emptyPlan)[0].content;
-    expect(writer).toContain('第三人称');
-    expect(writer).toContain('少用感叹号');
-    expect(writer).toMatch(/原著风格/);
-  });
-
-  it('planner includes planning style block', () => {
-    const snap = miniSnapshot();
-    const planner = compilePlannerMessages(snap)[0].content;
-    expect(planner).toContain('规划约束');
-    expect(planner).toContain('中速');
-  });
-
-  it('checker and repair receive style contract', () => {
-    const snap = miniSnapshot();
-    const checker = compileCheckerMessages(snap, '他走了。')[0].content;
-    expect(checker).toContain('检查契约');
-    const repair = compileRepairMessages(snap, '他走了。', [
-      {
-        id: 1,
-        runId: 'r',
-        chapterId: 1,
-        artifactId: 'a',
-        artifactHash: 'h',
-        category: 'style',
-        subtype: 'pov_shift',
-        severity: 'error',
-        confidence: 0.5,
-        generatedStart: 0,
-        generatedEnd: 1,
-        generatedExcerpt: '我',
-        description: '人称漂移',
-        entityRefType: null,
-        entityRefId: null,
-        evidenceIds: [],
-        suggestedFix: '统一人称',
-        resolutionStatus: 'open',
-        createdAt: 't',
-        updatedAt: 't',
-      },
-    ])[0].content;
-    expect(repair).toMatch(/修复|风格/);
-  });
-
-  it('does not let a stale off snapshot suppress original style content', () => {
-    const snap = miniSnapshot();
-    snap.settingsSnapshot.values.styleLevel = 'off';
-    const writer = compileWriterMessages(snap, emptyPlan)[0].content;
-    expect(writer).toContain('【原著风格');
-    expect(writer).toContain('第三人称');
   });
 });
 
@@ -724,14 +486,10 @@ describe('buildContinuationContext style path', () => {
     expect(snapshot.bundles.style?.narrativePerson).toContain('三');
     expect(snapshot.contextBudget?.styleTokens).toBeGreaterThan(0);
 
-    const styleCat = trace.categories.find(c => c.name === 'originalStyle');
+const styleCat = trace.categories.find(c => c.name === 'originalStyle');
     expect(styleCat).toBeDefined();
     expect(styleCat!.selected).toBe(1);
     expect(styleCat!.tokens).toBeGreaterThan(0);
-
-    const writer = compileWriterMessages(snapshot, emptyPlan)[0].content;
-    expect(writer).toContain('第三人称');
-    expect(writer).toContain('保持克制');
   });
 
   it('V4 freezes one Canon read into schema 3 stage views and policy trace', async () => {
@@ -797,9 +555,6 @@ describe('buildContinuationContext style path', () => {
       chapterId: 21,
       excerpt: continuationTail,
     });
-    expect(compileWriterMessages(snapshot, emptyPlan)[0].content).toContain(
-      continuationTail,
-    );
 
     const anchorCategory = trace.categories.find(
       category => category.name === 'primaryAnchor',

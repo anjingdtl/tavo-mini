@@ -57,8 +57,8 @@ function mulberry32(seed: number): () => number {
 // A. Version semantics + pipeline routing (Closure Plan §5 / Gate 02/03)
 // ===========================================================================
 describe('Closure §5 — contextBudgetVersion = 6 unified semantics', () => {
-  test('shouldIncludeBriefCheckpoint accepts 6 alongside 3/4/5', () => {
-    for (const cbv of [3, 4, 5, 6]) {
+  test('shouldIncludeBriefCheckpoint accepts 5/6/7 for the current workflow', () => {
+    for (const cbv of [5, 6, 7]) {
       expect(
         shouldIncludeBriefCheckpoint({
           outlineWorkflowVersion: 4,
@@ -112,22 +112,26 @@ describe('Closure §5 — contextBudgetVersion = 6 unified semantics', () => {
   });
 
   test('structured version helpers cover the Brief-bearing set', () => {
-    for (const cbv of [3, 4, 5, 6, 7]) {
+    for (const cbv of [5, 6, 7]) {
       expect(isStructuredContextBudgetVersion(cbv)).toBe(true);
     }
-    for (const owv of [3, 4]) {
+    for (const owv of [4]) {
       expect(isStructuredOutlineWorkflowVersion(owv)).toBe(true);
     }
+    expect(isStructuredContextBudgetVersion(4)).toBe(false);
+    expect(isStructuredOutlineWorkflowVersion(3)).toBe(false);
     expect(isStructuredContextBudgetVersion(8)).toBe(false);
     expect(isStructuredOutlineWorkflowVersion(2)).toBe(false);
   });
 
-  test('normalizePersistedContextBudgetVersion preserves 6/5 instead of collapsing to 1', () => {
+  test('normalizePersistedContextBudgetVersion preserves current 7/6/5, collapses legacy to 1', () => {
     expect(normalizePersistedContextBudgetVersion(7)).toBe(7);
     expect(normalizePersistedContextBudgetVersion(6)).toBe(6);
     expect(normalizePersistedContextBudgetVersion(5)).toBe(5);
     expect(normalizePersistedContextBudgetVersion('6')).toBe(6);
-    expect(normalizePersistedContextBudgetVersion(4)).toBe(4);
+    expect(normalizePersistedContextBudgetVersion(4)).toBe(1);
+    expect(normalizePersistedContextBudgetVersion(3)).toBe(1);
+    expect(normalizePersistedContextBudgetVersion(2)).toBe(1);
     expect(normalizePersistedContextBudgetVersion(undefined)).toBe(1);
     expect(normalizePersistedContextBudgetVersion(99)).toBe(1);
   });
@@ -167,7 +171,7 @@ function stage(
 function stages(
   map: Partial<Record<PipelineStageName, StageStatus>>,
 ): PersistedStageCheckpoint[] {
-  const names: PipelineStageName[] = ['draft', 'review', 'factCheck', 'brief', 'proof'];
+  const names: PipelineStageName[] = ['draft', 'qa', 'review', 'factCheck', 'brief', 'proof'];
   return names.map(n => stage(n, map[n] || 'pending'));
 }
 
@@ -183,6 +187,7 @@ function task(
     hasDraftContext: true,
     hasAuditContext: false,
     finalText: null,
+    pipelineTopologyVersion: 2,
     ...overrides,
   };
 }
@@ -191,10 +196,10 @@ function actionType(a: PipelineAction): string {
   return a.type;
 }
 
-describe('Closure §5.4 — version 6 routes through V3 (Brief) branches', () => {
-  test('A1/A4: full + version 6, failed factCheck → STAGE_FAILED (V3 path, Brief exists)', () => {
-    // Legacy (no version) would degrade to finalize_from_draft. V3 must block
-    // for retry at the failed node and keep the Brief stage in play.
+describe('Closure §5.4 — version 6 routes through the compact (Brief) branches', () => {
+  test('A1/A4: compact + version 6, failed qa → STAGE_FAILED (retry at the node)', () => {
+    // Compact blocks for retry at the failed QA node; the Brief stage stays in
+    // play. Degraded draft finalization is never emitted for a failed QA.
     const a = determineNextPipelineAction(
       task({
         pipelineMode: 'full',
@@ -205,18 +210,16 @@ describe('Closure §5.4 — version 6 routes through V3 (Brief) branches', () =>
       }),
       stages({
         draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'failed',
+        qa: 'failed',
         brief: 'pending',
-        proof: 'pending',
       }),
     );
     expect(actionType(a)).toBe('blocked');
-    expect((a as any).reason?.stage).toBe('factCheck');
+    expect((a as any).reason?.stage).toBe('qa');
     expect((a as any).reason?.userAction).toBe('retry');
   });
 
-  test('A4: conditional + version 6 routes through V3 conditional branch (Brief)', () => {
+  test('A4: conditional + version 6 routes to run_brief after successful qa', () => {
     const a = determineNextPipelineAction(
       task({
         pipelineMode: 'conditional',
@@ -226,16 +229,15 @@ describe('Closure §5.4 — version 6 routes through V3 (Brief) branches', () =>
       }),
       stages({
         draft: 'succeeded',
-        factCheck: 'succeeded',
+        qa: 'succeeded',
         brief: 'pending',
-        proof: 'pending',
       }),
     );
-    // V3 conditional: factCheck succeeded → run_brief (Brief is part of the path).
+    // Compact: qa succeeded → run_brief (Brief is part of the path).
     expect(actionType(a)).toBe('run_brief');
   });
 
-  test('A7: version 6 resume — re-run open factCheck, do NOT re-run succeeded draft', () => {
+  test('A7: version 6 resume — re-run open qa, do NOT re-run succeeded draft', () => {
     const a = determineNextPipelineAction(
       task({
         pipelineMode: 'full',
@@ -246,16 +248,14 @@ describe('Closure §5.4 — version 6 routes through V3 (Brief) branches', () =>
       }),
       stages({
         draft: 'succeeded',
-        review: 'succeeded',
-        factCheck: 'interrupted', // open → resume here
+        qa: 'interrupted', // open → resume here
         brief: 'pending',
-        proof: 'pending',
       }),
     );
-    expect(actionType(a)).toBe('run_fact_check');
+    expect(actionType(a)).toBe('run_qa');
   });
 
-  test('A3: twoStage + version 6 routes through V3 twoStage (Brief after review)', () => {
+  test('A3: twoStage + version 6 routes to run_brief after qa review', () => {
     const a = determineNextPipelineAction(
       task({
         pipelineMode: 'twoStage',
@@ -265,24 +265,23 @@ describe('Closure §5.4 — version 6 routes through V3 (Brief) branches', () =>
       }),
       stages({
         draft: 'succeeded',
-        review: 'succeeded',
+        qa: 'succeeded',
         brief: 'pending',
-        proof: 'pending',
       }),
     );
     expect(actionType(a)).toBe('run_brief');
   });
 
-  test('legacy version (none) still degrades — version 6 did not regress legacy full', () => {
+  test('legacy non-compact topology fails closed instead of degrading', () => {
     const a = determineNextPipelineAction(
-      task({ pipelineMode: 'full', hasAuditContext: true }),
+      task({ pipelineMode: 'full', hasAuditContext: true, pipelineTopologyVersion: 1 }),
       stages({
         draft: 'succeeded',
-        review: 'failed',
-        factCheck: 'failed',
+        qa: 'failed',
       }),
     );
-    expect(a).toEqual({ type: 'finalize_from_draft', degraded: true });
+    expect(actionType(a)).toBe('blocked');
+    expect((a as any).reason?.code).toBe('LEGACY_PIPELINE_BLOCKED');
   });
 });
 

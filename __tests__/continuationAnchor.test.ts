@@ -1,10 +1,6 @@
 import {
   selectContinuationAnchor,
 } from '../src/services/continuation/generation/continuationAnchor';
-import {
-  compilePlannerMessages,
-  compileWriterMessages,
-} from '../src/services/continuation/generation/legacy/continuationPromptCompiler';
 import { runDeterministicChecks } from '../src/services/continuation/generation/continuationChecker';
 import { summarizeTrace } from '../src/services/continuation/generation/continuationContextTrace';
 
@@ -126,89 +122,7 @@ function snapshot(overrides: Record<string, unknown> = {}): any {
   };
 }
 
-describe('continuation anchor prompt and checker behavior', () => {
-  test('first prompt uses source seam; later prompts use only the selected continuation seam', () => {
-    const first = snapshot({
-      primaryAnchor: {
-        kind: 'source_seam',
-        summary: '原著边界',
-        excerpt: sourceTail,
-        chapterId: null,
-        position: null,
-      },
-    });
-    const second = snapshot({
-      targetPosition: 1,
-      primaryAnchor: {
-        kind: 'continuation_chapter',
-        summary: '续写第一章',
-        excerpt: continuation1Tail,
-        chapterId: 10,
-        position: 0,
-      },
-      bundles: {
-        ...first.bundles,
-        seam: { summary: '（已替代）', excerpt: '' },
-      },
-    });
-    const third = snapshot({
-      targetPosition: 2,
-      primaryAnchor: {
-        kind: 'continuation_chapter',
-        summary: '续写第二章',
-        excerpt: continuation2Tail,
-        chapterId: 11,
-        position: 1,
-      },
-      bundles: {
-        ...first.bundles,
-        seam: { summary: '（已替代）', excerpt: '' },
-      },
-    });
-
-    const plan = {
-      schemaVersion: 1,
-      chapterGoal: '推进',
-      centralConflict: '冲突',
-      beats: [],
-      participatingCharacterIds: [],
-      characterActions: [],
-      plotAdvances: [],
-      foreshadowingActions: [],
-      proposedStateChanges: [],
-      risks: [],
-    } as any;
-    const firstWriter = compileWriterMessages(first, plan)[0].content;
-    const secondPlanner = compilePlannerMessages(second)[0].content;
-    const secondWriter = compileWriterMessages(second, plan)[0].content;
-    const thirdPlanner = compilePlannerMessages(third)[0].content;
-    const thirdWriter = compileWriterMessages(third, plan)[0].content;
-
-    expect(firstWriter).toContain(sourceTail);
-    for (const prompt of [secondPlanner, secondWriter]) {
-      expect(prompt).toContain('当前正文接缝：最近续写第 2 章');
-      expect(prompt).toContain(continuation1Tail);
-      expect(prompt).not.toContain(sourceTail);
-    }
-    for (const prompt of [thirdPlanner, thirdWriter]) {
-      expect(prompt).toContain('当前正文接缝：最近续写第 3 章');
-      expect(prompt).toContain(continuation2Tail);
-      expect(prompt).not.toContain(sourceTail);
-      expect(prompt).not.toContain(continuation1Tail);
-    }
-  });
-
-  test('schemaVersion 1 snapshots retain the legacy seam compiler path', () => {
-    const legacy = snapshot({
-      schemaVersion: 1,
-      bundles: {
-        ...snapshot().bundles,
-        seam: { summary: 'legacy seam', excerpt: sourceTail },
-      },
-    });
-    expect(compilePlannerMessages(legacy)[0].content).toContain(sourceTail);
-  });
-
+describe('continuation anchor checker behavior', () => {
   test('source and continuation anchor copies are hard errors for adoption', () => {
     const sourceIssues = runDeterministicChecks(
       sourceTail + sourceTail,
