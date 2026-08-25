@@ -214,6 +214,8 @@ describe('Writing Kernel first-pass contracts', () => {
       expect(transport.mock.calls[1][2].thinking).toEqual({ type: 'disabled' });
       expect(transport.mock.calls[1][2].reasoningEffort).toBeUndefined();
       expect(String(transport.mock.calls[1][2].scenario)).toMatch(/formatter/);
+      expect(transport.mock.calls[1][1]).toBe(transport.mock.calls[0][1]);
+      expect(transport.mock.calls[1][1]).toBeGreaterThan(4096);
     } finally {
       transport.mockRestore();
     }

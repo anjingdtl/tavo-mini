@@ -349,7 +349,7 @@ export async function executeSharedWriterStage(input: {
       stageInput,
       compiled: {
         messages: formatter.messages,
-        maxTokens: Math.min(maxTokens, 4096),
+        maxTokens,
         responseFormat:
           compiled.outputContract === 'json_envelope'
             ? 'json_object'
@@ -361,7 +361,7 @@ export async function executeSharedWriterStage(input: {
       call: () =>
         callWritingStageLLM(
           formatter.messages,
-          Math.min(maxTokens, 4096),
+          maxTokens,
           {
             queueClass: 'pipeline',
             queuePriority: 'normal',

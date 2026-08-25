@@ -3,7 +3,8 @@
 > 日期：2026-08-25  
 > Exact HEAD 基线：`fc65973c09b682d2400ddb39768cad707a891cc4`（V2.21.1 / Schema 56）  
 > A3 封口 HEAD：`6d4adf3`  
-> A4：本提交（Receipt 身份 + 失败 Receipt + 真实 LLM 基线）  
+> A4：`a8f9378` Receipt 身份 + 失败 Receipt + 真实 LLM 基线  
+> 预算修复：`d237fa1` 修订输出走弹性预留；后续 Formatter/Repair 同样去硬截断  
 > 未实施 B/C 轮。
 
 ---
@@ -19,7 +20,7 @@
 | launcher | `851e6fd` | Windows 一键启动 |
 | **A4** | 本提交 | ① 真实 LLM 矩阵 ② `requestFingerprint` 硬定性 ③ 失败请求 Receipt |
 
-未做：QA+State Extraction 合并、Story Memory Delta、Segment Repair、下一章预取、新 Agent Loop、第二套 Context / Memory / Prompt Compiler。
+未做（方案明确排除，属 B/C）：QA+State Extraction 合并、Story Memory Delta、Segment Repair、下一章预取、新 Agent Loop、第二套 Context / Memory / Prompt Compiler。
 
 ---
 
@@ -89,5 +90,30 @@ Red Test：`__tests__/writingRequestReceipt.test.ts`（指纹确定性；失败�
 A4 代码三项缺口：指纹硬定性、失败 Receipt、真实 LLM 记录，均已落地。
 
 **A4 代码 GO。**  
-**live 矩阵：续写满矩阵 GO；大纲质量档未定稿 → 不能宣称 A 轮全部门禁 GO。**  
-停在 A4，等待验收。不进入 B 轮。
+**live 矩阵：续写满矩阵 GO；大纲质量档曾因 8192 硬截断未定稿。预算修复后需覆盖安装再测。**  
+停在 A 轮。不进入 B 轮。
+
+---
+
+## 8. 方案未完工与刻意未改的硬编码
+
+### 本轮方案仍欠的建设
+
+| 项 | 状态 |
+|---|---|
+| A0–A3 合同（三级质量、Truth、Receipt） | 已提交 |
+| A4 指纹硬定性 + 失败 Receipt | 已提交 |
+| Outline/Continuation × 三档 × 2 章 live | 续写满；大纲质量档待预算修复后复测 |
+| 续写成功路径 Receipt 写入 `output_json` | 代码已补，live 样本在补写之前 |
+| 方案排除的 B/C 项 | 不做 |
+
+### 扫过但仍不改的硬编码（不是写作 Kernel 输出预算）
+
+- `FALLBACK_CONTEXT_WINDOW = 8192`：配置缺失时的窗口兜底，不是阶段输出 cap。
+- `deriveDefaultSafetyMargin` 的 256–1024：按窗口 2% 的安全边，弹性分配器自己的安全余量。
+- `DEFAULT_MAX_TOKENS = 4000`：流水线配置默认值；弹性开启后会被 V3/20% 预留覆盖。
+- `presets/catalog.ts` `max_tokens: 4000`：预设模板，不是运行时 envelope。
+- 构建模块 `construction/budget.ts`：与写作上下文预算隔离。
+- Provider 探测 `max_tokens: 16`、Tavern `openai_max_tokens: 300`。
+- Formatter 候选 `slice(0, 12000)`：整理已有语义的输入截取，不是 `max_tokens`。
+- Brief `visibleOutputFloor` 768–2048：只参与「可见输出 + thinking 是否装得下」检查；弹性模式下 `requestMaxTokens` 仍走 20% 预留。

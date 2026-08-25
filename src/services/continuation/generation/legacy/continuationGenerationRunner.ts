@@ -62,6 +62,7 @@ import {
   ContinuationOutdatedError,
 } from '../types';
 import { estimateMessagesTokens } from '../../../../utils/tokenEstimator';
+import { resolveElasticStageOutputReservation } from '../../../contextAutoAllocator';
 import { activeContinuationControllers as activeControllers } from '../continuationRunControllers';
 import {
   resumeContinuationV4Run,
@@ -627,6 +628,26 @@ function capacityForStage(
 ): ResolvedStageCapacity | null {
   const capacity = snapshot.stageBudgets?.[stage];
   return capacity ?? null;
+}
+
+function resolveRepairMaxTokens(
+  snapshot: ContinuationContextSnapshot,
+): number | null {
+  const frozen = capacityForStage(snapshot, 'repair')?.maxOutputTokens;
+  if (Number.isFinite(frozen) && Number(frozen) > 0) {
+    return Number(frozen);
+  }
+  const window =
+    snapshot.contextBudget?.modelContextLimit ||
+    snapshot.stageBudgets?.writer?.contextWindow ||
+    0;
+  if (!window) return null;
+  return resolveElasticStageOutputReservation({
+    contextWindow: Number(window),
+    modelMaxOutputTokens:
+      snapshot.contextBudget?.writerMaxOutputTokens ||
+      snapshot.stageBudgets?.writer?.maxOutputTokens,
+  });
 }
 
 function preflightStandardStage(input: {
@@ -1874,11 +1895,20 @@ async function continueFromWriter(
       // 已花的 planner+writer token）作废。改 try/catch：失败时记录 warning
       // 并 break 跳出 repair 循环，保留当前 artifact 走末尾 awaiting_user。
       try {
+        const repairMaxTokens = resolveRepairMaxTokens(snapshot);
+        if (!repairMaxTokens) {
+          opts.tokenUsage.repair = {
+            ...(opts.tokenUsage.repair ?? {}),
+            warning: 'repair_skipped',
+            warningMessage: '缺少 Repair 冻结输出预算，已跳过模型修复。',
+          };
+          break;
+        }
         repaired = (
           await opts.call(
             'repair',
             compileRepairMessages(snapshot, artifact.content, openChecks),
-            Math.min(4096, artifact.content.length + 500),
+            repairMaxTokens,
             snapshot.settingsSnapshot.resolvedModelConfigIds.repair,
             'text',
           )
