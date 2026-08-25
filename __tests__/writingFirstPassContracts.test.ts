@@ -5,6 +5,7 @@
  * Brief revision compressor.
  */
 import { compileSharedWritingPrompt } from '../src/services/writing/prompt/sharedPromptCompiler';
+import { resolveElasticStageOutputReservation } from '../src/services/contextAutoAllocator';
 import { executeSharedWriterStage } from '../src/services/writing/stages/writerCore';
 import { compileKernelStageReasoning } from '../src/services/writing/contracts/stageReasoning';
 import * as stageLlmCall from '../src/services/writing/stages/stageLlmCall';
@@ -134,7 +135,12 @@ describe('Writing Kernel first-pass contracts', () => {
     });
     const text = compiled.messages.map(item => item.content).join('\n');
     expect(compiled.responseFormat).toBe('json_object');
-    expect(compiled.maxTokens).toBeLessThanOrEqual(8192);
+    expect(compiled.maxTokens).toBe(
+      resolveElasticStageOutputReservation({
+        contextWindow: 32000,
+        modelMaxOutputTokens: 200000,
+      }),
+    );
     expect(text).toMatch(/修订合同|Brief/);
     expect(text).toMatch(/strategy/);
     expect(text).toMatch(/不要从零重写|不要另起一篇|受控修订/);

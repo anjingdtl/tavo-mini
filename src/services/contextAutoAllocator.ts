@@ -605,6 +605,78 @@ export function resolveOutlineElasticStageReservations(params: {
   ) as Record<OutlinePipelineStageV3, number>;
 }
 
+export type SharedStageMaxOutputTokens = {
+  draft: number;
+  qa: number;
+  review: number;
+  audit: number;
+  factCheck: number;
+  revision: number;
+  proof: number;
+};
+
+/**
+ * Map the frozen outline V3 stage ledger (draft/review/factCheck/brief/proof)
+ * onto the ONE Kernel stage names. Missing rows fall back to the same
+ * per-request elastic output reserve — never a stage-local magic cap.
+ */
+export function buildSharedStageMaxOutputTokens(input: {
+  contextWindow: number;
+  modelMaxOutputTokens?: number | null;
+  outlineStageBudgets?: ReadonlyArray<{
+    stage: string;
+    requestMaxTokens?: number | null;
+  }> | null;
+}): SharedStageMaxOutputTokens {
+  const elastic = resolveOutlineElasticStageReservations(input);
+  const byStage: Record<string, number> = {};
+  for (const item of input.outlineStageBudgets || []) {
+    const n = Number(item.requestMaxTokens);
+    if (Number.isFinite(n) && n > 0) {
+      byStage[item.stage] = Math.floor(n);
+    }
+  }
+  const pick = (outlineStage: OutlinePipelineStageV3): number =>
+    byStage[outlineStage] || elastic[outlineStage];
+  return {
+    draft: pick('draft'),
+    qa: pick('review'),
+    review: pick('review'),
+    audit: pick('factCheck'),
+    factCheck: pick('factCheck'),
+    revision: pick('brief'),
+    proof: pick('proof'),
+  };
+}
+
+/**
+ * Compile-time output ceiling for one shared Writer stage.
+ * Frozen `sharedStageMaxOutputTokens` wins; otherwise the elastic 20%
+ * envelope. No stage may invent a smaller absolute cap (for example 8192).
+ */
+export function resolveFrozenStageMaxOutputTokens(input: {
+  stage: string;
+  contextWindow: number;
+  modelMaxOutputTokens?: number | null;
+  sharedStageMaxOutputTokens?: Record<string, unknown> | null;
+}): number {
+  const modelMax = Math.max(
+    MIN_PIPELINE_TOKENS,
+    Number(input.modelMaxOutputTokens) || 1024,
+  );
+  const stageMax = Number(input.sharedStageMaxOutputTokens?.[input.stage]);
+  if (Number.isFinite(stageMax) && stageMax > 0) {
+    return Math.max(
+      MIN_PIPELINE_TOKENS,
+      Math.min(modelMax, Math.floor(stageMax)),
+    );
+  }
+  return resolveElasticStageOutputReservation({
+    contextWindow: input.contextWindow,
+    modelMaxOutputTokens: input.modelMaxOutputTokens,
+  });
+}
+
 function resolveOutlineStageTierV3(
   requestedTier: OutlineReasoningTierV3,
   stage: OutlinePipelineStageV3,

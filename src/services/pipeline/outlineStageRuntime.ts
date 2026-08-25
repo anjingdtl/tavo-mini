@@ -44,6 +44,7 @@ import { createGenerationTraceId } from './generationTrace';
 import { PipelineForeground } from '../../native/PipelineForegroundModule';
 import {
   allocateOutlinePipelineBudgetV3,
+  buildSharedStageMaxOutputTokens,
   cloneDefaultOutlinePipelineBudgetPolicyV3,
   resolveElasticStageOutputReservation,
   resolveOutlineElasticStageReservations,
@@ -1146,6 +1147,11 @@ async function actionPersistInitialSnapshot(
             .getState()
             .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
         ),
+        sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
+          contextWindow: Number(runtime.requestConfig.context_window) || 0,
+          modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,
+          outlineStageBudgets: execution.stageBudgets,
+        }),
       },
     },
   };

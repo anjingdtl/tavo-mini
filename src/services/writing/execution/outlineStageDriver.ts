@@ -52,6 +52,7 @@ import {
 } from '../scenario/outlineWritingAdapter';
 import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
+import { buildSharedStageMaxOutputTokens } from '../../contextAutoAllocator';
 import type { WritingRequest } from '../contracts/writingSource';
 import {
   BatchBudgetExceededError,
@@ -275,6 +276,11 @@ async function backfillKernelFreezeFromEnvelope(input: {
         pipelineTopologyVersion: pipelineTopologyLabel(
           task?.pipelineTopologyVersion,
         ),
+        sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
+          contextWindow: execution.model.contextWindow,
+          modelMaxOutputTokens: execution.model.maxOutputTokens,
+          outlineStageBudgets: execution.stageBudgets,
+        }),
       },
     },
   };

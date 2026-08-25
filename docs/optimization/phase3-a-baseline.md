@@ -167,5 +167,5 @@ Receipt 落在既有 `pipeline_stage_attempts.frozen_request_json`：`requestId`
 
 ### 6.4 观察（不在 A4 修）
 
-- 大纲质量档两次都在 **max thinking + json_object Revision** 上 fail-closed（网络失败或「返回格式无效」），Formatter 计数为 0。续写质量档同一 DAG 两次都过了 Revision。
+- 大纲质量档两次都在 **max thinking + json_object Revision** 上 fail-closed（网络失败或「返回格式无效」），Formatter 计数为 0。根因是 Shared Compiler 把修订输出硬截成 8192，长初稿 JSON 被截断且 Compact DAG 禁止 Revision Formatter。已改为使用弹性 20% 输出预留。续写质量档同一 DAG 两次都过了 Revision（章节更短，8192 碰巧够用）。
 - 大纲「标准」Draft Receipt 的 `reasoningEffort` 记为 `max`（`qualityProfile=standard`）。QA 仍是 `low`。不在本轮改映射。

@@ -78,7 +78,7 @@ Red Test：`__tests__/writingRequestReceipt.test.ts`（指纹确定性；失败�
 
 - 未实施 B/C 轮。
 - 未改 Schema 版本。
-- 未修复大纲质量档 Revision JSON 失败（模型/格式问题，不是 Receipt 身份）。
+- 大纲质量档 Revision「返回格式无效」的根因是 Shared Compiler 把修订 `maxTokens` 硬截成 8192，截断 JSON 后又禁止 Compact Formatter 救援。已改为走冻结弹性输出预留（`resolveElasticStageOutputReservation` / `sharedStageMaxOutputTokens`），不再使用阶段本地绝对 cap。
 - 未改「标准」Draft Receipt 上观察到的 `reasoningEffort=max` 映射现象。
 - 续写成功路径在 A4 补写 `output_json.requestReceipts`（失败路径 live 时已有；成功路径 live 样本仍只在 token_usage / UI 账本，因补写发生在跑批之后）。
 

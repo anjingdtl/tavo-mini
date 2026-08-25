@@ -21,6 +21,7 @@ import {
 import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
 import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
+import { resolveFrozenStageMaxOutputTokens } from '../../contextAutoAllocator';
 
 export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
 
@@ -213,24 +214,11 @@ function resolveMaxTokens(
   frozen: FrozenWritingContext,
   stage: SharedWritingStageName,
 ): number {
-  const modelMax = Math.max(256, Number(frozen.model.maxOutputTokens) || 1024);
-  const frozenStageBudgets = frozen.stagePolicy.values
-    ?.sharedStageMaxOutputTokens as Record<string, unknown> | undefined;
-  const stageMax = Number(frozenStageBudgets?.[stage]);
-  const effectiveMax =
-    Number.isFinite(stageMax) && stageMax > 0
-      ? Math.min(modelMax, stageMax)
-      : modelMax;
-  if (
-    stage === 'qa' ||
-    stage === 'review' ||
-    stage === 'audit' ||
-    stage === 'factCheck'
-  ) {
-    return Math.min(effectiveMax, Math.max(768, Math.floor(effectiveMax * 0.45)));
-  }
-  if (stage === 'revision') {
-    return Math.min(effectiveMax, 8192);
-  }
-  return effectiveMax;
+  return resolveFrozenStageMaxOutputTokens({
+    stage,
+    contextWindow: frozen.model.contextWindow,
+    modelMaxOutputTokens: frozen.model.maxOutputTokens,
+    sharedStageMaxOutputTokens: frozen.stagePolicy.values
+      ?.sharedStageMaxOutputTokens as Record<string, unknown> | undefined,
+  });
 }
