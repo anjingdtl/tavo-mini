@@ -81,6 +81,13 @@ describe('continuation shared-writer durable adapter', () => {
       stage: 'draft',
       body: '正文',
       usage: { inputTokens: 111, outputTokens: 222, totalTokens: 333 },
+      requestReceipts: [
+        {
+          requestId: 'req_1',
+          requestFingerprint: 'abc',
+          outcome: 'succeeded',
+        } as any,
+      ],
     });
 
     expect(mockUpdateStageResult).toHaveBeenCalledWith(
@@ -92,6 +99,46 @@ describe('continuation shared-writer durable adapter', () => {
         outputTokens: 222,
       }),
     );
+    const persisted = JSON.parse(
+      String(mockUpdateStageResult.mock.calls[0][0].outputJson),
+    );
+    expect(persisted.requestReceipts[0]).toEqual(
+      expect.objectContaining({
+        requestId: 'req_1',
+        requestFingerprint: 'abc',
+        outcome: 'succeeded',
+      }),
+    );
+  });
+
+  it('persists failed-request receipts on the existing stage ledger row', async () => {
+    const adapter = createContinuationDurableAdapter({
+      run: { id: 'ct_adapter' } as any,
+      snapshot: snapshot(),
+    });
+    await adapter.persistStageFailure?.(
+      'revision',
+      Object.assign(new Error('provider timeout'), {
+        requestReceipts: [
+          {
+            requestId: 'req_fail',
+            requestFingerprint: 'def',
+            outcome: 'failed',
+          },
+        ],
+      }),
+    );
+    const persisted = JSON.parse(
+      String(mockUpdateStageResult.mock.calls[0][0].outputJson),
+    );
+    expect(mockUpdateStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'ct_adapter',
+        stage: 'revision_writer',
+        status: 'failed',
+      }),
+    );
+    expect(persisted.requestReceipts[0].outcome).toBe('failed');
   });
 
   it('can reload a structured report without issuing a duplicate request', async () => {

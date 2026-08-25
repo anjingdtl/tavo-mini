@@ -107,16 +107,26 @@ export function getWritingObservabilityCollector(
   return collectors.get(generationTraceId) ?? null;
 }
 
+function upsertReceipt(
+  list: WritingRequestReceipt[] | undefined,
+  receipt: WritingRequestReceipt,
+): WritingRequestReceipt[] {
+  const next = [...(list || [])];
+  const index = next.findIndex(item => item.requestId === receipt.requestId);
+  if (index >= 0) next[index] = receipt;
+  else next.push(receipt);
+  return next;
+}
+
 export function recordWritingRequestReceipt(
   trace: WritingKernelTrace | null | undefined,
   receipt: WritingRequestReceipt,
 ): void {
   if (!trace) return;
-  trace.requestReceipts = [...(trace.requestReceipts || []), receipt];
+  trace.requestReceipts = upsertReceipt(trace.requestReceipts, receipt);
   const collector = getWritingObservabilityCollector(trace.generationTraceId);
   if (collector) {
-    collector.receipts = collector.receipts || [];
-    collector.receipts.push(receipt);
+    collector.receipts = upsertReceipt(collector.receipts, receipt);
   }
 }
 

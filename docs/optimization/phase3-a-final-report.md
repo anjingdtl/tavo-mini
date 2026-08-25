@@ -1,24 +1,25 @@
 # TAVO-MINI 三期 A 轮最终验收报告
 
-> 日期：2026-08-24  
+> 日期：2026-08-25  
 > Exact HEAD 基线：`fc65973c09b682d2400ddb39768cad707a891cc4`（V2.21.1 / Schema 56）  
-> A 轮封口 HEAD：`6d4adf3`  
-> 结论：**A 轮 GO**。未实施 B/C 轮。
+> A3 封口 HEAD：`6d4adf3`  
+> A4：本提交（Receipt 身份 + 失败 Receipt + 真实 LLM 基线）  
+> 未实施 B/C 轮。
 
 ---
 
 ## 1. 本轮做了什么
 
-只做方案规定的四件事：
-
 | 阶段 | Commit | 内容 |
 |---|---|---|
-| A0 | `4aacc88` `test(writing): freeze phase3-a exact-head baseline` | 冻结 Exact HEAD，结构基线 12 样本，verify + Debug 覆盖安装 |
-| A1 | `ff2c97f` `feat(writing): converge generation quality to fast standard quality` | 用户侧收束为 极速 / 标准 / 质量 |
-| A2 | `88fde98` `feat(writing): add chapter truth projection to one frozen context` | FrozenWritingContext 内 Chapter Truth Projection |
-| A3 | `6d4adf3` `feat(writing): add reconstructable request receipts` | 每次真实模型请求的 Request Receipt |
+| A0 | `4aacc88` | Exact HEAD 结构基线 12 样本 |
+| A1 | `ff2c97f` | 用户侧 极速 / 标准 / 质量 |
+| A2 | `88fde98` | FrozenWritingContext 内 Chapter Truth Projection |
+| A3 | `6d4adf3` | Request Receipt（当时指纹仍掺了 requestId/时间） |
+| launcher | `851e6fd` | Windows 一键启动 |
+| **A4** | 本提交 | ① 真实 LLM 矩阵 ② `requestFingerprint` 硬定性 ③ 失败请求 Receipt |
 
-未做：QA + State Extraction 合并、Story Memory Delta、Segment Repair、下一章预取、新 Agent Loop、第二套 Context / Memory / Prompt Compiler。
+未做：QA+State Extraction 合并、Story Memory Delta、Segment Repair、下一章预取、新 Agent Loop、第二套 Context / Memory / Prompt Compiler。
 
 ---
 
@@ -26,62 +27,38 @@
 
 | # | GO 条件 | 结果 |
 |---|---|---|
-| 1 | 极速 / 标准 / 质量 UI 和冻结语义正确 | **GO**。流水线配置页只显示这三档；`GenerationQualityProfile` 在 Freeze 时映射到既有 `executionProfile` + `reasoningEffort`。截图：`test-logs/phase3-a-final-quality.png` |
-| 2 | 极速仍严格 1 paid call | **GO**。`one_shot` skipRules 覆盖 QA/Revision 等付费阶段；禁止 Formatter 与 Primary retry。结构样本 paid call = 1 |
-| 3 | 标准、质量仍使用当前 Compact Standard DAG | **GO**。`draft → qa → revision → finalValidate → persist`。质量档不增加 Stage |
-| 4 | 三档 Canon / Outline / Seam / Story Memory / Writer Style 不缺失 | **GO**。极速不缩上下文；Continuation 样本含 canon/boundary/seam/anchor/story_memory/writer_style；Outline 样本含 outline/chapter/story_memory/writer_style |
-| 5 | 旧 frozen task Resume 不改变 | **GO**。无 `qualityProfile` 的请求 freeze 仍不写入该键；`executionProfile` 仍仅在 one_shot 时显式落盘。解析未知 quality 值 fail-closed，缺省不迁移 |
-| 6 | Truth Projection 在 Draft / QA / Revision 间无漂移 | **GO**。三阶段共用同一 `truthProjection.fingerprint`；漂移返回 `WRITING_TRUTH_PROJECTION_DRIFT`。不进入 freezeFingerprint |
-| 7 | 每次 LLM request 都有唯一 Request Receipt | **GO**。`requestId` 唯一；含 freeze/truth/stage/messages/request fingerprints。完整 Prompt 不进 SQLite JSON；落在 artifact、kernel trace 与既有 `pipeline_stage_attempts.frozen_request_json` |
-| 8 | `npm run verify` 全绿 | **GO**。A3 封口：lint + typecheck + version + Jest **502 suites / 3829 tests passed**（9 skipped） |
-| 9 | Android Debug 覆盖安装验证通过 | **GO**。见 §5 |
-| 10 | 不新增第二 Kernel / Context / Prompt Compiler / Memory | **GO**。无 `fastWriter` / 第二 Compiler / 第二 Context / 第二 Memory。内部仍是 `WritingExecutionProfile` + `stageReasoning` + `WritingStagePolicy` |
+| 1–6 / 10 | A1–A3 语义（三级质量、Compact DAG、不缩上下文、历史 Resume、Truth 不进 freezeFingerprint、无第二 Kernel） | **维持 GO**。A4 未改这些合同 |
+| 7 | 每次 LLM request 都有唯一 Receipt | **A4 收紧 GO**。`requestId` 仍唯一（`gt + stage + Date.now + seq`）；**`requestFingerprint` = sha256(stable identity)，不含 requestId / Date.now / seq / generationTraceId**。同模型/messages/params/frozen 请求指纹相同 |
+| 7b | 失败请求也有 Receipt | **GO（代码 + 大纲 live）**。provider 调用前 `started` 立刻记入 trace；catch 写成 `failed`/`cancelled`；大纲落 `pipeline_stage_attempts.frozen_request_json`；续写失败落既有 `continuation_generation_stage_results.output_json`。无第二账本 |
+| 8 | `npm run verify` | **GO**。lint + typecheck + version + Jest **502 suites / 3832 tests passed**（9 skipped） |
+| 9 | Debug 覆盖安装 | **GO**。`install -r -d --user 0`，未卸载/清数据；`lastUpdateTime=2026-08-24 07:59:20` |
+| live | Outline/Continuation × 三档 × ≥2 章真实 LLM | **部分 GO**。见 §6。续写 3×2 全部定稿；大纲极速/标准 2×2 定稿；**大纲质量两章修订失败未定稿** |
 
 ---
 
-## 3. 映射与冻结语义
+## 3. A4-2 / A4-3 实现要点
 
-用户侧：`极速 | 标准 | 质量`
+`WritingRequestIdentity` 只含：stage / kind / qualityProfile / executionProfile / provider / model / thinking / reasoningEffort / promptCompilerVersion / freeze / truth / stage / messages fingerprints / maxOutputTokens / responseFormat。
 
-| 用户档 | `GenerationQualityProfile` | `WritingExecutionProfile` | `reasoningEffort` | 付费写作 DAG |
-|---|---|---|---|---|
-| 极速 | `fast` | `one_shot` | `low` | Draft 1 次；QA/Revision 正式跳过 |
-| 标准 | `standard` | `standard` | `high`（原「中 / 平衡」） | Draft → ONE QA → Conditional Revision |
-| 质量 | `quality` | `standard` | `max`（原「高」） | 同上，不增加 Stage |
+`invokePhysicalWriterCall`：先 `startRequestReceipt`（outcome=`started`，`recordWritingRequestReceipt`）再打 provider；成功 `finishRequestReceipt(succeeded)`；异常 `failed` 或 `cancelled`，并把 receipts 挂到 Error 上给 durable adapter。
 
-历史任务：不迁移。Resume 只读已冻结 policy / snapshot。
+Red Test：`__tests__/writingRequestReceipt.test.ts`（指纹确定性；失败路径 started→failed）。
 
 ---
 
-## 4. 各阶段 PDCA
+## 4. A4-1 真实 LLM 基线摘要
 
-### A0
+设备 Keystore 已有 `deepseek-v4-flash`。详细表见 `docs/optimization/phase3-a-baseline.md` §6。
 
-- **P**：不改生产逻辑，冻 Exact HEAD。  
-- **D**：12 个结构 Freeze 样本（Outline/Continuation × 三档 × 2 章）；`npm run verify`；Debug APK `adb install -r`。  
-- **C**：极速 paid=1；标准/质量 Compact DAG；项目 33+15 与 LLM 配置保留。  
-- **A**：进入 A1。结构样本记录的 5 paid 是 legacy `stageOrder` 投影；运行时 Compact 上限是 Draft+QA+Conditional Revision。
+**极速**：Outline / Continuation 各 2 章，**物理 1**，QA/Revision 正式跳过，可采纳并定稿。
 
-### A1
+**标准**：Outline 2 章物理 2（QA pass → 修订跳过）；Continuation 2 章物理 3（QA 触发修订且修订成功）。
 
-- **P**：用户只见三级；内部不改 Kernel。  
-- **D**：Red Test → `generationQualityProfile.ts` + Freeze 映射 + 流水线配置 UI + 设置持久化。  
-- **C**：verify 全绿；无 `qualityProfile` 的 standard freeze 仍 byte-identical。  
-- **A**：进入 A2。旧「低」档从用户侧收走，打开配置页会显示为「标准」。
+**质量**：Continuation 2 章物理 3–4（含一次 Formatter），修订成功并定稿。Outline 2 章 Draft+QA 成功后修订 fail-closed（网络失败 / `revision 返回格式无效`），Receipt 已落失败 outcome，章节未定稿。
 
-### A2
+**Finalize→Next Ready**：定稿 Toast 立即出现；续写明确排队「状态提取与故事记忆重建」。下一章按钮在正文底部，上滑可进下一章编辑器（约 2s）。
 
-- **P**：Draft/QA/Revision 共用冻结事实指纹。  
-- **D**：`ChapterTruthProjection` 从 FrozenWritingContext 重建；gate + compiler fail-closed。  
-- **C**：指纹稳定；漂移被拦；`freezeFingerprint` 不含 truth 字段，历史 Resume 可重建。  
-- **A**：进入 A3。对测试夹具缺 `sourceBundle` 做了防御，避免误伤既有 Writer 单测。
-
-### A3
-
-- **P**：每次真实模型请求可追溯。  
-- **D**：`WritingRequestReceipt` 在 Shared Writer 主路径与 Formatter 路径生成；写入 artifact / trace / `frozen_request_json`。  
-- **C**：`requestId` 唯一；JSON 不含正文 Prompt。  
-- **A**：A 轮封口。完整 Prompt 仍可通过 Frozen Context + `shared-prompt-compiler-v1` + stage 重建后对照 `messagesFingerprint`。
+**PostWriting**：结果页采纳前为「等待」；定稿后走 ONE Memory / 状态提取 outbox，不是 Persist 同步完成。
 
 ---
 
@@ -89,28 +66,28 @@
 
 | 项 | 结果 |
 |---|---|
-| APK | `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`（56.81 MB） |
+| APK | `dist/apk/debug/ShineWriter-V2.21.1-debug.apk` |
 | 命令 | `adb -s emulator-5554 install -r -d --user 0` |
 | 禁止项 | **未** uninstall，**未** `pm clear` |
-| 安装 | `Success`；`lastUpdateTime` 2026-08-24 06:46:06 |
 | 版本 | `versionName=V2.21.1` / `versionCode=2210100` |
-| 项目 | 大纲创作 **33**、原著续写 **15**；「Phase 3 穿测项目」仍为当前项目 |
-| LLM | 设置页仍有「OpenAI 兼容接口」；流水线任务 **(9)** 仍在 |
-| UI | 生成质量 = **极速 / 标准 / 质量**，默认「标准」选中 |
-| 截图 | `test-logs/phase3-a-final-home.png`、`phase3-a-final-quality.png`、`phase3-a-final-settings.png` |
+| 项目 / LLM | 大纲 33 + 续写 15；Keystore 密钥保留 |
 
 ---
 
 ## 6. 明确未做 / 范围边界
 
-- 未跑 12 章 **live HTTP** 生成。A0 用生产 Freeze + 政策期望 paid call 冻基线；墙钟、真实 token、Finalize→Next Ready 不伪造。  
-- 未改 Schema 版本（Receipt 复用已有 `frozen_request_json`）。  
 - 未实施 B/C 轮。
+- 未改 Schema 版本。
+- 未修复大纲质量档 Revision JSON 失败（模型/格式问题，不是 Receipt 身份）。
+- 未改「标准」Draft Receipt 上观察到的 `reasoningEffort=max` 映射现象。
+- 续写成功路径在 A4 补写 `output_json.requestReceipts`（失败路径 live 时已有；成功路径 live 样本仍只在 token_usage / UI 账本，因补写发生在跑批之后）。
 
 ---
 
 ## 7. 结论
 
-A 轮十条硬门禁全部满足。
+A4 代码三项缺口：指纹硬定性、失败 Receipt、真实 LLM 记录，均已落地。
 
-**A 轮 GO。可以进入 B 轮。**
+**A4 代码 GO。**  
+**live 矩阵：续写满矩阵 GO；大纲质量档未定稿 → 不能宣称 A 轮全部门禁 GO。**  
+停在 A4，等待验收。不进入 B 轮。

@@ -203,6 +203,8 @@ export async function runSharedOutlineWriterAction(input: {
             : failureClass === 'outcome_unknown'
             ? 'outcome_unknown'
             : 'failed';
+        const failedReceipts = (error as { requestReceipts?: unknown })
+          .requestReceipts;
         await Promise.all(
           attemptIds.map(id =>
             updateStageAttempt({
@@ -217,6 +219,9 @@ export async function runSharedOutlineWriterAction(input: {
               inputTokens: 100,
               outputTokens: 0,
               totalTokens: 100,
+              frozenRequestJson: Array.isArray(failedReceipts)
+                ? JSON.stringify(failedReceipts)
+                : null,
             }),
           ),
         );

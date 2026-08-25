@@ -207,47 +207,51 @@ export async function executeSharedWriterStage(input: {
     compiled.maxTokens,
     Math.max(256, stageInput.modelConfig.maxOutputTokens || compiled.maxTokens),
   );
+  const receipts: WritingRequestReceipt[] = [];
   if (stageInput.callStage) {
     const injectedStartedAt = Date.now();
-    const injected = await stageInput.callStage({
+    const injected = await invokePhysicalWriterCall({
       stage,
-      messages: compiled.messages,
-      maxTokens,
-      configId: stageInput.modelConfig.configId,
-      responseFormat: compiled.responseFormat,
-    });
-    const adopted = adoptStructuredWriterText({
-      stage,
-      outputContract: compiled.outputContract,
-      text: injected.text,
-      reasoningText: (injected as { reasoningText?: string }).reasoningText,
-    });
-    const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
-    attachUsage(artifact, injected, {
-      kind: classifyWritingLlmCall({}),
-      physicalRequestCount: 1,
-      protocolFallbackCount: 0,
-    });
-    recordWriterCall(stageInput, {
-      stage,
-      kind: classifyWritingLlmCall({}),
-      result: injected,
-      physicalRequestCount: 1,
-      protocolFallbackCount: 0,
-      durationMs: Date.now() - injectedStartedAt,
-    });
-    attachRequestReceipts(artifact, stageInput, [
-      finishRequestReceipt(
-        startRequestReceipt(stage, stageInput, compiled, {
-          thinking: { type: 'enabled' },
+      stageInput,
+      compiled,
+      reasoning: { thinking: { type: 'enabled' } },
+      receipts,
+      call: () =>
+        stageInput.callStage!({
+          stage,
+          messages: compiled.messages,
+          maxTokens,
+          configId: stageInput.modelConfig.configId,
+          responseFormat: compiled.responseFormat,
         }),
-        injected,
-        'succeeded',
-        stageInput,
-      ),
-    ]);
-    await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
-    return artifact;
+    });
+    try {
+      const adopted = adoptStructuredWriterText({
+        stage,
+        outputContract: compiled.outputContract,
+        text: injected.text,
+        reasoningText: (injected as { reasoningText?: string }).reasoningText,
+      });
+      const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+      attachUsage(artifact, injected, {
+        kind: classifyWritingLlmCall({}),
+        physicalRequestCount: 1,
+        protocolFallbackCount: 0,
+      });
+      recordWriterCall(stageInput, {
+        stage,
+        kind: classifyWritingLlmCall({}),
+        result: injected,
+        physicalRequestCount: 1,
+        protocolFallbackCount: 0,
+        durationMs: Date.now() - injectedStartedAt,
+      });
+      attachRequestReceipts(artifact, stageInput, receipts);
+      await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+      return artifact;
+    } catch (error) {
+      throw annotateWriterReceipts(error, receipts);
+    }
   }
 
   const requestConfig = await resolveFrozenRequestConfig(stageInput);
@@ -262,36 +266,54 @@ export async function executeSharedWriterStage(input: {
     stage === 'audit' ||
     stage === 'factCheck';
   const primaryStartedAt = Date.now();
-  const primary = await callWritingStageLLM(
-    compiled.messages,
-    maxTokens,
-    {
-      queueClass: 'pipeline',
-      queuePriority: 'normal',
-      projectId: stageInput.frozenContext.projectId,
-      taskId: stageInput.frozenContext.writingRunId,
-      scenario:
-        stage === 'revision'
-          ? 'pipeline_brief'
-          : stage === 'factCheck'
-          ? 'pipeline_factcheck'
-          : `pipeline_${stage}`,
+  const primary = await invokePhysicalWriterCall({
+    stage,
+    stageInput,
+    compiled: {
+      messages: compiled.messages,
+      maxTokens,
       responseFormat:
         compiled.responseFormat === 'json_object' || isReport
           ? 'json_object'
-          : undefined,
-      thinking: stageReasoning.thinking,
-      reasoningEffort: stageReasoning.reasoningEffort,
-      temperature: isReport ? 0.2 : undefined,
-      top_p: isReport ? 1 : undefined,
-      requestConfig,
+          : compiled.responseFormat,
     },
-    stageInput.abortSignal,
-  );
+    reasoning: stageReasoning,
+    receipts,
+    call: () =>
+      callWritingStageLLM(
+        compiled.messages,
+        maxTokens,
+        {
+          queueClass: 'pipeline',
+          queuePriority: 'normal',
+          projectId: stageInput.frozenContext.projectId,
+          taskId: stageInput.frozenContext.writingRunId,
+          scenario:
+            stage === 'revision'
+              ? 'pipeline_brief'
+              : stage === 'factCheck'
+              ? 'pipeline_factcheck'
+              : `pipeline_${stage}`,
+          responseFormat:
+            compiled.responseFormat === 'json_object' || isReport
+              ? 'json_object'
+              : undefined,
+          thinking: stageReasoning.thinking,
+          reasoningEffort: stageReasoning.reasoningEffort,
+          temperature: isReport ? 0.2 : undefined,
+          top_p: isReport ? 1 : undefined,
+          requestConfig,
+        },
+        stageInput.abortSignal,
+      ),
+  });
   if (primary.finishReason === 'content_filter') {
-    throw Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
-      code: 'SHARED_WRITER_CONTENT_FILTER',
-    });
+    throw annotateWriterReceipts(
+      Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
+        code: 'SHARED_WRITER_CONTENT_FILTER',
+      }),
+      receipts,
+    );
   }
   let adopted = adoptStructuredWriterText({
     stage,
@@ -322,27 +344,43 @@ export async function executeSharedWriterStage(input: {
       candidate: String(primary.text || primary.reasoningText || ''),
     });
     const formatterStartedAt = Date.now();
-    const formatted = await callWritingStageLLM(
-      formatter.messages,
-      Math.min(maxTokens, 4096),
-      {
-        queueClass: 'pipeline',
-        queuePriority: 'normal',
-        projectId: stageInput.frozenContext.projectId,
-        taskId: stageInput.frozenContext.writingRunId,
-        scenario: formatter.scenario,
+    const formatted = await invokePhysicalWriterCall({
+      stage,
+      stageInput,
+      compiled: {
+        messages: formatter.messages,
+        maxTokens: Math.min(maxTokens, 4096),
         responseFormat:
           compiled.outputContract === 'json_envelope'
             ? 'json_object'
-            : undefined,
-        thinking: { type: 'disabled' },
-        reasoningEffort: undefined,
-        temperature: 0.2,
-        top_p: 1,
-        requestConfig,
+            : 'text',
       },
-      stageInput.abortSignal,
-    );
+      reasoning: { thinking: { type: 'disabled' } },
+      kind: 'formatter',
+      receipts,
+      call: () =>
+        callWritingStageLLM(
+          formatter.messages,
+          Math.min(maxTokens, 4096),
+          {
+            queueClass: 'pipeline',
+            queuePriority: 'normal',
+            projectId: stageInput.frozenContext.projectId,
+            taskId: stageInput.frozenContext.writingRunId,
+            scenario: formatter.scenario,
+            responseFormat:
+              compiled.outputContract === 'json_envelope'
+                ? 'json_object'
+                : undefined,
+            thinking: { type: 'disabled' },
+            reasoningEffort: undefined,
+            temperature: 0.2,
+            top_p: 1,
+            requestConfig,
+          },
+          stageInput.abortSignal,
+        ),
+    });
     adopted = adoptStructuredWriterText({
       stage,
       outputContract: compiled.outputContract,
@@ -350,9 +388,12 @@ export async function executeSharedWriterStage(input: {
       reasoningText: formatted.reasoningText,
     });
     if (!adopted.text.trim()) {
-      throw Object.assign(emptyWriterError(stage, formatted), {
-        formatterUsed: true,
-      });
+      throw annotateWriterReceipts(
+        Object.assign(emptyWriterError(stage, formatted), {
+          formatterUsed: true,
+        }),
+        receipts,
+      );
     }
     try {
       const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
@@ -384,67 +425,41 @@ export async function executeSharedWriterStage(input: {
         protocolFallbackCount: formatted.protocolFallbackCount,
         durationMs: Date.now() - formatterStartedAt,
       });
-      attachRequestReceipts(artifact, stageInput, [
-        finishRequestReceipt(
-          startRequestReceipt(stage, stageInput, compiled, stageReasoning),
-          primary,
-          'succeeded',
-          stageInput,
-        ),
-        finishRequestReceipt(
-          startRequestReceipt(
-            stage,
-            stageInput,
-            {
-              messages: formatter.messages,
-              maxTokens: Math.min(maxTokens, 4096),
-              responseFormat:
-                compiled.outputContract === 'json_envelope'
-                  ? 'json_object'
-                  : 'text',
-            },
-            { thinking: { type: 'disabled' } },
-            'formatter',
-          ),
-          formatted,
-          'succeeded',
-          stageInput,
-        ),
-      ]);
+      attachRequestReceipts(artifact, stageInput, receipts);
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
       return artifact;
     } catch (error) {
-      throw Object.assign(
-        error instanceof Error ? error : new Error(String(error)),
-        { formatterUsed: true },
+      throw annotateWriterReceipts(
+        Object.assign(
+          error instanceof Error ? error : new Error(String(error)),
+          { formatterUsed: true },
+        ),
+        receipts,
       );
     }
   }
-  const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
-  artifact.adoptedFrom = adopted.adoptedFrom;
-  attachUsage(artifact, primary, {
-    kind: classifyWritingLlmCall({}),
-    physicalRequestCount: primary.physicalRequestCount,
-    protocolFallbackCount: primary.protocolFallbackCount,
-  });
-  recordWriterCall(stageInput, {
-    stage,
-    kind: classifyWritingLlmCall({}),
-    result: primary,
-    physicalRequestCount: primary.physicalRequestCount,
-    protocolFallbackCount: primary.protocolFallbackCount,
-    durationMs: Date.now() - primaryStartedAt,
-  });
-  attachRequestReceipts(artifact, stageInput, [
-    finishRequestReceipt(
-      startRequestReceipt(stage, stageInput, compiled, stageReasoning),
-      primary,
-      'succeeded',
-      stageInput,
-    ),
-  ]);
-  await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
-  return artifact;
+  try {
+    const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+    artifact.adoptedFrom = adopted.adoptedFrom;
+    attachUsage(artifact, primary, {
+      kind: classifyWritingLlmCall({}),
+      physicalRequestCount: primary.physicalRequestCount,
+      protocolFallbackCount: primary.protocolFallbackCount,
+    });
+    recordWriterCall(stageInput, {
+      stage,
+      kind: classifyWritingLlmCall({}),
+      result: primary,
+      physicalRequestCount: primary.physicalRequestCount,
+      protocolFallbackCount: primary.protocolFallbackCount,
+      durationMs: Date.now() - primaryStartedAt,
+    });
+    attachRequestReceipts(artifact, stageInput, receipts);
+    await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+    return artifact;
+  } catch (error) {
+    throw annotateWriterReceipts(error, receipts);
+  }
 }
 
 function startRequestReceipt(
@@ -461,7 +476,7 @@ function startRequestReceipt(
   },
   kind: 'logical_stage' | 'formatter' = 'logical_stage',
 ): WritingRequestReceipt {
-  return buildWritingRequestReceipt({
+  const receipt = buildWritingRequestReceipt({
     generationTraceId: stageInput.frozenContext.generationTraceId,
     stage,
     frozenContext: stageInput.frozenContext,
@@ -470,6 +485,72 @@ function startRequestReceipt(
     reasoningEffort: reasoning.reasoningEffort,
     kind,
   });
+  recordWritingRequestReceipt(stageInput.trace, receipt);
+  return receipt;
+}
+
+async function invokePhysicalWriterCall<T>(input: {
+  stage: SharedWritingStageName;
+  stageInput: SharedWritingStageInput;
+  compiled: {
+    messages: Parameters<typeof buildWritingRequestReceipt>[0]['compiled']['messages'];
+    maxTokens: number;
+    responseFormat: 'json_object' | 'text';
+  };
+  reasoning: {
+    thinking: { type: 'enabled' | 'disabled' };
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  };
+  kind?: 'logical_stage' | 'formatter';
+  receipts: WritingRequestReceipt[];
+  call: () => Promise<T>;
+}): Promise<T> {
+  const started = startRequestReceipt(
+    input.stage,
+    input.stageInput,
+    input.compiled,
+    input.reasoning,
+    input.kind || 'logical_stage',
+  );
+  input.receipts.push(started);
+  try {
+    const result = await input.call();
+    const completed = finishRequestReceipt(
+      started,
+      result as {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+        reasoningTokens?: number | null;
+        finishReason?: string | null;
+        usage?: { prompt?: number; completion?: number; total?: number };
+      },
+      'succeeded',
+      input.stageInput,
+    );
+    input.receipts[input.receipts.length - 1] = completed;
+    return result;
+  } catch (error) {
+    const aborted = Boolean(input.stageInput.abortSignal?.aborted);
+    const completed = finishRequestReceipt(
+      started,
+      {},
+      aborted ? 'cancelled' : 'failed',
+      input.stageInput,
+    );
+    input.receipts[input.receipts.length - 1] = completed;
+    throw annotateWriterReceipts(error, input.receipts);
+  }
+}
+
+function annotateWriterReceipts(
+  error: unknown,
+  receipts: WritingRequestReceipt[],
+): Error {
+  const next =
+    error instanceof Error ? error : new Error(String(error || 'writer failed'));
+  Object.assign(next, { requestReceipts: receipts });
+  return next;
 }
 
 function finishRequestReceipt(
@@ -482,7 +563,7 @@ function finishRequestReceipt(
     finishReason?: string | null;
     usage?: { prompt?: number; completion?: number; total?: number };
   },
-  outcome: 'succeeded' | 'failed',
+  outcome: 'succeeded' | 'failed' | 'cancelled',
   stageInput: SharedWritingStageInput,
 ): WritingRequestReceipt {
   const completed = completeWritingRequestReceipt(receipt, {

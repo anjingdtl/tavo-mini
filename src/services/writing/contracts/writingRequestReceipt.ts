@@ -57,6 +57,24 @@ export interface WritingRequestReceipt {
 
 let receiptSeq = 0;
 
+export type WritingRequestIdentity = {
+  stage: string;
+  kind: 'logical_stage' | 'formatter';
+  qualityProfile: 'fast' | 'standard' | 'quality' | null;
+  executionProfile: 'standard' | 'one_shot';
+  provider: string;
+  model: string;
+  thinking: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  promptCompilerVersion: string;
+  freezeFingerprint: string;
+  truthProjectionFingerprint: string;
+  stageProjectionFingerprint: string;
+  messagesFingerprint: string;
+  maxOutputTokens: number;
+  responseFormat: 'json_object' | 'text';
+};
+
 export function fingerprintWritingMessages(messages: ChatMessage[]): string {
   return sha256Hex(
     stableWritingJson(
@@ -98,14 +116,11 @@ export function buildWritingRequestReceipt(input: {
       : 'draft') as SharedWritingStageName,
   });
   const requestId = `req_${input.generationTraceId}_${input.stage}_${Date.now()}_${receiptSeq}`;
-  const qualityProfile = resolveQualityProfileFromValues(values) || null;
-  const executionProfile = resolveExecutionProfileFromValues(values);
-  const identity = {
-    requestId,
-    generationTraceId: input.generationTraceId,
-    stage: input.stage,
-    qualityProfile,
-    executionProfile,
+  const identity: WritingRequestIdentity = {
+    stage: String(input.stage),
+    kind: input.kind || 'logical_stage',
+    qualityProfile: resolveQualityProfileFromValues(values) || null,
+    executionProfile: resolveExecutionProfileFromValues(values),
     provider: input.frozenContext.model?.provider || '',
     model: input.frozenContext.model?.modelName || '',
     thinking: input.thinking,
@@ -118,14 +133,25 @@ export function buildWritingRequestReceipt(input: {
     messagesFingerprint,
     maxOutputTokens: input.compiled.maxTokens,
     responseFormat: input.compiled.responseFormat,
-    kind: input.kind || 'logical_stage',
   };
   return {
     version: 1,
+    requestId,
+    generationTraceId: input.generationTraceId,
     ...identity,
-    requestFingerprint: sha256Hex(stableWritingJson(identity)),
+    requestFingerprint: computeWritingRequestFingerprint(identity),
     outcome: 'started',
   };
+}
+
+/**
+ * Exact request identity. Must be a pure function of the model-visible
+ * request: never requestId, Date.now, receiptSeq, or generationTraceId.
+ */
+export function computeWritingRequestFingerprint(
+  identity: WritingRequestIdentity,
+): string {
+  return sha256Hex(stableWritingJson(identity));
 }
 
 export function completeWritingRequestReceipt(
