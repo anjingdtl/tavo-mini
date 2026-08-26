@@ -11,6 +11,10 @@ import {
 import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from '../../writing/postWritingUpdate/stateExtractionPrompt';
+import {
+  buildQaStateProposalShadow,
+  extractQaStateProposals,
+} from '../../writing/prompt/qaStateProposals';
 import { planStageCapacity } from '../../writing/scenario/continuationStageCapacity';
 import {
   casUpdateRunState,
@@ -19,6 +23,7 @@ import {
   getRunById,
   getRunContextSnapshotJson,
   getRunGenerationTraceId,
+  getStageResult,
   insertProposals,
   ensureGenerationSettings,
   getOutboxByDedupe,
@@ -398,6 +403,19 @@ async function handleExtractState(
       evidenceEnd: p.evidenceEnd,
     })),
   );
+  // B5 §8.6 Shadow Mode：QA 提案 vs legacy 提取提案的影子对比（只记录，
+  // 不写第二套长期记忆）。extract 侧用 UTF-16 slice 还原 evidenceQuote。
+  await recordQaStateExtractionShadow({
+    sourceRunId: payload.sourceRunId ?? null,
+    content,
+    finalBodyFingerprint: hash,
+    extractProposals: proposals.map(p => ({
+      proposalType: p.proposalType,
+      evidenceQuote: safeSlice(content, p.evidenceStart, p.evidenceEnd),
+      evidenceStart: p.evidenceStart,
+      evidenceEnd: p.evidenceEnd,
+    })),
+  });
   try {
     await autoCommitRoutineContinuityProposals({
       projectId: payload.projectId,
@@ -405,6 +423,48 @@ async function handleExtractState(
     });
   } catch {
     // Extract already persisted. Leftover pending rows stay confirmable.
+  }
+}
+
+function safeSlice(text: string, start?: number, end?: number): string {
+  if (typeof start !== 'number' || typeof end !== 'number') return '';
+  const s = Math.max(0, start);
+  const e = Math.min(text.length, end);
+  if (s >= e) return '';
+  return text.slice(s, e);
+}
+
+/** B5: 读取同一 run 的 QA structured，与 legacy 提取提案做影子对比。 */
+async function recordQaStateExtractionShadow(input: {
+  sourceRunId: string | null;
+  content: string;
+  finalBodyFingerprint: string;
+  extractProposals: {
+    proposalType?: string;
+    evidenceQuote?: string;
+    evidenceStart?: number;
+    evidenceEnd?: number;
+  }[];
+}): Promise<void> {
+  if (!input.sourceRunId) return;
+  try {
+    const qaResult = await getStageResult(input.sourceRunId, 'unified_qa');
+    const outputJson = qaResult?.outputJson;
+    if (!outputJson) return;
+    const envelope = (JSON.parse(outputJson) as { envelope?: unknown })?.envelope;
+    if (!envelope) return;
+    const stats = buildQaStateProposalShadow({
+      qaProposals: extractQaStateProposals(envelope),
+      extractProposals: input.extractProposals,
+      extractionContentHash: input.finalBodyFingerprint,
+      finalBodyFingerprint: input.finalBodyFingerprint,
+    });
+    await persistContinuationStateExtractionObservability(input.sourceRunId, {
+      durationMs: 0,
+      qaStateShadow: stats,
+    });
+  } catch {
+    // Shadow observation must never fail state extraction.
   }
 }
 
@@ -442,7 +502,12 @@ async function recordStateExtractionObservability(
 
 async function persistContinuationStateExtractionObservability(
   runId: string | null | undefined,
-  usage: { durationMs: number; inputTokens?: number; outputTokens?: number },
+  usage: {
+    durationMs: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    qaStateShadow?: import('../../writing/prompt/qaStateProposals').QaStateProposalShadowStats;
+  },
 ): Promise<void> {
   if (!runId) return;
   const run = await getRunById(runId);
@@ -460,6 +525,7 @@ async function persistContinuationStateExtractionObservability(
     outputTokens: usage.outputTokens,
     physicalRequestCount: 1,
     blockingMs: 0,
+    qaStateShadow: usage.qaStateShadow,
   });
   if (!nextTrace.observability) return;
   const nextTokenUsageJson = mergeWritingTokenLedger(

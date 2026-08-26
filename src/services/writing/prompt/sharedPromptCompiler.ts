@@ -23,6 +23,7 @@ import { isOneShotStagePolicy } from '../contracts/executionProfile';
 import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
 import { resolveFrozenStageMaxOutputTokens } from '../../contextAutoAllocator';
 import type { QaEvidenceProjectionResult } from './evidenceQaProjection';
+import { QA_STATE_PROPOSAL_CONTRACT } from './qaStateProposals';
 
 export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
 
@@ -185,7 +186,7 @@ export function compileSharedWritingPrompt(
     input.stage === 'revision'
       ? REVISION_BRIEF_CONTRACT
       : input.stage === 'qa'
-      ? QA_STRUCTURED_REPORT_CONTRACT
+      ? `${QA_STRUCTURED_REPORT_CONTRACT}\n\n${QA_STATE_PROPOSAL_CONTRACT}`
       : isStructuredReportStage(input.stage)
       ? STRUCTURED_REPORT_CONTRACT
       : outputContract === 'json_envelope'

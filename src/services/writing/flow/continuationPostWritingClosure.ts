@@ -2,7 +2,10 @@ import type { WritingKernelTrace } from '../contracts/frozenWritingContext';
 import { appendWritingKernelStageEvent } from '../trace/writingTrace';
 import type { WritingPersistedEvent } from './writingPersistedEvent';
 import { assertWritingPersistedEvent } from './writingPersistedEvent';
-import type { WritingLlmCallRecord } from '../observability/writingChapterObservability';
+import type {
+  WritingLlmCallRecord,
+  WritingPostWritingSnapshot,
+} from '../observability/writingChapterObservability';
 
 /**
  * Close the same Kernel trace used by Outline after a Continuation chapter is
@@ -100,6 +103,8 @@ export function appendContinuationPostWritingObservability(input: {
   inputTokens?: number;
   outputTokens?: number;
   physicalRequestCount?: number;
+  /** B5: QA/State Shadow 统计（仅 state_extraction 后写入）。 */
+  qaStateShadow?: WritingPostWritingSnapshot['qaStateShadow'];
 }): WritingKernelTrace {
   const observability = input.trace.observability;
   if (!observability) return input.trace;
@@ -140,6 +145,7 @@ export function appendContinuationPostWritingObservability(input: {
       },
       postWriting: {
         ...postWriting,
+        ...(input.qaStateShadow ? { qaStateShadow: input.qaStateShadow } : {}),
         storyMemoryUpdateMs:
           postWriting.storyMemoryUpdateMs +
           (input.kind === 'story_memory' ? durationMs : 0),

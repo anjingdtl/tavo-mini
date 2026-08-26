@@ -95,6 +95,19 @@ export interface WritingPostWritingSnapshot {
   postWritingAuxiliaryCallCount: number;
   postWritingAuxiliaryInputTokens: number;
   postWritingAuxiliaryOutputTokens: number;
+  /**
+   * B5: QA/State Shadow 对比统计（§8.6）。可选：仅续写 extract_state
+   * 完成后写入；旧 trace 保持缺省。
+   */
+  qaStateShadow?: {
+    version: number;
+    qaProposalCount: number;
+    extractProposalCount: number;
+    overlapCount: number;
+    qaOnlyCount: number;
+    extractOnlyCount: number;
+    blockedFingerprintMismatch: boolean;
+  };
 }
 
 export interface WritingLlmSnapshot {
