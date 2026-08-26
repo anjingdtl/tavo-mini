@@ -177,6 +177,89 @@ export function buildQaStateProposalShadow(input: {
   };
 }
 
+export interface ResolvedQaProposalRow {
+  proposalType: QaStateProposalType;
+  payload: Record<string, unknown>;
+  risk: 'normal' | 'major';
+  evidenceQuote: string;
+  /** UTF-16 code-unit inclusive。 */
+  evidenceStart: number;
+  /** UTF-16 code-unit exclusive。 */
+  evidenceEnd: number;
+}
+
+/**
+ * B6 §8.4/§8.5：QA proposals 的 evidenceQuote 在最终正文上本地解析为
+ * UTF-16 offsets；0 命中（rejected）与多命中（ambiguous）的条目不入库。
+ */
+export function resolveQaProposalsToOffsets(input: {
+  proposals: QaStateProposal[];
+  finalBody: string;
+}): { rows: ResolvedQaProposalRow[]; rejectedCount: number } {
+  const rows: ResolvedQaProposalRow[] = [];
+  let rejectedCount = 0;
+  for (const proposal of input.proposals) {
+    const resolved = resolveEvidenceQuoteLocations(input.finalBody, proposal.evidenceQuote);
+    if (resolved.status !== 'accepted' || resolved.start === undefined || resolved.end === undefined) {
+      rejectedCount += 1;
+      continue;
+    }
+    rows.push({
+      proposalType: proposal.proposalType,
+      payload: proposal.payload,
+      risk: proposal.risk,
+      evidenceQuote: proposal.evidenceQuote,
+      evidenceStart: resolved.start,
+      evidenceEnd: resolved.end,
+    });
+  }
+  return { rows, rejectedCount };
+}
+
+export interface QaProposalInsertRow {
+  projectId: number;
+  chapterId: number;
+  sourceRunId: string | null;
+  extractionContentHash: string;
+  chapterRevisionHash: string;
+  proposalType: QaStateProposalType;
+  subjectRefType?: string | null;
+  subjectRefId?: string | null;
+  payloadJson: string;
+  evidenceStart: number;
+  evidenceEnd: number;
+}
+
+/**
+ * B6：QA proposals → continuation_state_proposals 同表录入行（pending，
+ * 复用 legacy 提案管道；INSERT OR IGNORE 幂等）。contentHash 绑定最终
+ * 正文指纹（§8.5：Final != Draft 时 QA 提案失效，不得用它跨正文提交）。
+ */
+export function buildQaProposalInsertRows(input: {
+  proposals: QaStateProposal[];
+  finalBody: string;
+  finalBodyFingerprint: string;
+  projectId: number;
+  chapterId: number;
+  sourceRunId: string | null;
+}): QaProposalInsertRow[] {
+  const { rows } = resolveQaProposalsToOffsets({
+    proposals: input.proposals,
+    finalBody: input.finalBody,
+  });
+  return rows.map(row => ({
+    projectId: input.projectId,
+    chapterId: input.chapterId,
+    sourceRunId: input.sourceRunId,
+    extractionContentHash: input.finalBodyFingerprint,
+    chapterRevisionHash: input.finalBodyFingerprint,
+    proposalType: row.proposalType,
+    payloadJson: JSON.stringify(row.payload),
+    evidenceStart: row.evidenceStart,
+    evidenceEnd: row.evidenceEnd,
+  }));
+}
+
 /** §8.3 QA 契约追加段（shall 提示，不强制）。 */
 export const QA_STATE_PROPOSAL_CONTRACT = [
   '【状态提案（可选）】',

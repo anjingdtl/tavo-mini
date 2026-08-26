@@ -115,6 +115,16 @@ const REVISION_BRIEF_CONTRACT = [
   'actions 每项尽量包含 covers 与 instruction；没有必须修改的问题时 actions 必须是 []。',
   'content 仅在必须改写时输出受控修订后的完整正文；若无需改写，可省略 content 或复用初稿，并在 validNoOpReasons 说明。',
   '禁止输出 Markdown 围栏，禁止把推理过程写进 content。',
+  // B6 §8.5：Final != Draft 时 QA 提案失效；修正确实改变了正文时，由
+  // 修订方基于最终正文补充状态提案与正文指纹绑定。
+  '状态提案（可选）：若修订后的 content 让章节相关的人物状态 / 关系 / 情节 /',
+  '    知识 / 世界事实产生可被下章引用的变化，可输出 finalStateProposals 数组。',
+  '    finalStateProposals 的字段与 QA stateProposals 相同（proposalType /',
+  '    subjectRefType / subjectRefId / payload / evidenceQuote / risk，',
+  '    evidenceQuote 必须是最终正文中逐字存在的短引文 4~80 字符）。',
+  '若输出了 finalStateProposals，必须同时输出 proposalSourceBodyFingerprint',
+  '    （= 最终正文 content 的 sha256 hex），状态提案只允许绑定该最终正文。',
+  '禁止输出任何 UTF-16 offset / start / end；offset 由客户端解析。',
 ].join('\n');
 
 const STRUCTURED_REPORT_CONTRACT = [

@@ -12,6 +12,7 @@ import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from '../../writing/postWritingUpdate/stateExtractionPrompt';
 import {
+  buildQaProposalInsertRows,
   buildQaStateProposalShadow,
   extractQaStateProposals,
 } from '../../writing/prompt/qaStateProposals';
@@ -335,6 +336,12 @@ async function handleExtractState(
     throw new Error('章节正文已变更，与定稿 hash 不一致');
   }
 
+  // B6 §8.5/8.6 cutover 金丝雀：把同 run 的 QA proposals（本地解析
+  // evidenceQuote 为 UTF-16 offsets）以 pending 状态录入与 legacy 提取
+  // 相同的提案管道（INSERT OR IGNORE 幂等）；不自动确认，与 legacy
+  // 提案同等待遇。extract_state 仍照常运行以产出 shadow 对比数据。
+  await recordQaDerivedProposals(payload, content, hash);
+
   const messages = compileStateExtractionMessages(content, '[]');
   let raw: string;
   let finishReason: string | null | undefined;
@@ -432,6 +439,42 @@ function safeSlice(text: string, start?: number, end?: number): string {
   const e = Math.min(text.length, end);
   if (s >= e) return '';
   return text.slice(s, e);
+}
+
+/**
+ * B6：QA-derived proposals 进入 legacy 提案管道（pending，cutover 金丝雀）。
+ * 复用 insertProposals 的 INSERT OR IGNORE 幂等；失败静默，不阻断提取。
+ */
+async function recordQaDerivedProposals(
+  payload: {
+    projectId: number;
+    chapterId: number;
+    sourceRunId?: string | null;
+    llmConfigId?: number;
+  },
+  content: string,
+  hash: string,
+): Promise<void> {
+  if (!payload.sourceRunId) return;
+  try {
+    const qaResult = await getStageResult(payload.sourceRunId, 'unified_qa');
+    if (!qaResult?.outputJson) return;
+    const envelope = (JSON.parse(qaResult.outputJson) as { envelope?: unknown })
+      ?.envelope;
+    if (!envelope) return;
+    const rows = buildQaProposalInsertRows({
+      proposals: extractQaStateProposals(envelope),
+      finalBody: content,
+      finalBodyFingerprint: hash,
+      projectId: payload.projectId,
+      chapterId: payload.chapterId,
+      sourceRunId: payload.sourceRunId,
+    });
+    if (rows.length === 0) return;
+    await insertProposals(rows);
+  } catch {
+    // QA-derived proposals must never fail state extraction.
+  }
 }
 
 /** B5: 读取同一 run 的 QA structured，与 legacy 提取提案做影子对比。 */
