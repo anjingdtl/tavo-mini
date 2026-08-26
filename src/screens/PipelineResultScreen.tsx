@@ -1077,7 +1077,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           <View style={styles.finalArtifactWrap}>
             <FinalManuscriptCard
               artifact={finalArtifact}
-              onEdit={() => navigateToChapterEditor(task.targetId)}
+              onEdit={() =>
+                navigateToChapterEditor(task.targetId, { resultTaskId: task.id })
+              }
             />
           </View>
         ) : null}

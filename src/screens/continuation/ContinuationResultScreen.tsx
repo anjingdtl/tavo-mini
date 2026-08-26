@@ -1757,7 +1757,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
                 <FinalManuscriptCard
                   artifact={finalArtifact}
                   onEdit={() =>
-                    navigateToChapterEditor(Number((run as any).chapterId ?? (run as any).chapter_id ?? 0))
+                    navigateToChapterEditor(
+                      Number((run as any).chapterId ?? (run as any).chapter_id ?? 0),
+                      { resultTaskId: run.id, resultScreen: 'ContinuationResult' },
+                    )
                   }
                 />
               </View>

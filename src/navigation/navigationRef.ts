@@ -154,26 +154,45 @@ export function navigateToPipelineTaskCenter(): void {
 
 /**
  * B3: 从结果页直达章节编辑器（ChapterEditor 在 Editor Tab 栈内）。
- * 切入 Editor Tab 前先抑制该章节「已完成待采纳任务 → 自动跳结果页」
- * 的编辑器挂载行为（见 chapterResultJumpSuppression），保证用户确实
- * 停在章节编辑器而非被自动导航拉回结果页。
+ * 进入前先抑制该章节「已完成待采纳任务 → 自动跳结果页」的编辑器挂载
+ * 行为（见 chapterResultJumpSuppression），保证用户确实停在章节编辑器。
+ * 若带 resultTaskId，先把结果页压进 Editor 栈作为返回上下文
+ * （[EditorMain, PipelineResult, ChapterEditor]），这样从编辑器返回
+ * 会回到流水线结果页而不是章节列表。
  */
-export function navigateToChapterEditor(chapterId: number): void {
+export function navigateToChapterEditor(
+  chapterId: number,
+  options?: { resultTaskId?: string; resultScreen?: 'PipelineResult' | 'ContinuationResult' },
+): void {
   if (!navigationRef.isReady()) return;
   suppressAutoResultJumpForChapter(chapterId, 60_000);
-  try {
-    navigationRef.dispatch(
-      CommonActions.navigate({
-        name: 'Editor',
-        params: {
-          screen: 'ChapterEditor',
-          params: { chapterId },
-          initial: false,
-        },
-      } as never),
+  const nested = (screen: 'PipelineResult' | 'ContinuationResult' | 'ChapterEditor', params: Record<string, unknown>) => {
+    try {
+      navigationRef.dispatch(
+        CommonActions.navigate({
+          name: 'Editor',
+          params: { screen, params, initial: false },
+        } as never),
+      );
+    } catch {
+      // ignore
+    }
+  };
+  const resultScreen = options?.resultScreen ?? 'PipelineResult';
+  if (options?.resultTaskId) {
+    nested(
+      resultScreen,
+      resultScreen === 'ContinuationResult'
+        ? { runId: options.resultTaskId }
+        : { taskId: options.resultTaskId },
     );
-  } catch {
-    // ignore
+  }
+  const timer = setTimeout(() => {
+    if (!navigationRef.isReady()) return;
+    nested('ChapterEditor', { chapterId });
+  }, options?.resultTaskId ? 120 : 0);
+  if (options?.resultTaskId) {
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 }
 
