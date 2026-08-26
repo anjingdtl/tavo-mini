@@ -25,6 +25,15 @@ export interface ProjectImportPreview {
   mode: string;
   chapterCount: number;
   resourceCount: number;
+  /** 包内包含哪些能力（B0 §2.5 导入预览）。 */
+  hasOutlines: boolean;
+  hasCharacters: boolean;
+  hasWorldbook: boolean;
+  hasNotes: boolean;
+  /** 作家风格 = 带 semantic_json 的 preset（writer-style v1）。 */
+  hasWriterStyle: boolean;
+  /** v3 续写包携带有 Continuation 数据。 */
+  hasContinuation: boolean;
 }
 
 export interface ParsedProjectPackage {
@@ -131,6 +140,15 @@ export function previewProjectPackage(pkg: ParsedProjectPackage): ProjectImportP
     mode: String(pkg.project.mode || 'outline'),
     chapterCount: pkg.chapters.length,
     resourceCount,
+    hasOutlines: (pkg.resources.outlines?.length ?? 0) > 0,
+    hasCharacters: pkg.resources.characters.length > 0,
+    hasWorldbook: pkg.resources.worldbookEntries.length > 0,
+    hasNotes: pkg.resources.notes.length > 0,
+    // writer-style v1 presets carry semantic_json; ordinary presets do not.
+    hasWriterStyle: pkg.resources.presets.some(
+      p => Boolean(p && (p.semantic_json || p.semantic)),
+    ),
+    hasContinuation: pkg.continuation != null,
   };
 }
 

@@ -98,7 +98,8 @@ function parseCjkNumber(s: string): number {
  */
 type HeadingKind = 'chapter' | 'volume';
 
-interface HeadingMatch {
+/** 行级标题判定结果（与流式解析器共享同一规则，供导入保留窗复用）。 */
+export interface HeadingMatch {
   kind: HeadingKind;
   /** Numeric value parsed from the marker (for sanity), or NaN if unparsed. */
   number: number;
@@ -115,7 +116,11 @@ const ENGLISH_CHAPTER_RE = /^Chapter\s+(\d+)\b(.*)$/i;
 const VOLUME_RE =
   /^(?:第([0-9一二三四五六七八九十百千两零〇]+)卷|卷([0-9一二三四五六七八九十百千两零〇]+))(?:.*)$/;
 
-function matchHeading(line: string): HeadingMatch | null {
+/**
+ * 判定一行是否为章节/卷标题。流式解析器内部使用；项目 TXT 流式导入也
+ * 复用同一规则做保留窗/智能分章判断，杜绝两套标题规则漂移。
+ */
+export function matchHeading(line: string): HeadingMatch | null {
   const trimmed = line.trim();
   if (trimmed.length === 0) return null;
 

@@ -11,11 +11,11 @@ import {
 } from 'react-native';
 import {
   Download,
+  FileText,
   History,
   Pencil,
   Plus,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
@@ -39,6 +39,8 @@ import {
 import {
   pickAndPreviewProjectPackage,
   importProjectPackage,
+  type ProjectImportPreview,
+  type ParsedProjectPackage,
 } from '../services/projectImport';
 import {
   pickAndPreviewTxtProject,
@@ -79,6 +81,16 @@ export const ProjectListScreen: React.FC = () => {
   const [renameName, setRenameName] = useState('');
   const [renamingBusy, setRenamingBusy] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [txtConfirm, setTxtConfirm] = useState<{
+    preview: ReturnType<typeof buildTxtPreview>;
+    pkg: TxtImportPackage;
+    normalizedText: string | null;
+  } | null>(null);
+  const [jsonConfirm, setJsonConfirm] = useState<{
+    preview: ProjectImportPreview;
+    pkg: ParsedProjectPackage;
+  } | null>(null);
   const [exportingId, setExportingId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [modeFilter, setModeFilter] = useState<'outline' | 'continuation'>(
@@ -316,51 +328,39 @@ export const ProjectListScreen: React.FC = () => {
 
   const handleImport = () => {
     if (importing) return;
-    Alert.alert('导入', '选择要导入的文件类型：', [
-      { text: '取消', style: 'cancel' },
-      { text: 'JSON 项目包', onPress: () => handleImportJson() },
-      { text: 'TXT 小说', onPress: () => handleImportTxt() },
-    ]);
+    setShowImportModal(true);
   };
 
   const handleImportJson = async () => {
     if (importing) return;
+    setShowImportModal(false);
     setImporting(true);
     try {
       const result = await pickAndPreviewProjectPackage();
       if (!result) return;
-      const { preview, pkg } = result;
-      Alert.alert(
-        '导入项目',
-        `项目名：${preview.name}\n模式：${
-          isValidProjectMode(preview.mode)
-            ? PROJECT_MODE_LABELS[preview.mode]
-            : preview.mode
-        }\n章节：${preview.chapterCount}\n资料：${
-          preview.resourceCount
-        }\n\n将作为新项目导入。`,
-        [
-          { text: '取消', style: 'cancel' },
-          {
-            text: '导入',
-            onPress: async () => {
-              try {
-                const newId = await importProjectPackage(pkg);
-                await loadProjects();
-                const newProject = useProjectStore
-                  .getState()
-                  .projects.find(p => p.id === newId);
-                if (newProject) setCurrentProject(newProject);
-                Alert.alert('导入成功', `项目「${preview.name}」已导入。`);
-              } catch (error: any) {
-                Alert.alert('导入失败', error?.message || '未知错误');
-              }
-            },
-          },
-        ],
-      );
+      setJsonConfirm(result);
     } catch (error: any) {
       Alert.alert('导入失败', error?.message || '无法读取项目文件。');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const confirmImportJson = async () => {
+    if (!jsonConfirm || importing) return;
+    const { preview, pkg } = jsonConfirm;
+    setImporting(true);
+    try {
+      const newId = await importProjectPackage(pkg);
+      await loadProjects();
+      const newProject = useProjectStore
+        .getState()
+        .projects.find(p => p.id === newId);
+      if (newProject) setCurrentProject(newProject);
+      setJsonConfirm(null);
+      Alert.alert('导入成功', `项目「${preview.name}」已恢复。`);
+    } catch (error: any) {
+      Alert.alert('导入失败', error?.message || '未知错误');
     } finally {
       setImporting(false);
     }
@@ -369,82 +369,63 @@ export const ProjectListScreen: React.FC = () => {
   const showTxtImportConfirm = (input: {
     preview: ReturnType<typeof buildTxtPreview>;
     pkg: TxtImportPackage;
-    rawText: string;
+    normalizedText: string | null;
   }) => {
-    const { preview, pkg, rawText } = input;
-    const sampleLine =
-      preview.sampleTitles.length > 0
-        ? `章节样例：${preview.sampleTitles.join('、')}\n`
-        : '';
-    const warningLine =
-      preview.warnings.length > 0 ? `\n${preview.warnings.join('\n')}` : '';
-    Alert.alert(
-      '导入 TXT 小说',
-      `项目名：${preview.name}\n编码：${preview.encoding}\n章节：${
-        preview.chapterCount
-      }\n${sampleLine}\n将导入为「大纲创作」项目，章节可继续编辑。${warningLine}`,
-      [
-        { text: '取消', style: 'cancel' },
-        ...(preview.needsSmartSplit
-          ? [
-              {
-                text: '智能分章（LLM）',
-                onPress: async () => {
-                  setImporting(true);
-                  try {
-                    const chapters = await smartSplitTxtChaptersWithLLM(rawText);
-                    const nextPkg: TxtImportPackage = {
-                      ...pkg,
-                      chapters,
-                      splitMode: 'llm',
-                      warnings: [],
-                    };
-                    showTxtImportConfirm({
-                      preview: buildTxtPreview(nextPkg),
-                      pkg: nextPkg,
-                      rawText,
-                    });
-                  } catch (error: any) {
-                    Alert.alert(
-                      '智能分章失败',
-                      error?.message || '请检查 LLM 配置后重试。',
-                    );
-                  } finally {
-                    setImporting(false);
-                  }
-                },
-              },
-            ]
-          : []),
-        {
-          text: '导入',
-          onPress: async () => {
-            setImporting(true);
-            try {
-              const newId = await importTxtProject(pkg);
-              await loadProjects();
-              const newProject = useProjectStore
-                .getState()
-                .projects.find(p => p.id === newId);
-              if (newProject) setCurrentProject(newProject);
-              Toast.show({
-                type: 'success',
-                text1: '导入成功',
-                text2: `项目「${pkg.name}」已导入 ${pkg.chapters.length} 章。`,
-              });
-            } catch (error: any) {
-              Alert.alert('导入失败', error?.message || '未知错误');
-            } finally {
-              setImporting(false);
-            }
-          },
-        },
-      ],
-    );
+    setTxtConfirm(input);
+  };
+
+  const confirmImportTxt = async () => {
+    if (!txtConfirm || importing) return;
+    const { pkg } = txtConfirm;
+    setImporting(true);
+    try {
+      const newId = await importTxtProject(pkg);
+      await loadProjects();
+      const newProject = useProjectStore
+        .getState()
+        .projects.find(p => p.id === newId);
+      if (newProject) setCurrentProject(newProject);
+      setTxtConfirm(null);
+      Toast.show({
+        type: 'success',
+        text1: '导入成功',
+        text2: `项目「${pkg.name}」已导入 ${pkg.chapters.length} 章。`,
+      });
+    } catch (error: any) {
+      Alert.alert('导入失败', error?.message || '未知错误');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const runSmartSplitOnConfirm = async () => {
+    if (!txtConfirm || importing) return;
+    const { pkg, normalizedText } = txtConfirm;
+    if (!normalizedText) return;
+    setImporting(true);
+    try {
+      const chapters = await smartSplitTxtChaptersWithLLM(normalizedText);
+      const nextPkg: TxtImportPackage = {
+        ...pkg,
+        chapters,
+        splitMode: 'llm',
+        warnings: [],
+      };
+      setTxtConfirm({
+        preview: buildTxtPreview(nextPkg),
+        pkg: nextPkg,
+        normalizedText,
+      });
+    } catch (error: any) {
+      Alert.alert('智能分章失败', error?.message || '请检查 LLM 配置后重试。');
+    } finally {
+      setImporting(false);
+    }
   };
 
   const handleImportTxt = async () => {
     if (importing) return;
+    setShowImportModal(false);
     setImporting(true);
     try {
       const result = await pickAndPreviewTxtProject();
@@ -542,12 +523,13 @@ export const ProjectListScreen: React.FC = () => {
         action={
           <View style={styles.headerActions}>
             <Button
-              label="导入"
-              icon={Upload}
+              label="导入项目"
+              icon={Download}
               variant="ghost"
               onPress={handleImport}
               disabled={importing}
               compact
+              testID="import-project-button"
             />
             <Button
               label="新建"
@@ -598,15 +580,24 @@ export const ProjectListScreen: React.FC = () => {
               : '创建后即可编写章节、整理资料并调用 AI 流水线。'
           }
           action={
-            <Button
-              label={
-                modeFilter === 'continuation'
-                  ? '新建原著续写项目'
-                  : '新建大纲作品'
-              }
-              icon={Plus}
-              onPress={() => openNewProjectModal(modeFilter)}
-            />
+            <View style={styles.emptyActions}>
+              <Button
+                label="导入项目"
+                icon={Download}
+                variant="ghost"
+                onPress={handleImport}
+                disabled={importing}
+              />
+              <Button
+                label={
+                  modeFilter === 'continuation'
+                    ? '新建原著续写项目'
+                    : '新建大纲作品'
+                }
+                icon={Plus}
+                onPress={() => openNewProjectModal(modeFilter)}
+              />
+            </View>
           }
         />
       ) : (
@@ -740,6 +731,278 @@ export const ProjectListScreen: React.FC = () => {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={showImportModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowImportModal(false)}
+        testID="import-project-modal"
+      >
+        <Pressable
+          style={styles.overlay}
+          onPress={() => setShowImportModal(false)}
+        >
+          <Pressable
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              导入项目
+            </Text>
+            <Text
+              style={[styles.modalSubtitle, { color: theme.colors.textSecondary }]}
+            >
+              把已有作品带进可编辑项目，两种方式任选：
+            </Text>
+            <TouchableOpacity
+              testID="import-txt-option"
+              accessibilityRole="button"
+              accessibilityLabel="导入小说"
+              onPress={handleImportTxt}
+              disabled={importing}
+              style={[
+                styles.importCard,
+                { backgroundColor: theme.colors.surface },
+                { borderColor: theme.colors.border },
+              ]}
+            >
+              <View style={styles.importCardIcon}>
+                <FileText size={22} color={theme.colors.accent} />
+              </View>
+              <View style={styles.importCardText}>
+                <Text
+                  style={[styles.importCardTitle, { color: theme.colors.textPrimary }]}
+                >
+                  导入小说
+                </Text>
+                <Text
+                  style={[styles.importCardDesc, { color: theme.colors.textSecondary }]}
+                >
+                  TXT 小说 → 自动识别章节 → 创建可编辑项目
+                </Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="import-json-option"
+              accessibilityRole="button"
+              accessibilityLabel="恢复项目"
+              onPress={handleImportJson}
+              disabled={importing}
+              style={[
+                styles.importCard,
+                { backgroundColor: theme.colors.surface },
+                { borderColor: theme.colors.border },
+              ]}
+            >
+              <View style={styles.importCardIcon}>
+                <Download size={22} color={theme.colors.accent} />
+              </View>
+              <View style={styles.importCardText}>
+                <Text
+                  style={[styles.importCardTitle, { color: theme.colors.textPrimary }]}
+                >
+                  恢复项目
+                </Text>
+                <Text
+                  style={[styles.importCardDesc, { color: theme.colors.textSecondary }]}
+                >
+                  TAVO / ShineWriter JSON 项目包 → 恢复完整项目
+                </Text>
+              </View>
+            </TouchableOpacity>
+            <View style={styles.modalActions}>
+              <Button
+                label={importing ? '读取中...' : '取消'}
+                variant="ghost"
+                onPress={() => setShowImportModal(false)}
+                disabled={importing}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={txtConfirm !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!importing) setTxtConfirm(null);
+        }}
+        testID="txt-import-confirm-modal"
+      >
+        <Pressable
+          style={styles.overlayScroll}
+          onPress={() => {
+            if (!importing) setTxtConfirm(null);
+          }}
+        >
+          <Pressable
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              导入 TXT 小说
+            </Text>
+            {txtConfirm && (
+              <View style={styles.previewRows}>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>项目名</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.name}</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>编码</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.encoding}</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>识别章节</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.chapterCount} 章</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>总字数</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.charCount.toLocaleString('zh-CN')} 字</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>分章</Text>
+                  <Text style={[styles.previewValue, { color: txtConfirm.preview.needsSmartSplit ? theme.colors.warning ?? '#B7791F' : theme.colors.accent }]}>
+                    {txtConfirm.preview.needsSmartSplit ? '⚠ ' : '✓ '}
+                    {txtConfirm.preview.splitModeLabel}
+                  </Text>
+                </View>
+                {txtConfirm.preview.sampleTitles.length > 0 && (
+                  <View style={styles.previewRow}>
+                    <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>预览</Text>
+                    <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]} numberOfLines={2}>
+                      {txtConfirm.preview.sampleTitles.join('、')}
+                    </Text>
+                  </View>
+                )}
+                {txtConfirm.preview.warnings.length > 0 && (
+                  <Text style={[styles.previewWarning, { color: theme.colors.warning ?? '#B7791F' }]}>
+                    {txtConfirm.preview.warnings.join('\n')}
+                  </Text>
+                )}
+                <Text style={[styles.previewHint, { color: theme.colors.textMuted }]}>
+                  将导入为「大纲创作」项目，章节可直接编辑并运行 AI 流水线。
+                </Text>
+              </View>
+            )}
+            <View style={styles.modalActions}>
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={() => {
+                  if (!importing) setTxtConfirm(null);
+                }}
+                disabled={importing}
+              />
+              {txtConfirm?.preview.needsSmartSplit ? (
+                <Button
+                  label={importing ? '分章中...' : '智能分章（LLM）'}
+                  variant="ghost"
+                  onPress={runSmartSplitOnConfirm}
+                  disabled={importing}
+                />
+              ) : null}
+              <Button
+                testID="txt-import-confirm"
+                label={importing ? '导入中...' : '确认导入'}
+                onPress={confirmImportTxt}
+                disabled={importing}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={jsonConfirm !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!importing) setJsonConfirm(null);
+        }}
+        testID="json-import-confirm-modal"
+      >
+        <Pressable
+          style={styles.overlayScroll}
+          onPress={() => {
+            if (!importing) setJsonConfirm(null);
+          }}
+        >
+          <Pressable
+            style={[styles.modal, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <Text
+              style={[styles.modalTitle, { color: theme.colors.textPrimary }]}
+            >
+              恢复项目
+            </Text>
+            {jsonConfirm && (
+              <View style={styles.previewRows}>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>项目名</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.name}</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>模式</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>
+                    {isValidProjectMode(jsonConfirm.preview.mode)
+                      ? PROJECT_MODE_LABELS[jsonConfirm.preview.mode]
+                      : jsonConfirm.preview.mode}
+                  </Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>章节</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.chapterCount} 章</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>资料</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.resourceCount} 项</Text>
+                </View>
+                <View style={styles.previewRow}>
+                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>包含</Text>
+                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>
+                    {[
+                      jsonConfirm.preview.hasOutlines ? '大纲' : null,
+                      jsonConfirm.preview.hasCharacters ? '人物' : null,
+                      jsonConfirm.preview.hasWorldbook ? '世界书' : null,
+                      jsonConfirm.preview.hasNotes ? '笔记' : null,
+                      jsonConfirm.preview.hasWriterStyle ? '作家风格' : null,
+                      jsonConfirm.preview.hasContinuation ? 'Continuation 数据' : null,
+                    ].filter(Boolean).join('、') || '无'}
+                  </Text>
+                </View>
+                <Text style={[styles.previewHint, { color: theme.colors.textMuted }]}>
+                  导入完成后将直接进入该项目。
+                </Text>
+              </View>
+            )}
+            <View style={styles.modalActions}>
+              <Button
+                label="取消"
+                variant="ghost"
+                onPress={() => {
+                  if (!importing) setJsonConfirm(null);
+                }}
+                disabled={importing}
+              />
+              <Button
+                testID="json-import-confirm"
+                label={importing ? '导入中...' : '导入'}
+                onPress={confirmImportJson}
+                disabled={importing}
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 };
@@ -802,4 +1065,43 @@ const styles = StyleSheet.create({
   },
   activeCard: { borderLeftWidth: 4 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },
+  emptyActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.sm,
+  },
+  modalSubtitle: { fontSize: 13, lineHeight: 20, marginBottom: spacing.md },
+  importCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  importCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  importCardText: { flex: 1 },
+  importCardTitle: { fontSize: 16, fontFamily: 'serif', fontWeight: '700' },
+  importCardDesc: { fontSize: 12, lineHeight: 18, marginTop: 2 },
+  previewRows: { gap: spacing.sm },
+  previewRow: { flexDirection: 'row', gap: spacing.md },
+  previewKey: { width: 64, fontSize: 13 },
+  previewValue: { flex: 1, fontSize: 13, lineHeight: 20 },
+  previewWarning: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
+  previewHint: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
+  overlayScroll: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    padding: spacing.xl,
+  },
 });

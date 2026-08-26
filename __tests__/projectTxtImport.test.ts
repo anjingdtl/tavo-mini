@@ -15,10 +15,6 @@ jest.mock('../src/services/fileImport', () => ({
   pickSourceFile: jest.fn(),
 }));
 
-jest.mock('../src/services/textFileReader', () => ({
-  readTextFileWithAutoEncodingResult: jest.fn(),
-}));
-
 jest.mock('../src/services/llm', () => ({
   callLLM: jest.fn(),
 }));
@@ -33,16 +29,64 @@ import {
   type TxtImportPackage,
 } from '../src/services/projectTxtImport';
 import { callLLM } from '../src/services/llm';
-import { readTextFileWithAutoEncodingResult } from '../src/services/textFileReader';
 import { pickSourceFile } from '../src/services/fileImport';
+import { requireContinuationTextImport } from '../src/native/ContinuationTextImportModule';
+import { utf8ByteLength } from '../src/services/continuation/hashUtils';
 import * as db from '../src/services/database';
 
 const mockCallLLM = callLLM as jest.Mock;
-const mockReader = readTextFileWithAutoEncodingResult as jest.Mock;
 const mockPick = pickSourceFile as jest.Mock;
 const mockCreateProject = db.createProject as jest.Mock;
 const mockCreateChaptersBulk = db.createChaptersBulk as jest.Mock;
 const mockDeleteProject = db.deleteProject as jest.Mock;
+
+/** 仿真原生 decodeChunk：按字符切片，字节游标按 UTF-8 字节数前进。 */
+function installChunkDecoder(path: string, text: string, charsPerChunk = 3) {
+  const mod = requireContinuationTextImport();
+  const mocked = mod.decodeChunk as jest.Mock;
+  mocked.mockReset();
+  mocked.mockImplementation(async (p: string, _enc: string, byteOffset: number) => {
+    if (p !== path) {
+      throw new Error(`test decoder: unknown path ${p}`);
+    }
+    let charIdx = 0;
+    let byteAt = 0;
+    while (byteAt < byteOffset && charIdx < text.length) {
+      byteAt += utf8ByteLength(text[charIdx]);
+      charIdx += 1;
+    }
+    const slice = text.slice(charIdx, charIdx + charsPerChunk);
+    if (slice.length === 0) {
+      return {
+        text: '',
+        nextByteOffset: byteOffset,
+        decodedChars: 0,
+        bytesConsumed: 0,
+        atEof: true,
+      };
+    }
+    const bytesLen = utf8ByteLength(slice);
+    return {
+      text: slice,
+      nextByteOffset: byteOffset + bytesLen,
+      decodedChars: slice.length,
+      bytesConsumed: bytesLen,
+      atEof: byteOffset + bytesLen >= utf8ByteLength(text),
+    };
+  });
+  return mocked;
+}
+
+function installDetectEncoding(encoding: string, fileSizeBytes = 5000) {
+  const mod = requireContinuationTextImport();
+  (mod.detectEncoding as jest.Mock).mockReset();
+  (mod.detectEncoding as jest.Mock).mockResolvedValue({
+    encoding,
+    confidence: fileSizeBytes === 5000 ? 1 : 0.6,
+    hasBom: false,
+    fileSizeBytes,
+  });
+}
 
 describe('splitTxtChapters', () => {
   it('标准标题切章：中文数字/阿拉伯数字/Chapter N，标题前正文收进开篇', () => {
@@ -111,10 +155,12 @@ describe('splitTxtChapters', () => {
       splitMode: result.splitMode,
       chapters: result.chapters,
       warnings: result.warnings,
+      charCount: 0,
     };
     const preview = buildTxtPreview(pkg);
     expect(preview.needsSmartSplit).toBe(true);
     expect(preview.chapterCount).toBe(1);
+    expect(preview.splitModeLabel).toBe('整篇单章（可智能分章）');
   });
 
   it('空内容直接抛错', () => {
@@ -163,18 +209,39 @@ describe('pickAndPreviewTxtProject', () => {
     (RNFS.stat as jest.Mock).mockReset();
   });
 
-  it('完整流程：选文件 → 读取 → 预览', async () => {
-    mockPick.mockResolvedValueOnce({ localPath: '/tmp/novel.txt', name: 'novel.txt' });
+  it('完整流程：选文件 → 流式读取 → 预览（含字数与分章模式）', async () => {
+    const path = '/tmp/novel.txt';
+    mockPick.mockResolvedValueOnce({ localPath: path, name: 'novel.txt' });
     (RNFS.stat as jest.Mock).mockResolvedValueOnce({ size: 5000 });
-    mockReader.mockResolvedValueOnce({ text: '第一章 甲\n内容甲。', encoding: 'GB18030' });
+    installDetectEncoding('gb18030');
+    installChunkDecoder(path, '第一章 甲\n内容甲。');
 
     const result = await pickAndPreviewTxtProject();
     expect(result).not.toBeNull();
     expect(result!.preview.name).toBe('novel');
-    expect(result!.preview.encoding).toBe('GB18030');
+    expect(result!.preview.encoding).toBe('gb18030');
     expect(result!.preview.chapterCount).toBe(1);
     expect(result!.preview.needsSmartSplit).toBe(false);
+expect(result!.preview.splitModeLabel).toBe('标准标题识别');
+    expect(result!.preview.charCount).toBe(10);
     expect(result!.pkg.chapters[0].title).toBe('第一章 甲');
+    expect(result!.normalizedText).toBeNull();
+  });
+
+  it('GBK/GB18030 文本按检测编码流式解码', async () => {
+    const path = '/tmp/gbk.txt';
+    mockPick.mockResolvedValueOnce({ localPath: path, name: 'gbk.txt' });
+    (RNFS.stat as jest.Mock).mockResolvedValueOnce({ size: 9000 });
+    installDetectEncoding('gbk');
+    installChunkDecoder(path, '楔子\n夜色深沉。\n一、初入江湖\n少年出门。');
+
+    const result = await pickAndPreviewTxtProject();
+    expect(result!.preview.encoding).toBe('gbk');
+    expect(result!.preview.splitModeLabel).toBe('宽松标题识别');
+    expect(result!.pkg.chapters.map(c => c.title)).toEqual([
+      '楔子',
+      '一、初入江湖',
+    ]);
   });
 
   it('非 .txt 扩展名抛错', async () => {
@@ -206,6 +273,7 @@ describe('importTxtProject', () => {
       name: 'novel',
       encoding: 'utf-8',
       splitMode: 'standard',
+      charCount: 0,
       chapters: [
         { title: '第一章 甲', content: '内容甲。' },
         { title: '第二章 乙', content: '内容乙。' },
@@ -232,6 +300,7 @@ describe('importTxtProject', () => {
       name: 'novel',
       encoding: 'utf-8',
       splitMode: 'fallback',
+      charCount: 0,
       chapters: [{ title: '整篇导入', content: 'x' }],
       warnings: [],
     };

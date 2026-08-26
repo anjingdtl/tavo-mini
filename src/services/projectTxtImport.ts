@@ -1,25 +1,33 @@
 /**
  * TXT 小说导入为项目（项目页「导入 TXT 小说」入口）。
  *
- * 流程：选 .txt 文件 → 原生编码识别读取（UTF-8/UTF-16/GBK/GB18030）→
- * 规范化 → 复用原著解析器按标题切章 → 未识别标题时先做宽松标题兜底，
- * 仍不行则整篇单章并允许用户在预览里选择 LLM 智能分章 → 预览确认 →
- * 创建 outline 模式项目并批量写入章节，失败整体回滚。
+ * 流程：选 .txt 文件 → 原生编码识别 → 共享 Streaming 管线（decode →
+ * normalize → 行级切分，与续写 TXT 同一套能力）→ 按标题切章（标准 →
+ * 宽松 → 整篇回退）→ 预览确认 → 创建 outline 模式项目并批量写入章节，
+ * 失败整体回滚。
  *
  * 选 outline 模式：导入的正文作为普通章节完全可编辑、可跑管线、可一键
  * N 章；continuation 模式会把项目章节当「续写章」走 Canon 边界编号，
  * 不适用于导入既有作品的完整正文。
+ *
+ * 流式解析（parseTxtProjectStreaming）与一次性 splitTxtChapters 语义等价，
+ * 但标准/宽松模式只保留当前章窗口，整篇文本仅在无标题回退时才保留
+ * （供 LLM 智能分章），避免大 TXT 整篇读入 OOM。
  */
 import RNFS from 'react-native-fs';
 import { types } from '@react-native-documents/picker';
 import * as db from './database';
 import { pickSourceFile } from './fileImport';
-import { readTextFileWithAutoEncodingResult } from './textFileReader';
+import { requireContinuationTextImport } from '../native/ContinuationTextImportModule';
 import { normalizeSourceText } from './continuation/continuationNormalizer';
 import {
   parseSourceChapters,
+  createStreamingChapterParser,
+  matchHeading,
+  type ParsedChapter,
   type ParsedSource,
 } from './continuation/continuationParser';
+import { streamDecodedText } from './txtStreaming';
 import { callLLM, type ChatMessage } from './llm';
 import { extractJSON } from '../utils/jsonExtractor';
 
@@ -39,6 +47,8 @@ export interface TxtImportPackage {
   splitMode: TxtSplitMode;
   chapters: TxtChapter[];
   warnings: string[];
+  /** 归一化总字数（含空白），用于预览「总字数」。 */
+  charCount: number;
 }
 
 export interface TxtImportPreview {
@@ -46,10 +56,29 @@ export interface TxtImportPreview {
   encoding: string;
   chapterCount: number;
   splitMode: TxtSplitMode;
+  /** 分章模式的人类可读描述（标准标题识别/宽松标题识别/整篇单章/LLM 智能分章）。 */
+  splitModeLabel: string;
+  /** 总字数。 */
+  charCount: number;
   /** true 时预览弹窗提供「智能分章（LLM）」按钮。 */
   needsSmartSplit: boolean;
   sampleTitles: string[];
   warnings: string[];
+}
+
+export interface TxtStreamProjectParseResult {
+  chapters: TxtChapter[];
+  splitMode: TxtSplitMode;
+  warnings: string[];
+  normalizedCharCount: number;
+  nonWhitespaceCharCount: number;
+  /**
+   * fallback 模式保留整篇归一化文本供 LLM 智能分章；standard/loose 为
+   * null（流式解析不常驻整篇正文）。
+   */
+  normalizedText: string | null;
+  /** 智能分章候选短行（行首 UTF-16 偏移 + 行文本）。 */
+  smartSplitCandidates: Array<{ offset: number; text: string }>;
 }
 
 // 序章/楔子/番外等无编号标题。仅整行匹配（可带【】或（）包装），行长受限
@@ -61,6 +90,19 @@ const LOOSE_NUMBERED_RE =
   /^(?:[0-9]{1,4}|[一二三四五六七八九十百]{1,6})[、.．:：]\s*\S{0,28}$/;
 
 const PREAMBLE_TITLE = '开篇';
+
+export function splitModeLabel(mode: TxtSplitMode): string {
+  switch (mode) {
+    case 'standard':
+      return '标准标题识别';
+    case 'loose':
+      return '宽松标题识别';
+    case 'llm':
+      return 'LLM 智能分章';
+    default:
+      return '整篇单章（可智能分章）';
+  }
+}
 
 function splitByOffsets(
   normalizedText: string,
@@ -160,38 +202,51 @@ function looseSplit(normalizedText: string): { chapters: TxtChapter[]; used: boo
   return { chapters, used: true };
 }
 
-const SMART_SPLIT_MAX_CANDIDATES = 1200;
+export const SMART_SPLIT_MAX_CANDIDATES = 1200;
 const SMART_SPLIT_LINE_MAX_CHARS = 30;
 
 /**
- * LLM 智能分章：把可能是标题的短行（行号 + 行文本）压缩成候选列表发给
- * LLM 判定章起点。只在规则切章失败（fallbackUsed）且用户主动选择时调用。
+ * 单行是否可作智能分章候选（一次性与流式共用同一过滤规则）。
  */
-export async function smartSplitTxtChaptersWithLLM(
-  rawText: string,
-): Promise<TxtChapter[]> {
-  const normalized = normalizeSourceText(rawText).text;
-  const lines = normalized.split('\n');
-  const candidates: { i: number; t: string }[] = [];
-  let offset = 0;
+function isSmartSplitCandidateLine(trimmed: string): boolean {
+  return (
+    trimmed.length > 0 &&
+    trimmed.length <= SMART_SPLIT_LINE_MAX_CHARS &&
+    !/[。！？；…”」』]$/u.test(trimmed)
+  );
+}
+
+/**
+ * 收集可能是标题的短行候选。LLM 载荷契约（{i: 行首偏移, t: 行文本}）与
+ * 历史版本一致，避免 LLM 侧行为漂移。
+ */
+export function collectSmartSplitCandidates(normalizedText: string): {
+  candidates: Array<{ i: number; t: string }>;
+  lineOffsets: number[];
+} {
+  const lines = normalizedText.split('\n');
+  const candidates: Array<{ i: number; t: string }> = [];
   const lineOffsets: number[] = [];
+  let offset = 0;
   for (const line of lines) {
     lineOffsets.push(offset);
     const trimmed = line.trim();
-    if (
-      trimmed.length > 0 &&
-      trimmed.length <= SMART_SPLIT_LINE_MAX_CHARS &&
-      !/[。！？；…”」』]$/u.test(trimmed) &&
-      candidates.length < SMART_SPLIT_MAX_CANDIDATES
-    ) {
+    if (isSmartSplitCandidateLine(trimmed) && candidates.length < SMART_SPLIT_MAX_CANDIDATES) {
       candidates.push({ i: offset, t: trimmed });
     }
     offset += line.length + 1;
   }
-  if (candidates.length < 2) {
-    throw new Error('没有可用于智能分章的候选行，请手动整理标题后重试。');
-  }
+  return { candidates, lineOffsets };
+}
 
+/**
+ * 候选行 + LLM 判定 → 章节组装。一次性与流式共用同一实现。
+ */
+async function assembleSmartSplit(
+  normalizedText: string,
+  candidates: Array<{ i: number; t: string }>,
+  lineOffsets: number[],
+): Promise<TxtChapter[]> {
   const messages: ChatMessage[] = [
     {
       role: 'system',
@@ -231,24 +286,203 @@ export async function smartSplitTxtChaptersWithLLM(
   const titleByOffset = new Map(candidates.map(c => [c.i, c.t]));
   const chapters: TxtChapter[] = [];
   const firstStart = boundaries[0];
-  const preamble = normalized.slice(0, firstStart).trim();
+  const preamble = normalizedText.slice(0, firstStart).trim();
   if (preamble.length > 0) {
     chapters.push({ title: PREAMBLE_TITLE, content: preamble });
   }
   chapters.push(
     ...splitByOffsets(
-      normalized,
+      normalizedText,
       boundaries.map((start, index) => {
-        const nlIdx = normalized.indexOf('\n', start);
+        const nlIdx = normalizedText.indexOf('\n', start);
         return {
           title: titleByOffset.get(start) || `第 ${index + 1} 章`,
           start,
-          contentStart: nlIdx >= 0 ? nlIdx + 1 : normalized.length,
+          contentStart: nlIdx >= 0 ? nlIdx + 1 : normalizedText.length,
         };
       }),
     ),
   );
   return chapters;
+}
+
+/**
+ * LLM 智能分章：作用于已归一化文本（流式 fallback 保留的整篇文本）。
+ */
+export async function smartSplitTxtChaptersFromNormalized(
+  normalizedText: string,
+): Promise<TxtChapter[]> {
+  const { candidates, lineOffsets } = collectSmartSplitCandidates(normalizedText);
+  if (candidates.length < 2) {
+    throw new Error('没有可用于智能分章的候选行，请手动整理标题后重试。');
+  }
+  return assembleSmartSplit(normalizedText, candidates, lineOffsets);
+}
+
+/**
+ * LLM 智能分章（一次性语义，测试/兼容入口）：先归一化再走同一实现。
+ */
+export async function smartSplitTxtChaptersWithLLM(
+  rawText: string,
+): Promise<TxtChapter[]> {
+  return smartSplitTxtChaptersFromNormalized(normalizeSourceText(rawText).text);
+}
+
+/**
+ * 流式解析项目 TXT：decode → normalize → 行级切分（共享管道），标准 →
+ * 宽松 → 整篇回退三档与一次性 splitTxtChapters 语义等价。
+ *
+ * 内存策略：一旦出现章节标题，正文窗口只保留「当前章 + 最近标题行」；
+ * 无任何章节标题时（宽松/整篇回退），整篇归一化文本才会常驻（供宽松
+ * 切分与 LLM 智能分章），此时与一次性解析的内存模型一致。
+ */
+export async function parseTxtProjectStreaming(input: {
+  localPath: string;
+  encoding: string;
+  fileSizeBytes: number;
+  originalFileName?: string;
+}): Promise<TxtStreamProjectParseResult> {
+  const parser = createStreamingChapterParser();
+
+  // 归一化文本保留窗：windowStart 是 window[0] 在归一化文本中的偏移。
+  let windowText = '';
+  let windowStart = 0;
+
+  let sawFirstChapterHeading = false;
+  // 当前打开章节的标题行起始偏移（仅用于窗口裁剪）。
+  let openHeadingStart: number | null = null;
+  // 首个章节标题前的正文（标准模式作为「开篇」）。
+  let preambleText = '';
+
+  const chapters: TxtChapter[] = [];
+  let nonWhitespaceCharCount = 0;
+  let globalParagraphCount = 0;
+  const smartSplitCandidates: TxtStreamProjectParseResult['smartSplitCandidates'] = [];
+
+  const emitClosed = (closed: ParsedChapter[]) => {
+    for (const ch of closed) {
+      const start = ch.contentStartOffset - windowStart;
+      const end = ch.sourceEndOffset - windowStart;
+      if (start >= 0 && end >= start) {
+        chapters.push({
+          title: ch.title.trim(),
+          content: windowText.slice(start, end).trim(),
+        });
+      }
+    }
+  };
+
+  // 窗口裁剪：丢弃当前打开章标题行之前的所有内容。
+  const dropBefore = (offset: number) => {
+    if (offset <= windowStart) return;
+    windowText = windowText.slice(offset - windowStart);
+    windowStart = offset;
+  };
+
+  const normMeta = await streamDecodedText({
+    files: [
+      {
+        localPath: input.localPath,
+        encoding: input.encoding,
+        fileSizeBytes: input.fileSizeBytes,
+        originalFileName: input.originalFileName,
+      },
+    ],
+    callbacks: {
+      onNormalizedChunk: async ({ block }) => {
+        windowText += block;
+        const matches = block.match(/\S/g);
+        if (matches) nonWhitespaceCharCount += matches.length;
+      },
+      onLine: async ({ line, lineStartOffset, lineLength }) => {
+        const closed = parser.pushLine(line, lineStartOffset);
+        emitClosed(closed);
+
+        const heading = matchHeading(line);
+        if (heading && heading.kind === 'chapter') {
+          if (!sawFirstChapterHeading) {
+            sawFirstChapterHeading = true;
+            const preamble = windowText.slice(0, lineStartOffset - windowStart).trim();
+            if (preamble.length > 0) {
+              preambleText = preamble;
+            }
+            dropBefore(lineStartOffset);
+          } else if (openHeadingStart !== null) {
+            dropBefore(openHeadingStart);
+          }
+          openHeadingStart = lineStartOffset;
+        }
+
+        const trimmed = line.trim();
+        if (trimmed.length > 0) globalParagraphCount += 1;
+        if (
+          isSmartSplitCandidateLine(trimmed) &&
+          smartSplitCandidates.length < SMART_SPLIT_MAX_CANDIDATES
+        ) {
+          smartSplitCandidates.push({ offset: lineStartOffset, text: trimmed });
+        }
+        void lineLength;
+      },
+      onLongLineParts: async ({ parts }) => {
+        if (parts.some(p => p.trim().length > 0)) globalParagraphCount += 1;
+      },
+    },
+  });
+
+  if (nonWhitespaceCharCount === 0) {
+    throw new Error('TXT 文件内容为空。');
+  }
+
+  if (!sawFirstChapterHeading) {
+    // 无任何章节标题：整篇文本完整保留在 windowText 中。
+    const normalizedText = windowText;
+    const loose = looseSplit(normalizedText);
+    if (loose.used) {
+      return {
+        chapters: loose.chapters,
+        splitMode: 'loose',
+        warnings: ['未识别到“第X章”式标题，已按序章/番外等特殊标题切分，请核对章节划分。'],
+        normalizedCharCount: normMeta.normalizedCharCount,
+        nonWhitespaceCharCount,
+        normalizedText: null,
+        smartSplitCandidates,
+      };
+    }
+    return {
+      chapters: [{ title: '整篇导入', content: normalizedText.trim() }],
+      splitMode: 'fallback',
+      warnings: ['未识别到章节标题，整篇作为单一章节导入。可在预览中选择「智能分章」。'],
+      normalizedCharCount: normMeta.normalizedCharCount,
+      nonWhitespaceCharCount,
+      normalizedText,
+      smartSplitCandidates,
+    };
+  }
+
+  // 标准模式：关闭最后一个章节。
+  const parsedFinal = parser.finalize({
+    fallbackSha256: normMeta.normalizedSha256,
+    fallbackParagraphCount: globalParagraphCount,
+    totalCharCount: normMeta.normalizedCharCount,
+  });
+  const finalClosed = parsedFinal.chapters;
+  emitClosed(finalClosed);
+
+  const result: TxtChapter[] = [];
+  if (preambleText.length > 0) {
+    result.push({ title: PREAMBLE_TITLE, content: preambleText });
+  }
+  result.push(...chapters);
+
+  return {
+    chapters: result,
+    splitMode: 'standard',
+    warnings: parsedFinal.warnings.slice(),
+    normalizedCharCount: normMeta.normalizedCharCount,
+    nonWhitespaceCharCount,
+    normalizedText: null,
+    smartSplitCandidates,
+  };
 }
 
 export function buildTxtPreview(pkg: TxtImportPackage): TxtImportPreview {
@@ -257,6 +491,8 @@ export function buildTxtPreview(pkg: TxtImportPackage): TxtImportPreview {
     encoding: pkg.encoding,
     chapterCount: pkg.chapters.length,
     splitMode: pkg.splitMode,
+    splitModeLabel: splitModeLabel(pkg.splitMode),
+    charCount: pkg.charCount,
     needsSmartSplit: pkg.splitMode === 'fallback',
     sampleTitles: pkg.chapters.slice(0, 5).map(c => c.title),
     warnings: pkg.warnings.slice(),
@@ -265,11 +501,14 @@ export function buildTxtPreview(pkg: TxtImportPackage): TxtImportPreview {
 
 /**
  * 选择一个 .txt 文件并解析为待导入项目。用户取消选择时返回 null。
+ *
+ * 读取走共享 Streaming 管线（vs 旧整篇读入）；normalizedText 仅在
+ * fallback（需要智能分章）时返回。
  */
 export async function pickAndPreviewTxtProject(): Promise<{
   preview: TxtImportPreview;
   pkg: TxtImportPackage;
-  rawText: string;
+  normalizedText: string | null;
 } | null> {
   const file = await pickSourceFile([types.plainText, types.allFiles]);
   if (!file) return null;
@@ -282,16 +521,29 @@ export async function pickAndPreviewTxtProject(): Promise<{
       `TXT 文件 ${(stat.size / 1024 / 1024).toFixed(1)}MB 超过 20MB 上限，请先拆分文件后再导入。`,
     );
   }
-  const decoded = await readTextFileWithAutoEncodingResult(file.localPath);
-  const { chapters, splitMode, warnings } = splitTxtChapters(decoded.text);
+  const decoder = requireContinuationTextImport();
+  const detected = await decoder.detectEncoding(file.localPath);
+  const parsed = await parseTxtProjectStreaming({
+    localPath: file.localPath,
+    encoding: detected.encoding,
+    fileSizeBytes: Number(detected.fileSizeBytes) > 0
+      ? Number(detected.fileSizeBytes)
+      : stat.size,
+    originalFileName: file.name,
+  });
   const pkg: TxtImportPackage = {
     name: file.name.replace(/\.txt$/i, '').trim() || '导入的TXT小说',
-    encoding: decoded.encoding,
-    splitMode,
-    chapters,
-    warnings,
+    encoding: detected.encoding,
+    splitMode: parsed.splitMode,
+    chapters: parsed.chapters,
+    warnings: parsed.warnings,
+    charCount: parsed.normalizedCharCount,
   };
-  return { preview: buildTxtPreview(pkg), pkg, rawText: decoded.text };
+  return {
+    preview: buildTxtPreview(pkg),
+    pkg,
+    normalizedText: parsed.normalizedText,
+  };
 }
 
 /**

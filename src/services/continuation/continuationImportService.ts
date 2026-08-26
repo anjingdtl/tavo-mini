@@ -22,7 +22,8 @@ import { openDatabase } from '../../data/connection/openDatabase';
 import { now } from '../../data/repositories/shared';
 import { requireContinuationTextImport } from '../../native/ContinuationTextImportModule';
 import { PARSER_VERSION, createStreamingChapterParser, type ParsedChapter } from './continuationParser';
-import { NORMALIZATION_VERSION, createStreamingNormalizer } from './continuationNormalizer';
+import { NORMALIZATION_VERSION } from './continuationNormalizer';
+import { streamDecodedText, TXT_STREAM_CHUNK_BYTES } from '../txtStreaming';
 import { applyParsingEdits, type ParsingEdit } from './continuationEditLog';
 import { Sha256Stream, sha256Hex } from './hashUtils';
 import {
@@ -428,13 +429,16 @@ function parsedChapterToInput(c: ParsedChapter): InsertChapterInput {
 /**
  * Decode → normalize → persist chunks → parse → persist chapters → validate.
  *
- * Single-pass streaming variant: each 192 KiB decoded byte-block is normalized,
- * hashed, sliced into text chunks, and fed to the streaming chapter parser
- * immediately, so the full novel never resides in JS memory at once. This
- * replaces the original load-everything-then-process pipeline that OOMed on
- * multi-MB novels. Output (chunks/chapters/hashes) is byte-for-byte identical
- * to the original pipeline — the streaming normalizer/parser are equivalence-
- * tested against the one-shot variants.
+ * Single-pass streaming variant: chunked decode/normalize/line-split is
+ * delegated to the SHARED streaming pipeline (src/services/txtStreaming.ts),
+ * the same capability used by project TXT import (B0: 不维护两套独立的大文件
+ * 解析逻辑). Each 192 KiB decoded byte-block is normalized, hashed, sliced
+ * into text chunks, and fed to the streaming chapter parser immediately, so
+ * the full novel never resides in JS memory at once. This replaces the
+ * original load-everything-then-process pipeline that OOMed on multi-MB
+ * novels. Output (chunks/chapters/hashes) is byte-for-byte identical to the
+ * original pipeline — the streaming normalizer/parser are equivalence-tested
+ * against the one-shot variants.
  *
  * Multi-file streaming variant: each file is decoded independently with its
  * own encoding, but the normalizer/parser/hashers are shared across files so
@@ -454,12 +458,6 @@ async function runPipelineToReview(
   if (files.length === 0) {
     throw new Error('未选择任何文件。');
   }
-  const mod = requireContinuationTextImport();
-  const CHUNK_BYTES = 192 * 1024;
-  // Joining an unbounded line (for example, a 50 MiB minified/plain-text
-  // export) creates a second giant JS string and can exceed Android's heap.
-  // Short lines still use the normal heading-aware parser path.
-  const MAX_JOINED_LINE_CHARS = 16 * 1024;
   // Chunk the normalized text into ~192 KiB UTF-8 bands (Spec §9.3). 3 bytes
   // per CJK char is the rough average used by the original pipeline.
   const CHUNK_CHAR_TARGET = Math.floor((192 * 1024) / 3);
@@ -468,7 +466,6 @@ async function runPipelineToReview(
   // the merged output is identical to a single-file import of the concat.
   const rawHasher = new Sha256Stream(); // SHA-256 over the raw decoded text
   const fallbackHasher = new Sha256Stream(); // SHA-256 over the full normalized text (fallback chapter)
-  const normalizer = createStreamingNormalizer();
   const parser = createStreamingChapterParser();
 
   let normalizedCharCursor = 0; // running UTF-16 length of normalized output (cross-file)
@@ -476,17 +473,12 @@ async function runPipelineToReview(
   let chunkBandStart = 0; // UTF-16 offset where chunkBand begins (cross-file)
   let chunkIndex = 0; // global chunk index (cross-file)
   let chapterCount = 0; // global chapter count (cross-file)
-  // Pending partial line carried across decoded chunks within a single file.
-  // Flushed at each file's end so partial lines never merge across files.
-  let pendingLineParts: string[] = [];
-  let pendingLineLength = 0;
-  let pendingLineStartOffset = 0;
   // Whole-text paragraph count over the normalized output (used only if the
   // parser falls back to a single whole-text chapter). Counted online as each
   // complete normalized line arrives.
   let globalParagraphCount = 0;
 
-  const progressTotal = Math.max(1, Math.ceil(totalSizeBytes / CHUNK_BYTES));
+  const progressTotal = Math.max(1, Math.ceil(totalSizeBytes / TXT_STREAM_CHUNK_BYTES));
   await updateJob(db, jobId, { stage: 'decoding', progressTotal });
 
   // flushChapterBatch takes a fileIndex so every chapter row records which
@@ -502,155 +494,89 @@ async function runPipelineToReview(
     chapterCount += chapters.length;
   };
 
-  // Per-file byte offsets (for progress + checkpoint). Reset to 0 each file.
-  let byteCursor = 0;
-
-  for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-    const file = files[fileIndex];
-    byteCursor = 0;
-
-    while (byteCursor < file.fileSizeBytes) {
-      const decoded = await mod.decodeChunk(
-        file.localPath,
-        file.encoding,
-        byteCursor,
-        CHUNK_BYTES,
-        null,
-      );
-      if (decoded.bytesConsumed === 0 && !decoded.atEof) {
-        throw new Error(
-          `解码 ${file.originalFileName} 无进展，疑似编码不匹配，请确认文件编码。`,
-        );
-      }
+  // 共享流式管线（B0）：decode → normalize → line feed 与项目 TXT 导入共用
+  // 同一套 streaming 能力（src/services/txtStreaming.ts），不在续写侧维护
+  // 第二套大文件解析逻辑。逐块回调顺序与原内联循环等价。
+  const normMeta = await streamDecodedText({
+    files: files.map(f => ({
+      localPath: f.localPath,
+      encoding: f.encoding,
+      fileSizeBytes: f.fileSizeBytes,
+      originalFileName: f.originalFileName,
+    })),
+    callbacks: {
       // Raw hash is over the decoded text before normalization (matches the
       // original raw_sha256 = sha256Hex(rawDecoded)). Cross-file accumulation.
-      rawHasher.updateString(decoded.text);
-
-      // Normalize this byte-block incrementally; push() returns the normalized
-      // text produced from just this block.
-      const normalizedBlock = normalizer.push(decoded.text);
-      fallbackHasher.updateString(normalizedBlock);
-
-      // Split the normalized block into complete lines and feed the streaming
-      // chapter parser. A trailing partial line (no '\n') is held until the next
-      // block completes it. Line offsets are UTF-16 offsets into the normalized
-      // text, tracked via pendingLineStartOffset (cross-file accumulation).
-      const flushLine = (parts: string[], lineLength: number) => {
-        if (lineLength <= MAX_JOINED_LINE_CHARS) {
-          const line = parts.length === 1 ? parts[0] : parts.join('');
-          return parser.pushLine(line, pendingLineStartOffset);
+      onDecodedChunk: async ({ rawText }) => {
+        rawHasher.updateString(rawText);
+      },
+      // Normalize this byte-block incrementally; the block is the normalized
+      // text produced from just this chunk (concat == one-shot normalize).
+      onNormalizedChunk: async ({ block, fileIndex }) => {
+        fallbackHasher.updateString(block);
+        // Accumulate the normalized block into chunk bands. When a band reaches
+        // CHUNK_CHAR_TARGET, flush it as a text chunk row. The band may span
+        // file boundaries; fileIndex here marks the file that completed the band,
+        // which is a provenance hint, not an offset participant (Spec §9.3).
+        chunkBand += block;
+        while (chunkBand.length >= CHUNK_CHAR_TARGET) {
+          // Never split a UTF-16 surrogate pair at the fixed band target. A cut
+          // that leaves an unpaired high surrogate in chunk N and low surrogate
+          // in chunk N+1 can desync declared offsets from content.length after
+          // SQLite TEXT round-trips, which then fails style-sample hash re-read
+          // past the first ~65536 boundary.
+          const cut = adjustUtf16ChunkEnd(chunkBand, CHUNK_CHAR_TARGET);
+          const slice = chunkBand.slice(0, cut);
+          const start = chunkBandStart;
+          const end = start + slice.length;
+          await insertChunks(db, sourceId, [
+            {
+              chunkIndex,
+              charStartOffset: asUtf16Offset(start),
+              charEndOffset: asUtf16Offset(end),
+              content: slice,
+              contentSha256: sha256Hex(slice),
+              fileIndex,
+            },
+          ]);
+          chunkIndex += 1;
+          chunkBandStart = end;
+          chunkBand = chunkBand.slice(cut);
         }
-        return parser.pushBodyLineChunks(parts, pendingLineStartOffset, lineLength);
-      };
-
-      let blockRest = normalizedBlock;
-      while (true) {
-        const nlIdx = blockRest.indexOf('\n');
-        if (nlIdx < 0) {
-          // No more complete lines in this block; carry string pieces rather
-          // than repeatedly concatenating a potentially unbounded line.
-          if (blockRest.length > 0) {
-            pendingLineParts.push(blockRest);
-            pendingLineLength += blockRest.length;
-          }
-          break;
-        }
-        const segment = blockRest.slice(0, nlIdx);
-        const lineParts = pendingLineParts.length > 0
-          ? [...pendingLineParts, segment]
-          : [segment];
-        const completeLineLength = pendingLineLength + segment.length;
-        const flushed = flushLine(lineParts, completeLineLength);
+        normalizedCharCursor += block.length;
+      },
+      onLine: async ({ line, lineStartOffset, fileIndex }) => {
+        const flushed = parser.pushLine(line, lineStartOffset);
         await flushChapterBatch(flushed, fileIndex);
-        if (lineParts.some(part => part.trim().length > 0)) {
+        if (line.trim().length > 0) {
           globalParagraphCount += 1;
         }
-        // Advance past the line content + the '\n'.
-        pendingLineStartOffset = pendingLineStartOffset + completeLineLength + 1;
-        pendingLineParts = [];
-        pendingLineLength = 0;
-        blockRest = blockRest.slice(nlIdx + 1);
-      }
-
-      // Accumulate the normalized block into chunk bands. When a band reaches
-      // CHUNK_CHAR_TARGET, flush it as a text chunk row. The band may span
-      // file boundaries; fileIndex here marks the file that completed the band
-      // (i.e. the file currently being decoded), which is acceptable since
-      // file_index is a provenance hint, not an offset participant (Spec §9.3).
-      chunkBand += normalizedBlock;
-      while (chunkBand.length >= CHUNK_CHAR_TARGET) {
-        // Never split a UTF-16 surrogate pair at the fixed band target. A cut
-        // that leaves an unpaired high surrogate in chunk N and low surrogate
-        // in chunk N+1 can desync declared offsets from content.length after
-        // SQLite TEXT round-trips, which then fails style-sample hash re-read
-        // past the first ~65536 boundary.
-        const cut = adjustUtf16ChunkEnd(chunkBand, CHUNK_CHAR_TARGET);
-        const slice = chunkBand.slice(0, cut);
-        const start = chunkBandStart;
-        const end = start + slice.length;
-        await insertChunks(db, sourceId, [
-          {
-            chunkIndex,
-            charStartOffset: asUtf16Offset(start),
-            charEndOffset: asUtf16Offset(end),
-            content: slice,
-            contentSha256: sha256Hex(slice),
+      },
+      onLongLineParts: async ({ parts, lineStartOffset, lineLength, fileIndex }) => {
+        const flushed = parser.pushBodyLineChunks(parts, lineStartOffset, lineLength);
+        await flushChapterBatch(flushed, fileIndex);
+        if (parts.some(part => part.trim().length > 0)) {
+          globalParagraphCount += 1;
+        }
+      },
+      onProgress: async ({ fileIndex, byteCursor, globalProcessedBytes }) => {
+        await updateJob(db, jobId, {
+          progressCurrent: Math.min(
+            progressTotal,
+            Math.ceil(globalProcessedBytes / TXT_STREAM_CHUNK_BYTES),
+          ),
+          // checkpoint carries only cursor + small state, never full text (§9.6).
+          checkpointJson: JSON.stringify({
             fileIndex,
-          },
-        ]);
-        chunkIndex += 1;
-        chunkBandStart = end;
-        chunkBand = chunkBand.slice(cut);
-      }
-      normalizedCharCursor += normalizedBlock.length;
-
-      byteCursor = decoded.nextByteOffset;
-      // Global processed bytes across all files (for progress + checkpoint).
-      const globalProcessedBytes =
-        files
-          .slice(0, fileIndex)
-          .reduce((s, f) => s + f.fileSizeBytes, 0) + byteCursor;
-      await updateJob(db, jobId, {
-        progressCurrent: Math.min(
-          progressTotal,
-          Math.ceil(globalProcessedBytes / CHUNK_BYTES),
-        ),
-        // checkpoint carries only cursor + small state, never full text (§9.6).
-        checkpointJson: JSON.stringify({
-          fileIndex,
-          byteCursor,
-          normalizedCharCursor,
-          chunkIndex,
-          chapterCount,
-        }),
-      });
-      if (decoded.atEof) break;
-    }
-
-    // Flush the trailing partial line at the end of each file so partial lines
-    // never merge across file boundaries (a file without a trailing newline
-    // would otherwise concatenate with the next file's first line). The offset
-    // advances by the pending line length only (no +1, because there is no
-    // '\n' at the boundary); this keeps pendingLineStartOffset in sync with
-    // normalizedCharCursor so the next file's first line starts at the right
-    // UTF-16 offset.
-    if (pendingLineLength > 0) {
-      const flushed = pendingLineLength <= MAX_JOINED_LINE_CHARS
-        ? parser.pushLine(
-          pendingLineParts.length === 1 ? pendingLineParts[0] : pendingLineParts.join(''),
-          pendingLineStartOffset,
-        )
-        : parser.pushBodyLineChunks(
-          pendingLineParts,
-          pendingLineStartOffset,
-          pendingLineLength,
-        );
-      await flushChapterBatch(flushed, fileIndex);
-      pendingLineStartOffset += pendingLineLength;
-      pendingLineParts = [];
-      pendingLineLength = 0;
-    }
-  }
+            byteCursor,
+            normalizedCharCursor,
+            chunkIndex,
+            chapterCount,
+          }),
+        });
+      },
+    },
+  });
 
   // Flush the final partial chunk band (fileIndex = last file).
   await updateJob(db, jobId, { stage: 'persisting' });
@@ -672,12 +598,10 @@ async function runPipelineToReview(
     chunkBand = '';
   }
 
-  // Finalize the normalizer (aggregate normalized char/byte counts + sha) and
-  // the parser (close trailing chapter / build fallback). The fallback needs
-  // the whole-text hash + paragraph count, which the streaming normalizer's
-  // sha and an online paragraph count provide.
+  // Finalize the parser (close trailing chapter / build fallback). The
+  // fallback needs the whole-text hash + paragraph count, which the shared
+  // streaming pipeline's aggregate sha and an online paragraph count provide.
   await updateJob(db, jobId, { stage: 'detecting_chapters' });
-  const normMeta = normalizer.finalize();
   const parsedFinal = parser.finalize({
     fallbackSha256: fallbackHasher.digest(),
     fallbackParagraphCount: globalParagraphCount,
