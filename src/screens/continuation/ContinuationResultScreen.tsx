@@ -27,6 +27,11 @@ import {
   type UnifiedPipelineStageStatus,
 } from '../../components/UnifiedPipelineStageView';
 import { useThemeStore } from '../../store/themeStore';
+import { FinalManuscriptCard } from '../../components/FinalManuscriptCard';
+import {
+  buildFinalArtifactFromContinuationArtifacts,
+  type FinalWritingArtifact,
+} from '../../services/writing/finalArtifactData';
 import {
   abandonRun,
   adoptArtifactAsDraft,
@@ -331,6 +336,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     useState<ContinuationArtifact | null>(null);
   const [rejectedRepair, setRejectedRepair] = useState<RejectedRepairAudit | null>(null);
   const [showRejectedRepair, setShowRejectedRepair] = useState(false);
+  const [finalArtifact, setFinalArtifact] = useState<FinalWritingArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -391,8 +397,16 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           setV5DraftArtifact(draftArt);
           setV5RevisionArtifact(revisionArt);
           // Prefer eligible final for display body; fall back to any final row.
-          setV5FinalArtifact(
-            art?.stage === 'final' ? art : finalArt ?? art ?? null,
+          const displayFinalArt = art?.stage === 'final' ? art : finalArt ?? art ?? null;
+          setV5FinalArtifact(displayFinalArt);
+          setFinalArtifact(
+            buildFinalArtifactFromContinuationArtifacts({
+              runId: r.id,
+              chapterId: Number((r as any).chapterId ?? (r as any).chapter_id ?? 0),
+              draftRow: draftArt,
+              finalRow: displayFinalArt,
+              kernelTrace: parsedSnapshot?.writingKernelTrace ?? null,
+            }),
           );
           setRejectedRepair(null);
         } else if (isV4) {
@@ -1735,6 +1749,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       <ScrollView contentContainerStyle={styles.pad}>
         {run.workflowVersion === 5 ? (
           <>
+            {run.state !== 'running' && finalArtifact ? (
+              <View style={styles.finalArtifactWrap}>
+                <FinalManuscriptCard artifact={finalArtifact} />
+              </View>
+            ) : null}
             {renderV5StateBranch()}
             {renderV5StageCards()}
           </>
@@ -1857,6 +1876,7 @@ function formatStageDuration(
 
 const styles = StyleSheet.create({
   pad: { padding: spacing.md, paddingBottom: 48 },
+  finalArtifactWrap: { marginTop: spacing.sm, marginBottom: spacing.sm },
   summary: { fontSize: 13, fontWeight: '700', marginBottom: spacing.md },
   resultCard: { borderRadius: 8, padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
   stageMeta: { fontSize: 12, fontWeight: '700' },

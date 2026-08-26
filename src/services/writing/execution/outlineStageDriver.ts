@@ -611,6 +611,7 @@ export async function createOutlineStageDriver(
         trace: authoritativeFreeze.trace,
         stages: [...finalizeStages],
         persistAdapter: createOutlineDurableAdapter({ taskId, chapter }),
+        chapterId: chapter.id,
         abortSignal,
         semanticApply: async () => {
           const projected = usePipelineTaskStore

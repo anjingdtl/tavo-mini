@@ -21,6 +21,7 @@ import { runReviewStage } from './review';
 import type { SemanticApplyCheckInput } from './semanticApply';
 import type { StageLlmCaller } from '../scenario/continuationWritingTypes';
 import { toFrozenStageModelConfig } from '../contracts/freezeModelConfig';
+import { attachWritingFinalArtifact } from '../finalArtifact';
 import {
   addWritingStagePersistMs,
   beginWritingStageTiming,
@@ -40,6 +41,8 @@ export interface WritingStagesRunInput {
     | (() => Promise<SemanticApplyCheckInput>);
   callStage?: StageLlmCaller;
   abortSignal?: AbortSignal;
+  /** B1: chapter identity for the Final Artifact summary (persist 后挂载）。 */
+  chapterId?: number;
 }
 
 /** The only stage dispatcher used after Freeze by both durable substrates. */
@@ -124,7 +127,46 @@ export async function runWritingStages(
     }
   }
 
+  // B1: persist 成功后把 Final Artifact summary 挂到 trace（幂等；不携带
+  // 正文）。draft body 取 draft stage artifact；final body 以 persist 的
+  // candidate 为准（与 resolveFinalWritingCandidate 单一候选契约一致）。
+  const persistResult = resultByStage.get('persist');
+  const persistedBody =
+    persistResult?.status === 'completed'
+      ? readArtifactBody(artifacts.persist)
+      : '';
+  if (persistedBody && input.chapterId != null) {
+    const draftArtifact = artifacts.draft;
+    const draftBody = readArtifactBody(draftArtifact);
+    attachWritingFinalArtifact(input.trace, {
+      chapterId: input.chapterId,
+      generationTraceId: input.frozenContext.generationTraceId,
+      qualityProfile: readQualityProfile(input.frozenContext),
+      draftBody: draftBody || null,
+      finalBody: persistedBody,
+    });
+  }
+
   return input.stages.map(stage => resultByStage.get(stage)!);
+}
+
+function readArtifactBody(value: unknown): string {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  const row = value as Record<string, unknown>;
+  if (typeof row.body === 'string') return row.body.trim();
+  if (typeof row.content === 'string') return row.content.trim();
+  return '';
+}
+
+function readQualityProfile(frozenContext: FrozenWritingContext) {
+  const values = frozenContext.stagePolicy?.values as
+    | Record<string, unknown>
+    | undefined;
+  const profile = values?.qualityProfile;
+  return profile === 'fast' || profile === 'standard' || profile === 'quality'
+    ? profile
+    : null;
 }
 
 async function executeWritingStage(args: {

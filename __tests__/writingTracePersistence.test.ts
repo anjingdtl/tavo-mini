@@ -7,6 +7,7 @@ import type { PipelineExecutionSnapshot } from '../src/types/pipelineExecution';
 import type { WritingKernelTrace } from '../src/services/writing/contracts/frozenWritingContext';
 import type { WritingSourceTrace } from '../src/services/writing/contracts/writingSource';
 import { mergePostFreezeKernelTrace } from '../src/services/writing/productionWritingEntry';
+import { buildFinalArtifactSummary } from '../src/services/writing/finalArtifact';
 
 function context(): PipelineContextSnapshot {
   const sourceTrace: WritingSourceTrace = {
@@ -164,6 +165,39 @@ describe('Writing Trace persistence', () => {
       { stage: 'draft', status: 'started' },
       { stage: 'postWritingUpdate', status: 'completed' },
     ]);
+  });
+
+  test('B1: carries the Final Artifact summary onto the durable Freeze trace', () => {
+    const durable = context().writingKernelTrace!;
+    const body = '最终稿正文。';
+    const summary = buildFinalArtifactSummary({
+      chapterId: 9,
+      generationTraceId: durable.generationTraceId,
+      qualityProfile: 'standard',
+      draftBody: body,
+      finalBody: body,
+      finalizedAt: '2026-08-26T00:00:00.000Z',
+    });
+    const facade = {
+      ...durable,
+      events: [...durable.events, { stage: 'persist' as const, status: 'completed' as const }],
+      finalArtifactSummary: summary,
+    };
+
+    const merged = mergePostFreezeKernelTrace(durable, facade);
+
+    expect(merged.finalArtifactSummary).toEqual(summary);
+    expect(merged.finalArtifactSummary!.sourceKind).toBe('draft');
+  });
+
+  test('B1: durable trace without summary stays summary-free (historical)', () => {
+    const durable = context().writingKernelTrace!;
+    const facade = {
+      ...durable,
+      events: [...durable.events, { stage: 'persist' as const, status: 'completed' as const }],
+    };
+    const merged = mergePostFreezeKernelTrace(durable, facade);
+    expect(merged.finalArtifactSummary).toBeUndefined();
   });
 
   test('preserves source and Kernel traces across post-draft reserialization', () => {

@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, BackHandler, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import {
@@ -35,6 +35,8 @@ import {
 } from '../data/repositories/pipelineStageCheckpointRepository';
 import { getOutboxByDedupe } from '../services/continuation/generation/generationRepository';
 import { createDerivedFinalRewriteTask } from '../services/pipeline/derivedFinalRewrite';
+import { FinalManuscriptCard } from '../components/FinalManuscriptCard';
+import { buildFinalArtifactFromOutlineTask } from '../services/writing/finalArtifactData';
 import type { PipelineStageResult, PipelineTask } from '../types/pipeline';
 import type {
   WritingKernelStage,
@@ -596,6 +598,14 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
 
   const task = tasks.find((t) => t.id === taskId);
 
+  const finalArtifact = useMemo(
+    () =>
+      task && task.finalText
+        ? buildFinalArtifactFromOutlineTask(task as any)
+        : null,
+    [task],
+  );
+
   // Closing this screen means “look at it later”, not “discard the result”.
   // Resolving it from unmount made a completed-but-unadopted task disappear
   // from the task centre, forcing the user to run the pipeline again.  Only
@@ -1040,6 +1050,11 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
           {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
         </Text>
+        {finalArtifact ? (
+          <View style={styles.finalArtifactWrap}>
+            <FinalManuscriptCard artifact={finalArtifact} />
+          </View>
+        ) : null}
         {!isUnifiedTask && !isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             审核未通过，未执行终审，已保留初稿
@@ -1192,6 +1207,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
 const styles = StyleSheet.create({
   content: { padding: spacing.md, gap: spacing.sm, paddingBottom: 72 },
   summary: { fontSize: 13, fontWeight: '700' },
+  finalArtifactWrap: { marginTop: spacing.sm },
   card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },

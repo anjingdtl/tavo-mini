@@ -28,6 +28,8 @@ import type {
 } from './contracts/writingSource';
 import { runWritingKernel } from './unifiedWritingKernel';
 import type { WritingKernelTrace } from './contracts/frozenWritingContext';
+import { buildFinalArtifactSummary } from './finalArtifact';
+import type { GenerationQualityProfile } from './contracts/generationQualityProfile';
 import { mergeWritingChapterObservability } from './observability/writingChapterObservability';
 import { mergeWritingTokenLedger } from './observability/writingTokenLedger';
 import { createOutlineStageDriver } from './execution/outlineStageDriver';
@@ -44,6 +46,29 @@ export type { StageInfo } from '../pipelineRunner';
  * stage driver starts. Merge post-Freeze kernel events into that exact
  * durable snapshot instead of replacing its real fingerprints.
  */
+function hasPersistCompletedEvent(trace: WritingKernelTrace): boolean {
+  return trace.events.some(
+    event => event.stage === 'persist' && event.status === 'completed',
+  );
+}
+
+function readStageBodyForSummary(
+  task: { stageResults?: Array<{ stage: string; status: string; text?: string | null }> } | null | undefined,
+  stage: string,
+): string | null {
+  const row = task?.stageResults?.find(
+    item => item.stage === stage && item.status === 'success' && item.text,
+  );
+  return row?.text ? String(row.text) : null;
+}
+
+function readTaskFinalText(
+  task: { finalText?: string | null } | null | undefined,
+): string | null {
+  const value = task?.finalText;
+  return value ? String(value) : null;
+}
+
 export function mergePostFreezeKernelTrace(
   existing: WritingKernelTrace,
   completed: WritingKernelTrace,
@@ -109,6 +134,11 @@ export function mergePostFreezeKernelTrace(
             completed.observability,
           ),
         }
+      : {}),
+    // B1: Final Artifact summary flows with the completed trace (idempotent
+    // merge — the attach site never overwrites an existing summary).
+    ...(completed.finalArtifactSummary
+      ? { finalArtifactSummary: completed.finalArtifactSummary }
       : {}),
   };
 }
@@ -182,6 +212,38 @@ export async function persistWritingKernelTraceForTask(
       existing,
       completedTrace,
     );
+    // B1 fail-safe: the driver-parsed in-memory trace may be a different
+    // object than the kernel trace for outline runs, so `attach` may have
+    // written the Final Artifact summary to an object that never reaches
+    // this merge. The summary is by design RECONSTRUCTIBLE from durable
+    // truth — rebuild it here when the merged trace lacks one and the
+    // persist stage completed.
+    if (
+      !context.writingKernelTrace.finalArtifactSummary &&
+      hasPersistCompletedEvent(context.writingKernelTrace) && task != null
+    ) {
+      const draftRow = readStageBodyForSummary(task, 'draft');
+      const finalBody = readTaskFinalText(task);
+      if (finalBody) {
+        const values = (context.frozenWritingContext?.stagePolicy
+          ?.values ?? {}) as Record<string, unknown>;
+        const profile = values.qualityProfile;
+        context.writingKernelTrace.finalArtifactSummary =
+          buildFinalArtifactSummary({
+            chapterId: Number(
+              (task as any).target_id ?? (task as any).targetId ?? 0,
+            ),
+            generationTraceId:
+              context.writingKernelTrace.generationTraceId,
+            qualityProfile:
+              profile === 'fast' || profile === 'standard' || profile === 'quality'
+                ? (profile as GenerationQualityProfile)
+                : null,
+            draftBody: draftRow,
+            finalBody,
+          });
+      }
+    }
     updatedContexts += 1;
   }
   if (updatedContexts === 0) {

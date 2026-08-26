@@ -331,6 +331,7 @@ export async function createContinuationStageDriver(
               run,
               snapshot: snapshotWithTraceId,
             }),
+            chapterId: input.chapterId,
             callStage: options.callStage,
             abortSignal: options.signal,
           });
@@ -362,10 +363,11 @@ export async function createContinuationStageDriver(
               trace: kernelFreeze.trace,
               stages: [stage],
               persistAdapter: createContinuationDurableAdapter({
-                run,
-                snapshot: snapshotWithTraceId,
-              }),
-              callStage: options.callStage,
+              run,
+              snapshot: snapshotWithTraceId,
+            }),
+            chapterId: input.chapterId,
+            callStage: options.callStage,
               abortSignal: options.signal,
             });
             round2StageIndex += 1;
@@ -383,6 +385,7 @@ export async function createContinuationStageDriver(
               run,
               snapshot: snapshotWithTraceId,
             }),
+            chapterId: input.chapterId,
             callStage: options.callStage,
             abortSignal: options.signal,
           });

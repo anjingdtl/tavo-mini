@@ -155,4 +155,11 @@ export interface WritingKernelTrace {
    * Never participates in freezeFingerprint.
    */
   observability?: WritingChapterObservability;
+  /**
+   * B1 Final Artifact summary: the stable user projection of this pipeline's
+   * final manuscript. Never carries the body itself (body stays in
+   * final_text / artifacts / chapter content as the single truth).
+   * Optional so historical traces keep parsing; never part of freezeFingerprint.
+   */
+  finalArtifactSummary?: import('../finalArtifact').FinalArtifactSummary;
 }

@@ -149,6 +149,7 @@ export async function runSharedOutlineWriterAction(input: {
           trace,
           stages,
           persistAdapter,
+          chapterId: input.chapter.id,
           abortSignal: input.abortSignal,
         });
         await Promise.all(
