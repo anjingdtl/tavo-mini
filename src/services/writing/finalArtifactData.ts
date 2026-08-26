@@ -16,6 +16,12 @@ import {
   type FinalArtifactSummary,
 } from './finalArtifact';
 import type { GenerationQualityProfile } from './contracts/generationQualityProfile';
+import {
+  computeRevisionChangeSet,
+  buildRevisionChangeSetEmpty,
+  type RevisionChangeSet,
+  type RevisionFindingLike,
+} from './revisionChangeSet';
 
 /** 完整用户投影：summary + 正文（正文来自现有真相，非本模块产物）。 */
 export interface FinalWritingArtifact {
@@ -24,6 +30,8 @@ export interface FinalWritingArtifact {
   body: string;
   /** 初稿正文；不可得时为 null（无法展示「初稿字数」对比）。 */
   draftBody: string | null;
+  /** Draft → Final 的修改清单（确定性本地 diff 投影，非第二正文）。 */
+  changes: RevisionChangeSet;
 }
 
 export interface OutlineTaskLike {
@@ -62,6 +70,29 @@ function isSummaryLike(value: unknown): boolean {
     typeof s.chapterId === 'number' &&
     typeof s.bodyFingerprint === 'string'
   );
+}
+
+/** 从大纲 qa stage_result 提取结构化 findings（compact QA 契约）。 */
+export function readOutlineQaFindings(
+  task: OutlineTaskLike,
+): RevisionFindingLike[] {
+  const qaRow = task.stageResults?.find(
+    item => item.stage === 'qa' && item.status === 'success' && item.text,
+  );
+  if (!qaRow?.text) return [];
+  try {
+    const parsed = JSON.parse(String(qaRow.text));
+    if (!Array.isArray(parsed.findings)) return [];
+    return parsed.findings
+      .filter((f: any) => f && typeof f === 'object' && typeof f.issue === 'string')
+      .map((f: any) => ({
+        issue: String(f.issue),
+        severity: f.severity === 'blocking' ? ('blocking' as const) : ('warning' as const),
+        ...(typeof f.target === 'string' && f.target ? { target: f.target } : {}),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -103,7 +134,12 @@ export function buildFinalArtifactFromOutlineTask(
     finalizedAt: traceSummary?.finalizedAt ?? '',
   };
 
-  return { summary, body: finalText, draftBody: draftText };
+  const changes =
+    draftText !== null
+      ? computeRevisionChangeSet(draftText, finalText, readOutlineQaFindings(task))
+      : buildRevisionChangeSetEmpty(finalText);
+
+  return { summary, body: finalText, draftBody: draftText, changes };
 }
 
 export interface ContinuationRunLike {
@@ -151,6 +187,7 @@ export function buildFinalArtifactFromContinuationArtifacts(input: {
   draftRow: ArtifactRow | null;
   finalRow: ArtifactRow | null;
   kernelTrace?: { finalArtifactSummary?: unknown } | null;
+  findings?: RevisionFindingLike[];
 }): FinalWritingArtifact | null {
   const finalBody = String(input.finalRow?.content ?? '');
   if (!finalBody.trim()) return null;
@@ -188,7 +225,12 @@ export function buildFinalArtifactFromContinuationArtifacts(input: {
     finalizedAt: traceSummary?.finalizedAt ?? '',
   };
 
-  return { summary, body: finalBody, draftBody };
+  const changes =
+    draftBody !== null
+      ? computeRevisionChangeSet(draftBody, finalBody, input.findings ?? [])
+      : buildRevisionChangeSetEmpty(finalBody);
+
+  return { summary, body: finalBody, draftBody, changes };
 }
 
 function assembleContinuationFinalArtifact(

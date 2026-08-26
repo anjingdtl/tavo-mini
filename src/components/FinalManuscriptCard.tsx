@@ -39,8 +39,10 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
 }) => {
   const { theme } = useThemeStore();
   const [reading, setReading] = useState(false);
+  const [diffIndex, setDiffIndex] = useState<number | null>(null);
 
   const revised = artifact?.summary.revisionApplied ?? false;
+  const changeCount = artifact?.changes.changes.length ?? 0;
   const charCount = artifact?.summary.charStats.nonWhitespaceCharCount ?? 0;
   const delta = useMemo(() => (artifact ? deltaText(artifact) : null), [artifact]);
 
@@ -59,6 +61,17 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
       ? `已修订（${delta}）`
       : '已修订'
     : '与初稿一致';
+
+  const changeTypeLabel = (type: string): string => {
+    switch (type) {
+      case 'add':
+        return '新增内容';
+      case 'delete':
+        return '删除内容';
+      default:
+        return '修改内容';
+    }
+  };
 
   const showReadingUnavailable = () => {
     Toast.show({
@@ -97,6 +110,11 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
           {formatCount(artifact.body.length)} 字
         </Text>
       ) : null}
+      {revised ? (
+        <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+          AI 本次修改：{changeCount} 处
+        </Text>
+      ) : null}
       <View style={styles.actions}>
         <Button
           label="阅读全文"
@@ -111,6 +129,15 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
             }
           }}
         />
+        {revised && changeCount > 0 ? (
+          <Button
+            label={`查看修改（${changeCount}）`}
+            compact
+            icon={undefined as any}
+            variant="ghost"
+            onPress={() => setDiffIndex(0)}
+          />
+        ) : null}
         {actions}
       </View>
 
@@ -149,6 +176,94 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
                 {artifact.body}
               </Text>
             </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    <Modal
+        visible={diffIndex !== null && artifact != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDiffIndex(null)}
+      >
+        <Pressable style={styles.readerOverlay} onPress={() => setDiffIndex(null)}>
+          <Pressable
+            style={[styles.reader, { backgroundColor: theme.colors.surface }]}
+            onPress={event => event.stopPropagation()}
+          >
+            <View style={styles.readerHead}>
+              <Text style={[styles.readerTitle, { color: theme.colors.textPrimary }]}>
+                查看修改
+              </Text>
+              <Text style={[styles.readerChars, { color: theme.colors.textSecondary }]}>
+                {diffIndex !== null && artifact
+                  ? `修改 ${diffIndex + 1} / ${artifact.changes.changes.length}`
+                  : ''}
+              </Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="关闭修改"
+                onPress={() => setDiffIndex(null)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.readerClose}
+              >
+                <Text style={[styles.readerCloseText, { color: theme.colors.textSecondary }]}>
+                  ✕
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {diffIndex !== null && artifact && artifact.changes.changes[diffIndex] ? (
+              <ScrollView style={styles.readerBody}>
+                <View style={styles.diffRow}>
+                  <Text style={[styles.diffTag, { backgroundColor: theme.colors.accentSoft, color: theme.colors.accent }]}>
+                    {changeTypeLabel(artifact.changes.changes[diffIndex].changeType)}
+                  </Text>
+                </View>
+                {artifact.changes.changes[diffIndex].beforeText.trim() ? (
+                  <View style={styles.diffBlock}>
+                    <Text style={[styles.diffLabel, { color: theme.colors.danger }]}>
+                      修改前
+                    </Text>
+                    <Text style={[styles.diffText, { color: theme.colors.textPrimary }]}>
+                      {artifact.changes.changes[diffIndex].beforeText}
+                    </Text>
+                  </View>
+                ) : null}
+                {artifact.changes.changes[diffIndex].afterText.trim() ? (
+                  <View style={styles.diffBlock}>
+                    <Text style={[styles.diffLabel, { color: theme.colors.accent }]}>
+                      修改后
+                    </Text>
+                    <Text style={[styles.diffText, { color: theme.colors.textPrimary }]}>
+                      {artifact.changes.changes[diffIndex].afterText}
+                    </Text>
+                  </View>
+                ) : null}
+                <View style={styles.diffBlock}>
+                  <Text style={[styles.diffLabel, { color: theme.colors.textSecondary }]}>
+                    原因
+                  </Text>
+                  <Text style={[styles.diffReason, { color: theme.colors.textSecondary }]}>
+                    {artifact.changes.changes[diffIndex].reason}
+                  </Text>
+                </View>
+                <View style={styles.diffActions}>
+                  <Button
+                    label="上一条"
+                    compact
+                    variant="ghost"
+                    disabled={diffIndex <= 0}
+                    onPress={() => setDiffIndex(diffIndex - 1)}
+                  />
+                  <Button
+                    label="下一条"
+                    compact
+                    variant="ghost"
+                    disabled={diffIndex >= artifact.changes.changes.length - 1}
+                    onPress={() => setDiffIndex(diffIndex + 1)}
+                  />
+                </View>
+              </ScrollView>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
@@ -199,4 +314,23 @@ const styles = StyleSheet.create({
   readerCloseText: { fontSize: 16 },
   readerBody: { flexGrow: 0 },
   readerText: { fontSize: 15, lineHeight: 26 },
+  diffRow: { flexDirection: 'row', marginBottom: spacing.sm },
+  diffTag: {
+    fontSize: 12,
+    fontWeight: '700',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  diffBlock: { marginBottom: spacing.md },
+  diffLabel: { fontSize: 12, fontWeight: '600', marginBottom: 3 },
+  diffText: { fontSize: 14, lineHeight: 23 },
+  diffReason: { fontSize: 13, lineHeight: 21 },
+  diffActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
 });
