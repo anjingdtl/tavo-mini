@@ -19,6 +19,10 @@ export interface FinalManuscriptCardProps {
   artifact: FinalWritingArtifact | null;
   /** 追加的便捷动作（B4 起用：编辑最终稿 / 继续下一章）。 */
   actions?: React.ReactNode;
+  /** 编辑最终稿（进入章节编辑器）。 */
+  onEdit?: () => void;
+  /** 继续写下一章。 */
+  onNext?: () => void;
 }
 
 function formatCount(n: number): string {
@@ -36,6 +40,8 @@ function deltaText(artifact: FinalWritingArtifact): string | null {
 export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
   artifact,
   actions,
+  onEdit,
+  onNext,
 }) => {
   const { theme } = useThemeStore();
   const [reading, setReading] = useState(false);
@@ -44,6 +50,7 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
   const revised = artifact?.summary.revisionApplied ?? false;
   const changeCount = artifact?.changes.changes.length ?? 0;
   const charCount = artifact?.summary.charStats.nonWhitespaceCharCount ?? 0;
+  const paragraphCount = artifact?.summary.charStats.paragraphCount ?? 0;
   const delta = useMemo(() => (artifact ? deltaText(artifact) : null), [artifact]);
 
   if (!artifact) {
@@ -104,6 +111,9 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
       <Text style={[styles.charCount, { color: theme.colors.textPrimary }]}>
         {formatCount(charCount)} 字
       </Text>
+      <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
+        {paragraphCount} 段
+      </Text>
       {delta && artifact.draftBody ? (
         <Text style={[styles.meta, { color: theme.colors.textSecondary }]}>
           初稿 {formatCount(artifact.draftBody.length)} 字 → 最终稿{' '}
@@ -136,6 +146,23 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
             icon={undefined as any}
             variant="ghost"
             onPress={() => setDiffIndex(0)}
+          />
+        ) : null}
+        {onEdit ? (
+          <Button
+            label="编辑最终稿"
+            compact
+            icon={undefined as any}
+            onPress={onEdit}
+          />
+        ) : null}
+        {onNext ? (
+          <Button
+            label="继续下一章"
+            compact
+            icon={undefined as any}
+            variant="ghost"
+            onPress={onNext}
           />
         ) : null}
         {actions}

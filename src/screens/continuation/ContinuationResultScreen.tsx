@@ -14,6 +14,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,6 +33,7 @@ import {
   buildFinalArtifactFromContinuationArtifacts,
   type FinalWritingArtifact,
 } from '../../services/writing/finalArtifactData';
+import { navigateToChapterEditor } from '../../navigation/navigationRef';
 import {
   abandonRun,
   adoptArtifactAsDraft,
@@ -339,6 +341,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [finalArtifact, setFinalArtifact] = useState<FinalWritingArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showDetails, setShowDetails] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -1751,11 +1754,25 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           <>
             {run.state !== 'running' && finalArtifact ? (
               <View style={styles.finalArtifactWrap}>
-                <FinalManuscriptCard artifact={finalArtifact} />
+                <FinalManuscriptCard
+                  artifact={finalArtifact}
+                  onEdit={() =>
+                    navigateToChapterEditor(Number((run as any).chapterId ?? (run as any).chapter_id ?? 0))
+                  }
+                />
               </View>
             ) : null}
             {renderV5StateBranch()}
-            {renderV5StageCards()}
+            <Pressable
+              accessibilityRole="button"
+              style={styles.detailsToggle}
+              onPress={() => setShowDetails(prev => !prev)}
+            >
+              <Text style={[styles.detailsToggleText, { color: theme.colors.textSecondary }]}>
+                {showDetails ? '▼' : '▶'} 生成详情（Token / 调用 / 阶段）
+              </Text>
+            </Pressable>
+            {showDetails ? <View style={styles.detailsBody}>{renderV5StageCards()}</View> : null}
           </>
         ) : run.workflowVersion === 4 ? (
           <>
@@ -1877,6 +1894,12 @@ function formatStageDuration(
 const styles = StyleSheet.create({
   pad: { padding: spacing.md, paddingBottom: 48 },
   finalArtifactWrap: { marginTop: spacing.sm, marginBottom: spacing.sm },
+  detailsToggle: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  detailsToggleText: { fontSize: 13, fontWeight: '600' },
+  detailsBody: { marginBottom: spacing.md },
   summary: { fontSize: 13, fontWeight: '700', marginBottom: spacing.md },
   resultCard: { borderRadius: 8, padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
   stageMeta: { fontSize: 12, fontWeight: '700' },

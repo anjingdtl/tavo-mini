@@ -50,6 +50,27 @@ jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
   repairContinuationArtifactOnce: jest.fn(async () => undefined),
 }));
 
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    goBack: jest.fn(),
+    dispatch: jest.fn(),
+    navigate: jest.fn(),
+    getState: () => ({ routes: [], index: 0 }),
+  }),
+  NavigationRouteContext: require('react').createContext(undefined),
+  CommonActions: {
+    reset: jest.fn(),
+    navigate: (payload: any) => payload,
+    goBack: () => ({ type: 'GO_BACK' }),
+  },
+  createNavigationContainerRef: () => ({
+    isReady: () => false,
+    dispatch: jest.fn(),
+    navigate: jest.fn(),
+  }),
+  NavigationContainer: ({ children }: any) => children,
+}));
+
 import { ContinuationResultScreen } from '../src/screens/continuation/ContinuationResultScreen';
 import {
   getArtifactForRun,
@@ -462,8 +483,13 @@ describe('ContinuationResultScreen adoption decision', () => {
     );
 
     await waitFor(() =>
+      expect(getByText(/生成详情（Token \/ 调用 \/ 阶段）/)).toBeTruthy(),
+    );
+    fireEvent.press(getByText(/生成详情（Token \/ 调用 \/ 阶段）/));
+    await waitFor(() =>
       expect(getByText('共享 Writing Kernel · Standard')).toBeTruthy(),
     );
+    // B3: 阶段视图退到「生成详情」折叠内，展开后可见。
     expect(
       getByText('Freeze → 生成 → 检查 → 修订 → 校验 → 保存 → PostWriting → ONE Memory'),
     ).toBeTruthy();
@@ -551,6 +577,10 @@ describe('ContinuationResultScreen adoption decision', () => {
       <ContinuationResultScreen runId="run-v5-one-shot" onClose={jest.fn()} />,
     );
 
+    await waitFor(() =>
+      expect(getByText(/生成详情（Token \/ 调用 \/ 阶段）/)).toBeTruthy(),
+    );
+    fireEvent.press(getByText(/生成详情（Token \/ 调用 \/ 阶段）/));
     await waitFor(() =>
       expect(getByText('共享 Writing Kernel · One-Shot')).toBeTruthy(),
     );

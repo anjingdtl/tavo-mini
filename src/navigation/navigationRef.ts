@@ -1,5 +1,6 @@
 import { CommonActions, createNavigationContainerRef } from '@react-navigation/native';
 import type { EditorStackParamList, SettingsStackParamList } from './TabNavigator';
+import { suppressAutoResultJumpForChapter } from './chapterResultJumpSuppression';
 
 type RootStackParamList = EditorStackParamList & SettingsStackParamList;
 
@@ -144,6 +145,31 @@ export function navigateToPipelineTaskCenter(): void {
       CommonActions.navigate({
         name: 'Settings',
         params: { screen: 'PipelineTask', initial: false },
+      } as never),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * B3: 从结果页直达章节编辑器（ChapterEditor 在 Editor Tab 栈内）。
+ * 切入 Editor Tab 前先抑制该章节「已完成待采纳任务 → 自动跳结果页」
+ * 的编辑器挂载行为（见 chapterResultJumpSuppression），保证用户确实
+ * 停在章节编辑器而非被自动导航拉回结果页。
+ */
+export function navigateToChapterEditor(chapterId: number): void {
+  if (!navigationRef.isReady()) return;
+  suppressAutoResultJumpForChapter(chapterId, 60_000);
+  try {
+    navigationRef.dispatch(
+      CommonActions.navigate({
+        name: 'Editor',
+        params: {
+          screen: 'ChapterEditor',
+          params: { chapterId },
+          initial: false,
+        },
       } as never),
     );
   } catch {

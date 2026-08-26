@@ -80,7 +80,13 @@ const mockGoBack = jest.fn();
 jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ goBack: (...args: any[]) => mockGoBack(...args) }),
   NavigationRouteContext: require('react').createContext(undefined),
-  CommonActions: { reset: jest.fn() },
+  CommonActions: { reset: jest.fn(), navigate: (payload: any) => payload, goBack: () => ({ type: 'GO_BACK' }) },
+  createNavigationContainerRef: () => ({
+    isReady: () => false,
+    dispatch: jest.fn(),
+    navigate: jest.fn(),
+  }),
+  NavigationContainer: ({ children }: any) => children,
 }));
 
 const mockGetChapter = jest.fn();
@@ -294,6 +300,7 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
     );
     // 修复前：interrupted 被误显示为"进行中"且无重启入口。
     expect(await findByText('从失败节点重试')).toBeTruthy();
+    fireEvent.press(getByText(/生成详情（Token \/ 调用 \/ 阶段）/));
     expect(getByText(/已中断，可从失败阶段继续/)).toBeTruthy();
     fireEvent.press(await findByText('从失败节点重试'));
     await waitFor(() => expect(mockResetCheckpoints).toHaveBeenCalledWith('t4'));
@@ -326,6 +333,7 @@ describe('F2-07: 流水线结果页从失败节点重试', () => {
       <PipelineResultScreen taskId="t5" />,
     );
     // 运行中：头部标明当前阶段，不提供采纳/放弃/重启（避免误采纳旧初稿）。
+    fireEvent.press(getByText(/生成详情（Token \/ 调用 \/ 阶段）/));
     expect(getByText(/进行中 · 审阅\/评估/)).toBeTruthy();
     expect(queryByText('采纳')).toBeNull();
     expect(queryByText('放弃')).toBeNull();

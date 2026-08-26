@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, BackHandler, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, BackHandler, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Button, Field, Header, Screen, spacing } from '../components/ui';
 import {
   UnifiedPipelineStageView,
@@ -37,6 +37,7 @@ import { getOutboxByDedupe } from '../services/continuation/generation/generatio
 import { createDerivedFinalRewriteTask } from '../services/pipeline/derivedFinalRewrite';
 import { FinalManuscriptCard } from '../components/FinalManuscriptCard';
 import { buildFinalArtifactFromOutlineTask } from '../services/writing/finalArtifactData';
+import { navigateToChapterEditor } from '../navigation/navigationRef';
 import type { PipelineStageResult, PipelineTask } from '../types/pipeline';
 import type {
   WritingKernelStage,
@@ -516,6 +517,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const taskId = propTaskId ?? routeTaskId;
   const { tasks, resolveTask, loadTaskDetails } = usePipelineTaskStore();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showDetails, setShowDetails] = useState(false);
+  const [chapterTitle, setChapterTitle] = useState<string | null>(null);
   // 10.2: 采纳进行中状态，disable 采纳/放弃按钮防止重复点击触发多次 updateChapter
   const [adopting, setAdopting] = useState(false);
   const [rewriteVisible, setRewriteVisible] = useState(false);
@@ -605,6 +608,24 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         : null,
     [task],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (task?.targetType === 'chapter') {
+      db.getChapterById(task.targetId)
+        .then(chapter => {
+          if (!cancelled) setChapterTitle(chapter?.title ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setChapterTitle(null);
+        });
+    } else {
+      setChapterTitle(null);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.id, task?.targetType, task?.targetId]);
 
   // Closing this screen means “look at it later”, not “discard the result”.
   // Resolving it from unmount made a completed-but-unadopted task disappear
@@ -1047,12 +1068,17 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         action={<Button label="返回" variant="ghost" onPress={handleClose} />}
       />
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
-          {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
-        </Text>
+        {chapterTitle ? (
+          <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>
+            {chapterTitle}
+          </Text>
+        ) : null}
         {finalArtifact ? (
           <View style={styles.finalArtifactWrap}>
-            <FinalManuscriptCard artifact={finalArtifact} />
+            <FinalManuscriptCard
+              artifact={finalArtifact}
+              onEdit={() => navigateToChapterEditor(task.targetId)}
+            />
           </View>
         ) : null}
         {!isUnifiedTask && !isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
@@ -1071,53 +1097,6 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             可在此查看最终结果并采纳。
           </Text>
         ) : null}
-        <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
-          本次输入上下文 tokens：{inputTokens.toLocaleString()}
-        </Text>
-        {!isUnifiedTask
-          ? (() => {
-              const assessment = parseOutlineAssessmentFromReview(task.stageResults);
-              if (!assessment) return null;
-              const list = (title: string, items: string[]) =>
-                items.length > 0 ? (
-                  <View key={title} style={{ marginTop: spacing.sm }}>
-                    <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
-                      {title}
-                    </Text>
-                    {items.map((item, idx) => (
-                      <Text
-                        key={`${title}-${idx}`}
-                        style={[styles.stageText, { color: theme.colors.textPrimary }]}
-                      >
-                        · {item}
-                      </Text>
-                    ))}
-                  </View>
-                ) : null;
-              return (
-                <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-                  <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
-                    大纲执行报告 ·{' '}
-                    {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
-                  </Text>
-                  {list('已完成节点', assessment.fulfilledBeats)}
-                  {list('遗漏节点', assessment.missingBeats)}
-                  {list('主线偏离', assessment.deviations)}
-                  {list('提前发生节点', assessment.prematureBeats)}
-                  {list('历史回滚风险', assessment.factRollbackRisks)}
-                  {!assessment.fulfilledBeats.length &&
-                  !assessment.missingBeats.length &&
-                  !assessment.deviations.length &&
-                  !assessment.prematureBeats.length &&
-                  !assessment.factRollbackRisks.length ? (
-                    <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
-                      未发现额外的大纲节点问题。
-                    </Text>
-                  ) : null}
-                </View>
-              );
-            })()
-          : null}
         {(task.finalText && !isRunning) || canResumeFailed || legacyIncomplete ? (
           <View testID="pipeline-result-actions" style={[styles.actions, styles.topActions]}>
             {legacyIncomplete ? (
@@ -1146,16 +1125,79 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             ) : null}
           </View>
         ) : null}
-        {isUnifiedTask ? (
-          <UnifiedPipelineStageView
-            profile={unifiedProfile}
-            compact
-            items={unifiedStageItems}
-            summary={`${statusSummary} · ${unifiedCallSummary || `${totalTokens.toLocaleString()} tokens`} · 正式跳过 ${skippedCount} 阶段`}
-          />
-        ) : (
-          uniqueStageResults(task.stageResults).map(renderStageCard)
-        )}
+        <Pressable
+          accessibilityRole="button"
+          style={styles.detailsToggle}
+          onPress={() => setShowDetails(prev => !prev)}
+        >
+          <Text style={[styles.detailsToggleText, { color: theme.colors.textSecondary }]}>
+            {showDetails ? '▼' : '▶'} 生成详情（Token / 调用 / 阶段）
+          </Text>
+        </Pressable>
+        {showDetails ? (
+          <View style={styles.detailsBody}>
+            <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
+              {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
+            </Text>
+            <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
+              本次输入上下文 tokens：{inputTokens.toLocaleString()}
+            </Text>
+            {!isUnifiedTask
+              ? (() => {
+                  const assessment = parseOutlineAssessmentFromReview(task.stageResults);
+                  if (!assessment) return null;
+                  const list = (title: string, items: string[]) =>
+                    items.length > 0 ? (
+                      <View key={title} style={{ marginTop: spacing.sm }}>
+                        <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                          {title}
+                        </Text>
+                        {items.map((item, idx) => (
+                          <Text
+                            key={`${title}-${idx}`}
+                            style={[styles.stageText, { color: theme.colors.textPrimary }]}
+                          >
+                            · {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null;
+                  return (
+                    <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
+                      <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
+                        大纲执行报告 ·{' '}
+                        {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
+                      </Text>
+                      {list('已完成节点', assessment.fulfilledBeats)}
+                      {list('遗漏节点', assessment.missingBeats)}
+                      {list('主线偏离', assessment.deviations)}
+                      {list('提前发生节点', assessment.prematureBeats)}
+                      {list('历史回滚风险', assessment.factRollbackRisks)}
+                      {!assessment.fulfilledBeats.length &&
+                      !assessment.missingBeats.length &&
+                      !assessment.deviations.length &&
+                      !assessment.prematureBeats.length &&
+                      !assessment.factRollbackRisks.length ? (
+                        <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
+                          未发现额外的大纲节点问题。
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })()
+              : null}
+            {isUnifiedTask ? (
+              <UnifiedPipelineStageView
+                profile={unifiedProfile}
+                compact
+                items={unifiedStageItems}
+                summary={`${statusSummary} · ${unifiedCallSummary || `${totalTokens.toLocaleString()} tokens`} · 正式跳过 ${skippedCount} 阶段`}
+              />
+            ) : (
+              uniqueStageResults(task.stageResults).map(renderStageCard)
+            )}
+          </View>
+        ) : null}
         {canRewriteFinal ? (
           <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
             <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
@@ -1208,6 +1250,18 @@ const styles = StyleSheet.create({
   content: { padding: spacing.md, gap: spacing.sm, paddingBottom: 72 },
   summary: { fontSize: 13, fontWeight: '700' },
   finalArtifactWrap: { marginTop: spacing.sm },
+  chapterTitle: {
+    fontSize: 22,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    marginTop: spacing.sm,
+  },
+  detailsToggle: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  detailsToggleText: { fontSize: 13, fontWeight: '600' },
+  detailsBody: { gap: spacing.sm, marginBottom: spacing.md },
   card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },

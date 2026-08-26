@@ -15,6 +15,7 @@ import {
   type StageInfo,
 } from '../../../services/writing';
 import { suppressGlobalPipelinePrompt } from '../../../navigation/pipelinePromptSuppression';
+import { isAutoResultJumpSuppressed } from '../../../navigation/chapterResultJumpSuppression';
 import { PipelineForeground } from '../../../native/PipelineForegroundModule';
 import { requestNotificationPermission } from '../../../utils/notificationPermission';
 import { usePipelineTaskStore } from '../../../store/pipelineTaskStore';
@@ -220,7 +221,12 @@ export function useChapterPipeline({ chapter, chapterId, navigation }: Params) {
     const initial = findTask();
     if (initial) {
       attachRunningPipelineTask(initial);
-      if (initial.status === 'completed' || initial.status === 'failed') {
+      // B3: 从结果页点「编辑最终稿」进入时抑制 initial terminal 自动
+      // 跳转（用户已看过结果页，正意图编辑终稿，不应被拉回）。
+      if (
+        (initial.status === 'completed' || initial.status === 'failed') &&
+        !isAutoResultJumpSuppressed(chapterId)
+      ) {
         handleTerminal(initial);
       }
     }
