@@ -509,6 +509,16 @@ export function measureStructuralChapterObservability(input: {
 }
 
 export function percentileMs(values: number[], percentile: 50 | 95): number | null {
+  const raw = percentileTokens(values, percentile);
+  return raw === null ? null : Math.round(raw);
+}
+
+/**
+ * B4: 通用百分位统计（用于 QA vs Draft 的输入 token p50 对比观测）。
+ * 与 percentileMs 同规则线性插值，但保留浮点精度（token 数值本身是整数，
+ * 插值结果仅在分裂池时出现小数；观察侧按需取整）。
+ */
+export function percentileTokens(values: number[], percentile: number): number | null {
   const cleaned = values
     .map(value => Number(value))
     .filter(value => Number.isFinite(value) && value >= 0)
@@ -520,7 +530,7 @@ export function percentileMs(values: number[], percentile: 50 | 95): number | nu
   const high = Math.ceil(rank);
   if (low === high) return cleaned[low];
   const weight = rank - low;
-  return Math.round(cleaned[low] * (1 - weight) + cleaned[high] * weight);
+  return cleaned[low] * (1 - weight) + cleaned[high] * weight;
 }
 
 export function parseWritingChapterObservability(

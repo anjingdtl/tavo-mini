@@ -22,6 +22,7 @@ import { projectFrozenContextForStage } from '../context/stageContextProjection'
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
 import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
 import { resolveFrozenStageMaxOutputTokens } from '../../contextAutoAllocator';
+import type { QaEvidenceProjectionResult } from './evidenceQaProjection';
 
 export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
 
@@ -31,6 +32,12 @@ export interface SharedPromptCompileInput {
   artifacts: WritingStageArtifacts;
   requirements: WritingRequirements;
   stagePolicy: WritingStagePolicy;
+  /**
+   * B4 Evidence QA Projection：QA 阶段高置信时以
+   * 【章节真相】+【要求检查清单】+【相关证据】替换宽 union 冻结上下文。
+   * 缺省或 enabled=false → 回退现有 union projection（fail-safe）。
+   */
+  qaEvidence?: QaEvidenceProjectionResult | null;
 }
 
 export interface SharedPromptCompileResult {
@@ -164,7 +171,16 @@ export function compileSharedWritingPrompt(
     frozenContext: input.frozenContext,
     stage: input.stage,
   });
-  const rendered = projected.text;
+  // B4: QA Evidence Projection（高置信）替换宽 union 冻结上下文；否则
+  // fallback 到 legacy union projection（fail-safe）。
+  const useQaEvidence =
+    input.stage === 'qa' && input.qaEvidence?.enabled === true;
+  const rendered = useQaEvidence
+    ? `【QA Evidence Projection v${input.qaEvidence!.version}】\n${input.qaEvidence!.text}`
+    : projected.text;
+  const renderedHeader = useQaEvidence
+    ? ''
+    : '【冻结上下文】\n';
   const contract =
     input.stage === 'revision'
       ? REVISION_BRIEF_CONTRACT
@@ -177,7 +193,7 @@ export function compileSharedWritingPrompt(
       : PROSE_CONTRACT;
   const user = [
     instructionBlock(input.frozenContext),
-    rendered ? `【冻结上下文】\n${rendered}` : '',
+    rendered ? `${renderedHeader}${rendered}` : '',
     requirementText,
     input.stage === 'draft' && isOneShotStagePolicy(input.stagePolicy)
       ? ONE_SHOT_DRAFT_PROJECTION

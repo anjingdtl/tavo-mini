@@ -3,6 +3,7 @@
  */
 import type { LLMRequestConfig } from '../../llm/types';
 import { compileSharedWritingPrompt } from '../prompt/sharedPromptCompiler';
+import { resolveQaEvidenceProjection } from '../prompt/evidenceQaProjection';
 import { resolveWritingCredential } from './resolveFrozenCredential';
 import type {
   SharedWritingArtifact,
@@ -196,12 +197,24 @@ export async function executeSharedWriterStage(input: {
     return existing;
   }
   await stageInput.persistAdapter?.reserve?.(stage);
+  // B4: QA 阶段先尝试 Evidence QA Projection（高置信 → 窄投影；
+  // 零命中/无相关条目/异常 → fail-safe 回退 union，见 resolver）。
+  const qaEvidence =
+    stage === 'qa'
+      ? resolveQaEvidenceProjection({
+          stage,
+          frozenContext: stageInput.frozenContext,
+          artifacts: stageInput.artifacts,
+          requirements: stageInput.requirements,
+        })
+      : null;
   const compiled = compileSharedWritingPrompt({
     stage,
     frozenContext: stageInput.frozenContext,
     artifacts: stageInput.artifacts,
     requirements: stageInput.requirements,
     stagePolicy: stageInput.stagePolicy,
+    qaEvidence,
   });
   const maxTokens = Math.min(
     compiled.maxTokens,

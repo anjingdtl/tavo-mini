@@ -395,6 +395,9 @@ function emptyPostWriting(): WritingPostWritingSnapshot {
 function isPaidStage(stage: string): stage is SharedWritingStageName {
   return (
     stage === 'draft' ||
+    // B4: ONE QA 加入付费 stage 集合，使 stages[qa].projectedTokens / QA
+    // 输入 token 的结构化估计可观测（QA input p50 vs Draft input p50）。
+    stage === 'qa' ||
     stage === 'review' ||
     stage === 'audit' ||
     stage === 'factCheck' ||
