@@ -12,7 +12,7 @@
 
 - 唯一施工基线：`F:\ClaudeWorkSpace\projects\TAVO-MINI`。
 - 开工核对：`git fetch` 已完成；当前 `origin/main=86784869839cdee669ca6a16bd1c87fe0851e67d`，本地 `main` 起点相同。
-- 当前本地 HEAD：`90f10e3fed08a2665717840097d4e736cc9e567f`，比 `origin/main` 超前 5 个独立修复提交；不要把这些提交回退或重置。
+- 当前实现提交 tip：`90f10e3fed08a2665717840097d4e736cc9e567f`；其后仅有本进度文档提交。接手时必须用 `git rev-parse HEAD` 实测当前文档提交，不得回退已有提交；`origin/main` 仍为上方 hash。
 - B0-B5 保持既有行为；本轮只处理 B6、B7、B8，不启动 C 轮。
 - 工作区没有已跟踪文件改动；以下 4 项是开工前已存在的未跟踪文件，必须保留、不得清理或擅自提交：`-`、`docs/optimization/TAVO-MINI_第二期_最终生产源码穿透测试与自修复封板方案_V1.0.md`、`emulator-5554`、`qa_import_preset.json`。
 
@@ -47,7 +47,7 @@
 
 - 已有历史真实证据：Outline Issue=3、Clean=2、Fast=1；Evidence QA 有真实命中样本；Continuation 有过一次真实采纳/定稿闭环。
 - 这些数量不满足本轮最终矩阵要求（Outline 与 Continuation 均需 Fast≥3、Standard≥5、Quality≥5），不能作为 GO。
-- 当前阶段没有重新执行完整 `npm run verify:elastic`、`npm run typecheck`、`npm run verify`、Debug APK build/install 和完整真实矩阵；必须在当前 `90f10e3...` HEAD 上重跑并留证。
+- 当前阶段没有重新执行完整 `npm run verify:elastic`、`npm run typecheck`、`npm run verify`、Debug APK build/install 和完整真实矩阵；必须在接手时实测的当前 HEAD 上重跑并留证。
 - 当前进度仍需继续核查 State Proposal / Evidence QA / PostWriting closure 的真实 receipt、stage ledger、usage、outbox 一致性；现有单测不能替代真实请求证据。
 - 最终报告 `docs/optimization/phase3-b-final-report.md` 仍含旧的 GO 文字；在全部硬门禁满足前不得沿用该结论，最终收口时必须按真实结果更新。
 
