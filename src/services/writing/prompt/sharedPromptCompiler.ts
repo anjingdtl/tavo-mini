@@ -132,6 +132,7 @@ const REVISION_BRIEF_CONTRACT = [
   '    默认必须输出 finalStateProposals: []；只有最终正文明确产生可被下章引用的状态变化时才允许非空。',
   '    非空时每项 payload 必须是 JSON object（键值对象），例如 {"status":"已受伤"}；不能是字符串、数组或 null。',
   '    不得把自然语言句子或 QA 的 stateProposals 原样放进 payload；无法表达为键值对象时省略提案。',
+  '    risk 只能是 normal 或 major；不要输出 low / medium / high / critical 等其他值。',
   '    proposalType 只能是 character_state / relationship_change / plot_advance /',
   '    character_experience / knowledge_change / new_world_fact / new_character /',
   '    new_location / new_organization / foreshadowing / other；无法合法表达时省略提案。',
