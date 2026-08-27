@@ -21,7 +21,7 @@ describe('Continuation V5 contracts', () => {
     expect(CONTINUATION_V5_LENGTH_POLICY.preferredMinRatio).toBe(0.9);
     expect(CONTINUATION_V5_LENGTH_POLICY.preferredMaxRatio).toBe(1.1);
     expect(CONTINUATION_V5_LENGTH_POLICY.severeUnderRatio).toBe(0.65);
-    expect(CONTINUATION_V5_LENGTH_POLICY.outputHeadroomRatio).toBe(1.6);
+    expect(CONTINUATION_V5_LENGTH_POLICY.outputHeadroomRatio).toBe(2.4);
     const t = resolveV5LengthTargets(3000);
     expect(t.preferredMinHan).toBe(2700);
     expect(t.preferredMaxHan).toBe(3300);

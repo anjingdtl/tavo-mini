@@ -29,10 +29,11 @@ export const CONTINUATION_V5_LENGTH_POLICY: ContinuationV5LengthPolicy = {
   preferredMaxRatio: 1.1,
   severeUnderRatio: 0.65,
   // Full-text V5 nodes must leave room for the JSON envelope and model
-  // planning tokens. 1.2 was observed to hit max_tokens on real 3k-char
-  // chapters before the body could close; keep the gate hard but give the
-  // frozen request enough adaptive headroom to finish a complete draft.
-  outputHeadroomRatio: 1.6,
+  // planning tokens. Real 3k-word chapters can expand well beyond the
+  // nominal target in a compatible provider, so keep the gate hard but give
+  // the frozen request enough adaptive headroom to finish a complete draft
+  // and the corresponding full Revision envelope.
+  outputHeadroomRatio: 2.4,
 };
 
 export type V5SoftWarning = string;
