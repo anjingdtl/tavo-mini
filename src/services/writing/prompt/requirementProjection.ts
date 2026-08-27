@@ -37,7 +37,7 @@ export function projectRequirementsForStage(input: {
     requirementAppliesToStage(input.stage, item),
   );
   if (relevant.length === 0) {
-    return '【写作要求】\n（本阶段无额外结构化要求）';
+    return '【写作要求】\n【Requirement Checklist】\n（本阶段无额外结构化要求）';
   }
   const blocks = new Map<string, WritingRequirement[]>();
   for (const item of relevant) {
@@ -45,7 +45,7 @@ export function projectRequirementsForStage(input: {
     list.push(item);
     blocks.set(item.kind, list);
   }
-  const sections: string[] = ['【写作要求】'];
+  const sections: string[] = ['【写作要求】', '【Requirement Checklist】'];
   for (const [kind, items] of blocks) {
     sections.push(`【${KIND_LABEL[kind] || kind}】`);
     for (const item of items) {

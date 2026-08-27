@@ -171,7 +171,10 @@ const ONE_SHOT_DRAFT_PROJECTION = [
 export function compileSharedWritingPrompt(
   input: SharedPromptCompileInput,
 ): SharedPromptCompileResult {
-  resolveChapterTruthProjection(input.frozenContext, input.stage);
+  const truthProjection = resolveChapterTruthProjection(
+    input.frozenContext,
+    input.stage,
+  );
   const outputContract = isStructuredReportStage(input.stage)
     ? 'json_envelope'
     : input.stage === 'revision'
@@ -211,6 +214,7 @@ export function compileSharedWritingPrompt(
   const renderedHeader = useQaEvidence
     ? ''
     : '【冻结上下文】\n';
+  const truthProjectionBlock = formatChapterTruthProjection(truthProjection);
   const contract =
     input.stage === 'revision'
       ? REVISION_BRIEF_CONTRACT
@@ -223,6 +227,7 @@ export function compileSharedWritingPrompt(
       : PROSE_CONTRACT;
   const user = [
     instructionBlock(input.frozenContext),
+    truthProjectionBlock,
     rendered ? `${renderedHeader}${rendered}` : '',
     requirementText,
     input.stage === 'draft' && isOneShotStagePolicy(input.stagePolicy)
@@ -244,6 +249,28 @@ export function compileSharedWritingPrompt(
     responseFormat: outputContract === 'json_envelope' ? 'json_object' : 'text',
     outputContract,
   };
+}
+
+function formatChapterTruthProjection(
+  projection: ReturnType<typeof resolveChapterTruthProjection>,
+): string {
+  return [
+    '【Chapter Truth Projection】',
+    `version=${projection.version}`,
+    `fingerprint=${projection.fingerprint}`,
+    `requirementFingerprint=${projection.requirementFingerprint}`,
+    `outline=${projection.outlineFingerprint || 'none'}`,
+    `canon=${projection.canonSnapshotFingerprint || 'none'}`,
+    `hardFacts=${projection.hardFactsFingerprint || 'none'}`,
+    `sourceBoundary=${projection.sourceBoundaryFingerprint || 'none'}`,
+    `previousChapter=${projection.previousChapterFingerprint || 'none'}`,
+    `seam=${projection.seamFingerprint || 'none'}`,
+    `anchor=${projection.anchorFingerprint || 'none'}`,
+    `storyMemory=${projection.storyMemoryFingerprint || 'none'}`,
+    `structuredState=${projection.structuredContinuityStateFingerprint || 'none'}`,
+    `writerStyle=${projection.writerStyleFingerprint || 'none'}`,
+    '以上是当前冻结章节边界的指纹索引；正文事实必须以同一冻结上下文的资料块为准。',
+  ].join('\n');
 }
 
 function readPromptBody(value: unknown): string {
