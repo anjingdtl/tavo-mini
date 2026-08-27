@@ -173,7 +173,7 @@ describe('B6 — Revision contract posts final-state proposals（§8.5）', () =
       '非空时每项 payload 必须是 JSON object（键值对象），例如 {"status":"已受伤"}；不能是字符串、数组或 null',
     );
     expect(user).toContain(
-      '默认必须输出 finalStateProposals: []；只有最终正文明确产生可被下章引用的状态变化时才允许非空',
+      '默认必须输出 finalStateProposals: []；冻结需求未明确要求时禁止输出非空数组',
     );
     expect(user).toContain(
       'risk 只能是 normal 或 major；不要输出 low / medium / high / critical 等其他值',

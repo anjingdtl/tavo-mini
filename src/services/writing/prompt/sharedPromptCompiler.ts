@@ -125,11 +125,13 @@ const REVISION_BRIEF_CONTRACT = [
   '禁止输出 Markdown 围栏，禁止把推理过程写进 content。',
   // B6 §8.5：Final != Draft 时 QA 提案失效；修正确实改变了正文时，由
   // 修订方基于最终正文补充状态提案与正文指纹绑定。
-  '状态提案（可选）：若修订后的 content 让章节相关的人物状态 / 关系 / 情节 /',
-  '    知识 / 世界事实产生可被下章引用的变化，可输出 finalStateProposals 数组。',
+  '状态提案（严格可选）：除非冻结需求明确要求记录状态变化，否则省略 finalStateProposals 或输出 []。',
+  '    不要因为修改了措辞、补充了细节或回应 QA finding 就主动生成状态提案。',
+  '    只有修订后的 content 明确产生可被下章引用的人物状态 / 关系 / 情节 /',
+  '    知识 / 世界事实变化时，才允许输出 finalStateProposals 数组。',
   '    finalStateProposals 的字段与 QA stateProposals 相同（proposalType /',
   '    subjectRefType / subjectRefId / payload / evidenceQuote / risk，',
-  '    默认必须输出 finalStateProposals: []；只有最终正文明确产生可被下章引用的状态变化时才允许非空。',
+  '    默认必须输出 finalStateProposals: []；冻结需求未明确要求时禁止输出非空数组。',
   '    非空时每项 payload 必须是 JSON object（键值对象），例如 {"status":"已受伤"}；不能是字符串、数组或 null。',
   '    不得把自然语言句子或 QA 的 stateProposals 原样放进 payload；无法表达为键值对象时省略提案。',
   '    risk 只能是 normal 或 major；不要输出 low / medium / high / critical 等其他值。',
