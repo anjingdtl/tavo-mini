@@ -54,7 +54,7 @@ import {
   getLatestEligibleArtifact,
   getPlan,
   getRunById,
-  getRunContextSnapshotJson,
+  getRunByIdWithContext,
   getLatestArtifactForStage,
   getStageResult,
   findLatestAdoptedRunForChapter,
@@ -486,7 +486,7 @@ export async function repairContinuationArtifactOnce(
   runId: string,
   callStage?: StageLlmCaller,
 ): Promise<void> {
-  const run = await getRunById(runId);
+  const run = await getRunByIdWithContext(runId);
   if (!run) throw new Error('run 不存在');
   if (run.workflowVersion !== 2) {
     throw new Error('历史续写不支持额外修正，请继续使用历史恢复流程');
@@ -859,7 +859,7 @@ export async function confirmPlanAndContinue(
   callStage?: StageLlmCaller,
   deterministicOnly?: boolean,
 ): Promise<void> {
-  const run = await getRunById(runId);
+  const run = await getRunByIdWithContext(runId);
   if (!run) throw new Error('run 不存在');
   if (run.workflowVersion === 4) {
     throw new Error('V4 不使用 Planner 确认步骤。');
@@ -1352,7 +1352,7 @@ export async function adoptArtifactAsDraft(input: {
   /** Explicit user opt-in to adopt an artifact with open severe local checks. */
   allowOpenChecks?: boolean;
 }): Promise<{ contentHash: string }> {
-  const run = await getRunById(input.runId);
+  const run = await getRunByIdWithContext(input.runId);
   if (!run) throw new Error('run 不存在');
   if (run.state === 'outdated') throw new ContinuationOutdatedError();
   if (run.state === 'awaiting_regeneration') {
@@ -1533,7 +1533,7 @@ export async function adoptArtifactAsDraft(input: {
 }
 
 export async function abandonRun(runId: string): Promise<void> {
-  const run = await getRunById(runId);
+  const run = await getRunByIdWithContext(runId);
   const ok = await casUpdateRunState(
     runId,
     [
@@ -1773,7 +1773,7 @@ export async function finalizeContinuationChapter(input: {
   let resolvedSourceRunId: string | null = input.sourceRunId ?? null;
   let sourceRun: ContinuationGenerationRun | null = null;
   if (input.sourceRunId) {
-    sourceRun = await getRunById(input.sourceRunId);
+    sourceRun = await getRunByIdWithContext(input.sourceRunId);
     if (
       !sourceRun ||
       sourceRun.projectId !== input.projectId ||
@@ -1786,15 +1786,10 @@ export async function finalizeContinuationChapter(input: {
       input.projectId,
       input.chapterId,
     );
+    if (sourceRun) {
+      sourceRun = await getRunByIdWithContext(sourceRun.id);
+    }
     resolvedSourceRunId = sourceRun?.id ?? null;
-  }
-  if (sourceRun) {
-    // Metadata reads project the giant snapshot column away (CursorWindow
-    // limit on low-RAM devices); the finalization trace still needs the
-    // frozen fields, so stream the body back in chunks here.
-    sourceRun.contextSnapshotJson = await getRunContextSnapshotJson(
-      sourceRun.id,
-    );
   }
 
   const stateProposalResolution =
@@ -1981,7 +1976,7 @@ export async function enqueueContinuationStateExtractionFallback(input: {
   const position = Number(chapter.rows.item(0).position);
   let sourceRun: ContinuationGenerationRun | null = null;
   if (input.sourceRunId) {
-    sourceRun = await getRunById(input.sourceRunId);
+    sourceRun = await getRunByIdWithContext(input.sourceRunId);
     if (
       !sourceRun ||
       sourceRun.projectId !== input.projectId ||

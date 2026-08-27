@@ -114,7 +114,15 @@ export function buildV55ToV56Statements(): SqlStatement[] {
     },
     {
       sql: `INSERT INTO continuation_generation_stage_results__v56
-        SELECT * FROM continuation_generation_stage_results`,
+        (id, run_id, stage, status, request_reserved, request_count,
+         model_config_id, input_tokens, output_tokens, min_output_tokens,
+         max_output_tokens, output_json, artifact_id, error_code,
+         error_message, started_at, completed_at, created_at, updated_at)
+        SELECT id, run_id, stage, status, request_reserved, request_count,
+               model_config_id, input_tokens, output_tokens, min_output_tokens,
+               max_output_tokens, output_json, artifact_id, error_code,
+               error_message, started_at, completed_at, created_at, updated_at
+          FROM continuation_generation_stage_results`,
     },
     { sql: 'DROP TABLE continuation_generation_stage_results' },
     {

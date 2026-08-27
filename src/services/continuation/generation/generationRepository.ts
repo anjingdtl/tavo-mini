@@ -99,10 +99,11 @@ function rowSettings(r: any): ContinuationGenerationSettings {
  * SQL with json_extract so metadata-only callers keep their semantics.
  */
 const RUN_METADATA_SELECT = `
-  id, project_id, chapter_id, target_position, source_id, source_snapshot_json,
+  id, project_id, chapter_id, target_position, source_id,
+  NULL AS source_snapshot_json,
   canon_snapshot_id, canon_revision, story_memory_fingerprint,
   story_memory_through_position, input_revision_hash, user_instruction,
-  settings_snapshot_json, context_trace_json, token_usage_json,
+  settings_snapshot_json, NULL AS context_trace_json, token_usage_json,
   NULL AS context_snapshot_json,
   json_extract(context_snapshot_json, '$.workflowVersion') AS workflow_version,
   json_extract(context_snapshot_json, '$.writingKernelTrace.generationTraceId') AS generation_trace_id,
@@ -110,8 +111,108 @@ const RUN_METADATA_SELECT = `
   state, stage, completion_reason, adopted_revision_hash, finalized_revision_hash,
   error_code, error_message, created_at, updated_at, completed_at`;
 
-/** Chunk size (characters) for streamed snapshot reads. */
-const RUN_SNAPSHOT_CHUNK_CHARS = 512 * 1024;
+/**
+ * Large continuation payloads are never selected as a whole row. A single
+ * substr() result stays below the Android CursorWindow limit even when the
+ * stored chapter, structured envelope, or receipt JSON is much larger.
+ */
+const LARGE_PAYLOAD_CHUNK_CHARS = 128 * 1024;
+
+const ARTIFACT_METADATA_SELECT = `
+  id, run_id, stage, repair_round, parent_artifact_id,
+  NULL AS content, content_hash, eligibility_status, rejection_code, created_at`;
+
+const STAGE_RESULT_METADATA_SELECT = `
+  id, run_id, stage, status, request_reserved, request_count,
+  model_config_id, input_tokens, output_tokens, min_output_tokens,
+  max_output_tokens, NULL AS output_json, artifact_id, error_code,
+  error_message, started_at, completed_at, created_at, updated_at`;
+
+type LargePayloadTable =
+  | 'continuation_generation_runs'
+  | 'continuation_generation_artifacts'
+  | 'continuation_generation_stage_results'
+  | 'pipeline_stage_attempts';
+
+type LargePayloadColumn =
+  | 'context_snapshot_json'
+  | 'source_snapshot_json'
+  | 'context_trace_json'
+  | 'content'
+  | 'output_json'
+  | 'frozen_request_json'
+  | 'reasoning_content_temp'
+  | 'response_candidate_temp'
+  | 'validation_details_json';
+
+async function readLargePayloadColumn(input: {
+  table: LargePayloadTable;
+  column: LargePayloadColumn;
+  whereSql: string;
+  params: any[];
+}): Promise<string | null> {
+  const db = await openDatabase();
+  const [lengthResult] = await db.executeSql(
+    `SELECT length(${input.column}) AS payload_length
+       FROM ${input.table}
+      WHERE ${input.whereSql}`,
+    input.params,
+  );
+  if (lengthResult.rows.length === 0) return null;
+  const rawLength = lengthResult.rows.item(0).payload_length;
+  if (rawLength == null) return null;
+  const totalLength = Number(rawLength);
+  if (!Number.isFinite(totalLength) || totalLength < 0) return null;
+  if (totalLength === 0) return '';
+
+  let payload = '';
+  for (
+    let offset = 1;
+    offset <= totalLength;
+    offset += LARGE_PAYLOAD_CHUNK_CHARS
+  ) {
+    const [chunkResult] = await db.executeSql(
+      `SELECT substr(${input.column}, ?, ?) AS payload_chunk
+         FROM ${input.table}
+        WHERE ${input.whereSql}`,
+      [offset, LARGE_PAYLOAD_CHUNK_CHARS, ...input.params],
+    );
+    if (chunkResult.rows.length === 0) break;
+    payload += String(chunkResult.rows.item(0).payload_chunk ?? '');
+  }
+  return payload;
+}
+
+async function materializeArtifactRow(
+  row: any,
+): Promise<ContinuationArtifact> {
+  const artifact = rowArtifact(row);
+  const content = await readLargePayloadColumn({
+    table: 'continuation_generation_artifacts',
+    column: 'content',
+    whereSql: 'id = ?',
+    params: [artifact.id],
+  });
+  if (content == null) {
+    throw new Error(
+      `continuation artifact ${artifact.id} content disappeared during read`,
+    );
+  }
+  return { ...artifact, content };
+}
+
+async function materializeStageResultRow(
+  row: any,
+): Promise<ContinuationGenerationStageResult> {
+  const result = rowStageResult(row);
+  const outputJson = await readLargePayloadColumn({
+    table: 'continuation_generation_stage_results',
+    column: 'output_json',
+    whereSql: 'id = ?',
+    params: [result.id],
+  });
+  return { ...result, outputJson };
+}
 
 function rowRun(r: any): ContinuationGenerationRun {
   let workflowVersion: 2 | 4 | 5 | undefined;
@@ -537,23 +638,56 @@ export async function getRunById(
 export async function getRunContextSnapshotJson(
   runId: string,
 ): Promise<string | null> {
-  const db = await openDatabase();
-  const [lenRes] = await db.executeSql(
-    'SELECT length(context_snapshot_json) AS len FROM continuation_generation_runs WHERE id = ?',
-    [runId],
-  );
-  if (lenRes.rows.length === 0) return null;
-  const total = Number(lenRes.rows.item(0).len);
-  if (!Number.isFinite(total) || total <= 0) return null;
-  let out = '';
-  for (let start = 1; start <= total; start += RUN_SNAPSHOT_CHUNK_CHARS) {
-    const [res] = await db.executeSql(
-      'SELECT substr(context_snapshot_json, ?, ?) AS piece FROM continuation_generation_runs WHERE id = ?',
-      [start, RUN_SNAPSHOT_CHUNK_CHARS, runId],
-    );
-    out += String(res.rows.item(0).piece ?? '');
-  }
-  return out;
+  const payload = await readLargePayloadColumn({
+    table: 'continuation_generation_runs',
+    column: 'context_snapshot_json',
+    whereSql: 'id = ?',
+    params: [runId],
+  });
+  // Preserve the historical empty-snapshot contract (NULL for both a missing
+  // row and a NULL/empty snapshot) while using the shared bounded reader.
+  return payload ? payload : null;
+}
+
+/** Read the frozen Source snapshot only when an old caller explicitly needs it. */
+export async function getRunSourceSnapshotJson(
+  runId: string,
+): Promise<string | null> {
+  return readLargePayloadColumn({
+    table: 'continuation_generation_runs',
+    column: 'source_snapshot_json',
+    whereSql: 'id = ?',
+    params: [runId],
+  });
+}
+
+/** Read the trace payload only for state transitions that must append an event. */
+export async function getRunContextTraceJson(
+  runId: string,
+): Promise<string | null> {
+  return readLargePayloadColumn({
+    table: 'continuation_generation_runs',
+    column: 'context_trace_json',
+    whereSql: 'id = ?',
+    params: [runId],
+  });
+}
+
+/**
+ * Explicit opt-in full run read. Normal lists/status reads stay metadata-only;
+ * legacy state-machine and adoption paths use this boundary when they really
+ * need the frozen snapshot and trace bodies.
+ */
+export async function getRunByIdWithContext(
+  runId: string,
+): Promise<ContinuationGenerationRun | null> {
+  const run = await getRunById(runId);
+  if (!run) return null;
+  const [contextSnapshotJson, contextTraceJson] = await Promise.all([
+    getRunContextSnapshotJson(runId),
+    getRunContextTraceJson(runId),
+  ]);
+  return { ...run, contextSnapshotJson, contextTraceJson };
 }
 
 /**
@@ -684,20 +818,24 @@ export async function markRunsInterruptedOnColdStart(): Promise<number> {
   const db = await openDatabase();
   const ts = nowIso();
   const [runningRows] = await db.executeSql(
-    `SELECT id, state, stage, context_snapshot_json, context_trace_json
-     FROM continuation_generation_runs
-     WHERE state IN ('queued', 'running')`,
+    `SELECT id, state, stage
+      FROM continuation_generation_runs
+      WHERE state IN ('queued', 'running')`,
   );
   let interruptedRuns = 0;
   for (let index = 0; index < runningRows.rows.length; index += 1) {
     const row = runningRows.rows.item(index);
+    const [snapshotJson, existingContextTraceJson] = await Promise.all([
+      getRunContextSnapshotJson(String(row.id)),
+      getRunContextTraceJson(String(row.id)),
+    ]);
     let contextTraceJson: string | null = null;
     try {
       const snapshot = JSON.parse(
-        row.context_snapshot_json || '{}',
+        snapshotJson || '{}',
       ) as ContinuationContextSnapshot;
-      const trace = row.context_trace_json
-        ? (JSON.parse(row.context_trace_json) as ContinuationContextTrace)
+      const trace = existingContextTraceJson
+        ? (JSON.parse(existingContextTraceJson) as ContinuationContextTrace)
         : ({
             sourceId: snapshot.source.sourceId,
             canonSnapshotId: snapshot.canon.snapshotId,
@@ -856,12 +994,12 @@ export async function insertArtifact(input: {
       // Stage-local UNIQUE(run_id, content_hash, stage) — optionally reuse an
       // existing same-stage row, else uniquify a deliberate same-stage retry.
       const [res] = await db.executeSql(
-        `SELECT * FROM continuation_generation_artifacts
+        `SELECT ${ARTIFACT_METADATA_SELECT} FROM continuation_generation_artifacts
          WHERE run_id = ? AND content_hash = ?`,
         [input.runId, contentHash],
       );
       if (res.rows.length > 0) {
-        const existing = rowArtifact(res.rows.item(0));
+        const existing = await materializeArtifactRow(res.rows.item(0));
         if (
           !input.requireStageMatch ||
           existing.stage === input.stage
@@ -887,12 +1025,12 @@ export async function getLatestArtifact(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_artifacts
+    `SELECT ${ARTIFACT_METADATA_SELECT} FROM continuation_generation_artifacts
      WHERE run_id = ? ORDER BY created_at DESC LIMIT 1`,
     [runId],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 /**
@@ -907,7 +1045,7 @@ export async function getLatestEligibleArtifact(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_artifacts
+    `SELECT ${ARTIFACT_METADATA_SELECT} FROM continuation_generation_artifacts
      WHERE run_id = ? AND eligibility_status = 'eligible'
        AND stage IN ('writer', 'repair', 'user_edit', 'final')
      ORDER BY
@@ -922,7 +1060,7 @@ export async function getLatestEligibleArtifact(
     [runId],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 /** Read the newest artifact for one producing stage. */
@@ -935,12 +1073,12 @@ export async function getLatestArtifactForStage(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_artifacts
+    `SELECT ${ARTIFACT_METADATA_SELECT} FROM continuation_generation_artifacts
      WHERE run_id = ? AND stage = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
     [runId, stage],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 export async function getArtifactById(
@@ -948,11 +1086,12 @@ export async function getArtifactById(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_generation_artifacts WHERE id = ?',
+    `SELECT ${ARTIFACT_METADATA_SELECT}
+       FROM continuation_generation_artifacts WHERE id = ?`,
     [id],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 /**
@@ -967,11 +1106,12 @@ export async function getArtifactForRun(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_generation_artifacts WHERE id = ? AND run_id = ?',
+    `SELECT ${ARTIFACT_METADATA_SELECT}
+       FROM continuation_generation_artifacts WHERE id = ? AND run_id = ?`,
     [artifactId, runId],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 export async function getEligibleArtifactForRun(
@@ -980,12 +1120,13 @@ export async function getEligibleArtifactForRun(
 ): Promise<ContinuationArtifact | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_artifacts
+    `SELECT ${ARTIFACT_METADATA_SELECT}
+       FROM continuation_generation_artifacts
      WHERE id = ? AND run_id = ? AND eligibility_status = 'eligible'`,
     [artifactId, runId],
   );
   if (res.rows.length === 0) return null;
-  return rowArtifact(res.rows.item(0));
+  return materializeArtifactRow(res.rows.item(0));
 }
 
 export function newContinuationStageResultId(): string {
@@ -998,12 +1139,13 @@ export async function getStageResult(
 ): Promise<ContinuationGenerationStageResult | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_stage_results
+    `SELECT ${STAGE_RESULT_METADATA_SELECT}
+       FROM continuation_generation_stage_results
      WHERE run_id = ? AND stage = ?`,
     [runId, stage],
   );
   if (res.rows.length === 0) return null;
-  return rowStageResult(res.rows.item(0));
+  return materializeStageResultRow(res.rows.item(0));
 }
 
 export async function listStageResults(
@@ -1011,7 +1153,8 @@ export async function listStageResults(
 ): Promise<ContinuationGenerationStageResult[]> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_generation_stage_results
+    `SELECT ${STAGE_RESULT_METADATA_SELECT}
+       FROM continuation_generation_stage_results
      WHERE run_id = ?
      ORDER BY CASE stage
        WHEN 'writer' THEN 1
@@ -1029,10 +1172,9 @@ export async function listStageResults(
      END`,
     [runId],
   );
-  const out: ContinuationGenerationStageResult[] = [];
-  for (let i = 0; i < res.rows.length; i += 1)
-    out.push(rowStageResult(res.rows.item(i)));
-  return out;
+  const rows: any[] = [];
+  for (let i = 0; i < res.rows.length; i += 1) rows.push(res.rows.item(i));
+  return Promise.all(rows.map(materializeStageResultRow));
 }
 
 /**

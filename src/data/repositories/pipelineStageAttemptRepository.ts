@@ -122,6 +122,84 @@ export interface UpdateStageAttemptInput {
   frozenRequestJson?: string | null;
 }
 
+/**
+ * Attempt rows carry response receipts and recovery scratch JSON. Keep those
+ * columns out of the metadata CursorWindow row; the payload is reassembled by
+ * the bounded reader below only when an audit/recovery caller asks for it.
+ */
+const PIPELINE_STAGE_ATTEMPT_METADATA_SELECT = `
+  id, pipeline_task_id, stage, attempt_no, request_version,
+  request_fingerprint, allocation_trace_json, NULL AS frozen_request_json,
+  llm_config_id, llm_config_snapshot_json, client_request_id,
+  provider_request_id, status, failure_class, error_code, error_message,
+  http_status, retry_after_ms, started_at, last_progress_at, deadline_at,
+  next_retry_at, completed_at, input_tokens, output_tokens, total_tokens,
+  reasoning_tokens, finish_reason, empty_reason, response_channel,
+  response_candidate_channel, visible_output_tokens, parse_failure_code,
+  formatter_used,
+  NULL AS reasoning_content_temp, NULL AS response_candidate_temp,
+  NULL AS validation_details_json, prompt_cache_hit_tokens,
+  prompt_cache_miss_tokens`;
+
+const ATTEMPT_PAYLOAD_CHUNK_CHARS = 128 * 1024;
+type AttemptPayloadColumn =
+  | 'frozen_request_json'
+  | 'reasoning_content_temp'
+  | 'response_candidate_temp'
+  | 'validation_details_json';
+
+async function readAttemptPayloadColumn(
+  id: string,
+  column: AttemptPayloadColumn,
+): Promise<string | null> {
+  const database = await openDatabase();
+  const [lengthResult] = await database.executeSql(
+    `SELECT length(${column}) AS payload_length
+       FROM pipeline_stage_attempts WHERE id = ?`,
+    [id],
+  );
+  if (lengthResult.rows.length === 0) return null;
+  const rawLength = lengthResult.rows.item(0).payload_length;
+  if (rawLength == null) return null;
+  const totalLength = Number(rawLength);
+  if (!Number.isFinite(totalLength) || totalLength < 0) return null;
+  if (totalLength === 0) return '';
+
+  let payload = '';
+  for (
+    let offset = 1;
+    offset <= totalLength;
+    offset += ATTEMPT_PAYLOAD_CHUNK_CHARS
+  ) {
+    const [chunkResult] = await database.executeSql(
+      `SELECT substr(${column}, ?, ?) AS payload_chunk
+         FROM pipeline_stage_attempts WHERE id = ?`,
+      [offset, ATTEMPT_PAYLOAD_CHUNK_CHARS, id],
+    );
+    if (chunkResult.rows.length === 0) break;
+    payload += String(chunkResult.rows.item(0).payload_chunk ?? '');
+  }
+  return payload;
+}
+
+async function hydrateAttemptRow(row: any): Promise<PipelineStageAttemptRow> {
+  const base = mapRow(row);
+  const [frozenRequestJson, reasoningContentTemp, responseCandidateTemp, validationDetailsJson] =
+    await Promise.all([
+      readAttemptPayloadColumn(base.id, 'frozen_request_json'),
+      readAttemptPayloadColumn(base.id, 'reasoning_content_temp'),
+      readAttemptPayloadColumn(base.id, 'response_candidate_temp'),
+      readAttemptPayloadColumn(base.id, 'validation_details_json'),
+    ]);
+  return {
+    ...base,
+    frozenRequestJson,
+    reasoningContentTemp,
+    responseCandidateTemp,
+    validationDetailsJson,
+  };
+}
+
 function mapRow(row: any): PipelineStageAttemptRow {
   return {
     id: String(row.id),
@@ -278,12 +356,13 @@ export async function getStageAttempts(
   stage: string,
 ): Promise<PipelineStageAttemptRow[]> {
   const rows = await all(
-    `SELECT * FROM pipeline_stage_attempts
-     WHERE pipeline_task_id = ? AND stage = ?
-     ORDER BY attempt_no ASC`,
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts
+      WHERE pipeline_task_id = ? AND stage = ?
+      ORDER BY attempt_no ASC`,
     [pipelineTaskId, stage],
   );
-  return rows.map(mapRow);
+  return Promise.all(rows.map(hydrateAttemptRow));
 }
 
 export async function getLatestStageAttempt(
@@ -291,22 +370,24 @@ export async function getLatestStageAttempt(
   stage: string,
 ): Promise<PipelineStageAttemptRow | null> {
   const row = await one(
-    `SELECT * FROM pipeline_stage_attempts
-     WHERE pipeline_task_id = ? AND stage = ?
-     ORDER BY attempt_no DESC LIMIT 1`,
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts
+      WHERE pipeline_task_id = ? AND stage = ?
+      ORDER BY attempt_no DESC LIMIT 1`,
     [pipelineTaskId, stage],
   );
-  return row ? mapRow(row) : null;
+  return row ? hydrateAttemptRow(row) : null;
 }
 
 export async function getStageAttempt(
   attemptId: string,
 ): Promise<PipelineStageAttemptRow | null> {
   const row = await one(
-    'SELECT * FROM pipeline_stage_attempts WHERE id = ?',
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts WHERE id = ?`,
     [attemptId],
   );
-  return row ? mapRow(row) : null;
+  return row ? hydrateAttemptRow(row) : null;
 }
 
 /** Clear cold-start reasoning scratch data once a checkpoint is settled. */
@@ -329,13 +410,14 @@ export async function getRetryDueAttempts(
   now: number,
 ): Promise<PipelineStageAttemptRow[]> {
   const rows = await all(
-    `SELECT * FROM pipeline_stage_attempts
-     WHERE status IN ('safe_to_retry', 'outcome_unknown')
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts
+      WHERE status IN ('safe_to_retry', 'outcome_unknown')
        AND next_retry_at IS NOT NULL AND next_retry_at <= ?
-     ORDER BY next_retry_at ASC`,
+      ORDER BY next_retry_at ASC`,
     [now],
   );
-  return rows.map(mapRow);
+  return Promise.all(rows.map(hydrateAttemptRow));
 }
 
 /** Latest attempt across all stages of a task (failure classification).
@@ -350,15 +432,16 @@ export async function getLatestAttemptByTask(
   pipelineTaskId: string,
 ): Promise<PipelineStageAttemptRow | null> {
   const row = await one(
-    `SELECT * FROM pipeline_stage_attempts
-     WHERE pipeline_task_id = ?
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts
+      WHERE pipeline_task_id = ?
      ORDER BY COALESCE(completed_at, started_at) DESC,
               started_at DESC,
               id DESC
      LIMIT 1`,
     [pipelineTaskId],
   );
-  return row ? mapRow(row) : null;
+  return row ? hydrateAttemptRow(row) : null;
 }
 
 /**
@@ -369,10 +452,11 @@ export async function getTaskAttempts(
   pipelineTaskId: string,
 ): Promise<PipelineStageAttemptRow[]> {
   const rows = await all(
-    `SELECT * FROM pipeline_stage_attempts
-     WHERE pipeline_task_id = ?
-     ORDER BY stage ASC, attempt_no ASC, started_at ASC`,
+    `SELECT ${PIPELINE_STAGE_ATTEMPT_METADATA_SELECT}
+       FROM pipeline_stage_attempts
+      WHERE pipeline_task_id = ?
+      ORDER BY stage ASC, attempt_no ASC, started_at ASC`,
     [pipelineTaskId],
   );
-  return rows.map(mapRow);
+  return Promise.all(rows.map(hydrateAttemptRow));
 }
