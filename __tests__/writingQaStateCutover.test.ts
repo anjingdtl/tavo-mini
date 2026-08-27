@@ -168,6 +168,7 @@ describe('B6 — Revision contract posts final-state proposals（§8.5）', () =
     const user = compiled.messages[1].content;
     expect(user).toContain('finalStateProposals');
     expect(user).toContain('proposalSourceBodyFingerprint');
+    expect(user).toContain('proposalType 只能是 character_state / relationship_change / plot_advance');
     expect(user).toContain('stateProposals');
   });
 });
