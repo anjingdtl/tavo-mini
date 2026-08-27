@@ -24,7 +24,9 @@ import {
   adoptStructuredWriterText,
   compileSharedWriterFormatterPrompt,
   isAdoptableStructuredReport,
+  hasExplicitRevisionNoOp,
   shouldRunWriterFormatter,
+  validateRevisionStructuredContract,
 } from './writerRecovery';
 import {
   classifyWritingLlmCall,
@@ -412,6 +414,7 @@ export async function executeSharedWriterStage(input: {
         stage,
         stageInput,
         injectedAdopted.text,
+        injected as Partial<LLMResult>,
       );
       attachUsage(artifact, injected, {
         kind: classifyWritingLlmCall({}),
@@ -500,6 +503,21 @@ export async function executeSharedWriterStage(input: {
         Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
           code: 'SHARED_WRITER_CONTENT_FILTER',
         }),
+        { stage, result: primary },
+      ),
+      receipts,
+    );
+  }
+  if (
+    stage === 'revision' &&
+    String(primary.finishReason || '').toLowerCase() === 'length'
+  ) {
+    throw annotateWriterReceipts(
+      annotateWriterFailure(
+        Object.assign(
+          new Error('Revision 输出以 finishReason=length 截断，拒绝持久化'),
+          { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
+        ),
         { stage, result: primary },
       ),
       receipts,
@@ -594,7 +612,12 @@ export async function executeSharedWriterStage(input: {
       );
     }
     try {
-      const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+      const artifact = finalizeWriterArtifact(
+        stage,
+        stageInput,
+        adopted.text,
+        formatted as Partial<LLMResult>,
+      );
       artifact.formatterUsed = true;
       artifact.adoptedFrom = adopted.adoptedFrom;
       attachUsage(artifact, primary, {
@@ -645,7 +668,12 @@ export async function executeSharedWriterStage(input: {
     }
   }
   try {
-    const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+    const artifact = finalizeWriterArtifact(
+      stage,
+      stageInput,
+      adopted.text,
+      primary as Partial<LLMResult>,
+    );
     artifact.adoptedFrom = adopted.adoptedFrom;
     attachUsage(artifact, primary, {
       kind: classifyWritingLlmCall({}),
@@ -809,49 +837,93 @@ function finalizeWriterArtifact(
   stage: SharedWritingStageName,
   stageInput: SharedWritingStageInput,
   text: string,
+  result?: Partial<LLMResult>,
 ): SharedWritingArtifact {
   const artifact = parseSharedWriterOutput(stage, text);
-  if (stage === 'revision' && artifact.structured) {
+  if (stage === 'revision') {
+    if (String(result?.finishReason || '').toLowerCase() === 'length') {
+      throw Object.assign(
+        new Error('Revision 输出以 finishReason=length 截断，拒绝持久化'),
+        { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
+      );
+    }
+    const compactRevision =
+      stageInput.stagePolicy.values?.pipelineTopologyVersion ===
+      'compact_standard';
+    if (!artifact.structured && compactRevision) {
+      throw Object.assign(
+        new Error('Revision 返回格式无效，未解析出结构化 JSON 合同'),
+        { code: 'SHARED_WRITER_INVALID_REVISION_CONTRACT' },
+      );
+    }
     const draftBody = String(
       (stageInput.artifacts as { draft?: { body?: string } }).draft?.body ?? '',
     );
-    const segmentResolution = resolveAnchoredRevisionOutput({
-      draftBody,
-      findings: aggregateStageFindings(stageInput.artifacts),
-      structured: artifact.structured,
-    });
-    if (segmentResolution.status === 'invalid') {
-      throw Object.assign(
-        new Error(
-          `Revision 局部段级修复无效且未提供完整正文回退（${segmentResolution.reason}）`,
-        ),
-        { code: 'SHARED_WRITER_INVALID_SEGMENT_REPAIR' },
-      );
+    if (artifact.structured) {
+      const segmentResolution = resolveAnchoredRevisionOutput({
+        draftBody,
+        findings: aggregateStageFindings(stageInput.artifacts),
+        structured: artifact.structured,
+      });
+      if (segmentResolution.status === 'invalid') {
+        throw Object.assign(
+          new Error(
+            `Revision 局部段级修复无效且未提供完整正文回退（${segmentResolution.reason}）`,
+          ),
+          { code: 'SHARED_WRITER_INVALID_SEGMENT_REPAIR' },
+        );
+      }
+      if (
+        segmentResolution.status === 'segment_repair' ||
+        segmentResolution.status === 'full_revision_fallback'
+      ) {
+        artifact.body = segmentResolution.body;
+        artifact.structured = {
+          ...artifact.structured,
+          content: segmentResolution.body,
+          segmentRepair: segmentResolution.metadata,
+        };
+        artifact.diagnostics = [
+          ...(artifact.diagnostics || []),
+          ...segmentResolution.diagnostics,
+        ];
+      }
     }
     if (
-      segmentResolution.status === 'segment_repair' ||
-      segmentResolution.status === 'full_revision_fallback'
+      !compactRevision &&
+      artifact.structured &&
+      !String(artifact.structured.content || '').trim()
     ) {
-      artifact.body = segmentResolution.body;
-      artifact.structured = {
-        ...artifact.structured,
-        content: segmentResolution.body,
-        segmentRepair: segmentResolution.metadata,
-      };
-      artifact.diagnostics = [
-        ...(artifact.diagnostics || []),
-        ...segmentResolution.diagnostics,
-      ];
+      // Historical Legacy Brief may be a report-only contract. It has no
+      // Compact Revision contract fields, but its body authority remains the
+      // already-persisted Draft instead of the JSON report envelope.
+      artifact.body = draftBody;
     }
-  }
-  if (
-    stage === 'revision' &&
-    !String(artifact.structured?.content || '').trim()
-  ) {
-    const draft = (stageInput.artifacts as { draft?: { body?: string } }).draft
-      ?.body;
-    if (String(draft || '').trim()) {
-      artifact.body = String(draft);
+    if (
+      compactRevision &&
+      !String(artifact.structured?.content || '').trim() &&
+      hasExplicitRevisionNoOp(artifact.structured!)
+    ) {
+      artifact.body = draftBody;
+    }
+    if (compactRevision) {
+      const validation = validateRevisionStructuredContract({
+        parsed: artifact.structured,
+        finalBody: artifact.body,
+      });
+      if (!validation.valid) {
+        const stateProposalFailure =
+          validation.reason?.startsWith('proposal_') ||
+          validation.reason?.startsWith('finalStateProposals');
+        throw Object.assign(
+          new Error(`Revision 返回格式无效（${validation.reason || 'unknown'}）`),
+          {
+            code: stateProposalFailure
+              ? 'SHARED_WRITER_INVALID_STATE_PROPOSAL_CONTRACT'
+              : 'SHARED_WRITER_INVALID_REVISION_CONTRACT',
+          },
+        );
+      }
     }
   }
   if (!artifact.body.trim()) {

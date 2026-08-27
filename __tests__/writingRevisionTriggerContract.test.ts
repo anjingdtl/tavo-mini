@@ -52,7 +52,9 @@ async function runRevision(qa: Record<string, unknown>, text?: string, topology?
     stage === reportStage ? reportArtifact(reportStage, qa) : null,
   );
   const callStage = jest.fn(async () => ({
-    text: text ?? '{"content":"修订后正文","appliedObligationIds":["R1"]}',
+    text:
+      text ??
+      '{"schemaVersion":1,"strategy":"full_revision","actions":[],"preserve":[],"ending":"keep","content":"修订后正文","appliedObligationIds":["R1"]}',
   }));
   const results = await runWritingStages({
     frozenContext: freeze.frozenContext,

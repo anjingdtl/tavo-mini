@@ -7,9 +7,20 @@
  */
 import type { ChatMessage } from '../../llm/types';
 import { selectStructuredCandidate } from '../../pipeline/structuredCandidate';
+import { sha256Hex } from '../../continuation/hashUtils';
+import {
+  QA_STATE_PROPOSAL_TYPES,
+  resolveEvidenceQuoteLocations,
+} from '../prompt/qaStateProposals';
+import { normalizeContinuationProposalSubjectRefType } from '../../continuation/generation/types';
 import type { SharedWritingStageName } from '../contracts/writingPolicy';
 
 export interface QaStructuredContractValidation {
+  valid: boolean;
+  reason: string | null;
+}
+
+export interface RevisionStructuredContractValidation {
   valid: boolean;
   reason: string | null;
 }
@@ -83,6 +94,165 @@ export function validateQaStructuredContract(
   }
 
   return { valid: true, reason: null };
+}
+
+/**
+ * Compact Revision admission contract.
+ *
+ * Revision is allowed to produce either a complete `content` body or a
+ * segment-repair plan.  The latter is resolved locally by the existing
+ * Revision stage.  Everything else is fail-closed: a body is never silently
+ * replaced with Draft just because a JSON envelope happened to parse.
+ */
+export function validateRevisionStructuredContract(input: {
+  parsed: Record<string, unknown> | undefined;
+  finalBody: string;
+}): RevisionStructuredContractValidation {
+  const invalid = (reason: string): RevisionStructuredContractValidation => ({
+    valid: false,
+    reason,
+  });
+  const parsed = input.parsed;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return invalid('root_not_object');
+  }
+  if (parsed.schemaVersion !== 1) return invalid('schemaVersion');
+
+  const strategy = nonEmptyString(parsed.strategy);
+  if (!strategy) return invalid('strategy');
+  if (!Array.isArray(parsed.actions)) return invalid('actions_not_array');
+  if (!Array.isArray(parsed.preserve)) return invalid('preserve_not_array');
+  if (!nonEmptyString(parsed.ending)) return invalid('ending');
+
+  const hasSegmentRepairs = Object.prototype.hasOwnProperty.call(
+    parsed,
+    'segmentRepairs',
+  );
+  const hasPatches = Object.prototype.hasOwnProperty.call(parsed, 'patches');
+  const segmentRepair =
+    strategy === 'segment_repair' || hasSegmentRepairs || hasPatches;
+  if (hasSegmentRepairs && !Array.isArray(parsed.segmentRepairs)) {
+    return invalid('segmentRepairs_not_array');
+  }
+  if (hasPatches && !Array.isArray(parsed.patches)) {
+    return invalid('patches_not_array');
+  }
+  if (
+    strategy === 'segment_repair' &&
+    !Array.isArray(parsed.segmentRepairs) &&
+    !Array.isArray(parsed.patches)
+  ) {
+    return invalid('segmentRepairs_missing');
+  }
+
+  const content = nonEmptyString(parsed.content);
+  if (!content && !segmentRepair && !hasExplicitRevisionNoOp(parsed)) {
+    return invalid('content_missing');
+  }
+  if (segmentRepair && !content && !hasExplicitRevisionNoOp(parsed)) {
+    // The local resolver will additionally validate anchors and coverage.  A
+    // segment plan may omit content only when it is a real plan, not an empty
+    // or otherwise content-less envelope.
+    const patches = Array.isArray(parsed.segmentRepairs)
+      ? parsed.segmentRepairs
+      : Array.isArray(parsed.patches)
+      ? parsed.patches
+      : [];
+    if (patches.length === 0) return invalid('segmentRepairs_empty');
+  }
+
+  const hasFinalProposals = Object.prototype.hasOwnProperty.call(
+    parsed,
+    'finalStateProposals',
+  );
+  const hasFingerprint = Object.prototype.hasOwnProperty.call(
+    parsed,
+    'proposalSourceBodyFingerprint',
+  );
+  if (hasFinalProposals && !Array.isArray(parsed.finalStateProposals)) {
+    return invalid('finalStateProposals_not_array');
+  }
+  if (hasFingerprint && !hasFinalProposals) {
+    return invalid('proposal_fingerprint_without_proposals');
+  }
+  const proposals = hasFinalProposals
+    ? (parsed.finalStateProposals as unknown[])
+    : [];
+  if (proposals.length > 0) {
+    const fingerprint = nonEmptyString(parsed.proposalSourceBodyFingerprint);
+    if (!fingerprint) return invalid('proposal_source_fingerprint_missing');
+    if (fingerprint !== sha256Hex(input.finalBody)) {
+      return invalid('proposal_source_fingerprint_mismatch');
+    }
+    if (!input.finalBody.trim()) return invalid('proposal_final_body_empty');
+    for (let index = 0; index < proposals.length; index += 1) {
+      const proposal = proposals[index];
+      const reason = validateFinalStateProposal(proposal, input.finalBody);
+      if (reason) return invalid(`finalStateProposals[${index}]_${reason}`);
+    }
+  }
+  return { valid: true, reason: null };
+}
+
+export function hasExplicitRevisionNoOp(parsed: Record<string, unknown>): boolean {
+  if (!Array.isArray(parsed.actions) || parsed.actions.length !== 0) {
+    return false;
+  }
+  if (!parsed.validNoOpReasons || typeof parsed.validNoOpReasons !== 'object') {
+    return false;
+  }
+  return Object.values(parsed.validNoOpReasons as Record<string, unknown>).some(
+    value => nonEmptyString(value).length > 0,
+  );
+}
+
+function validateFinalStateProposal(
+  value: unknown,
+  finalBody: string,
+): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return 'not_object';
+  }
+  const proposal = value as Record<string, unknown>;
+  if (
+    typeof proposal.proposalType !== 'string' ||
+    !(QA_STATE_PROPOSAL_TYPES as readonly string[]).includes(
+      proposal.proposalType,
+    )
+  ) {
+    return 'proposalType';
+  }
+  if (
+    !proposal.payload ||
+    typeof proposal.payload !== 'object' ||
+    Array.isArray(proposal.payload)
+  ) {
+    return 'payload';
+  }
+  if (proposal.risk !== 'normal' && proposal.risk !== 'major') {
+    return 'risk';
+  }
+  const evidenceQuote = nonEmptyString(proposal.evidenceQuote);
+  if (evidenceQuote.length < 4 || evidenceQuote.length > 80) {
+    return 'evidenceQuote_length';
+  }
+  if (resolveEvidenceQuoteLocations(finalBody, evidenceQuote).status !== 'accepted') {
+    return 'evidenceQuote_not_unique_in_final_body';
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(proposal, 'subjectRefType') &&
+    (typeof proposal.subjectRefType !== 'string' ||
+      !normalizeContinuationProposalSubjectRefType(proposal.subjectRefType))
+  ) {
+    return 'subjectRefType';
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(proposal, 'subjectRefId') &&
+    (typeof proposal.subjectRefId !== 'string' || !proposal.subjectRefId.trim())
+  ) {
+    return 'subjectRefId';
+  }
+  return null;
 }
 
 function nonEmptyString(value: unknown): string {

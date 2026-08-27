@@ -29,6 +29,15 @@ const validNeedsRevision = {
   ],
 };
 
+const validRevision = {
+  schemaVersion: 1,
+  strategy: 'full_revision',
+  actions: [{ covers: ['R1'], instruction: '改写问题段落' }],
+  preserve: [],
+  ending: 'keep',
+  content: '修订后正文',
+};
+
 function physicalResult(text: string) {
   return {
     text,
@@ -129,9 +138,7 @@ describe('Compact QA Structured Contract admission', () => {
         physicalResult(JSON.stringify(qaContentOnlyFailureFixture)),
       )
       .mockResolvedValueOnce(physicalResult(JSON.stringify(validNeedsRevision)))
-      .mockResolvedValueOnce(
-        physicalResult(JSON.stringify({ content: '修订后正文' })),
-      );
+      .mockResolvedValueOnce(physicalResult(JSON.stringify(validRevision)));
 
     try {
       await runWritingStages({
