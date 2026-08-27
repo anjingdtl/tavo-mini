@@ -76,6 +76,34 @@ describe('Continuation V5 budget', () => {
       targetChapterChars: 3_000,
     });
     expect(budget.maximumOutputTokens).toBeGreaterThan(14_000);
+    expect(budget.maximumOutputTokens).toBe(200_000);
+  });
+
+  test('full-text nodes do not turn target demand into a transport ceiling', () => {
+    const budget = resolveContinuationV5StageBudget({
+      stage: 'revision_writer',
+      frozenModelConfig: {
+        configId: 1,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 200_000,
+      },
+      frozenPolicy: {
+        ...policy,
+        continuation: {
+          ...policy.continuation,
+          hanDemand: {
+            estimatedTokensPerHan: 3,
+            minimumCompletionCoverageRatio: 0.72,
+          },
+        },
+      },
+      compiledPromptTokens: 75_000,
+      protocolSkeletonTokens: 320,
+      targetChapterChars: 3_000,
+    });
+    expect(budget.demandTokens).toBe(21_920);
+    expect(budget.maximumOutputTokens).toBe(200_000);
+    expect(budget.maximumOutputTokens).toBeGreaterThan(budget.demandTokens);
   });
 
   test('prompt budget exceeded fails preflight without sending', () => {

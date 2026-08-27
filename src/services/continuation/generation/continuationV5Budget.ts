@@ -140,10 +140,20 @@ export function resolveContinuationV5StageBudget(
     0,
     effectiveWindow - compiledPromptTokens - promptReserveTokens,
   );
+  // `demandTokens` is a completion-demand signal, not a hard transport cap.
+  // Full-text nodes must be allowed to finish a valid JSON envelope and a
+  // complete chapter even when the model's natural completion is larger than
+  // the nominal target. The previous demand cap made a legal V2 Revision
+  // stop exactly at the target-derived ceiling and then fail closed on
+  // finishReason=length. Provider/model capability, actual context capacity,
+  // and the structured-node demand ceiling remain the hard limits.
+  const demandCeiling = isV5FullTextStage(input.stage)
+    ? Number.POSITIVE_INFINITY
+    : Math.max(demandTokens, minimumOutputTokens);
   const maximumOutputTokens = Math.min(
     wireMaxOutputTokens,
     availableOutputTokens,
-    Math.max(demandTokens, minimumOutputTokens),
+    demandCeiling,
   );
   const pressure = Math.min(
     1,
