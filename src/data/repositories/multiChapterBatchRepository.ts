@@ -159,11 +159,16 @@ const BATCH_METADATA_SELECT = `
   current_ordinal, completed_count, active_item_ordinal,
   max_llm_calls, max_input_tokens, max_output_tokens,
   used_llm_calls, used_input_tokens, used_output_tokens,
-  outline_workflow_version, context_budget_version, pipeline_topology_version,
-  writing_mode, NULL AS continuation_anchor_json,
-  NULL AS continuation_execution_policy_json, execution_profile,
+  outline_workflow_version, context_budget_version,
   pause_reason, error_code, error_message, lease_owner, lease_expires_at,
   row_version, created_at, updated_at, started_at, completed_at, cancelled_at`;
+const BATCH_OPTIONAL_COLUMNS = [
+  'pipeline_topology_version',
+  'writing_mode',
+  'continuation_anchor_json',
+  'continuation_execution_policy_json',
+  'execution_profile',
+] as const;
 const BATCH_ITEM_METADATA_SELECT = `
   batch_id, ordinal, title, NULL AS synopsis, NULL AS key_beats_json,
   NULL AS carry_in, NULL AS carry_out, target_words, status, chapter_id,
@@ -190,6 +195,28 @@ type BatchPayloadColumn =
   | 'carry_in'
   | 'carry_out'
   | 'llm_config_snapshot_json';
+
+/**
+ * The batch repository is also used by migration evidence immediately after
+ * a partial schema upgrade (for example, Schema 53 before Schema 55). Keep
+ * the hot-path projection narrow while making later additive columns
+ * capability-detected instead of making a Schema-53 read fail on a missing
+ * identifier.
+ */
+async function batchMetadataSelect(): Promise<string> {
+  const db = await openDatabase();
+  const [result] = await db.executeSql(
+    'PRAGMA table_info(multi_chapter_batches)',
+  );
+  const columns = new Set<string>();
+  for (let i = 0; i < result.rows.length; i += 1) {
+    columns.add(String(result.rows.item(i).name));
+  }
+  const optional = BATCH_OPTIONAL_COLUMNS.map(column =>
+    columns.has(column) ? column : `NULL AS ${column}`,
+  );
+  return `${BATCH_METADATA_SELECT}, ${optional.join(', ')}`;
+}
 
 async function readBatchPayload(input: {
   table: BatchPayloadTable;
@@ -604,8 +631,9 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
 export async function getBatchById(
   batchId: string,
 ): Promise<MultiChapterBatchRow | null> {
+  const select = await batchMetadataSelect();
   const row = await one(
-    `SELECT ${BATCH_METADATA_SELECT} FROM multi_chapter_batches WHERE id = ?`,
+    `SELECT ${select} FROM multi_chapter_batches WHERE id = ?`,
     [batchId],
   );
   return row ? materializeBatchRow(row) : null;
@@ -615,8 +643,9 @@ export async function getBatchById(
 export async function getActiveBatchByProject(
   projectId: number,
 ): Promise<MultiChapterBatchRow | null> {
+  const select = await batchMetadataSelect();
   const row = await one(
-    `SELECT ${BATCH_METADATA_SELECT} FROM multi_chapter_batches
+    `SELECT ${select} FROM multi_chapter_batches
      WHERE project_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')
      ORDER BY updated_at DESC LIMIT 1`,
     [projectId],

@@ -284,8 +284,40 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       })),
     );
   }
-  // Outbox: list pending
-  if (s.startsWith('SELECT * FROM CONTINUATION_STATE_SYNC_OUTBOX')) {
+  // Outbox payloads are now projected away from metadata reads and loaded in
+  // bounded chunks. Keep the test double faithful to both query shapes.
+  if (
+    s.includes('SELECT LENGTH(PAYLOAD_JSON)') &&
+    s.includes('FROM CONTINUATION_STATE_SYNC_OUTBOX')
+  ) {
+    const row = mockStore.outbox.find(o => o.id === params[0]);
+    return mockRes(
+      row?.payload_json == null
+        ? []
+        : [{ payload_length: String(row.payload_json).length }],
+    );
+  }
+  if (
+    s.includes('SELECT SUBSTR(PAYLOAD_JSON,') &&
+    s.includes('FROM CONTINUATION_STATE_SYNC_OUTBOX')
+  ) {
+    const row = mockStore.outbox.find(o => o.id === params[params.length - 1]);
+    const offset = Number(params[0] || 1) - 1;
+    const size = Number(params[1] || 0);
+    return mockRes([
+      {
+        payload_chunk: String(row?.payload_json ?? '').slice(
+          offset,
+          offset + size,
+        ),
+      },
+    ]);
+  }
+  // Outbox: list pending / dedupe lookup
+  if (
+    s.startsWith('SELECT') &&
+    s.includes('FROM CONTINUATION_STATE_SYNC_OUTBOX')
+  ) {
     const normalized = sql.replace(/\s+/g, ' ');
     if (/STATE IN \('pending'/i.test(normalized)) {
       return mockRes(mockStore.outbox.filter(o => o.state === 'pending'));
