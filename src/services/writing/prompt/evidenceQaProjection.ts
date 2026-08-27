@@ -15,7 +15,7 @@ import { estimateTokens } from '../../../utils/tokenEstimator';
 import type { FrozenWritingContext } from '../contracts/frozenWritingContext';
 import type { WritingRequirements } from '../contracts/writingRequirement';
 import type { WritingStageArtifacts } from '../contracts/writingStage';
-import type { WritingSourceKind } from '../contracts/writingSource';
+import type { WritingSource, WritingSourceKind } from '../contracts/writingSource';
 
 export const QA_EVIDENCE_PROJECTION_VERSION = 1 as const;
 
@@ -109,6 +109,9 @@ export function resolveQaEvidenceProjection(input: {
   const kindById = new Map(
     materials.map(item => [item.source.candidateId, item.source.kind]),
   );
+  const sourceById = new Map(
+    materials.map(item => [item.source.candidateId, item.source]),
+  );
   const relevantIds = renderedItems
     .filter(item => item.included)
     .map(item => item.candidateId)
@@ -140,9 +143,14 @@ export function resolveQaEvidenceProjection(input: {
   const hitKinds: WritingSourceKind[] = [];
   relevantBlocks.forEach((block, index) => {
     const id = relevantIds[index];
-    const name = entityName(block);
+    const source = sourceById.get(id);
+    const name = entityName(block, source);
     if (!name || name.length < 2 || !haystack.includes(name)) return;
-    hitBlocks.push(block);
+    // A resource card can contain several entities or unrelated facts. Keep
+    // the matched entity's compact first fact in the QA projection instead of
+    // replaying the whole card; this preserves the hit evidence without
+    // smuggling unrelated names into a supposedly narrow input.
+    hitBlocks.push(compactEvidenceBlock(block, name, source));
     hitIds.push(id);
     const kind = kindById.get(id)!;
     if (!hitKinds.includes(kind)) hitKinds.push(kind);
@@ -198,7 +206,15 @@ export function resolveQaEvidenceProjection(input: {
   };
 }
 
-function entityName(block: string): string {
+function entityName(block: string, source?: WritingSource): string {
+  const sourceText = String(source?.content || '').trim();
+  const labeledCharacter = sourceText.match(/角色\s*[「『"]([^」』"]+)[」』"]/);
+  if (labeledCharacter?.[1]) return cleanForMatch(labeledCharacter[1]);
+  const sourceBody = sourceText.replace(/^【[^\n]*】\s*/u, '').trim();
+  const sourceHead = sourceBody.slice(0, 64);
+  const sourceSep = sourceHead.search(/[:：,，。;；\s]/);
+  if (sourceSep > 0) return cleanForMatch(sourceHead.slice(0, sourceSep));
+
   // 块形如 【kind:candidateId】\n<正文>；实体名取自正文首段。
   const body = block.split('\n').slice(1).join('\n').trim();
   if (!body) return '';
@@ -206,6 +222,25 @@ function entityName(block: string): string {
   const sep = head.search(/[:：,，。;；\s]/);
   const raw = sep > 0 ? head.slice(0, sep) : head.slice(0, 10);
   return cleanForMatch(raw);
+}
+
+function compactEvidenceBlock(
+  block: string,
+  name: string,
+  source?: WritingSource,
+): string {
+  const header = block.split('\n')[0] || '';
+  const sourceText = String(source?.content || '').trim();
+  const sourceNameIndex = sourceText.indexOf(name);
+  const blockBody = block.split('\n').slice(1).join('\n').trim();
+  const body = sourceNameIndex >= 0 ? sourceText.slice(sourceNameIndex) : blockBody;
+  const normalizedBody = body.replace(/^[」』”"']/, '');
+  const boundary = normalizedBody.search(/[，,。；;!?！？\n]/);
+  const snippet = (boundary > 0
+    ? normalizedBody.slice(0, boundary)
+    : normalizedBody.slice(0, Math.max(name.length, 80)))
+    .trim();
+  return `${header}\n${snippet || name}`.trim();
 }
 
 /** 归一化：只保留中文、字母、数字（去掉标点与空白后做包含匹配）。 */

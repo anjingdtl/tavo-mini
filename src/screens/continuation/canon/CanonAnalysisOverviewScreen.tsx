@@ -376,6 +376,7 @@ export const CanonAnalysisOverviewScreen: React.FC<{
                 providerType: requestConfig.provider_type,
                 contextWindow: requestConfig.context_window,
                 maxOutputTokens: requestConfig.max_output_tokens,
+                requestConfig,
               });
               setBusy(false);
               if (!precheck.ok) {
@@ -406,7 +407,11 @@ export const CanonAnalysisOverviewScreen: React.FC<{
               }
               Alert.alert(
                 fast ? '即将开始快速续写分析' : '即将开始完整原著分析',
-                `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens: ${precheck.maxOutputTokens}\n\n派生计算：\n  单 batch 实际输入目标: ${precheck.targetInputBudget} tokens\n  单 batch 硬性安全上限: ${precheck.effectiveInputBudget} tokens\n  预计 batch 数: ${precheck.estimatedBatchCount}\n  预计 LLM 调用次数: ${precheck.estimatedWorkItemCount}\n  预计耗时: 约 ${precheck.estimatedDurationMinutes} 分钟\n\n分析过程可暂停或取消。`,
+                `当前 LLM 配置：\n  context_window: ${precheck.contextWindow}\n  max_output_tokens（逻辑配置）: ${precheck.maxOutputTokens}\n  实际发送 max_tokens: ${precheck.wireMaxOutputTokens}${
+                  precheck.providerAdapterId
+                    ? `（${precheck.providerAdapterId} 适配器）`
+                    : ''
+                }\n\n派生计算：\n  单 batch 实际输入目标: ${precheck.targetInputBudget} tokens\n  单 batch 硬性安全上限: ${precheck.effectiveInputBudget} tokens\n  预计 batch 数: ${precheck.estimatedBatchCount}\n  预计 LLM 调用次数: ${precheck.estimatedWorkItemCount}\n  预计耗时: 约 ${precheck.estimatedDurationMinutes} 分钟\n\n分析过程可暂停或取消。`,
                 [
                   { text: '取消', style: 'cancel' },
                   {

@@ -8,7 +8,8 @@
  *
  * Checks (doc §16):
  *   1. the completed chapter is finalized;
- *   2. its extract_state outbox task finished (not failed);
+ *   2. its Final-Body State Proposal pipeline and rebuild task finished;
+ *      legacy extract_state rows remain supported for old runs;
  *   3. its rebuild_story_memory outbox task finished (not failed);
  *   4. no unresolved outbox failure the Freeze depends on (closure P0-1:
  *      historical/stale/superseded/covered/unrelated failures never block);
@@ -127,10 +128,17 @@ export async function checkNextChapterReady(
     getOutboxByDedupe(extractKey),
     getOutboxByDedupe(rebuildKey),
   ]);
-  for (const [label, row] of [
-    ['状态提取', extractRow],
-    ['故事记忆重建', rebuildRow],
-  ] as const) {
+  // B6 normal finalization no longer creates extract_state: the QA/Revision
+  // proposal rows are committed with the final body and only the direct Story
+  // Memory rebuild is queued. Old/manual rows still take the legacy gate.
+  const directFinalBodyPipeline = isFinalBodyStateProposalRebuild(rebuildRow);
+  const settlementRows = directFinalBodyPipeline
+    ? ([['故事记忆重建', rebuildRow]] as const)
+    : ([
+        ['状态提取', extractRow],
+        ['故事记忆重建', rebuildRow],
+      ] as const);
+  for (const [label, row] of settlementRows) {
     if (!row) {
       return {
         ready: false,
@@ -297,6 +305,19 @@ export async function checkNextChapterReady(
   }
 
   return { ready: true };
+}
+
+/** Whether a rebuild row belongs to the B6 Final-Body proposal pipeline. */
+export function isFinalBodyStateProposalRebuild(
+  row: ContinuationOutboxItem | null,
+): boolean {
+  if (!row || row.operation !== 'rebuild_story_memory') return false;
+  try {
+    const payload = JSON.parse(row.payloadJson);
+    return payload?.stateProposalPipeline === 'final_body_v1';
+  } catch {
+    return false;
+  }
 }
 
 /** Scoped story-memory truth snapshot used by the failure classifier. */

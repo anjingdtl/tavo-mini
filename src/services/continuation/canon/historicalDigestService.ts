@@ -13,6 +13,10 @@ import {
   resolveLLMRequestConfigById,
 } from '../../llm';
 import type { LLMRequestConfig } from '../../llm/types';
+import {
+  resolveProviderOutputBudget,
+  type ProviderCapabilityConfig,
+} from '../../llm/providerCapabilities';
 import { continuationSourceReader } from '../continuationSourceReader';
 import type { BoundedSourceChapter } from '../types';
 import { CanonQueryService } from './canonQueryService';
@@ -20,7 +24,6 @@ import type { HistoricalChapterCandidate, HistoricalDigest } from './types';
 
 const LEGACY_HISTORY_INPUT_CHAR_BUDGET = 18_000;
 const HISTORY_PROMPT_OVERHEAD_TOKENS = 1_200;
-const HISTORY_MAX_OUTPUT_RESERVE_TOKENS = 65_536;
 type Row = Record<string, any>;
 
 export interface HistoricalDigestCoverage {
@@ -103,13 +106,14 @@ function chapterTerms(chapter: BoundedSourceChapter): Array<{ display: string; n
 export function resolveHistoricalDigestInputCharBudget(
   contextWindow: number | null | undefined,
   maxOutputTokens: number | null | undefined,
+  providerConfig?: ProviderCapabilityConfig,
 ): number {
   if (!Number.isFinite(contextWindow) || (contextWindow ?? 0) <= 0) {
     return LEGACY_HISTORY_INPUT_CHAR_BUDGET;
   }
-  const outputReserve = Math.min(
-    Math.max(16_384, maxOutputTokens ?? 16_384),
-    HISTORY_MAX_OUTPUT_RESERVE_TOKENS,
+  const outputReserve = resolveHistoricalDigestMaxTokens(
+    maxOutputTokens,
+    providerConfig,
   );
   return Math.max(
     LEGACY_HISTORY_INPUT_CHAR_BUDGET,
@@ -124,11 +128,20 @@ export function resolveHistoricalDigestInputCharBudget(
 
 export function resolveHistoricalDigestMaxTokens(
   maxOutputTokens: number | null | undefined,
+  providerConfig?: ProviderCapabilityConfig,
 ): number {
-  return Math.min(
-    Math.max(8192, maxOutputTokens ?? 8192),
-    HISTORY_MAX_OUTPUT_RESERVE_TOKENS,
-  );
+  const config: ProviderCapabilityConfig = providerConfig ?? {
+    provider_type: 'openai_compatible',
+    model_name: '',
+    url: '',
+  };
+  return resolveProviderOutputBudget({
+    config: {
+      ...config,
+      max_output_tokens: maxOutputTokens,
+    },
+    requestedMaxTokens: maxOutputTokens,
+  }).wireMaxTokens;
 }
 
 function splitHistoricalDigestChapters(
@@ -235,6 +248,7 @@ export async function queueHistoricalDigests(input: {
   const inputCharBudget = resolveHistoricalDigestInputCharBudget(
     requestConfig.context_window,
     requestConfig.max_output_tokens,
+    requestConfig,
   );
   const groups = input.groupSize
     ? Array.from(
@@ -315,11 +329,15 @@ export async function processHistoricalDigest(digestId: string): Promise<Histori
             resolveHistoricalDigestInputCharBudget(
               requestConfig.context_window,
               requestConfig.max_output_tokens,
+              requestConfig,
             ),
           ),
         },
       ],
-      resolveHistoricalDigestMaxTokens(requestConfig.max_output_tokens),
+      resolveHistoricalDigestMaxTokens(
+        requestConfig.max_output_tokens,
+        requestConfig,
+      ),
       buildHistoricalDigestRequestOptions(
         digest.projectId,
         digestId,

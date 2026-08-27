@@ -68,6 +68,8 @@ export interface WritingCredentialRef {
 export interface FrozenModelConfig {
   configId: number | null;
   provider: string;
+  /** Stable capability-adapter identity frozen with the request. */
+  providerAdapterId?: string | null;
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;

@@ -68,8 +68,9 @@ import { migrateV52ToV53 } from './v52-to-v53';
 import { migrateV53ToV54 } from './v53-to-v54';
 import { migrateV54ToV55 } from './v54-to-v55';
 import { migrateV55ToV56 } from './v55-to-v56';
+import { migrateV56ToV57 } from './v56-to-v57';
 
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 57;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -418,6 +419,16 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV55ToV56,
   },
+  {
+    from: 56,
+    to: 57,
+    breaking: false,
+    // Preserve byte-exact Final bodies when Draft/Revision/Final repeat the
+    // same content; the old cross-stage hash constraint forced invisible
+    // suffixes and broke Final-Body fingerprint binding.
+    buildStatements: noSchemaStatements,
+    migrate: migrateV56ToV57,
+  },
 ];
 
 export async function runMigrations(
@@ -477,6 +488,10 @@ export async function runMigrations(
       // Idempotent logic migration: continuation stage_results CHECK rebuild
       // for Phase 4 §7.2 (compact Standard writes a `unified_qa` ledger row).
       await migrateV55ToV56(db);
+    } else if (migration.from === 56 && migration.to === 57) {
+      // Idempotent logic migration: artifact content uniqueness is now
+      // stage-local so the Final body hash remains exact.
+      await migrateV56ToV57(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

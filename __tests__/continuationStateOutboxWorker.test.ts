@@ -533,6 +533,71 @@ describe('processContinuationOutbox: malformed LLM output', () => {
     expect(result.failed).toBe(1);
     expect(mockStore.outbox[0].last_error).toMatch(/hash 不一致/);
   });
+
+  test('explicit legacy fallback never double-writes after Final-Body settlement', async () => {
+    const content = '主角走在路上，推开密室石门。';
+    seedChapter(content);
+    const hash = contentRevisionHash(content);
+    const rebuildDedupeKey = `rebuild_story_memory:auto:1:21:${hash}`;
+    mockStore.outbox = [
+      {
+        id: 'co_final_body',
+        project_id: 1,
+        chapter_id: 10,
+        operation: 'rebuild_story_memory',
+        payload_json: JSON.stringify({
+          fromPosition: 21,
+          stateProposalPipeline: 'final_body_v1',
+          stateProposalFingerprint: hash,
+        }),
+        dedupe_key: rebuildDedupeKey,
+        state: 'pending',
+        attempt_count: 0,
+        last_error: null,
+        created_at: 't0',
+        updated_at: 't0',
+        completed_at: null,
+      },
+      {
+        id: 'co_legacy_fallback',
+        project_id: 1,
+        chapter_id: 10,
+        operation: 'extract_state',
+        payload_json: JSON.stringify({
+          projectId: 1,
+          chapterId: 10,
+          chapterRevisionHash: hash,
+        }),
+        dedupe_key: `extract_state:10:${hash}`,
+        state: 'pending',
+        attempt_count: 0,
+        last_error: null,
+        created_at: 't1',
+        updated_at: 't1',
+        completed_at: null,
+      },
+    ];
+
+    const result = await processContinuationOutbox({
+      limit: 5,
+      callExtract: async () =>
+        JSON.stringify({
+          proposals: [
+            {
+              proposalType: 'character_state',
+              payload: { staleLegacy: true },
+              evidenceStart: 0,
+              evidenceEnd: content.length,
+            },
+          ],
+        }),
+    });
+
+    expect(result.processed).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(mockStore.proposals).toHaveLength(0);
+    expect(mockStore.outbox[1].state).toBe('completed');
+  });
 });
 
 describe('processContinuationOutbox: real-path thinking placement (regression)', () => {
@@ -591,7 +656,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     resolveConfigMock.mockReset();
   });
 
-  test('deepseek-v4-flash: thinking disabled at CALL level, 4096 budget, raw requestConfig', async () => {
+  test('deepseek-v4-flash: thinking disabled at CALL level, elastic budget, raw requestConfig', async () => {
     seedForExtraction();
     resolveConfigMock.mockResolvedValue({
       id: 7,
@@ -599,7 +664,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
       api_key: 'k',
       model_name: 'deepseek-v4-flash',
       url: 'https://api.deepseek.com/chat/completions',
-      context_window: 1000000,
+      context_window: 1_000_000,
       max_output_tokens: 200000,
     });
     callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
@@ -609,7 +674,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     expect(result.failed).toBe(0);
     expect(callLLMResult).toHaveBeenCalledTimes(1);
     const [messages, maxTokens, callConfig] = callLLMMock.mock.calls[0];
-    expect(maxTokens).toBe(4096);
+    expect(maxTokens).toBe(200000);
     expect(Array.isArray(messages)).toBe(true);
     // THE regression assertion: thinking lives on the call config itself.
     expect(callConfig.thinking).toEqual({ type: 'disabled' });
@@ -645,6 +710,8 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
       api_key: 'k',
       model_name: 'deepseek-chat',
       url: 'https://api.deepseek.com/chat/completions',
+      context_window: 8192,
+      max_output_tokens: 200000,
     });
     callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
 
@@ -661,6 +728,8 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
       api_key: 'k',
       model_name: 'qwen-max',
       url: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+      context_window: 1_000_000,
+      max_output_tokens: 200000,
     });
     callLLMMock.mockResolvedValue({ text: '{"proposals":[]}' });
 
@@ -685,16 +754,18 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     await processContinuationOutbox({ limit: 5 });
     expect(resolveActiveConfigMock).toHaveBeenCalledTimes(1);
     const [, maxTokens, callConfig] = callLLMMock.mock.calls[0];
-    expect(maxTokens).toBe(4096);
+    expect(maxTokens).toBe(200000);
     expect(callConfig.thinking).toEqual({ type: 'disabled' });
   });
 
-  test('uses the safe fallback when capability metadata is unavailable', () => {
-    expect(resolveContinuationStateExtractionMaxOutputTokens()).toBe(4096);
+  test('fails closed without capability metadata and derives from context when available', () => {
+    expect(() => resolveContinuationStateExtractionMaxOutputTokens()).toThrow(
+      /显式状态提取回退缺少模型能力/,
+    );
     expect(
       resolveContinuationStateExtractionMaxOutputTokens({
-        max_output_tokens: 2048,
+        context_window: 10000,
       }),
-    ).toBe(2048);
+    ).toBe(2000);
   });
 });

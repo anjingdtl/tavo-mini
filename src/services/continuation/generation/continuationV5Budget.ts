@@ -4,6 +4,7 @@
  * Structured nodes: narrative_architect / adversarial_auditor.
  */
 import type { ContextAutomationPolicyV2 } from '../../contextAutomationPolicy';
+import { resolveEffectiveMaxOutputTokens } from '../../llm/providerCapabilities';
 import {
   CONTINUATION_V5_LENGTH_POLICY,
   resolveV5LengthTargets,
@@ -20,6 +21,10 @@ export interface FrozenContinuationV5StageModel {
   configId: number;
   contextWindow: number;
   maxOutputTokens: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
 }
 
 export interface ResolveContinuationV5StageBudgetInput {
@@ -76,6 +81,13 @@ export function resolveContinuationV5StageBudget(
     input.frozenModelConfig.maxOutputTokens,
     'maxOutputTokens',
   );
+  const wireMaxOutputTokens = resolveEffectiveMaxOutputTokens({
+    providerType: input.frozenModelConfig.providerType,
+    modelName: input.frozenModelConfig.modelName,
+    url: input.frozenModelConfig.url,
+    configuredMaxOutputTokens: declaredMaxOutputTokens,
+    providerAdapterId: input.frozenModelConfig.providerAdapterId,
+  });
   const compiledPromptTokens = nonNegative(
     input.compiledPromptTokens,
     'compiledPromptTokens',
@@ -129,7 +141,7 @@ export function resolveContinuationV5StageBudget(
     effectiveWindow - compiledPromptTokens - promptReserveTokens,
   );
   const maximumOutputTokens = Math.min(
-    declaredMaxOutputTokens,
+    wireMaxOutputTokens,
     availableOutputTokens,
     Math.max(demandTokens, minimumOutputTokens),
   );
@@ -153,6 +165,7 @@ export function resolveContinuationV5StageBudget(
     contextWindow,
     effectiveWindow,
     declaredMaxOutputTokens,
+    wireMaxOutputTokens,
     compiledPromptTokens,
     protocolSkeletonTokens,
     promptReserveTokens,
@@ -240,6 +253,10 @@ export function frozenModelToV5Stage(
     configId: config.configId,
     contextWindow: config.contextWindow,
     maxOutputTokens: config.maxOutputTokens,
+    providerType: config.providerType,
+    modelName: config.modelName,
+    url: config.url,
+    providerAdapterId: config.providerAdapterId,
   };
 }
 

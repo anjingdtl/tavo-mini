@@ -21,6 +21,7 @@ import {
   parseBatchChapterPlan,
   computePlannerHash,
   resolvePlannerWireMaxTokens,
+  resolvePlannerReservedOutputTokens,
 } from './planner';
 import {
   BATCH_MAX_CHAPTERS,
@@ -371,7 +372,12 @@ export async function createContinuationBatchChapterPlan(
       '当前模型未配置有效上下文窗口',
     );
   }
-  const reservedOutputTokens = input.reservedOutputTokens ?? 4000;
+  const reservedOutputTokens = resolvePlannerReservedOutputTokens({
+    explicitReservation: input.reservedOutputTokens,
+    contextWindow,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    providerConfig: requestConfig,
+  });
 
   const compiled = compileContinuationBatchPlannerRequest({
     sourcePrompt: input.sourcePrompt,
@@ -396,6 +402,7 @@ export async function createContinuationBatchChapterPlan(
     contextWindow,
     estimatedInputTokens: ready.estimatedInputTokens,
     safetyMargin: ready.safetyMargin,
+    providerConfig: requestConfig,
   });
   const requestJson = JSON.stringify({
     messages,

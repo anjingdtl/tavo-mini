@@ -122,8 +122,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       setSaveStatus('saved');
       const project = useProjectStore.getState().currentProject;
       if (project?.mode === 'continuation') {
-        // Spec §11: finalize inserts extract_state outbox; no LLM in transaction.
-        // UI hints that state extraction will be an extra billed call.
+        // B6: Final-Body State Proposals are persisted with the final body;
+        // only Story Memory rebuild remains in the normal post-writing queue.
         const fin = await finalizeContinuationChapter({
           projectId: project.id,
           chapterId: savedChapter.id,
@@ -133,7 +133,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         Toast.show({
           type: 'success',
           text1: '章节已定稿',
-          text2: `状态提取与故事记忆重建已排队（hash ${fin.revisionHash.slice(
+          text2: `状态提案与故事记忆重建已排队（hash ${fin.revisionHash.slice(
             0,
             8,
           )}）。`,

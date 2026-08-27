@@ -269,6 +269,10 @@ function buildExecutionSnapshot(params: {
     ? resolveElasticStageOutputReservation({
         contextWindow,
         modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+        providerType: params.requestConfig.provider_type,
+        modelName: params.requestConfig.model_name,
+        url: params.requestConfig.url,
+        providerAdapterId: params.requestConfig.provider_adapter_id,
       })
     : undefined;
   const stageBudgets =
@@ -285,9 +289,17 @@ function buildExecutionSnapshot(params: {
             contextWindow,
             requestedTier,
             modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+            providerType: params.requestConfig.provider_type,
+            modelName: params.requestConfig.model_name,
+            url: params.requestConfig.url,
+            providerAdapterId: params.requestConfig.provider_adapter_id,
             requestMaxTokenOverrides: resolveOutlineElasticStageReservations({
               contextWindow,
               modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+              providerType: params.requestConfig.provider_type,
+              modelName: params.requestConfig.model_name,
+              url: params.requestConfig.url,
+              providerAdapterId: params.requestConfig.provider_adapter_id,
             }),
             visibleOutputFloors: {
               brief: briefVisibleOutputFloor || 1200,
@@ -998,6 +1010,7 @@ async function actionPersistInitialSnapshot(
     model: freezeWritingModelConfig({
       configId: runtime.requestConfig.id ?? null,
       provider: runtime.requestConfig.provider_type,
+      providerAdapterId: runtime.requestConfig.provider_adapter_id,
       modelName: runtime.requestConfig.model_name,
       url: runtime.requestConfig.url,
       name: runtime.requestConfig.name,
@@ -1030,6 +1043,10 @@ async function actionPersistInitialSnapshot(
         sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
           contextWindow: Number(runtime.requestConfig.context_window) || 0,
           modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,
+          providerType: runtime.requestConfig.provider_type,
+          modelName: runtime.requestConfig.model_name,
+          url: runtime.requestConfig.url,
+          providerAdapterId: runtime.requestConfig.provider_adapter_id,
           outlineStageBudgets: execution.stageBudgets,
         }),
       },
@@ -1207,6 +1224,13 @@ async function actionFinalizeFromDraft(
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
   const draftText = await getDraftText(taskId);
+  // Compact Standard's clean path may have produced a Revision (`brief` in
+  // the outline checkpoint projection).  The final-closure action is entered
+  // as `finalize_from_draft` for historical state-machine compatibility, but
+  // it must not write the Draft over the already validated Revision.  A
+  // degraded path intentionally retains Draft as its explicit fallback.
+  const finalText =
+    !degraded ? (await getStageText(taskId, 'brief')) || draftText : draftText;
   const runtime = await loadRuntime(taskId, chapter);
   const mode = runtime.config.pipelineMode;
   // The One-Shot (极速) profile froze its stage skips at Freeze time. The
@@ -1299,9 +1323,9 @@ async function actionFinalizeFromDraft(
     return;
   }
   if (store.persistTaskFinalText) {
-    await store.persistTaskFinalText(taskId, draftText);
+    await store.persistTaskFinalText(taskId, finalText);
   } else {
-    store.setTaskFinalText(taskId, draftText);
+    store.setTaskFinalText(taskId, finalText);
   }
   if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成校验，准备保存', 98);

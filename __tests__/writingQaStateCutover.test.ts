@@ -15,11 +15,13 @@
 
 import {
   buildQaProposalInsertRows,
+  resolveFinalBodyStateProposals,
   resolveQaProposalsToOffsets,
 } from '../src/services/writing/prompt/qaStateProposals';
+import { sha256Hex } from '../src/services/continuation/hashUtils';
 import { compileSharedWritingPrompt } from '../src/services/writing/prompt/sharedPromptCompiler';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
-import { continuationRequest, outlineRequest } from './helpers/oneShotFixtures';
+import { outlineRequest } from './helpers/oneShotFixtures';
 
 describe('B6 — resolveQaProposalsToOffsets（§8.4 本地解析 + 过滤）', () => {
   const finalBody = '夜谈将尽，柳如烟把信物放在案上。\n烛火映着她眉间的霜色。';
@@ -85,8 +87,9 @@ describe('B6 — buildQaProposalInsertRows（进入 legacy 提案管道）', () 
           risk: 'normal',
         },
       ],
+      draftBody: '夜谈将尽，柳如烟把信物放在案上。',
       finalBody: '夜谈将尽，柳如烟把信物放在案上。',
-      finalBodyFingerprint: 'abc123',
+      finalBodyFingerprint: sha256Hex('夜谈将尽，柳如烟把信物放在案上。'),
       projectId: 7,
       chapterId: 9001,
       sourceRunId: 'run-1',
@@ -98,8 +101,12 @@ describe('B6 — buildQaProposalInsertRows（进入 legacy 提案管道）', () 
     expect(rows[0].sourceRunId).toBe('run-1');
     expect(rows[0].payloadJson).toContain('信物已移交');
     // contentHash 绑定最终正文指纹（§8.5）
-    expect(rows[0].extractionContentHash).toBe('abc123');
-    expect(rows[0].chapterRevisionHash).toBe('abc123');
+    expect(rows[0].extractionContentHash).toBe(
+      sha256Hex('夜谈将尽，柳如烟把信物放在案上。'),
+    );
+    expect(rows[0].chapterRevisionHash).toBe(
+      sha256Hex('夜谈将尽，柳如烟把信物放在案上。'),
+    );
   });
 
   test('ambiguous evidence drops the row (multi-match exact quote)', () => {
@@ -112,8 +119,9 @@ describe('B6 — buildQaProposalInsertRows（进入 legacy 提案管道）', () 
           risk: 'normal',
         },
       ],
+      draftBody: '霜色。\n霜色。',
       finalBody: '霜色。\n霜色。',
-      finalBodyFingerprint: 'h1',
+      finalBodyFingerprint: sha256Hex('霜色。\n霜色。'),
       projectId: 1,
       chapterId: 2,
       sourceRunId: 'run-x',
@@ -159,13 +167,144 @@ describe('B6 — cutover stays shadow-safe on outline scenarios', () => {
           risk: 'normal',
         },
       ],
+      draftBody: body,
       finalBody: body,
-      finalBodyFingerprint: 'h-outline',
+      finalBodyFingerprint: sha256Hex(body),
       projectId: 1,
       chapterId: 2,
       sourceRunId: 'run-o',
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].evidenceStart).toBe(body.indexOf('墨色未干'));
+  });
+});
+
+describe('B6 — Final-Body State Proposal authority', () => {
+  test('Final==Draft admits QA proposals and ignores Revision candidates', () => {
+    const body = '柳如烟收起信物，决定暂不回城。';
+    const result = resolveFinalBodyStateProposals({
+      draftBody: body,
+      finalBody: body,
+      qaStructured: {
+        stateProposals: [
+          {
+            proposalType: 'character_state',
+            payload: { decision: '暂不回城' },
+            evidenceQuote: '决定暂不回城',
+            risk: 'normal',
+          },
+        ],
+      },
+      revisionStructured: {
+        finalStateProposals: [
+          {
+            proposalType: 'plot_advance',
+            payload: { wrongSource: true },
+            evidenceQuote: '收起信物',
+            risk: 'major',
+          },
+        ],
+        proposalSourceBodyFingerprint: sha256Hex(body),
+      },
+    });
+    expect(result.finalEqualsDraft).toBe(true);
+    expect(result.source).toBe('qa');
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].payload).toEqual({ decision: '暂不回城' });
+  });
+
+  test('Final!=Draft discards QA even when its quote still matches Final', () => {
+    const draft = '柳如烟收起信物。';
+    const finalBody = '柳如烟收起信物，决定暂不回城。';
+    const result = resolveFinalBodyStateProposals({
+      draftBody: draft,
+      finalBody,
+      qaStructured: {
+        stateProposals: [
+          {
+            proposalType: 'character_state',
+            payload: { staleQa: true },
+            evidenceQuote: '收起信物',
+            risk: 'normal',
+          },
+        ],
+      },
+      revisionStructured: {
+        finalStateProposals: [],
+        // Deliberately absent: a matching QA quote cannot revive QA.
+      },
+    });
+    expect(result.finalEqualsDraft).toBe(false);
+    expect(result.source).toBe('none');
+    expect(result.rows).toEqual([]);
+    expect(result.rejectionReason).toBe(
+      'revision_final_body_fingerprint_mismatch',
+    );
+  });
+
+  test('Final!=Draft admits only fingerprint-matched Revision proposals', () => {
+    const draft = '柳如烟收起信物。';
+    const finalBody = '柳如烟收起信物，决定暂不回城。';
+    const result = resolveFinalBodyStateProposals({
+      draftBody: draft,
+      finalBody,
+      qaStructured: {
+        stateProposals: [
+          {
+            proposalType: 'character_state',
+            payload: { staleQa: true },
+            evidenceQuote: '收起信物',
+            risk: 'normal',
+          },
+        ],
+      },
+      revisionStructured: {
+        finalStateProposals: [
+          {
+            proposalType: 'character_state',
+            payload: { decision: '暂不回城' },
+            evidenceQuote: '决定暂不回城',
+            risk: 'normal',
+          },
+        ],
+        proposalSourceBodyFingerprint: sha256Hex(finalBody),
+      },
+    });
+    expect(result.source).toBe('revision');
+    expect(result.fingerprintMatched).toBe(true);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].payload).toEqual({ decision: '暂不回城' });
+  });
+
+  test('fingerprint mismatch rejects Revision proposals even when quote matches', () => {
+    const draft = '原稿。';
+    const finalBody = '终稿，新增事实。';
+    const result = resolveFinalBodyStateProposals({
+      draftBody: draft,
+      finalBody,
+      qaStructured: {
+        stateProposals: [
+          {
+            proposalType: 'other',
+            payload: { staleQa: true },
+            evidenceQuote: '新增事实',
+            risk: 'normal',
+          },
+        ],
+      },
+      revisionStructured: {
+        finalStateProposals: [
+          {
+            proposalType: 'other',
+            payload: { staleRevision: true },
+            evidenceQuote: '新增事实',
+            risk: 'normal',
+          },
+        ],
+        proposalSourceBodyFingerprint: sha256Hex('another body'),
+      },
+    });
+    expect(result.rows).toEqual([]);
+    expect(result.fingerprintMatched).toBe(false);
   });
 });

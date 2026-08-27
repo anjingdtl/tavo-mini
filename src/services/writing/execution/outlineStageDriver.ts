@@ -248,6 +248,9 @@ async function backfillKernelFreezeFromEnvelope(input: {
     model: freezeWritingModelConfig({
       configId: execution.model.llmConfigId ?? null,
       provider: execution.model.provider,
+      providerAdapterId: (execution.model as typeof execution.model & {
+        providerAdapterId?: string | null;
+      }).providerAdapterId,
       modelName: execution.model.modelName,
       url: execution.model.url,
       name: execution.model.name,
@@ -279,6 +282,12 @@ async function backfillKernelFreezeFromEnvelope(input: {
         sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
           contextWindow: execution.model.contextWindow,
           modelMaxOutputTokens: execution.model.maxOutputTokens,
+          providerType: execution.model.provider,
+          modelName: execution.model.modelName,
+          url: execution.model.url,
+          providerAdapterId: (execution.model as typeof execution.model & {
+            providerAdapterId?: string | null;
+          }).providerAdapterId,
           outlineStageBudgets: execution.stageBudgets,
         }),
       },

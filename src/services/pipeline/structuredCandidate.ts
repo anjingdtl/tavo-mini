@@ -37,10 +37,23 @@ function parseOne(
   expectedRootKeys: readonly string[],
   coverageKeys: readonly string[],
   findingKeys: readonly string[],
+  allowSingleItemArray: boolean,
 ): { candidate: StructuredCandidate | null; rejection?: string } {
   const source = raw.trim();
   if (!source) return { candidate: null, rejection: 'empty_channel' };
-  const extracted = extractAuditJsonPayload(source);
+  let extractionSource = source;
+  // Some gateways serialize the complete message.content as a JSON string
+  // (including escaped braces), so the generic balanced extractor quite
+  // correctly sees no outer object. Decode that transport wrapper once.
+  try {
+    const decoded = JSON.parse(source);
+    if (typeof decoded === 'string' && decoded.trim()) {
+      extractionSource = decoded.trim();
+    }
+  } catch {
+    // Continue with the original channel text.
+  }
+  const extracted = extractAuditJsonPayload(extractionSource);
   if (!extracted.jsonText) {
     return {
       candidate: null,
@@ -50,8 +63,25 @@ function parseOne(
   let parsed: unknown;
   try {
     parsed = JSON.parse(extracted.jsonText);
+    // A few compatible gateways double-encode json_object content. Unwrap
+    // only a bounded JSON string, never arbitrary prose.
+    for (let depth = 0; depth < 2 && typeof parsed === 'string'; depth += 1) {
+      const nested = parsed.trim();
+      if (!nested) break;
+      parsed = JSON.parse(nested);
+    }
   } catch {
     return { candidate: null, rejection: 'json_parse_failed' };
+  }
+  if (
+    allowSingleItemArray &&
+    Array.isArray(parsed) &&
+    parsed.length === 1 &&
+    parsed[0] &&
+    typeof parsed[0] === 'object' &&
+    !Array.isArray(parsed[0])
+  ) {
+    parsed = parsed[0];
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { candidate: null, rejection: 'root_not_object' };
@@ -116,6 +146,8 @@ export function selectStructuredCandidate(params: {
   expectedRootKeys?: readonly string[];
   coverageKeys?: readonly string[];
   findingKeys?: readonly string[];
+  /** Revision-only compatibility for a single object wrapped in an array. */
+  allowSingleItemArray?: boolean;
 }): StructuredCandidateSelection {
   const content = nonEmpty(params.content ?? params.result?.text);
   const reasoning = nonEmpty(params.reasoning ?? params.result?.reasoningText);
@@ -137,6 +169,7 @@ export function selectStructuredCandidate(params: {
       expectedRootKeys,
       coverageKeys,
       findingKeys,
+      params.allowSingleItemArray === true,
     );
     if (parsed.candidate) candidates.push(parsed.candidate);
     else if (parsed.rejection) rejected.push({ channel, reason: parsed.rejection });

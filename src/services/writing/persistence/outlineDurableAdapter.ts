@@ -70,6 +70,15 @@ export function createOutlineDurableAdapter(input: {
         return { stage, body: row.text };
       }
       if (stage === 'finalValidate' || stage === 'persist') {
+        // `brief` is the durable outline-pipeline name for the current
+        // Revision result.  Final validation/persistence preload the current
+        // candidate, so prefer it before historical proof/draft fallbacks.
+        // Otherwise a successful B7 repair can be overwritten by the Draft
+        // when finalValidate asks the adapter to load an existing body.
+        const revision = task?.stageResults?.find(
+          item => item.stage === 'brief' && item.status === 'success' && item.text,
+        );
+        if (revision?.text) return { stage, body: revision.text };
         const proof = task?.stageResults?.find(
           item => item.stage === 'proof' && item.status === 'success' && item.text,
         );

@@ -8,17 +8,21 @@
  * source text goes into one analysis batch.
  *
  * Hard rules enforced here:
- *   - `declaredContextWindow` and `configuredMaxOutputTokens` come straight from
- *     the user's LLM config and are never written back or compressed.
+ *   - `declaredContextWindow` and the logical
+ *     `configuredMaxOutputTokens` come straight from the user's LLM config and
+ *     are never written back. The selected Provider capability adapter may
+ *     translate the logical output to a smaller wire value when the gateway
+ *     contract requires it.
  *   - 30% (`SOURCE_CHUNK_RATIO_NORMAL`) controls ONLY the source-chunk size,
  *     never the request context ceiling, never the max output, never thinking.
- *   - No Canon-specific output ceiling (64K / 96K / 131072) is applied. The
- *     request sends the configured `max_output_tokens` in full.
+ *   - No Canon-specific output ceiling is applied. A Provider capability
+ *     adapter is the only place allowed to translate a provider wire limit;
+ *     Canon never invents a second cap.
  *   - Thinking mode is preserved (we never emit `thinking: { type: 'disabled' }`).
  *   - The only place the source chunk shrinks is the per-batch retry ladder on
  *     recoverable output failures (length / reasoning-only / truncated JSON /
  *     route-owned categories all empty). Shrinking the chunk never touches the
- *     model's output or thinking budget.
+ *     model's logical output or thinking budget.
  *
  * Protocol compatibility: some providers require `input + max_output <=
  * context_window`. When that constraint binds, we shrink the SOURCE CHUNK to
@@ -26,6 +30,10 @@
  * report a configuration incompatibility rather than silently crippling the
  * model.
  */
+import {
+  resolveProviderOutputBudget,
+  type ProviderCapabilityConfig,
+} from '../../llm/providerCapabilities';
 
 /**
  * Normal (non-retry) source-chunk target as a fraction of the declared context
@@ -71,7 +79,9 @@ export const DEFAULT_CONTEXT_WINDOW_FLOOR = 32_768;
 /**
  * Fallback output baseline per profile, used ONLY when the LLM config does not
  * declare `max_output_tokens`. It is never applied as a ceiling on top of a
- * configured value: a configured `max_output_tokens` is always used in full.
+ * configured value: a configured `max_output_tokens` remains the logical
+ * reserve. A Provider capability adapter may translate it at the wire boundary
+ * when the selected endpoint has a smaller documented request limit.
  */
 export const DEFAULT_OUTPUT_BASELINE_BY_PROFILE: Record<
   'quick' | 'standard' | 'deep',
@@ -94,6 +104,8 @@ export interface CanonBudgetInput {
   declaredContextWindow: number | null | undefined;
   /** Real configured max output tokens from LLM config (`null` = unknown). */
   configuredMaxOutputTokens: number | null | undefined;
+  /** Optional provider identity for the shared logical → wire adapter. */
+  providerConfig?: ProviderCapabilityConfig;
   /** Estimated prompt skeleton overhead in tokens (instructions + schema). */
   promptOverhead: number;
   /**
@@ -104,6 +116,8 @@ export interface CanonBudgetInput {
 }
 
 export interface CanonBudgetPlan {
+  /** User-declared logical output capability before provider translation. */
+  declaredMaxOutputTokens: number;
   /** Real declared context window (resolved with fallback if missing). */
   declaredContextWindow: number;
   /** Real configured max output tokens (resolved with fallback if missing). */
@@ -139,10 +153,19 @@ export function resolveCanonBudget(
 ): CanonBudgetPlan {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configuredMaxOutputTokens =
+  const declaredMaxOutputTokens =
     input.configuredMaxOutputTokens && input.configuredMaxOutputTokens > 0
       ? input.configuredMaxOutputTokens
       : profileBaseline;
+  const configuredMaxOutputTokens = input.providerConfig
+    ? resolveProviderOutputBudget({
+        config: {
+          ...input.providerConfig,
+          max_output_tokens: declaredMaxOutputTokens,
+        },
+        requestedMaxTokens: declaredMaxOutputTokens,
+      }).wireMaxTokens
+    : declaredMaxOutputTokens;
   const declaredContextWindow =
     input.declaredContextWindow && input.declaredContextWindow > 0
       ? input.declaredContextWindow
@@ -157,8 +180,8 @@ export function resolveCanonBudget(
     declaredContextWindow * chunkRatio,
   );
   // Protocol compatibility: some providers enforce input + max_output <= window.
-  // Shrink the SOURCE CHUNK to fit, never the output. The output stays at the
-  // full configured value.
+  // Shrink the SOURCE CHUNK to fit. The logical configured value is not
+  // rewritten; only a provider adapter may have translated it above.
   const protocolInputLimit = Math.max(
     0,
     declaredContextWindow - configuredMaxOutputTokens - promptOverhead,
@@ -182,6 +205,7 @@ export function resolveCanonBudget(
     );
     return {
       declaredContextWindow,
+      declaredMaxOutputTokens,
       configuredMaxOutputTokens,
       sourceChunkTargetTokens,
       promptOverhead,
@@ -201,6 +225,7 @@ export function resolveCanonBudget(
 
   return {
     declaredContextWindow,
+    declaredMaxOutputTokens,
     configuredMaxOutputTokens,
     sourceChunkTargetTokens,
     promptOverhead,
@@ -210,17 +235,27 @@ export function resolveCanonBudget(
 }
 
 /**
- * Resolve the `max_tokens` to send in a single extraction request. This is the
- * FULL configured `max_output_tokens`; Canon analysis never applies an
- * output-side ceiling. The fallback baseline is used only when the config does
- * not declare a value.
+ * Resolve the extraction request through the same Provider capability adapter
+ * used by the transport. Canon itself never applies an output-side ceiling;
+ * the adapter only prevents a provider-invalid wire value.
  */
 export function resolveCanonRequestMaxTokens(input: {
   profile: 'quick' | 'standard' | 'deep';
   configuredMaxOutputTokens: number | null | undefined;
+  providerConfig?: ProviderCapabilityConfig;
 }): number {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configured = input.configuredMaxOutputTokens ?? profileBaseline;
-  return configured > 0 ? configured : profileBaseline;
+  const configured =
+    input.configuredMaxOutputTokens && input.configuredMaxOutputTokens > 0
+      ? input.configuredMaxOutputTokens
+      : profileBaseline;
+  if (!input.providerConfig) return configured;
+  return resolveProviderOutputBudget({
+    config: {
+      ...input.providerConfig,
+      max_output_tokens: configured,
+    },
+    requestedMaxTokens: configured,
+  }).wireMaxTokens;
 }

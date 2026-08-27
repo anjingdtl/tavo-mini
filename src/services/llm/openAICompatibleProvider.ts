@@ -22,6 +22,7 @@ import {
   toLLMRequestError,
 } from './requestPolicy';
 import { assertAllowedLLMEndpoint } from './networkPolicy';
+import { resolveProviderOutputBudget } from './providerCapabilities';
 
 export function normalizeChatCompletionUrl(baseUrl: string): string {
   let url = baseUrl.trim();
@@ -389,12 +390,16 @@ export const openAICompatibleProvider: LLMProvider = {
             // misplacement) is honored as a fallback so the caller's intent
             // still reaches the wire instead of being silently dropped.
             const effectiveThinking = options.thinking ?? config.thinking;
+            const outputBudget = resolveProviderOutputBudget({
+              config,
+              requestedMaxTokens: options.max_tokens,
+            });
             const requestBody: Record<string, unknown> = {
               model: config.model_name,
               messages,
               temperature: options.temperature ?? 0.8,
               top_p: options.top_p ?? 0.9,
-              max_tokens: options.max_tokens ?? 4000,
+              max_tokens: outputBudget.wireMaxTokens,
               stream: false,
             };
             if (options.responseFormat === 'json_object') {
@@ -573,6 +578,7 @@ export const openAICompatibleProvider: LLMProvider = {
               emptyReason,
               metrics: { ...timeoutController.metrics },
               rawUsage: data.usage,
+              outputBudget: outputBudget.trace,
             };
           } catch (error: any) {
             throw toLLMRequestError(

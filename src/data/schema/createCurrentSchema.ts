@@ -708,7 +708,8 @@ export function createCurrentSchemaStatements(): string[] {
     // Schema 56 Phase 4 (§7.2) continuation stage_results CHECK rebuild so
     // the new `unified_qa` ledger node is allowed. The CHECK list is
     // extended inline in the migration; here we just call the same builder
-    // so fresh installs land on Schema 56.
+    // so fresh installs land on Schema 57 (the artifact uniqueness fix is
+    // already inlined by buildSchema34ArtifactsCreateSql).
     ...buildV55ToV56Statements().map(statement => statement.sql),
     // Schema 49 V3.2 candidate scratch and validation diagnostics.
     ...buildSchema49CreateSqls(),

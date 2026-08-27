@@ -3,15 +3,18 @@
  * 2026-08-03, §6).
  *
  * The planner packs original-text chapters into batches sized at 30% of the
- * declared context window (`sourceChunkTargetTokens`). The model's real
- * capabilities — `context_window`, `max_output_tokens`, thinking mode — are
- * NEVER compressed or written back. See `canonBudgetPolicy.ts` for the policy.
+ * declared context window (`sourceChunkTargetTokens`). The model's logical
+ * capabilities — `context_window`, configured `max_output_tokens`, thinking
+ * mode — are NEVER rewritten. The shared Provider capability adapter may
+ * translate the logical output to a provider-valid wire value; see
+ * `canonBudgetPolicy.ts` for the policy.
  *
  * Rules:
  *   - `sourceChunkTargetTokens = floor(declaredContextWindow * 0.30)`.
  *   - 30% controls ONLY the source chunk size per batch, not the request
  *     context ceiling, not max output, not thinking.
- *   - The full configured `max_output_tokens` is sent on every request.
+ *   - The logical configured `max_output_tokens` is reserved on every request;
+ *     the shared Provider adapter owns any provider-specific wire translation.
  *   - Protocol compatibility (`input + output <= window`) shrinks the chunk,
  *     never the output.
  *   - Single chapters larger than the target are split into chunk batches;
@@ -35,6 +38,8 @@ import {
   MIN_SOURCE_CHUNK_TOKENS,
   MIN_CHUNK_CHAR_SIZE,
 } from './canonBudgetPolicy';
+import type { ProviderCapabilityConfig } from '../../llm/providerCapabilities';
+import { resolveProviderOutputBudget } from '../../llm/providerCapabilities';
 
 /**
  * Defensive lower bound. When `effectiveInputBudget` falls at or below this
@@ -108,6 +113,8 @@ export interface AdaptiveBatchPlanInput {
   providerType?: string | null;
   contextWindow: number | null | undefined;
   maxOutputTokens: number | null | undefined;
+  /** Full provider identity for the shared logical → wire budget adapter. */
+  requestConfig?: ProviderCapabilityConfig;
   /** Representative material type used to estimate prompt overhead. */
   materialType?: AnalysisWorkItemType;
 }
@@ -198,6 +205,7 @@ export function planAdaptiveBatching(
     profile: input.profile,
     declaredContextWindow: input.contextWindow,
     configuredMaxOutputTokens: input.maxOutputTokens,
+    providerConfig: input.requestConfig,
     promptOverhead,
     chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
   });
@@ -208,7 +216,8 @@ export function planAdaptiveBatching(
       // The hard input budget (after protocol-compat shrink) is the chunk target.
       effectiveInputBudget: budget.sourceChunkTargetTokens,
       targetInputBudget: budget.sourceChunkTargetTokens,
-      // The full configured max output is preserved; never compressed.
+      // Preserve the logical output reserve; the transport applies the same
+      // provider adapter when it serializes max_tokens on the wire.
       outputReserve: budget.configuredMaxOutputTokens,
       retryOutputCeiling: budget.configuredMaxOutputTokens,
       promptOverhead: budget.promptOverhead,
@@ -221,7 +230,8 @@ export function planAdaptiveBatching(
   // 30% of the declared context window, further bounded by protocol compat.
   const targetInputBudget = budget.sourceChunkTargetTokens;
   const effectiveInputBudget = targetInputBudget;
-  // The model's real configured max output — sent in full on every request.
+  // The model's logical configured max output. The transport applies the same
+  // provider adapter used by the budget planner before sending max_tokens.
   const outputReserve = budget.configuredMaxOutputTokens;
 
   // Pre-compute per-chapter token estimates. For very long books (2000+ chapters)
@@ -293,9 +303,9 @@ export function planAdaptiveBatching(
     batches,
     effectiveInputBudget,
     targetInputBudget,
-    // Full configured max output; never an internal ceiling. Kept on the plan
-    // so persisted checkpoints (which store this value) keep working, and the
-    // extractor sends exactly this value as max_tokens.
+    // Logical configured output; never an internal product ceiling. Kept on
+    // the plan so persisted checkpoints remain compatible. The extractor and
+    // transport independently apply the same provider adapter at send time.
     outputReserve,
     retryOutputCeiling: outputReserve,
     promptOverhead,
@@ -322,6 +332,10 @@ export interface CanonAnalysisPrecheck {
   /** Current LLM config snapshot for display. */
   contextWindow: number;
   maxOutputTokens: number;
+  /** Provider-valid wire value after the shared capability adapter. */
+  wireMaxOutputTokens: number;
+  /** Adapter used for the logical → wire translation, when known. */
+  providerAdapterId?: string;
   /** Derived values. */
   effectiveInputBudget: number;
   /** Actual per-request packing target, below the hard safety budget. */
@@ -347,6 +361,7 @@ export function precheckCanonAnalysis(input: {
   providerType?: string | null;
   contextWindow: number | null | undefined;
   maxOutputTokens: number | null | undefined;
+  requestConfig?: ProviderCapabilityConfig;
 }): CanonAnalysisPrecheck {
   const plan = planAdaptiveBatching({
     chapters: input.chapters,
@@ -354,6 +369,7 @@ export function precheckCanonAnalysis(input: {
     providerType: input.providerType,
     contextWindow: input.contextWindow,
     maxOutputTokens: input.maxOutputTokens,
+    requestConfig: input.requestConfig,
     materialType: 'character_state',
   });
   // Each batch produces 2 work items (character_state + world_plot) per
@@ -369,6 +385,13 @@ export function precheckCanonAnalysis(input: {
       reason: plan.reason,
       contextWindow: input.contextWindow ?? 0,
       maxOutputTokens: input.maxOutputTokens ?? 0,
+      wireMaxOutputTokens: plan.outputReserve,
+      providerAdapterId: input.requestConfig
+        ? resolveProviderOutputBudget({
+            config: input.requestConfig,
+            requestedMaxTokens: input.maxOutputTokens,
+          }).adapterId
+        : undefined,
       effectiveInputBudget: plan.effectiveInputBudget,
       targetInputBudget: plan.targetInputBudget,
       estimatedBatchCount: 0,
@@ -382,6 +405,13 @@ export function precheckCanonAnalysis(input: {
     ok: true,
     contextWindow: input.contextWindow ?? 0,
     maxOutputTokens: input.maxOutputTokens ?? 0,
+    wireMaxOutputTokens: plan.outputReserve,
+    providerAdapterId: input.requestConfig
+      ? resolveProviderOutputBudget({
+          config: input.requestConfig,
+          requestedMaxTokens: input.maxOutputTokens,
+        }).adapterId
+      : undefined,
     effectiveInputBudget: plan.effectiveInputBudget,
     targetInputBudget: plan.targetInputBudget,
     estimatedBatchCount: plan.estimatedBatchCount,
@@ -393,13 +423,11 @@ export function precheckCanonAnalysis(input: {
 /**
  * Estimate the `max_tokens` to send to the LLM for a single extraction call.
  *
- * Per the original-analysis quality spec (§6.2 / §7.1) the model's real
- * `max_output_tokens` is sent in FULL on every request. There is no
- * Canon-specific output ceiling, no 4× input scaling, no 25% share. The
- * fallback per-profile baseline is used ONLY when the config does not declare
- * a value. The `outputReserve` argument (the planner's stored value) is kept
- * for signature compatibility but is honoured only when it equals the
- * configured output — it never compresses a configured value.
+ * Per the original-analysis quality spec (§6.2 / §7.1) there is no
+ * Canon-specific output ceiling, no 4× input scaling and no 25% share. The
+ * fallback per-profile baseline is used only when the config does not declare
+ * a value. The selected Provider capability adapter is the only place that
+ * may translate an otherwise provider-invalid wire value.
  */
 export function resolveExtractionMaxTokens(input: {
   profile: AnalysisProfile;
@@ -407,6 +435,8 @@ export function resolveExtractionMaxTokens(input: {
   effectiveInputBudget: number;
   /** Adaptive plan's reserved completion budget, when analysing a new run. */
   outputReserve?: number;
+  /** Full provider identity for the shared logical → wire adapter. */
+  providerConfig?: ProviderCapabilityConfig;
 }): number {
   const profileBaseline =
     DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
@@ -415,12 +445,22 @@ export function resolveExtractionMaxTokens(input: {
       ? input.maxOutputTokens
       : profileBaseline;
   // Honour the planner's stored outputReserve when it carries the configured
-  // value (new runs). It is the full configured max_output_tokens and is
-  // returned as-is; never compressed.
-  if (input.outputReserve && input.outputReserve > 0) {
-    return Math.max(configured, input.outputReserve);
+  // logical value (new runs), then apply the same Provider adapter used by the
+  // transport. A stored reserve is never an independent product cap.
+  const logical =
+    input.outputReserve && input.outputReserve > 0
+      ? Math.max(configured, input.outputReserve)
+      : configured;
+  if (input.providerConfig) {
+    return resolveProviderOutputBudget({
+      config: {
+        ...input.providerConfig,
+        max_output_tokens: logical,
+      },
+      requestedMaxTokens: logical,
+    }).wireMaxTokens;
   }
-  return configured;
+  return logical;
 }
 
 /**

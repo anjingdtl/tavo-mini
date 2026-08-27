@@ -15,6 +15,7 @@ export function writingCredentialRef(
 export function freezeWritingModelConfig(input: {
   configId: number | null;
   provider?: string;
+  providerAdapterId?: string | null;
   modelName?: string;
   url?: string;
   name?: string;
@@ -25,14 +26,23 @@ export function freezeWritingModelConfig(input: {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }): FrozenModelConfig {
   const credentialRef = writingCredentialRef(input.configId);
+  const contextWindow = Math.max(
+    1024,
+    Number(input.contextWindow) || 8192,
+  );
+  const configuredMaxOutputTokens = Number(input.maxOutputTokens);
   return {
     configId: input.configId,
     provider: input.provider || 'openai_compatible',
+    providerAdapterId: input.providerAdapterId ?? null,
     modelName: input.modelName || 'runtime-selected',
     url: String(input.url || ''),
     name: input.name || input.modelName || '',
-    contextWindow: Math.max(1024, Number(input.contextWindow) || 8192),
-    maxOutputTokens: Math.max(256, Number(input.maxOutputTokens) || 1024),
+    contextWindow,
+    maxOutputTokens:
+      Number.isFinite(configuredMaxOutputTokens) && configuredMaxOutputTokens > 0
+        ? Math.max(1, Math.floor(configuredMaxOutputTokens))
+        : Math.max(1, Math.floor(contextWindow * 0.2)),
     allowInsecureLanHttp: Boolean(input.allowInsecureLanHttp),
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
@@ -47,6 +57,7 @@ export function toFrozenStageModelConfig(
     configId: model.configId,
     name: model.name || model.modelName,
     providerType: model.provider,
+    providerAdapterId: model.providerAdapterId ?? null,
     url: model.url || '',
     modelName: model.modelName,
     contextWindow: model.contextWindow,

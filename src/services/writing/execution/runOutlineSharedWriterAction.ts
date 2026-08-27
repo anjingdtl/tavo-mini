@@ -19,6 +19,7 @@ import { runWritingStages } from '../stages/writingStageRunner';
 import { evaluateRuntimeStageSkip } from '../stages/evaluateRuntimeStageSkip';
 import { resolveSharedStageSkip } from '../contracts/writingPolicy';
 import { isCompactPipelineTopology } from '../../pipeline/outlineWorkflowVersion';
+import type { SharedWriterFailureDiagnostics } from '../stages/writerCore';
 
 /**
  * Reserve billing/attempt bookkeeping only for a stage that can actually
@@ -186,6 +187,13 @@ export async function runSharedOutlineWriterAction(input: {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
+        const writerDiagnostics = (
+          error as { writerDiagnostics?: SharedWriterFailureDiagnostics }
+        ).writerDiagnostics;
+        const errorRecord =
+          error && typeof error === 'object'
+            ? (error as Record<string, unknown>)
+            : {};
         const failureClass =
           (error as { failureClass?: string }).failureClass ||
           (error as { code?: string }).code ||
@@ -204,14 +212,37 @@ export async function runSharedOutlineWriterAction(input: {
               id,
               status,
               failureClass,
+              errorCode:
+                typeof errorRecord.code === 'string'
+                  ? errorRecord.code
+                  : writerDiagnostics?.errorCode || null,
               errorMessage: message,
+              httpStatus:
+                typeof errorRecord.status === 'number'
+                  ? errorRecord.status
+                  : null,
+              providerRequestId:
+                typeof errorRecord.providerRequestId === 'string'
+                  ? errorRecord.providerRequestId
+                  : null,
               formatterUsed: Boolean(
                 (error as { formatterUsed?: boolean }).formatterUsed,
               ),
               completedAt: Date.now(),
-              inputTokens: 100,
-              outputTokens: 0,
-              totalTokens: 100,
+              inputTokens: writerDiagnostics?.inputTokens ?? 0,
+              outputTokens: writerDiagnostics?.outputTokens ?? 0,
+              totalTokens: writerDiagnostics?.totalTokens ?? 0,
+              reasoningTokens: writerDiagnostics?.reasoningTokens ?? null,
+              finishReason: writerDiagnostics?.finishReason ?? null,
+              emptyReason: writerDiagnostics?.emptyReason ?? null,
+              responseChannel: writerDiagnostics?.responseChannel,
+              visibleOutputTokens:
+                writerDiagnostics?.visibleOutputTokens ?? null,
+              parseFailureCode: writerDiagnostics?.parseFailureCode,
+              responseCandidateChannel:
+                writerDiagnostics?.responseCandidateChannel,
+              validationDetailsJson:
+                writerDiagnostics?.validationDetailsJson,
               frozenRequestJson: Array.isArray(failedReceipts)
                 ? JSON.stringify(failedReceipts)
                 : null,

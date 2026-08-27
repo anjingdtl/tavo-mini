@@ -524,14 +524,16 @@ const CANON_PROMPT_OVERHEAD_TOKENS = 600;
 /**
  * Online models may expose a much larger context than local llama.cpp. Use the
  * configured window to group consecutive chapters aggressively while reserving
- * the FULL configured output budget (never compressed). If the provider does
+ * the configured logical output budget. If the provider does
  * not declare a window, retain the conservative legacy three-chapter grouping
  * instead of guessing.
  *
  * NOTE: the canonical batch planner is now `planAdaptiveBatching` in
  * adaptiveBatchPlanner.ts (30% source-chunk target). This function is retained
  * only for legacy tests / callers and now honours the same "no output ceiling"
- * rule: it subtracts the full configured `max_output_tokens`, never a 65K cap.
+ * rule: it subtracts the configured logical `max_output_tokens`; the shared
+ * Provider adapter translates it at the wire boundary when required, and this
+ * legacy helper owns no 65K cap.
  */
 export function resolveContextDrivenChaptersPerBatch(input: {
   providerType?: string | null;
@@ -606,8 +608,8 @@ export interface AnalysisTokenBudgetPlan {
 /**
  * Legacy per-batch window-fit estimator. The canonical path is now
  * `planAdaptiveBatching`. This legacy function is retained for any caller that
- * still references it; it honours the full configured output baseline (no
- * 65K/32K internal cap) when downgrading.
+ * still references it; it honours the configured logical output baseline (no
+ * Canon-owned 65K/32K internal cap) when downgrading.
  */
 export function planAnalysisTokenBudget(input: {
   chapters: BoundedSourceChapter[];
@@ -1633,6 +1635,7 @@ export async function startAnalysis(
     providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
     maxOutputTokens: requestConfig.max_output_tokens,
+    requestConfig,
     materialType: 'character_state',
   });
   if (!adaptivePlan.ok) {
@@ -3280,6 +3283,7 @@ export async function extractMaterialUntilCovered(
     profile,
     declaredContextWindow: requestConfig.context_window,
     configuredMaxOutputTokens: requestConfig.max_output_tokens,
+    providerConfig: requestConfig,
     promptOverhead: estimatePromptOverhead({ profile, materialType }),
     chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
   });
@@ -3410,8 +3414,9 @@ export async function extractMaterialWithLlm(
   }
   const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
   // ── Model capability: keep it intact ──────────────────────────────────
-  // The request sends the FULL configured max_output_tokens on every attempt.
-  // There is no Canon-specific output ceiling (no 65K / 32K / 131072). Thinking
+  // The logical configured max_output_tokens is reserved on every attempt.
+  // The shared Provider adapter translates it to the endpoint's valid wire
+  // value; Canon itself owns no 65K / 32K / provider-specific ceiling. Thinking
   // mode is preserved: we never emit `thinking: { type: 'disabled' }`. The
   // only thing this function shrinks on failure is the SOURCE CHUNK.
   const requestMaxTokens = resolveExtractionMaxTokens({
@@ -3419,6 +3424,7 @@ export async function extractMaterialWithLlm(
     maxOutputTokens: requestConfig.max_output_tokens,
     effectiveInputBudget: adaptivePlan?.effectiveInputBudget ?? 0,
     outputReserve: adaptivePlan?.outputReserve,
+    providerConfig: requestConfig,
   });
   // ── Source-chunk sizing (TOTAL request budget, not per-chapter) ───────
   // Normal target = 30% of declared context window. Shrink ladder:
@@ -3431,6 +3437,7 @@ export async function extractMaterialWithLlm(
         profile,
         declaredContextWindow: requestConfig.context_window,
         configuredMaxOutputTokens: requestConfig.max_output_tokens,
+        providerConfig: requestConfig,
         promptOverhead: estimatePromptOverhead({ profile, materialType }),
         chunkRatio: SOURCE_CHUNK_RATIO_NORMAL,
       });
@@ -3504,9 +3511,9 @@ export async function extractMaterialWithLlm(
       const prompt = buildPromptForSegments(slicePlan.segments);
       const response = await callLLMResult(
         [{ role: 'user', content: `${prompt}${retryInstruction}` }],
-        // max_tokens is the full configured value on EVERY attempt — never
-        // doubled, never capped. Thinking mode is left to the model default
-        // (we do not pass `thinking: { type: 'disabled' }`).
+        // Keep the logical output budget stable across attempts. The shared
+        // Provider adapter is applied by the transport; thinking mode is left
+        // to the model default (we do not pass `thinking: { type: 'disabled' }`).
         requestMaxTokens,
         {
           responseFormat: 'json_object',
@@ -3530,7 +3537,8 @@ export async function extractMaterialWithLlm(
           finishReason: finishReason ?? null,
         };
         // On length / reasoning_only / empty, shrink the SOURCE CHUNK for the
-        // next attempt. max_tokens stays at its full configured value.
+        // next attempt. The logical max_tokens request stays unchanged; only
+        // the source chunk shrinks.
         if (
           emptyReason === 'length' ||
           emptyReason === 'reasoning_only' ||
@@ -3850,7 +3858,7 @@ async function runTargetedRescanForMissingDimensions(input: {
     return evaluateFiveDimensionGate(counts);
   }
   // 2026-08-04 修复（问题4）：从真实 LLM context_window 派生 15% source chunk
-  // 预算，而不是传 undefined 退回硬编码上限。max_output_tokens 保持用户完整配置，
+  // 预算，而不是传 undefined 退回旧的固定窗口。max_output_tokens 保持用户的逻辑配置，
   // thinking 保持模型默认。prompt overhead 正确计入。协议要求 input+output<=context
   // 时只缩正文（resolveCanonBudget 内部处理）。
   const rescanRequestConfig = run.modelConfigId
@@ -3864,6 +3872,7 @@ async function runTargetedRescanForMissingDimensions(input: {
     profile: run.profile,
     declaredContextWindow: rescanRequestConfig?.context_window,
     configuredMaxOutputTokens: rescanRequestConfig?.max_output_tokens,
+    providerConfig: rescanRequestConfig ?? undefined,
     promptOverhead: rescanPromptOverhead,
     chunkRatio: SOURCE_CHUNK_RATIO_RESCAN,
   });

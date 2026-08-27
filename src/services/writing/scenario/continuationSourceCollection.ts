@@ -134,6 +134,10 @@ export interface BuildContinuationContextInput {
     configId: number;
     contextWindow: number;
     maxOutputTokens: number;
+    providerType?: string | null;
+    modelName?: string | null;
+    url?: string | null;
+    providerAdapterId?: string | null;
   };
   /** Non-secret routing fields frozen from each selected stage config. */
   frozenModelConfigs?: {
@@ -336,10 +340,14 @@ export async function buildContinuationContext(
           hardContextTokens,
           hasPrimaryAnchor,
         })
-      : planContinuationSourceDemand({
-          modelContextLimit: layoutLimit,
-          writerMaxOutputTokens: layoutMaxOut,
-          targetChapterChars: settings.targetChapterChars,
+        : planContinuationSourceDemand({
+            modelContextLimit: layoutLimit,
+            writerMaxOutputTokens: layoutMaxOut,
+            providerType: input.writerStageModel?.providerType,
+            modelName: input.writerStageModel?.modelName,
+            url: input.writerStageModel?.url,
+            providerAdapterId: input.writerStageModel?.providerAdapterId,
+            targetChapterChars: settings.targetChapterChars,
           hardContextTokens,
           hasPrimaryAnchor,
         });
@@ -788,11 +796,21 @@ export async function buildContinuationContext(
         llmConfigId: settingsSnapshot.resolvedModelConfigIds.planner,
         contextWindow: layoutLimit,
         maxOutputTokens: layoutMaxOut,
+        providerType: input.frozenModelConfigs?.planner?.providerType,
+        modelName: input.frozenModelConfigs?.planner?.modelName,
+        url: input.frozenModelConfigs?.planner?.url,
+        providerAdapterId:
+          input.frozenModelConfigs?.planner?.providerAdapterId,
       }),
       writer: planStageCapacity({
         llmConfigId: settingsSnapshot.resolvedModelConfigIds.writer,
         contextWindow: layoutLimit,
         maxOutputTokens: layoutMaxOut,
+        providerType: input.frozenModelConfigs?.writer?.providerType,
+        modelName: input.frozenModelConfigs?.writer?.modelName,
+        url: input.frozenModelConfigs?.writer?.url,
+        providerAdapterId:
+          input.frozenModelConfigs?.writer?.providerAdapterId,
       }),
       checker:
         settingsSnapshot.resolvedModelConfigIds.checker != null
@@ -800,6 +818,11 @@ export async function buildContinuationContext(
               llmConfigId: settingsSnapshot.resolvedModelConfigIds.checker,
               contextWindow: layoutLimit,
               maxOutputTokens: layoutMaxOut,
+              providerType: input.frozenModelConfigs?.checker?.providerType,
+              modelName: input.frozenModelConfigs?.checker?.modelName,
+              url: input.frozenModelConfigs?.checker?.url,
+              providerAdapterId:
+                input.frozenModelConfigs?.checker?.providerAdapterId,
             })
           : null,
       repair:
@@ -808,6 +831,11 @@ export async function buildContinuationContext(
               llmConfigId: settingsSnapshot.resolvedModelConfigIds.repair,
               contextWindow: layoutLimit,
               maxOutputTokens: layoutMaxOut,
+              providerType: input.frozenModelConfigs?.repair?.providerType,
+              modelName: input.frozenModelConfigs?.repair?.modelName,
+              url: input.frozenModelConfigs?.repair?.url,
+              providerAdapterId:
+                input.frozenModelConfigs?.repair?.providerAdapterId,
             })
           : null,
     } satisfies ContinuationStageBudgets);
@@ -1063,7 +1091,15 @@ export interface BuildContinuationV4ContextInput
   policy: ContextAutomationPolicyV2;
   stageModels: Record<
     ContinuationV4ContextStage,
-    { configId: number; contextWindow: number; maxOutputTokens: number }
+    {
+      configId: number;
+      contextWindow: number;
+      maxOutputTokens: number;
+      providerType?: string | null;
+      modelName?: string | null;
+      url?: string | null;
+      providerAdapterId?: string | null;
+    }
   >;
 }
 
@@ -1291,7 +1327,15 @@ export interface BuildContinuationV5ContextInput
   policy: ContextAutomationPolicyV2;
   stageModels: Record<
     ContinuationV5PhysicalNode,
-    { configId: number; contextWindow: number; maxOutputTokens: number }
+    {
+      configId: number;
+      contextWindow: number;
+      maxOutputTokens: number;
+      providerType?: string | null;
+      modelName?: string | null;
+      url?: string | null;
+      providerAdapterId?: string | null;
+    }
   >;
   frozenModelConfigs: NonNullable<
     ContinuationGenerationSettingsSnapshot['frozenModelConfigs']

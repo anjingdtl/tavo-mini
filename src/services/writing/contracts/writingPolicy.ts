@@ -29,6 +29,8 @@ export interface FrozenStageModelConfig {
   configId: number | null;
   name: string;
   providerType: string;
+  /** Stable capability-adapter identity frozen with the request. */
+  providerAdapterId?: string | null;
   url: string;
   modelName: string;
   contextWindow: number;

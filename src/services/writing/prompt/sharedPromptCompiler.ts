@@ -24,6 +24,11 @@ import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjecti
 import { resolveFrozenStageMaxOutputTokens } from '../../contextAutoAllocator';
 import type { QaEvidenceProjectionResult } from './evidenceQaProjection';
 import { QA_STATE_PROPOSAL_CONTRACT } from './qaStateProposals';
+import { aggregateStageFindings } from '../context/findingsAggregator';
+import {
+  buildAnchoredSegmentRepairPlan,
+  formatAnchoredSegmentRepairPlan,
+} from '../revision/anchoredSegmentRepair';
 
 export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
 
@@ -95,6 +100,7 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '请输出修订合同，不要从零重写整章，不要另起一篇。',
     '必须基于已有初稿和审阅/审计/事实核查，做受控修订。',
     '已成立的事件、人物选择、因果和情绪落点必须保留。',
+    '如果收到 B7 局部段级修复计划，优先在同一个 Revision 请求中完成局部修复；无法安全覆盖全部局部问题时，返回同一个 JSON 内的完整 content 回退。',
   ].join('\n'),
   proof: [
     '你是终稿修订员，也是终审校对员和小说终稿编辑。',
@@ -114,6 +120,8 @@ const REVISION_BRIEF_CONTRACT = [
   '必须包含 strategy、actions（数组）、preserve（数组）、ending。',
   'actions 每项尽量包含 covers 与 instruction；没有必须修改的问题时 actions 必须是 []。',
   'content 仅在必须改写时输出受控修订后的完整正文；若无需改写，可省略 content 或复用初稿，并在 validNoOpReasons 说明。',
+  '若收到【B7 局部段级修复优先】计划，优先输出 strategy=segment_repair 和 segmentRepairs 数组。每项必须包含 anchorId、paragraphHash、replacementText、findingIds、reason；paragraphHash 必须对应输入 anchor 原文。禁止输出数字 offset，禁止修改未列出的 anchor。',
+  '若局部修复无法安全覆盖全部 findings，必须在同一个 JSON 返回 strategy=full_revision 与完整 content，作为本次 Revision 的回退；不得要求或触发第二次模型请求。',
   '禁止输出 Markdown 围栏，禁止把推理过程写进 content。',
   // B6 §8.5：Final != Draft 时 QA 提案失效；修正确实改变了正文时，由
   // 修订方基于最终正文补充状态提案与正文指纹绑定。
@@ -121,6 +129,7 @@ const REVISION_BRIEF_CONTRACT = [
   '    知识 / 世界事实产生可被下章引用的变化，可输出 finalStateProposals 数组。',
   '    finalStateProposals 的字段与 QA stateProposals 相同（proposalType /',
   '    subjectRefType / subjectRefId / payload / evidenceQuote / risk，',
+  '    subjectRefType（如提供）只能是 canon_character / continuation_entity / plotline / world；Canon 剧情线统一写 plotline。',
   '    evidenceQuote 必须是最终正文中逐字存在的短引文 4~80 字符）。',
   '若输出了 finalStateProposals，必须同时输出 proposalSourceBodyFingerprint',
   '    （= 最终正文 content 的 sha256 hex），状态提案只允许绑定该最终正文。',
@@ -178,6 +187,16 @@ export function compileSharedWritingPrompt(
     frozenContext: input.frozenContext,
   });
   const previous = previousArtifactBlock(input.artifacts, input.stage);
+  const segmentRepairPlan =
+    input.stage === 'revision'
+      ? buildAnchoredSegmentRepairPlan({
+          draftBody: readPromptBody(input.artifacts.draft),
+          findings: aggregateStageFindings(input.artifacts),
+        })
+      : null;
+  const segmentRepairBlock = segmentRepairPlan
+    ? formatAnchoredSegmentRepairPlan(segmentRepairPlan)
+    : '';
   const projected = projectFrozenContextForStage({
     frozenContext: input.frozenContext,
     stage: input.stage,
@@ -209,6 +228,7 @@ export function compileSharedWritingPrompt(
     input.stage === 'draft' && isOneShotStagePolicy(input.stagePolicy)
       ? ONE_SHOT_DRAFT_PROJECTION
       : '',
+    segmentRepairBlock,
     previous,
     contract,
   ]
@@ -224,6 +244,18 @@ export function compileSharedWritingPrompt(
     responseFormat: outputContract === 'json_envelope' ? 'json_object' : 'text',
     outputContract,
   };
+}
+
+function readPromptBody(value: unknown): string {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value !== 'object') return '';
+  const row = value as Record<string, unknown>;
+  if (typeof row.body === 'string' && row.body.trim()) return row.body.trim();
+  if (typeof row.content === 'string' && row.content.trim()) {
+    return row.content.trim();
+  }
+  return '';
 }
 
 function isStructuredReportStage(stage: SharedWritingStageName): boolean {
@@ -245,6 +277,10 @@ function resolveMaxTokens(
     stage,
     contextWindow: frozen.model.contextWindow,
     modelMaxOutputTokens: frozen.model.maxOutputTokens,
+    providerType: frozen.model.provider,
+    providerAdapterId: frozen.model.providerAdapterId,
+    modelName: frozen.model.modelName,
+    url: frozen.model.url,
     sharedStageMaxOutputTokens: frozen.stagePolicy.values
       ?.sharedStageMaxOutputTokens as Record<string, unknown> | undefined,
   });

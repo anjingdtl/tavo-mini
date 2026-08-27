@@ -11,6 +11,7 @@ import {
   appendContinuationGenerationTraceEvent,
   ensureContinuationGenerationTrace,
 } from './continuationGenerationTrace';
+import { normalizeContinuationProposalSubjectRefType } from './types';
 import type {
   CheckCategory,
   CheckResolutionStatus,
@@ -767,8 +768,10 @@ export async function markRunsOutdatedForProject(
 }
 
 /**
- * UNIQUE(run_id, content_hash) forbids identical bodies. Soft-promote / V3 that
- * matches V2 must get a distinct storage body while keeping readable prose.
+ * Same-stage retries still need a distinct storage body when the caller is
+ * deliberately recording another attempt. Cross-stage copies, however, are
+ * exact artifacts and must retain the original body/hash (Schema 57 makes the
+ * uniqueness boundary stage-local).
  */
 export function withDistinctArtifactBody(
   content: string,
@@ -781,15 +784,19 @@ export function withDistinctArtifactBody(
 export async function ensureUniqueArtifactContent(
   runId: string,
   content: string,
+  stage?: ContinuationArtifactStage,
 ): Promise<string> {
   const db = await openDatabase();
   let candidate = content;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const hash = sha256Hex(candidate);
     const [res] = await db.executeSql(
-      `SELECT id FROM continuation_generation_artifacts
-       WHERE run_id = ? AND content_hash = ? LIMIT 1`,
-      [runId, hash],
+      stage
+        ? `SELECT id FROM continuation_generation_artifacts
+           WHERE run_id = ? AND content_hash = ? AND stage = ? LIMIT 1`
+        : `SELECT id FROM continuation_generation_artifacts
+           WHERE run_id = ? AND content_hash = ? LIMIT 1`,
+      stage ? [runId, hash, stage] : [runId, hash],
     );
     if (res.rows.length === 0) return candidate;
     candidate = withDistinctArtifactBody(content, `${attempt + 1}_${Date.now()}`);
@@ -846,7 +853,8 @@ export async function insertArtifact(input: {
         createdAt,
       };
     } catch (e: any) {
-      // UNIQUE(run_id, content_hash) — optionally reuse existing, else uniquify.
+      // Stage-local UNIQUE(run_id, content_hash, stage) — optionally reuse an
+      // existing same-stage row, else uniquify a deliberate same-stage retry.
       const [res] = await db.executeSql(
         `SELECT * FROM continuation_generation_artifacts
          WHERE run_id = ? AND content_hash = ?`,
@@ -1304,10 +1312,11 @@ export async function finalizeContinuationV5Final(input: {
   const db = await openDatabase();
   const ts = input.ts ?? nowIso();
   const artifactId = `ca_${v4().replace(/-/g, '')}`;
-  // V3 body may equal V2; UNIQUE(run_id, content_hash) requires a distinct body.
+  // V3 Final may equal V2 Revision/Draft; Schema 57 keeps that body exact.
   const uniqueContent = await ensureUniqueArtifactContent(
     input.runId,
     input.content,
+    'final',
   );
   const contentHash = sha256Hex(uniqueContent);
   const expectedStates = input.expectedRunStates ?? ['running'];
@@ -2224,71 +2233,114 @@ export function proposalFingerprint(input: {
   return sha256Hex(normalized);
 }
 
-export async function insertProposals(
-  rows: Array<{
-    projectId: number;
-    chapterId: number;
-    sourceRunId: string | null;
-    extractionContentHash: string;
-    chapterRevisionHash: string;
-    proposalType: ProposalType;
-    subjectRefType?: string | null;
-    subjectRefId?: string | null;
-    payloadJson: string;
-    evidenceStart: number;
-    evidenceEnd: number;
-  }>,
-): Promise<ContinuationStateProposal[]> {
-  const db = await openDatabase();
-  const out: ContinuationStateProposal[] = [];
-  const ts = nowIso();
-  // H8-Generation 修复：原逐条 INSERT try/catch UNIQUE 冲突，N 条 proposals
-  // 就是 N 次独立事务（sqlite-storage 自动提交），中途崩溃会留下部分插入。
-  // 改单事务批量插入：INSERT OR IGNORE 跳过冲突，事务结束后统一查询填充 out。
-  // 注意：executeTransaction 同步构建 statements，所以预先计算所有 id/fp。
-  const preparedRows = rows.map(r => {
+export interface ContinuationProposalInsertRow {
+  projectId: number;
+  chapterId: number;
+  sourceRunId: string | null;
+  extractionContentHash: string;
+  chapterRevisionHash: string;
+  proposalType: ProposalType;
+  subjectRefType?: string | null;
+  subjectRefId?: string | null;
+  payloadJson: string;
+  evidenceStart: number;
+  evidenceEnd: number;
+}
+
+export interface PreparedContinuationProposalInsert {
+  id: string;
+  proposalFingerprint: string;
+  row: ContinuationProposalInsertRow;
+  statement: { sql: string; params: unknown[] };
+}
+
+/**
+ * Build proposal INSERTs without opening a transaction. Finalization uses the
+ * same builder to commit the chapter body, its authoritative proposals and
+ * the Story Memory rebuild outbox as one local transaction.
+ */
+export function buildProposalInsertStatements(
+  rows: ContinuationProposalInsertRow[],
+  ts: string = nowIso(),
+): PreparedContinuationProposalInsert[] {
+  return rows.map(row => {
+    const rawSubjectRefType = row.subjectRefType;
+    const normalizedSubjectRefType =
+      normalizeContinuationProposalSubjectRefType(rawSubjectRefType);
+    if (
+      typeof rawSubjectRefType === 'string' &&
+      rawSubjectRefType.trim() &&
+      !normalizedSubjectRefType
+    ) {
+      throw new Error(
+        `CONTINUATION_PROPOSAL_SUBJECT_REF_INVALID: ${rawSubjectRefType}`,
+      );
+    }
+    const normalizedRow: ContinuationProposalInsertRow = {
+      ...row,
+      subjectRefType: normalizedSubjectRefType,
+    };
     const id = `cp_${v4().replace(/-/g, '')}`;
-    const fp = proposalFingerprint({
-      proposalType: r.proposalType,
-      subjectRefType: r.subjectRefType ?? null,
-      subjectRefId: r.subjectRefId ?? null,
-      payloadJson: r.payloadJson,
-      evidenceStart: r.evidenceStart,
-      evidenceEnd: r.evidenceEnd,
+    const proposalFingerprintValue = proposalFingerprint({
+      proposalType: normalizedRow.proposalType,
+      subjectRefType: normalizedRow.subjectRefType ?? null,
+      subjectRefId: normalizedRow.subjectRefId ?? null,
+      payloadJson: normalizedRow.payloadJson,
+      evidenceStart: normalizedRow.evidenceStart,
+      evidenceEnd: normalizedRow.evidenceEnd,
     });
-    return { id, fp, r };
-  });
-  await executeTransaction(
-    db,
-    preparedRows.map(({ id, fp, r }) => ({
-      sql: `INSERT OR IGNORE INTO continuation_state_proposals (
+    return {
+      id,
+      proposalFingerprint: proposalFingerprintValue,
+      row: normalizedRow,
+      statement: {
+        sql: `INSERT INTO continuation_state_proposals (
           id, project_id, chapter_id, source_run_id, extraction_content_hash,
           chapter_revision_hash, proposal_type, subject_ref_type, subject_ref_id,
           payload_json, proposal_fingerprint, evidence_start, evidence_end,
           status, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      params: [
-        id,
-        r.projectId,
-        r.chapterId,
-        r.sourceRunId,
-        r.extractionContentHash,
-        r.chapterRevisionHash,
-        r.proposalType,
-        r.subjectRefType ?? null,
-        r.subjectRefId ?? null,
-        r.payloadJson,
-        fp,
-        r.evidenceStart,
-        r.evidenceEnd,
-        'pending',
-        ts,
-        ts,
-      ],
-    })),
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(project_id, chapter_id, chapter_revision_hash, proposal_fingerprint)
+        DO NOTHING`,
+        params: [
+          id,
+          normalizedRow.projectId,
+          normalizedRow.chapterId,
+          normalizedRow.sourceRunId,
+          normalizedRow.extractionContentHash,
+          normalizedRow.chapterRevisionHash,
+          normalizedRow.proposalType,
+          normalizedRow.subjectRefType ?? null,
+          normalizedRow.subjectRefId ?? null,
+          normalizedRow.payloadJson,
+          proposalFingerprintValue,
+          normalizedRow.evidenceStart,
+          normalizedRow.evidenceEnd,
+          'pending',
+          ts,
+          ts,
+        ],
+      },
+    };
+  });
+}
+
+export async function insertProposals(
+  rows: ContinuationProposalInsertRow[],
+): Promise<ContinuationStateProposal[]> {
+  const db = await openDatabase();
+  const out: ContinuationStateProposal[] = [];
+  const preparedRows = buildProposalInsertStatements(rows);
+  // H8-Generation 修复：原逐条 INSERT try/catch UNIQUE 冲突，N 条 proposals
+  // 就是 N 次独立事务（sqlite-storage 自动提交），中途崩溃会留下部分插入。
+  // 改单事务批量插入：INSERT OR IGNORE 跳过冲突，事务结束后统一查询填充 out。
+  // 注意：executeTransaction 同步构建 statements，所以预先计算所有 id/fp。
+  await executeTransaction(
+    db,
+    preparedRows.map(prepared => prepared.statement),
   );
   // 事务提交后，统一查询每行对应的记录（新插入或已存在的冲突行）。
-  for (const { fp, r } of preparedRows) {
+  for (const { proposalFingerprint: fp, row: r } of preparedRows) {
     const [existing] = await db.executeSql(
       `SELECT * FROM continuation_state_proposals
        WHERE project_id = ? AND chapter_id = ? AND chapter_revision_hash = ?

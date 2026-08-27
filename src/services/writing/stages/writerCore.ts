@@ -1,7 +1,11 @@
 /**
  * THE one Shared Writer Core. Every post-Freeze prose stage goes through here.
  */
-import type { LLMRequestConfig } from '../../llm/types';
+import type { LLMRequestConfig, LLMResult } from '../../llm/types';
+import {
+  selectStructuredCandidate,
+  type StructuredCandidateChannel,
+} from '../../pipeline/structuredCandidate';
 import { compileSharedWritingPrompt } from '../prompt/sharedPromptCompiler';
 import { resolveQaEvidenceProjection } from '../prompt/evidenceQaProjection';
 import { resolveWritingCredential } from './resolveFrozenCredential';
@@ -32,6 +36,32 @@ import {
   completeWritingRequestReceipt,
   type WritingRequestReceipt,
 } from '../contracts/writingRequestReceipt';
+import { aggregateStageFindings } from '../context/findingsAggregator';
+import { resolveAnchoredRevisionOutput } from '../revision/anchoredSegmentRepair';
+import { extractAuditJsonPayload } from '../../pipelineAuditValidator';
+import { normalizeStructuredWriterPayload } from './writerRecovery';
+
+/**
+ * B6/B7 failure telemetry carried from the Shared Writer to the durable
+ * stage-attempt ledger.  It deliberately contains shapes/counts, never the
+ * provider response body or the user's manuscript text.
+ */
+export interface SharedWriterFailureDiagnostics {
+  stage: SharedWritingStageName;
+  errorCode: string | null;
+  parseFailureCode: string | null;
+  responseChannel: 'content' | 'reasoning' | 'both' | 'empty';
+  responseCandidateChannel: StructuredCandidateChannel | null;
+  finishReason: string | null;
+  emptyReason: string | null;
+  visibleOutputTokens: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  reasoningTokens: number | null;
+  formatterUsed: boolean;
+  validationDetailsJson: string;
+}
 
 export function emptyRequirementResult() {
   return {
@@ -96,9 +126,21 @@ export function parseSharedWriterOutput(
   text: string,
 ): SharedWritingArtifact {
   const trimmed = String(text || '').trim();
-  const extracted = extractJsonObject(trimmed);
-  if (extracted) {
-    const json = extracted.value;
+  const extracted = extractAuditJsonPayload(trimmed);
+  if (extracted.jsonText) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(extracted.jsonText);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { stage, body: trimmed, diagnostics: [] };
+    }
+    const json = normalizeStructuredWriterPayload(
+      stage,
+      parsed as Record<string, unknown>,
+    );
     const body =
       typeof json.content === 'string' && json.content.trim()
         ? json.content
@@ -106,7 +148,7 @@ export function parseSharedWriterOutput(
         ? json.body
         : typeof json.report === 'string' && json.report.trim()
         ? json.report
-        : extracted.raw;
+        : extracted.jsonText;
     return {
       stage,
       body,
@@ -162,29 +204,146 @@ function assertStructuredReport(
   }
 }
 
-function extractJsonObject(
-  text: string,
-): { value: Record<string, unknown>; raw: string } | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  const raw = text.slice(start, end + 1);
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? { value: parsed as Record<string, unknown>, raw }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value
     .map(item => String(item || '').trim())
     .filter(Boolean);
   return items.length ? items : undefined;
+}
+
+function asFiniteOrNull(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function normalizeAttemptResponseChannel(
+  channel: StructuredCandidateChannel | 'empty',
+): 'content' | 'reasoning' | 'both' | 'empty' {
+  if (channel === 'empty') return 'empty';
+  if (channel === 'content' || channel === 'both_content_preferred') {
+    return channel === 'content' ? 'content' : 'both';
+  }
+  if (channel === 'reasoning' || channel === 'both_reasoning_preferred') {
+    return channel === 'reasoning' ? 'reasoning' : 'both';
+  }
+  return 'empty';
+}
+
+function safeRootKeys(value: Record<string, unknown> | undefined): string[] {
+  return value ? Object.keys(value).sort().slice(0, 64) : [];
+}
+
+/**
+ * Build bounded, body-free diagnostics for a failed Shared Writer stage.
+ * `selectStructuredCandidate` is reused only for observation; it never
+ * changes the candidate that the business validator adopts.
+ */
+export function buildSharedWriterFailureDiagnostics(input: {
+  stage: SharedWritingStageName;
+  result?: Partial<Pick<LLMResult, 'text' | 'reasoningText' | 'inputTokens' |
+    'outputTokens' | 'totalTokens' | 'reasoningTokens' | 'visibleOutputTokens' |
+    'finishReason' | 'emptyReason'>>;
+  adoptedText?: string | null;
+  parsed?: SharedWritingArtifact | null;
+  error?: unknown;
+  formatterUsed?: boolean;
+}): SharedWriterFailureDiagnostics {
+  const result = input.result || {};
+  const errorRecord =
+    input.error && typeof input.error === 'object'
+      ? (input.error as Record<string, unknown>)
+      : {};
+  const errorCode =
+    typeof errorRecord.code === 'string' && errorRecord.code.trim()
+      ? errorRecord.code.trim()
+      : null;
+  const selection = selectStructuredCandidate({
+    content: result.text,
+    reasoning: result.reasoningText,
+    expectedRootKeys:
+      input.stage === 'revision'
+        ? [
+            'content',
+            'body',
+            'finalContent',
+            'revisedBody',
+            'strategy',
+            'actions',
+            'preserve',
+            'ending',
+            'verdict',
+            'report',
+          ]
+        : ['content', 'verdict', 'findings'],
+    findingKeys: ['findings', 'actions', 'issues', 'errors', 'warnings'],
+    allowSingleItemArray: input.stage === 'revision',
+  });
+  const structuredKeys = safeRootKeys(input.parsed?.structured);
+  const candidate = selection.candidate;
+  const selectionFailure = candidate
+    ? null
+    : selection.rejected[0]?.reason || 'no_structured_candidate';
+  const parseFailureCode =
+    errorCode?.startsWith('SHARED_WRITER_') ||
+    errorCode === 'PIPELINE_RESPONSE_INVALID'
+      ? errorCode
+      : selectionFailure &&
+        (input.stage === 'revision' || input.parsed?.structured != null)
+      ? `WRITER_${selectionFailure.toUpperCase()}`
+      : null;
+  const validationDetails = {
+    version: 1,
+    stage: input.stage,
+    rawContentChars: String(result.text || '').trim().length,
+    reasoningChars: String(result.reasoningText || '').trim().length,
+    adoptedChars: String(input.adoptedText || '').trim().length,
+    candidateChars: candidate?.candidateChars || 0,
+    candidateHash: candidate?.candidateHash || null,
+    candidateRootKeys: candidate?.rootKeys || [],
+    artifactRootKeys: structuredKeys,
+    rejectedChannels: selection.rejected.slice(0, 4),
+    truncatedLikely: Boolean(candidate?.truncatedLikely),
+    selectionResponseChannel: selection.responseChannel,
+  };
+  return {
+    stage: input.stage,
+    errorCode,
+    parseFailureCode,
+    responseChannel: normalizeAttemptResponseChannel(selection.responseChannel),
+    responseCandidateChannel: candidate?.responseChannel || null,
+    finishReason:
+      typeof result.finishReason === 'string' ? result.finishReason : null,
+    emptyReason:
+      typeof result.emptyReason === 'string' ? result.emptyReason : null,
+    visibleOutputTokens: asFiniteOrNull(result.visibleOutputTokens),
+    inputTokens: asFiniteOrNull(result.inputTokens),
+    outputTokens: asFiniteOrNull(result.outputTokens),
+    totalTokens: asFiniteOrNull(result.totalTokens),
+    reasoningTokens: asFiniteOrNull(result.reasoningTokens),
+    formatterUsed: input.formatterUsed === true,
+    validationDetailsJson: JSON.stringify(validationDetails),
+  };
+}
+
+function annotateWriterFailure(
+  error: unknown,
+  input: Parameters<typeof buildSharedWriterFailureDiagnostics>[0],
+): Error & { writerDiagnostics: SharedWriterFailureDiagnostics } {
+  const next =
+    error instanceof Error ? error : new Error(String(error || 'writer failed'));
+  const existing = (next as Error & {
+    writerDiagnostics?: SharedWriterFailureDiagnostics;
+  }).writerDiagnostics;
+  if (!existing) {
+    Object.assign(next, {
+      writerDiagnostics: buildSharedWriterFailureDiagnostics({
+        ...input,
+        error,
+      }),
+    });
+  }
+  return next as Error & { writerDiagnostics: SharedWriterFailureDiagnostics };
 }
 
 export async function executeSharedWriterStage(input: {
@@ -238,14 +397,22 @@ export async function executeSharedWriterStage(input: {
           responseFormat: compiled.responseFormat,
         }),
     });
+    let injectedAdopted: ReturnType<typeof adoptStructuredWriterText> = {
+      text: String(injected.text || ''),
+      adoptedFrom: injected.text ? 'content' : null,
+    };
     try {
-      const adopted = adoptStructuredWriterText({
+      injectedAdopted = adoptStructuredWriterText({
         stage,
         outputContract: compiled.outputContract,
         text: injected.text,
         reasoningText: (injected as { reasoningText?: string }).reasoningText,
       });
-      const artifact = finalizeWriterArtifact(stage, stageInput, adopted.text);
+      const artifact = finalizeWriterArtifact(
+        stage,
+        stageInput,
+        injectedAdopted.text,
+      );
       attachUsage(artifact, injected, {
         kind: classifyWritingLlmCall({}),
         physicalRequestCount: 1,
@@ -263,7 +430,14 @@ export async function executeSharedWriterStage(input: {
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
       return artifact;
     } catch (error) {
-      throw annotateWriterReceipts(error, receipts);
+      throw annotateWriterReceipts(
+        annotateWriterFailure(error, {
+          stage,
+          result: injected as Partial<LLMResult>,
+          adoptedText: injectedAdopted.text,
+        }),
+        receipts,
+      );
     }
   }
 
@@ -322,9 +496,12 @@ export async function executeSharedWriterStage(input: {
   });
   if (primary.finishReason === 'content_filter') {
     throw annotateWriterReceipts(
-      Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
-        code: 'SHARED_WRITER_CONTENT_FILTER',
-      }),
+      annotateWriterFailure(
+        Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
+          code: 'SHARED_WRITER_CONTENT_FILTER',
+        }),
+        { stage, result: primary },
+      ),
       receipts,
     );
   }
@@ -402,9 +579,17 @@ export async function executeSharedWriterStage(input: {
     });
     if (!adopted.text.trim()) {
       throw annotateWriterReceipts(
-        Object.assign(emptyWriterError(stage, formatted), {
-          formatterUsed: true,
-        }),
+        annotateWriterFailure(
+          Object.assign(emptyWriterError(stage, formatted), {
+            formatterUsed: true,
+          }),
+          {
+            stage,
+            result: formatted,
+            adoptedText: adopted.text,
+            formatterUsed: true,
+          },
+        ),
         receipts,
       );
     }
@@ -443,9 +628,17 @@ export async function executeSharedWriterStage(input: {
       return artifact;
     } catch (error) {
       throw annotateWriterReceipts(
-        Object.assign(
-          error instanceof Error ? error : new Error(String(error)),
-          { formatterUsed: true },
+        annotateWriterFailure(
+          Object.assign(
+            error instanceof Error ? error : new Error(String(error)),
+            { formatterUsed: true },
+          ),
+          {
+            stage,
+            result: formatted,
+            adoptedText: adopted.text,
+            formatterUsed: true,
+          },
         ),
         receipts,
       );
@@ -471,7 +664,15 @@ export async function executeSharedWriterStage(input: {
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
     return artifact;
   } catch (error) {
-    throw annotateWriterReceipts(error, receipts);
+    throw annotateWriterReceipts(
+      annotateWriterFailure(error, {
+        stage,
+        result: primary,
+        adoptedText: adopted.text,
+        parsed,
+      }),
+      receipts,
+    );
   }
 }
 
@@ -610,6 +811,39 @@ function finalizeWriterArtifact(
   text: string,
 ): SharedWritingArtifact {
   const artifact = parseSharedWriterOutput(stage, text);
+  if (stage === 'revision' && artifact.structured) {
+    const draftBody = String(
+      (stageInput.artifacts as { draft?: { body?: string } }).draft?.body ?? '',
+    );
+    const segmentResolution = resolveAnchoredRevisionOutput({
+      draftBody,
+      findings: aggregateStageFindings(stageInput.artifacts),
+      structured: artifact.structured,
+    });
+    if (segmentResolution.status === 'invalid') {
+      throw Object.assign(
+        new Error(
+          `Revision 局部段级修复无效且未提供完整正文回退（${segmentResolution.reason}）`,
+        ),
+        { code: 'SHARED_WRITER_INVALID_SEGMENT_REPAIR' },
+      );
+    }
+    if (
+      segmentResolution.status === 'segment_repair' ||
+      segmentResolution.status === 'full_revision_fallback'
+    ) {
+      artifact.body = segmentResolution.body;
+      artifact.structured = {
+        ...artifact.structured,
+        content: segmentResolution.body,
+        segmentRepair: segmentResolution.metadata,
+      };
+      artifact.diagnostics = [
+        ...(artifact.diagnostics || []),
+        ...segmentResolution.diagnostics,
+      ];
+    }
+  }
   if (
     stage === 'revision' &&
     !String(artifact.structured?.content || '').trim()
@@ -782,6 +1016,7 @@ async function resolveFrozenRequestConfig(
     name: frozen.name,
     provider_type: (frozen.providerType ||
       'openai_compatible') as LLMRequestConfig['provider_type'],
+    provider_adapter_id: frozen.providerAdapterId,
     api_key: apiKey,
     model_name: frozen.modelName,
     url: frozen.url,

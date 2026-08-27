@@ -172,6 +172,42 @@ export type ProposalType =
   | 'foreshadowing'
   | 'other';
 
+/**
+ * Canonical subject reference values accepted by the durable proposal
+ * schema. Canon views call a canon plot thread `plot_thread`; proposals use
+ * the existing `plotline` reference vocabulary so they can be committed into
+ * the ONE Continuity State event pipeline without a schema-invalid write.
+ */
+export const CONTINUATION_PROPOSAL_SUBJECT_REF_TYPES = [
+  'canon_character',
+  'continuation_entity',
+  'plotline',
+  'world',
+] as const;
+
+export type ContinuationProposalSubjectRefType =
+  (typeof CONTINUATION_PROPOSAL_SUBJECT_REF_TYPES)[number];
+
+/**
+ * Normalize the only known model/context spelling alias and reject every
+ * other non-empty value. Keeping this at the domain boundary prevents
+ * SQLite's INSERT OR IGNORE from silently dropping an authoritative proposal
+ * because it violates the subject_ref_type CHECK constraint.
+ */
+export function normalizeContinuationProposalSubjectRefType(
+  value: unknown,
+): ContinuationProposalSubjectRefType | null {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const canonical = text === 'plot_thread' ? 'plotline' : text;
+  return (CONTINUATION_PROPOSAL_SUBJECT_REF_TYPES as readonly string[]).includes(
+    canonical,
+  )
+    ? (canonical as ContinuationProposalSubjectRefType)
+    : null;
+}
+
 export type ProposalStatus =
   | 'pending'
   | 'accepted'
@@ -276,6 +312,7 @@ export interface FrozenContinuationModelConfig {
   modelName: string;
   contextWindow: number;
   maxOutputTokens: number;
+  providerAdapterId?: string | null;
   allowInsecureLanHttp?: boolean;
   thinking?: { type: 'enabled' | 'disabled' };
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
@@ -451,6 +488,8 @@ export interface ContinuationV5StageBudget {
   contextWindow: number;
   effectiveWindow: number;
   declaredMaxOutputTokens: number;
+  /** Provider-adapted value available on the `max_tokens` wire field. */
+  wireMaxOutputTokens?: number;
   compiledPromptTokens: number;
   protocolSkeletonTokens: number;
   promptReserveTokens: number;

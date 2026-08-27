@@ -66,6 +66,7 @@ export function buildContinuationKernelFrozenModel(input: {
   return freezeWritingModelConfig({
     configId: frozenModel?.configId ?? null,
     provider: frozenModel?.providerType,
+    providerAdapterId: frozenModel?.providerAdapterId,
     modelName: frozenModel?.modelName,
     url: frozenModel?.url,
     name: frozenModel?.name,

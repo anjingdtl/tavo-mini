@@ -5,6 +5,7 @@ import type {
 import { writingSourceContentHash } from '../contracts/writingFingerprint';
 import type { WritingSource } from '../contracts/writingSource';
 import type { CollectedWritingMaterials } from './collectWritingMaterials';
+import { estimateTokens } from '../../../utils/tokenEstimator';
 
 export interface NormalizedWritingMaterials {
   sources: WritingSource[];
@@ -33,7 +34,9 @@ export function normalizeWritingMaterials(
       return {
         ...candidate,
         source,
-        demandTokens: Math.max(1, Math.ceil(content.length / 4)),
+        // Recompute after normalization with the same tokenizer used by
+        // renderWritingContext; never use a character-count proxy here.
+        demandTokens: Math.max(1, estimateTokens(content)),
       };
     })
     .filter(candidate => {

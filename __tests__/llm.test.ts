@@ -100,6 +100,42 @@ test('requests JSON mode and exposes the provider finish reason', async () => {
   expect(request.response_format).toEqual({ type: 'json_object' });
 });
 
+test('adapts an oversized BigModel max_tokens at the shared provider boundary', async () => {
+  const fetchMock = jest.fn(async (..._args: any[]) => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '正文' }, finish_reason: 'stop' }],
+    }),
+  }));
+  globalThis.fetch = fetchMock as any;
+
+  const result = await openAICompatibleProvider.generate(
+    [{ role: 'user', content: '写一段' }],
+    {
+      max_tokens: 200_000,
+      requestConfig: {
+        provider_type: 'openai_compatible',
+        api_key: 'test-key',
+        model_name: 'GLM-5.3-Flash',
+        url: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+        max_output_tokens: 200_000,
+      },
+    },
+  );
+
+  const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+  expect(request.max_tokens).toBe(131_072);
+  expect(result.outputBudget).toEqual(
+    expect.objectContaining({
+      requestedMaxTokens: 200_000,
+      wireMaxTokens: 131_072,
+      adapterId: 'open.bigmodel.cn-v4',
+      adapted: true,
+    }),
+  );
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 test('forwards an optional thinking control without changing callers that omit it', async () => {
   const fetchMock = jest.fn(async (..._args: any[]) => ({
     ok: true,

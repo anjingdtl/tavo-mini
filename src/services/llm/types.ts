@@ -83,6 +83,16 @@ export interface LLMResult {
       reasoning_tokens?: number;
     };
   };
+  /** Provider adapter trace for the logical → wire output budget translation. */
+  outputBudget?: LLMOutputBudgetTrace;
+}
+
+export interface LLMOutputBudgetTrace {
+  requestedMaxTokens: number;
+  wireMaxTokens: number;
+  providerLimit: number | null;
+  adapterId: string;
+  adapted: boolean;
 }
 
 /** DeepSeek-style reasoning intensity. Thinking remains enabled separately. */
@@ -136,6 +146,8 @@ export interface LLMRequestConfig {
   url: string;
   context_window?: number;
   max_output_tokens?: number;
+  /** Optional explicit provider capability adapter id. */
+  provider_adapter_id?: string | null;
   allow_insecure_lan_http?: boolean;
   /**
    * Fallback thinking control honored by the OpenAI-compatible provider when

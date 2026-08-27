@@ -1,6 +1,7 @@
 import type { WritingRequest, WritingSource } from '../contracts/writingSource';
 import { assertValidWritingSourceBundle } from '../contracts/writingSourceValidation';
 import type { WritingMaterialCandidate } from '../contracts/frozenWritingContext';
+import { estimateTokens } from '../../../utils/tokenEstimator';
 
 export interface CollectedWritingMaterials {
   sources: WritingSource[];
@@ -22,7 +23,10 @@ export function collectWritingMaterials(
     candidates: sources.map((source, sourceOrder) => ({
       source: { ...source },
       sourceOrder,
-      demandTokens: Math.max(1, Math.ceil(source.content.length / 4)),
+      // Keep demand, allocation and clipping on the same tokenizer. A
+      // character-count heuristic truncates CJK resource names before the
+      // entity body, which makes the Evidence QA hit gate silently fall back.
+      demandTokens: Math.max(1, estimateTokens(source.content)),
     })),
   };
 }

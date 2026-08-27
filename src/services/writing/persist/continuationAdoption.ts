@@ -44,6 +44,7 @@ import {
 } from '../../continuation/generation/continuationRepairPatch';
 import {
   buildAcceptOpenChecksStatement,
+  buildProposalInsertStatements,
   buildOutboxInsertStatement,
   casUpdateRunState,
   contentRevisionHash,
@@ -54,6 +55,8 @@ import {
   getPlan,
   getRunById,
   getRunContextSnapshotJson,
+  getLatestArtifactForStage,
+  getStageResult,
   findLatestAdoptedRunForChapter,
   insertArtifact,
   insertCheckResults,
@@ -63,6 +66,7 @@ import {
   listChecksForArtifact,
   savePlan,
 } from '../../continuation/generation/generationRepository';
+import type { ContinuationProposalInsertRow } from '../../continuation/generation/generationRepository';
 import type {
   ContinuationArtifact,
   ContinuationCheckResult,
@@ -112,6 +116,7 @@ import {
   renderStyleProfile,
   type StyleRenderLevel,
 } from '../../continuation/styleProfile/styleProfileRenderer';
+import { resolveFinalBodyStateProposals } from '../prompt/qaStateProposals';
 
 function traceJsonForRunState(input: {
   run: ContinuationGenerationRun;
@@ -190,11 +195,16 @@ function resolveRepairMaxTokens(
     snapshot.stageBudgets?.writer?.contextWindow ||
     0;
   if (!window) return null;
+  const frozenRepair = snapshot.settingsSnapshot.frozenModelConfigs?.repair;
   return resolveElasticStageOutputReservation({
     contextWindow: Number(window),
     modelMaxOutputTokens:
       snapshot.contextBudget?.writerMaxOutputTokens ||
       snapshot.stageBudgets?.writer?.maxOutputTokens,
+    providerType: frozenRepair?.providerType,
+    modelName: frozenRepair?.modelName,
+    url: frozenRepair?.url,
+    providerAdapterId: frozenRepair?.providerAdapterId,
   });
 }
 
@@ -394,6 +404,7 @@ async function defaultStageCaller(input: {
         model_name: input.frozenModelConfig.modelName,
         context_window: input.frozenModelConfig.contextWindow,
         max_output_tokens: input.frozenModelConfig.maxOutputTokens,
+        provider_adapter_id: input.frozenModelConfig.providerAdapterId,
       }
     : liveRequestConfig;
   const contextWindow = requestConfig.context_window;
@@ -1606,18 +1617,137 @@ function readRunAppliedRequirementIds(
     .map((item: { id: string }) => item.id);
 }
 
+function readStageEnvelope(
+  outputJson: string | null,
+): Record<string, unknown> | null {
+  if (!outputJson) return null;
+  try {
+    const parsed = JSON.parse(outputJson);
+    const envelope = parsed?.envelope;
+    return envelope && typeof envelope === 'object' && !Array.isArray(envelope)
+      ? (envelope as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readContinuationStageBodyAndEnvelope(input: {
+  runId: string;
+  artifactStage?: 'draft' | 'revision_1';
+  resultStage: 'draft_writer' | 'revision_writer' | 'unified_qa';
+}): Promise<{
+  body: string | null;
+  structured: Record<string, unknown> | null;
+}> {
+  const [artifact, result] = await Promise.all([
+    input.artifactStage
+      ? getLatestArtifactForStage(input.runId, input.artifactStage)
+      : Promise.resolve(null),
+    getStageResult(input.runId, input.resultStage),
+  ]);
+  const structured = readStageEnvelope(result?.outputJson ?? null);
+  const envelopeBody =
+    typeof structured?.content === 'string'
+      ? structured.content
+      : typeof structured?.body === 'string'
+      ? structured.body
+      : null;
+  return {
+    body:
+      artifact?.content != null
+        ? String(artifact.content)
+        : envelopeBody != null
+        ? String(envelopeBody)
+        : null,
+    structured,
+  };
+}
+
+async function resolveContinuationFinalBodyStateProposals(input: {
+  sourceRun: ContinuationGenerationRun | null;
+  finalBody: string;
+  projectId: number;
+  chapterId: number;
+  finalBodyFingerprint: string;
+}): Promise<{
+  insertRows: ContinuationProposalInsertRow[];
+  source: 'qa' | 'revision' | 'none';
+  finalEqualsDraft: boolean;
+  rejectedCount: number;
+  fingerprintMatched: boolean;
+}> {
+  if (!input.sourceRun) {
+    return {
+      insertRows: [],
+      source: 'none',
+      finalEqualsDraft: false,
+      rejectedCount: 0,
+      fingerprintMatched: false,
+    };
+  }
+  const sourceRunId = input.sourceRun.id;
+
+  const [draft, qa, revision] = await Promise.all([
+    readContinuationStageBodyAndEnvelope({
+      runId: sourceRunId,
+      artifactStage: 'draft',
+      resultStage: 'draft_writer',
+    }),
+    // The artifact stage is intentionally ignored for QA: the unified QA
+    // result is the only durable source of QA stateProposals.
+    readContinuationStageBodyAndEnvelope({
+      runId: sourceRunId,
+      resultStage: 'unified_qa',
+    }),
+    readContinuationStageBodyAndEnvelope({
+      runId: sourceRunId,
+      artifactStage: 'revision_1',
+      resultStage: 'revision_writer',
+    }),
+  ]);
+  // The resolver computes the fingerprint itself. Keep the explicit argument
+  // in this boundary as a defensive assertion: the body written in the same
+  // transaction must be the body used for proposal binding.
+  const resolved = resolveFinalBodyStateProposals({
+    draftBody: draft.body,
+    finalBody: input.finalBody,
+    qaStructured: qa.structured,
+    revisionStructured: revision.structured,
+  });
+  if (resolved.finalBodyFingerprint !== input.finalBodyFingerprint) {
+    throw new Error('FINAL_BODY_STATE_PROPOSAL_FINGERPRINT_DRIFT');
+  }
+  return {
+    insertRows: resolved.rows.map(row => ({
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      sourceRunId,
+      extractionContentHash: resolved.finalBodyFingerprint,
+      chapterRevisionHash: resolved.finalBodyFingerprint,
+      proposalType: row.proposalType,
+      subjectRefType: row.subjectRefType ?? null,
+      subjectRefId: row.subjectRefId ?? null,
+      payloadJson: JSON.stringify(row.payload),
+      evidenceStart: row.evidenceStart,
+      evidenceEnd: row.evidenceEnd,
+    })),
+    source: resolved.source,
+    finalEqualsDraft: resolved.finalEqualsDraft,
+    rejectedCount: resolved.rejectedCount,
+    fingerprintMatched: resolved.fingerprintMatched,
+  };
+}
+
 /**
- * Finalize chapter: mark finalized, dirty SM, link source run and enqueue
- * extract_state outbox — all in ONE local transaction (Spec §11.1, fix-plan §2).
+ * Finalize chapter: mark finalized, persist Final-Body State Proposals and
+ * enqueue the Story Memory rebuild — all in ONE local transaction.
  *
  * Previously the outbox INSERT and the run linkage update ran after the
- * chapters/story-memory transaction committed. If the app was killed in that
- * window the chapter was finalized but no state-extraction task was ever
- * enqueued, silently dropping Story Memory rebuild. They now share a single
- * atomic commit so the chapter cannot reach `finalized` without its
- * extraction task. The post-commit `processContinuationOutbox({ limit: 1 })`
- * call is best-effort acceleration only; reliable delivery is the outbox +
- * cold-start path, never this fire-and-forget trigger.
+ * chapters/story-memory transaction committed. The chapter, authoritative
+ * proposal rows and rebuild outbox now share one atomic commit. The old
+ * independent PostWriting State Extraction is deliberately not part of the
+ * normal path; an explicit fallback/diagnostic caller may still enqueue it.
  *
  * Does NOT call LLM in the transaction.
  */
@@ -1640,10 +1770,6 @@ export async function finalizeContinuationChapter(input: {
   const position = ch.rows.item(0).position as number;
   const ts = new Date().toISOString();
 
-  // Spec §5.1 / fix-plan §5.1: the authoritative frozen field is
-  // `resolvedModelConfigIds` (built by continuationContextBuilder). The legacy
-  // `resolvedLlmConfigIds` key was never written, so it silently read as null
-  // and State Extraction fell back to the live active config on every run.
   let resolvedSourceRunId: string | null = input.sourceRunId ?? null;
   let sourceRun: ContinuationGenerationRun | null = null;
   if (input.sourceRunId) {
@@ -1671,30 +1797,18 @@ export async function finalizeContinuationChapter(input: {
     );
   }
 
-  let frozenStateExtractionConfigId: number | null = null;
-  let missingFrozenConfigReason: string | null = null;
-  if (sourceRun) {
-    try {
-      const snapshot = JSON.parse(sourceRun.settingsSnapshotJson);
-      const resolved = snapshot?.resolvedModelConfigIds?.stateExtraction;
-      if (typeof resolved === 'number') {
-        frozenStateExtractionConfigId = resolved;
-      } else {
-        // Old / corrupt snapshot: stay safe (null) but record the reason in
-        // the outbox payload so the worker and UI can surface it without
-        // logging the prompt or chapter body.
-        missingFrozenConfigReason =
-          snapshot?.resolvedModelConfigIds == null
-            ? 'snapshot_missing_resolved_model_config_ids'
-            : 'snapshot_state_extraction_not_number';
-      }
-    } catch {
-      frozenStateExtractionConfigId = null;
-      missingFrozenConfigReason = 'settings_snapshot_json_unparseable';
-    }
-  } else {
-    missingFrozenConfigReason = 'manual_or_unknown_source_run';
-  }
+  const stateProposalResolution =
+    await resolveContinuationFinalBodyStateProposals({
+      sourceRun,
+      finalBody: input.content,
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      finalBodyFingerprint: revisionHash,
+    });
+  const proposalInserts = buildProposalInsertStatements(
+    stateProposalResolution.insertRows,
+    ts,
+  );
 
   const persistedEvent = buildWritingPersistedEvent({
     generationTraceId:
@@ -1713,9 +1827,7 @@ export async function finalizeContinuationChapter(input: {
   });
   assertWritingPersistedEventAllowsMemoryUpdate(persistedEvent);
 
-  const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
   const rebuildDedupeKey = `rebuild_story_memory:auto:${input.projectId}:${position}:${revisionHash}`;
-  const outboxId = `co_${v4().replace(/-/g, '')}`;
   const rebuildOutboxId = `co_${v4().replace(/-/g, '')}`;
   const finalizedTraceJson = sourceRun
     ? traceJsonForRunState({
@@ -1751,8 +1863,8 @@ export async function finalizeContinuationChapter(input: {
         closeContinuationPostWritingSnapshot({
           snapshot,
           persistedEvent,
-          // Story Memory and state extraction are queued after the atomic
-          // finalize boundary; the trace still records the handoff itself.
+          // Story Memory is queued after the atomic finalize boundary; the
+          // trace records the handoff without a paid PostWriting call.
           durationMs: 0,
         }),
       );
@@ -1801,30 +1913,14 @@ export async function finalizeContinuationChapter(input: {
     });
   }
 
-  // INSERT OR IGNORE: re-tapping finalize for an unchanged chapter never
-  // duplicates the extract_state task (UNIQUE(dedupe_key)).
+  // State proposal rows are part of the same transaction as the finalized
+  // body. This makes the Final-body fingerprint binding atomic and prevents a
+  // second QA/legacy writer from submitting the same semantic proposal.
+  statements.push(...proposalInserts.map(item => item.statement));
+  // Story Memory describes finalized text, not proposal decisions. The direct
+  // B6 rebuild payload has no extract_state dependency because the normal path
+  // has no independent PostWriting State Extraction LLM call.
   statements.push(
-    buildOutboxInsertStatement({
-      id: outboxId,
-      projectId: input.projectId,
-      chapterId: input.chapterId,
-      operation: 'extract_state',
-      payload: {
-        projectId: input.projectId,
-        chapterId: input.chapterId,
-        chapterRevisionHash: revisionHash,
-        sourceRunId: resolvedSourceRunId,
-        llmConfigId: frozenStateExtractionConfigId,
-        // Visible audit hint only — never the prompt or chapter body.
-        configNote: missingFrozenConfigReason,
-        writingPersistedEvent: persistedEvent,
-      },
-      dedupeKey,
-      ts,
-    }),
-    // Chapter summaries and Story Memory describe finalized text, not proposal
-    // decisions. Queue their rebuild now, but make it depend on durable state
-    // extraction so a crash/retry cannot run the two jobs out of order.
     buildOutboxInsertStatement({
       id: rebuildOutboxId,
       projectId: input.projectId,
@@ -1833,7 +1929,15 @@ export async function finalizeContinuationChapter(input: {
       payload: {
         fromPosition: position,
         reason: 'finalized_chapter_memory',
-        dependsOnDedupeKey: dedupeKey,
+        stateProposalPipeline: 'final_body_v1',
+        stateProposalSource: stateProposalResolution.source,
+        stateProposalCount: stateProposalResolution.insertRows.length,
+        stateProposalRejectedCount: stateProposalResolution.rejectedCount,
+        stateProposalFingerprint: revisionHash,
+        stateProposalFinalEqualsDraft: stateProposalResolution.finalEqualsDraft,
+        stateProposalFingerprintMatched:
+          stateProposalResolution.fingerprintMatched,
+        writingPersistedEvent: persistedEvent,
       },
       dedupeKey: rebuildDedupeKey,
       ts,
@@ -1845,11 +1949,83 @@ export async function finalizeContinuationChapter(input: {
   // Best-effort acceleration only. Reliable delivery is the outbox + cold
   // start path (markRunsInterruptedOnColdStart + processContinuationOutbox),
   // never this fire-and-forget trigger.
-  // The dependent Story Memory rebuild is inserted beside the extraction
-  // event. Process both in creation order when the app remains alive; cold
-  // start processing still makes the chain recoverable after interruption.
-  processContinuationOutbox({ limit: 2 }).catch(() => {});
+  // Best-effort acceleration only. Reliable delivery is the direct rebuild
+  // outbox plus the cold-start processor.
+  processContinuationOutbox({ limit: 1 }).catch(() => {});
 
+  return { revisionHash, outboxDedupeKey: rebuildDedupeKey };
+}
+
+/**
+ * Explicit diagnostic/fallback entry point for the legacy State Extraction
+ * worker. Normal finalization never calls this function and never enqueues an
+ * extract_state row. Keeping the operation explicit prevents a hidden fourth
+ * paid call from reappearing in the standard/quality path.
+ */
+export async function enqueueContinuationStateExtractionFallback(input: {
+  projectId: number;
+  chapterId: number;
+  content: string;
+  sourceRunId?: string | null;
+}): Promise<{ revisionHash: string; outboxDedupeKey: string }> {
+  if (!input.content.trim()) {
+    throw new Error('章节正文为空，无法启动状态提取 fallback。');
+  }
+  const revisionHash = contentRevisionHash(input.content);
+  const db = await openDatabase();
+  const [chapter] = await db.executeSql(
+    'SELECT position FROM chapters WHERE id = ? AND project_id = ?',
+    [input.chapterId, input.projectId],
+  );
+  if (chapter.rows.length === 0) throw new Error('章节不存在');
+  const position = Number(chapter.rows.item(0).position);
+  let sourceRun: ContinuationGenerationRun | null = null;
+  if (input.sourceRunId) {
+    sourceRun = await getRunById(input.sourceRunId);
+    if (
+      !sourceRun ||
+      sourceRun.projectId !== input.projectId ||
+      sourceRun.chapterId !== input.chapterId
+    ) {
+      throw new Error('sourceRunId 不属于当前项目或章节，无法启动 fallback');
+    }
+  }
+  const persistedEvent = buildWritingPersistedEvent({
+    generationTraceId:
+      readRunTraceField(sourceRun, 'generationTraceId') ||
+      `continuation-state-fallback:${input.chapterId}:${revisionHash}`,
+    freezeFingerprint:
+      readRunTraceField(sourceRun, 'freezeFingerprint') ||
+      'continuation-explicit-state-fallback',
+    projectId: input.projectId,
+    chapterId: input.chapterId,
+    chapterPosition: position,
+    finalBody: input.content,
+    executionProfile: readRunExecutionProfile(sourceRun),
+    appliedRequirementIds: readRunAppliedRequirementIds(sourceRun),
+    scenario: 'continuation',
+  });
+  assertWritingPersistedEventAllowsMemoryUpdate(persistedEvent);
+  const dedupeKey = `extract_state:${input.chapterId}:${revisionHash}`;
+  await executeTransaction(db, [
+    buildOutboxInsertStatement({
+      id: `co_${v4().replace(/-/g, '')}`,
+      projectId: input.projectId,
+      chapterId: input.chapterId,
+      operation: 'extract_state',
+      payload: {
+        mode: 'explicit_fallback',
+        projectId: input.projectId,
+        chapterId: input.chapterId,
+        chapterRevisionHash: revisionHash,
+        sourceRunId: input.sourceRunId ?? null,
+        writingPersistedEvent: persistedEvent,
+      },
+      dedupeKey,
+      ts: new Date().toISOString(),
+    }),
+  ]);
+  processContinuationOutbox({ limit: 1 }).catch(() => {});
   return { revisionHash, outboxDedupeKey: dedupeKey };
 }
 

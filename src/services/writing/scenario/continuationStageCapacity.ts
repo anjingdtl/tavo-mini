@@ -3,6 +3,7 @@
  * the current chapter demand.  The ratios below are product policy, not token
  * ceilings: no category gets an absolute token cap.
  */
+import { resolveEffectiveMaxOutputTokens } from '../../llm/providerCapabilities';
 
 export const CONTINUATION_BUDGET_POLICY = {
   contextUtilizationRatio: 0.8,
@@ -151,6 +152,10 @@ export function planStageCapacity(input: {
   llmConfigId: number;
   contextWindow: number;
   maxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   promptSkeletonTokens?: number;
 }): ResolvedStageCapacity {
   const contextWindow = positive(input.contextWindow, FALLBACK_CONTEXT_WINDOW);
@@ -158,10 +163,17 @@ export function planStageCapacity(input: {
     contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
   );
   const declaredOutputTokens = positive(input.maxOutputTokens, contextWindow);
+  const effectiveOutputTokens = resolveEffectiveMaxOutputTokens({
+    providerType: input.providerType,
+    modelName: input.modelName,
+    url: input.url,
+    configuredMaxOutputTokens: declaredOutputTokens,
+    providerAdapterId: input.providerAdapterId,
+  });
   const outputShareCap = Math.floor(
     contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
   );
-  const maxOutputTokens = Math.min(declaredOutputTokens, outputShareCap);
+  const maxOutputTokens = Math.min(effectiveOutputTokens, outputShareCap);
   const promptSkeletonTokens = Math.max(
     0,
     Math.floor(
@@ -286,6 +298,10 @@ export function resolveContinuationWriterOutputBudget(input: {
 export function planContinuationSourceDemand(input: {
   modelContextLimit: number;
   writerMaxOutputTokens: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   targetChapterChars?: number;
   hardContextTokens?: number;
   hasPrimaryAnchor?: boolean;
@@ -300,6 +316,10 @@ export function planContinuationSourceDemand(input: {
 export function planContinuationContextBudget(input: {
   modelContextLimit: number;
   writerMaxOutputTokens: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   targetChapterChars?: number;
   hardContextTokens?: number;
   hasPrimaryAnchor?: boolean;
@@ -308,6 +328,10 @@ export function planContinuationContextBudget(input: {
     llmConfigId: 0,
     contextWindow: input.modelContextLimit,
     maxOutputTokens: input.writerMaxOutputTokens,
+    providerType: input.providerType,
+    modelName: input.modelName,
+    url: input.url,
+    providerAdapterId: input.providerAdapterId,
   });
   const chapterDemand = estimateTargetChapterTokens(input.targetChapterChars ?? 1);
   const pressure = ratio(chapterDemand / writer.contextWindow);

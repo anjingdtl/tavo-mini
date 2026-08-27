@@ -42,6 +42,10 @@ export const STORY_MEMORY_INPUT_SAFETY_TOKENS = 256;
 export interface StoryMemoryOutputBudgetInput {
   contextWindow?: number | null;
   maxOutputTokens?: number | null;
+  requestConfig?: Pick<
+    LLMRequestConfig,
+    'provider_type' | 'model_name' | 'url' | 'max_output_tokens'
+  > & { provider_adapter_id?: string | null };
   /** Compatibility input used only when the model has no capability data. */
   legacyOutputTokens: number;
   batchSize: number;
@@ -67,6 +71,10 @@ export function resolveStoryMemoryOutputBudget(
     return resolveElasticStageOutputReservation({
       contextWindow,
       modelMaxOutputTokens: maxOutputTokens || undefined,
+      providerType: input.requestConfig?.provider_type,
+      modelName: input.requestConfig?.model_name,
+      url: input.requestConfig?.url,
+      providerAdapterId: input.requestConfig?.provider_adapter_id,
     });
   }
   return legacyCheckpointMaxTokens({
@@ -463,6 +471,7 @@ export function planStoryMemoryRequest(input: {
   const maxTokens = resolveStoryMemoryOutputBudget({
     contextWindow: input.config.contextWindow,
     maxOutputTokens: input.config.maxOutputTokens,
+    requestConfig: input.config.requestConfig,
     legacyOutputTokens: input.legacyOutputTokens,
     batchSize: input.batchSize,
   });
@@ -574,6 +583,7 @@ export function planStoryMemoryElasticRequest(input: {
   const maxTokens = resolveStoryMemoryOutputBudget({
     contextWindow: input.config.contextWindow,
     maxOutputTokens: input.config.maxOutputTokens,
+    requestConfig: input.config.requestConfig,
     legacyOutputTokens: input.legacyOutputTokens ?? 0,
     batchSize: input.batchSize,
   });

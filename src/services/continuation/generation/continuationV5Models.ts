@@ -16,6 +16,10 @@ interface V5StageModel {
   configId: number;
   contextWindow: number;
   maxOutputTokens: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
 }
 
 interface V5StageModels {
@@ -77,6 +81,7 @@ export function freezeV5ModelConfig(
       config.max_output_tokens,
       'max_output_tokens',
     ),
+    providerAdapterId: config.provider_adapter_id,
     allowInsecureLanHttp: Boolean(config.allow_insecure_lan_http),
     thinking: freezeContinuationThinking(config.model_name, config.thinking),
   };
@@ -162,21 +167,37 @@ export async function resolveV5StageModels(
         configId: frozen.draftWriter!.configId,
         contextWindow: frozen.draftWriter!.contextWindow,
         maxOutputTokens: frozen.draftWriter!.maxOutputTokens,
+        providerType: frozen.draftWriter!.providerType,
+        modelName: frozen.draftWriter!.modelName,
+        url: frozen.draftWriter!.url,
+        providerAdapterId: frozen.draftWriter!.providerAdapterId,
       },
       narrative_architect: {
         configId: frozen.narrativeArchitect!.configId,
         contextWindow: frozen.narrativeArchitect!.contextWindow,
         maxOutputTokens: frozen.narrativeArchitect!.maxOutputTokens,
+        providerType: frozen.narrativeArchitect!.providerType,
+        modelName: frozen.narrativeArchitect!.modelName,
+        url: frozen.narrativeArchitect!.url,
+        providerAdapterId: frozen.narrativeArchitect!.providerAdapterId,
       },
       revision_writer: {
         configId: frozen.revisionWriter!.configId,
         contextWindow: frozen.revisionWriter!.contextWindow,
         maxOutputTokens: frozen.revisionWriter!.maxOutputTokens,
+        providerType: frozen.revisionWriter!.providerType,
+        modelName: frozen.revisionWriter!.modelName,
+        url: frozen.revisionWriter!.url,
+        providerAdapterId: frozen.revisionWriter!.providerAdapterId,
       },
       adversarial_auditor: {
         configId: frozen.adversarialAuditor!.configId,
         contextWindow: frozen.adversarialAuditor!.contextWindow,
         maxOutputTokens: frozen.adversarialAuditor!.maxOutputTokens,
+        providerType: frozen.adversarialAuditor!.providerType,
+        modelName: frozen.adversarialAuditor!.modelName,
+        url: frozen.adversarialAuditor!.url,
+        providerAdapterId: frozen.adversarialAuditor!.providerAdapterId,
       },
       // Phase 4 §7.2: the unified_qa node reuses the legacy auditor's model
       // config. The compact driver dispatches round2 through unified_qa only;
@@ -186,11 +207,19 @@ export async function resolveV5StageModels(
         configId: frozen.adversarialAuditor!.configId,
         contextWindow: frozen.adversarialAuditor!.contextWindow,
         maxOutputTokens: frozen.adversarialAuditor!.maxOutputTokens,
+        providerType: frozen.adversarialAuditor!.providerType,
+        modelName: frozen.adversarialAuditor!.modelName,
+        url: frozen.adversarialAuditor!.url,
+        providerAdapterId: frozen.adversarialAuditor!.providerAdapterId,
       },
       final_reviser: {
         configId: frozen.finalReviser!.configId,
         contextWindow: frozen.finalReviser!.contextWindow,
         maxOutputTokens: frozen.finalReviser!.maxOutputTokens,
+        providerType: frozen.finalReviser!.providerType,
+        modelName: frozen.finalReviser!.modelName,
+        url: frozen.finalReviser!.url,
+        providerAdapterId: frozen.finalReviser!.providerAdapterId,
       },
     },
   };

@@ -22,6 +22,11 @@ import {
 import { sha256Hex } from '../continuation/hashUtils';
 import * as db from '../database';
 import { getEnabledOutlinesByProject } from '../../data/repositories/outlineRepository';
+import { resolveElasticStageOutputReservation } from '../contextAutoAllocator';
+import {
+  resolveProviderOutputBudget,
+  type ProviderCapabilityConfig,
+} from '../llm/providerCapabilities';
 
 export type PlannerValidationResult =
   | { ok: true; plan: BatchChapterPlan }
@@ -297,15 +302,12 @@ ${previousOutput}
 请基于该输出，仅修复 JSON 结构，重新输出完整 JSON（不要解释）。`;
 
 /**
- * Planner wire max_tokens. The elastic compiler only sizes the INPUT side;
- * the output side is the fixed `reservedOutputTokens` reservation (default
- * 4000) — one constant doubling as the context-window reservation AND the
- * wire cap. Reasoning models count chain-of-thought inside completion
- * tokens, so a 4000 cap can starve the visible JSON and truncate it
- * mid-stream (finish_reason=length). When the user configured an explicit
- * max_output_tokens, honor it as the wire cap up to what the compiled
- * window math allows (input + output ≤ window − safety margin), with the
- * reservation as the floor. Unset configs keep the legacy reservation cap.
+ * Planner wire max_tokens. The elastic compiler sizes the INPUT side from the
+ * same per-request output envelope used by the rest of the app. An explicit
+ * reservation remains a caller-owned request demand; when it is omitted, the
+ * caller derives one from the frozen context window + provider capability
+ * instead of inventing a planner-local 4000-token cap. The provider adapter
+ * still owns the final logical → wire translation.
  */
 export function resolvePlannerWireMaxTokens(input: {
   reservedOutputTokens: number;
@@ -313,9 +315,18 @@ export function resolvePlannerWireMaxTokens(input: {
   contextWindow?: number | null;
   estimatedInputTokens?: number | null;
   safetyMargin?: number | null;
+  providerConfig?: ProviderCapabilityConfig;
 }): number {
   const reserved = Math.max(0, Number(input.reservedOutputTokens) || 0);
-  const configuredMax = Number(input.maxOutputTokens) || 0;
+  const configuredMax = input.providerConfig
+    ? resolveProviderOutputBudget({
+        config: {
+          ...input.providerConfig,
+          max_output_tokens: input.maxOutputTokens,
+        },
+        requestedMaxTokens: input.maxOutputTokens,
+      }).wireMaxTokens
+    : Number(input.maxOutputTokens) || 0;
   const contextWindow = Number(input.contextWindow) || 0;
   if (!(configuredMax > 0) || !(contextWindow > 0)) {
     return reserved;
@@ -325,6 +336,26 @@ export function resolvePlannerWireMaxTokens(input: {
   const ceiling = Math.max(0, contextWindow - estimatedInput - margin);
   return Math.max(reserved, Math.min(configuredMax, ceiling));
 };
+
+export function resolvePlannerReservedOutputTokens(input: {
+  explicitReservation?: number | null;
+  contextWindow: number;
+  maxOutputTokens?: number | null;
+  providerConfig?: ProviderCapabilityConfig;
+}): number {
+  const explicit = Number(input.explicitReservation);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.max(1, Math.floor(explicit));
+  }
+  return resolveElasticStageOutputReservation({
+    contextWindow: input.contextWindow,
+    modelMaxOutputTokens: input.maxOutputTokens,
+    providerType: input.providerConfig?.provider_type,
+    modelName: input.providerConfig?.model_name,
+    url: input.providerConfig?.url,
+    providerAdapterId: input.providerConfig?.provider_adapter_id,
+  });
+}
 
 export interface CreateBatchChapterPlanResult {
   plan: BatchChapterPlan;
@@ -455,7 +486,12 @@ export async function createBatchChapterPlan(
   if (!(contextWindow > 0)) {
     throw new BatchPlannerError('BATCH_PLAN_INVALID', '当前模型未配置有效上下文窗口');
   }
-  const reservedOutputTokens = input.reservedOutputTokens ?? 4000;
+  const reservedOutputTokens = resolvePlannerReservedOutputTokens({
+    explicitReservation: input.reservedOutputTokens,
+    contextWindow,
+    maxOutputTokens: requestConfig.max_output_tokens,
+    providerConfig: requestConfig,
+  });
 
   const compiled = compileBatchPlannerRequest({
     sourcePrompt: input.sourcePrompt,
@@ -482,6 +518,7 @@ export async function createBatchChapterPlan(
     contextWindow,
     estimatedInputTokens: ready.estimatedInputTokens,
     safetyMargin: ready.safetyMargin,
+    providerConfig: requestConfig,
   });
   const requestJson = JSON.stringify({
     messages,

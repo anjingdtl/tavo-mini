@@ -20,7 +20,14 @@ describe('historical digest LLM request options', () => {
     expect(
       resolveHistoricalDigestInputCharBudget(1_000_000, 200_000),
     ).toBeGreaterThan(1_000_000);
-    expect(resolveHistoricalDigestMaxTokens(200_000)).toBe(65_536);
+    expect(resolveHistoricalDigestMaxTokens(200_000)).toBe(200_000);
+    expect(
+      resolveHistoricalDigestMaxTokens(200_000, {
+        provider_type: 'openai_compatible',
+        model_name: 'GLM-5.3-Flash',
+        url: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
+      }),
+    ).toBe(131_072);
   });
 
   it('merges overlapping ready digest ranges before reporting historical coverage', () => {

@@ -93,7 +93,15 @@ describe('Shared Writer report contract', () => {
     });
     await expect(
       executeSharedWriterStage({ stage: 'review', stageInput: invalid }),
-    ).rejects.toMatchObject({ code: 'SHARED_WRITER_INVALID_REPORT' });
+    ).rejects.toMatchObject({
+      code: 'SHARED_WRITER_INVALID_REPORT',
+      writerDiagnostics: expect.objectContaining({
+        parseFailureCode: 'SHARED_WRITER_INVALID_REPORT',
+        responseChannel: 'content',
+        responseCandidateChannel: 'content',
+        validationDetailsJson: expect.stringContaining('candidateRootKeys'),
+      }),
+    });
 
     const valid = stageInput('prose');
     valid.callStage = async () => ({
@@ -139,6 +147,26 @@ describe('Shared Writer revision brief contract', () => {
     ).toBe(true);
   });
 
+  it('accepts a legacy report-only Brief and keeps the Draft as the body', async () => {
+    const input = stageInput('prose');
+    input.artifacts = {
+      draft: { stage: 'draft', body: '沿用的初稿正文' },
+    } as any;
+    input.callStage = async () => ({
+      text: JSON.stringify({ report: '建议保持人物动机与结尾落点' }),
+    });
+
+    const artifact = await executeSharedWriterStage({
+      stage: 'revision',
+      stageInput: input,
+    });
+
+    expect(artifact.body).toBe('沿用的初稿正文');
+    expect(artifact.structured).toEqual(
+      expect.objectContaining({ report: '建议保持人物动机与结尾落点' }),
+    );
+  });
+
   it('adopts a brief whose only populated fields are preserve/ending', () => {
     expect(
       isAdoptableStructuredReport('revision', {
@@ -151,6 +179,52 @@ describe('Shared Writer revision brief contract', () => {
   it('rejects a bare prose object with no brief signal', () => {
     expect(isAdoptableStructuredReport('revision', { schemaVersion: 1 })).toBe(
       false,
+    );
+  });
+
+  it('normalizes compatible revision envelopes and body aliases at the writer boundary', () => {
+    const artifact = parseSharedWriterOutput(
+      'revision',
+      '网关包装后的结果：{"data":{"mode":"full_revision","revisedBody":"修订后的正文"}}',
+    );
+
+    expect(artifact.body).toBe('修订后的正文');
+    expect(artifact.structured).toEqual(
+      expect.objectContaining({
+        strategy: 'full_revision',
+        content: '修订后的正文',
+      }),
+    );
+    expect(isAdoptableStructuredReport('revision', artifact.structured)).toBe(
+      true,
+    );
+  });
+
+  it('adopts a double-encoded or single-item-array revision without a second call', async () => {
+    const input = stageInput('prose');
+    input.artifacts = {
+      draft: { stage: 'draft', body: '初稿正文' },
+    } as any;
+    input.callStage = async () => ({
+      text: JSON.stringify([
+        {
+          strategy: 'full_revision',
+          revisedBody: '网关变体正文',
+        },
+      ]),
+    });
+
+    const artifact = await executeSharedWriterStage({
+      stage: 'revision',
+      stageInput: input,
+    });
+
+    expect(artifact.body).toBe('网关变体正文');
+    expect(artifact.structured).toEqual(
+      expect.objectContaining({
+        strategy: 'full_revision',
+        content: '网关变体正文',
+      }),
     );
   });
 

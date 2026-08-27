@@ -27,6 +27,7 @@ import {
 } from './helpers/oneShotFixtures';
 import type { WritingRequest } from '../src/services/writing/contracts/writingSource';
 import type { SharedWritingArtifact } from '../src/services/writing/contracts/writingStage';
+import { estimateTokens } from '../src/utils/tokenEstimator';
 
 const DRAFT_BODY = [
   '夜谈将尽，柳如烟把信物轻轻放在案上。',
@@ -88,6 +89,19 @@ function qaInput() {
 }
 
 describe('B4 — resolveQaEvidenceProjection', () => {
+  test('CJK material demand uses the shared tokenizer before Evidence QA runs', () => {
+    const { frozenContext } = qaInput();
+    const character = frozenContext.materials.find(
+      item => item.source.kind === 'character',
+    );
+    expect(character).toBeDefined();
+    expect(character?.demandTokens).toBe(
+      estimateTokens(character?.source.content),
+    );
+    const rendered = frozenContext.rendered.text;
+    expect(rendered).toContain('柳如烟');
+  });
+
   test('high-confidence: relevant evidence is kept, irrelevant candidates are dropped', () => {
     const { frozenContext, artifacts, requirements } = qaInput();
     const result = resolveQaEvidenceProjection({

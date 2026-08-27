@@ -416,7 +416,7 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
     expect((options as any).max_tokens).toBe(8000);
   });
 
-  it('keeps the 4000 reservation cap when max_output_tokens is unset', async () => {
+  it('derives the reservation from the model context when max_output_tokens is unset', async () => {
     mockResolveLLMRequestConfig.mockResolvedValue({
       id: 1,
       context_window: 128000,
@@ -431,7 +431,9 @@ describe('createBatchChapterPlan (mocked LLM)', () => {
     });
     await createBatchChapterPlan(baseInput);
     const [, maxTokensArg, options] = mockCallLLMResult.mock.calls[0];
-    expect(maxTokensArg).toBe(4000);
-    expect((options as any).max_tokens).toBe(4000);
+    // context_window=128000 → elastic 20% reservation; no planner-local
+    // 4000-token cap is allowed to override the model envelope.
+    expect(maxTokensArg).toBe(25600);
+    expect((options as any).max_tokens).toBe(25600);
   });
 });

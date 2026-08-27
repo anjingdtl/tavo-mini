@@ -26,6 +26,7 @@ export type {
   LLMQueueState,
   LLMRequestMetrics,
   LLMPhysicalRequestHooks,
+  LLMOutputBudgetTrace,
   ReasoningEffort,
 } from './llm/types';
 
@@ -37,6 +38,12 @@ export {
   supportsReasoningEffort,
   parseReasoningTokens,
 } from './llm/openAICompatibleProvider';
+export {
+  ELASTIC_OUTPUT_RESERVE_RATIO,
+  deriveElasticOutputReservation,
+  resolveEffectiveMaxOutputTokens,
+  resolveProviderOutputBudget,
+} from './llm/providerCapabilities';
 
 export interface LLMCallConfig {
   temperature?: number;
@@ -81,6 +88,7 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
     url: normalizeChatCompletionUrl(config.base_url),
     context_window: raw.context_window,
     max_output_tokens: raw.max_output_tokens,
+    provider_adapter_id: raw.provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
   };
 }
@@ -106,6 +114,8 @@ export async function resolveLLMRequestConfigById(
     url: normalizeChatCompletionUrl(config.base_url),
     context_window: config.context_window,
     max_output_tokens: config.max_output_tokens,
+    provider_adapter_id: (config as typeof config & { provider_adapter_id?: string | null })
+      .provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
   };
 }

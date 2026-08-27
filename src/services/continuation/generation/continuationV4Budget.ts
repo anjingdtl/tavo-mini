@@ -4,6 +4,7 @@ import type {
   RatioCurve,
 } from '../../contextAutomationPolicy';
 import type { ContinuationContextBudgetPlan } from '../../writing/scenario/continuationStageCapacity';
+import { resolveEffectiveMaxOutputTokens } from '../../llm/providerCapabilities';
 
 export type { ContinuationV4Stage } from '../../contextAutomationPolicy';
 
@@ -11,6 +12,10 @@ export interface FrozenContinuationStageModel {
   configId: number;
   contextWindow: number;
   maxOutputTokens: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
 }
 
 export interface ResolveContinuationStageBudgetInput {
@@ -33,6 +38,7 @@ export interface ContinuationV4StageBudget {
   contextWindow: number;
   effectiveWindow: number;
   declaredMaxOutputTokens: number;
+  wireMaxOutputTokens: number;
   maxOutputRatio: number;
   compiledPromptTokens: number;
   protocolSkeletonTokens: number;
@@ -216,6 +222,13 @@ export function resolveContinuationStageBudget(
     input.frozenModelConfig.maxOutputTokens,
     'max_output_tokens',
   );
+  const wireMaxOutputTokens = resolveEffectiveMaxOutputTokens({
+    providerType: input.frozenModelConfig.providerType,
+    modelName: input.frozenModelConfig.modelName,
+    url: input.frozenModelConfig.url,
+    configuredMaxOutputTokens: declaredMaxOutputTokens,
+    providerAdapterId: input.frozenModelConfig.providerAdapterId,
+  });
   const compiledPromptTokens = nonNegativeNumber(
     input.compiledPromptTokens,
     'compiledPromptTokens',
@@ -267,7 +280,7 @@ export function resolveContinuationStageBudget(
   const maximumByPolicy = Math.floor(contextWindow * stageRule.maxOutputRatio);
   const maximumOutputTokens = Math.max(
     0,
-    Math.min(declaredMaxOutputTokens, maximumByPolicy, availableOutputTokens),
+    Math.min(wireMaxOutputTokens, maximumByPolicy, availableOutputTokens),
   );
   const demand = resolveDemand({
     stage: input.stage,
@@ -302,6 +315,7 @@ export function resolveContinuationStageBudget(
     contextWindow,
     effectiveWindow,
     declaredMaxOutputTokens,
+    wireMaxOutputTokens,
     maxOutputRatio: stageRule.maxOutputRatio,
     compiledPromptTokens,
     protocolSkeletonTokens,

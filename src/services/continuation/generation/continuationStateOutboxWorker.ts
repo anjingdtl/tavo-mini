@@ -12,7 +12,6 @@ import { rebuildStoryMemory } from '../../storyMemory/storyMemoryRebuild';
 import { modelJsonCandidates } from '../canon/canonJsonValidators';
 import { compileStateExtractionMessages } from '../../writing/postWritingUpdate/stateExtractionPrompt';
 import {
-  buildQaProposalInsertRows,
   buildQaStateProposalShadow,
   extractQaStateProposals,
 } from '../../writing/prompt/qaStateProposals';
@@ -67,28 +66,23 @@ function thinkingDisabledForModel(
   return { type: 'disabled' };
 }
 
-/**
- * Completion budget for the extraction call. The extraction envelope is
- * typically well under 1k tokens; 4096 leaves headroom for models/gateways
- * that still emit a short reasoning prefix (or whose thinking-disable goes
- * through the provider's protocol fallback) without inviting runaway output.
- */
-export const CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS = 4096;
-
 type StateExtractionRequestConfig = {
   id?: number;
   model_name?: string | null;
+  provider_type?: string | null;
+  url?: string | null;
+  provider_adapter_id?: string | null;
   context_window?: number | null;
   max_output_tokens?: number | null;
 };
 
 /**
- * Resolve the state-extraction envelope from the selected model's real
- * capability. The 4096 value is an extraction-specific safety ceiling, not a
- * replacement for the continuation elastic stage pool: smaller models still
- * get the lower of their declared output and the 20% continuation reserve.
- * When an old/manual outbox has no capability metadata, retain the historical
- * safe fallback rather than turning the request into an unusably tiny call.
+ * Resolve the explicit fallback envelope from the selected model's real
+ * capability. There is no extraction-owned output ceiling here: the same
+ * continuation stage envelope and Provider adapter used by normal requests
+ * resolve the actual value. If an old/manual outbox has no capability
+ * metadata, an explicit fallback cannot safely invent a ceiling and therefore
+ * fails closed; normal Final-Body settlement never enters this worker.
  */
 export function resolveContinuationStateExtractionMaxOutputTokens(
   config?: StateExtractionRequestConfig | null,
@@ -102,27 +96,21 @@ export function resolveContinuationStateExtractionMaxOutputTokens(
       contextWindow,
       maxOutputTokens:
         configuredMaxOutputTokens > 0 ? configuredMaxOutputTokens : undefined,
+      providerType: config?.provider_type,
+      modelName: config?.model_name,
+      url: config?.url,
+      providerAdapterId: config?.provider_adapter_id,
     });
-    return Math.max(
-      1,
-      Math.min(
-        CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS,
-        capacity.maxOutputTokens,
-      ),
-    );
+    return Math.max(1, capacity.maxOutputTokens);
   }
 
   if (configuredMaxOutputTokens > 0) {
-    return Math.max(
-      1,
-      Math.min(
-        CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS,
-        Math.floor(configuredMaxOutputTokens),
-      ),
-    );
+    return Math.max(1, Math.floor(configuredMaxOutputTokens));
   }
 
-  return CONTINUATION_STATE_EXTRACTION_MAX_OUTPUT_TOKENS;
+  throw new Error(
+    '显式状态提取回退缺少模型能力：需要 context_window 或 max_output_tokens。',
+  );
 }
 
 export async function coldStartNormalizeContinuation(): Promise<number> {
@@ -256,11 +244,11 @@ export async function processContinuationOutbox(options?: {
 }
 
 /**
- * Outline PostWriting rows carry the exact persisted-body event that caused
- * the rebuild. Validate it before consuming the outbox so a stale retry can
- * never rebuild Memory for a newer body under the old event key. Historical
- * Continuation rebuild rows do not carry this field and retain their legacy
- * behavior.
+ * Outline and Continuation PostWriting rows carry the exact persisted-body
+ * event that caused the rebuild. Validate it before consuming the outbox so a
+ * stale retry can never rebuild Memory for a newer body under the old event
+ * key. Historical Continuation rebuild rows do not carry this field and
+ * retain their legacy behavior.
  */
 async function validateWritingPersistedEventForMemoryRebuild(
   projectId: number,
@@ -274,7 +262,7 @@ async function validateWritingPersistedEventForMemoryRebuild(
   assertWritingPersistedEventAllowsMemoryUpdate(event);
   if (
     event.projectId !== projectId ||
-    event.scenario !== 'outline' ||
+    (event.scenario !== 'outline' && event.scenario !== 'continuation') ||
     (payload.fromPosition != null &&
       Number(payload.fromPosition) !== event.chapterPosition)
   ) {
@@ -336,12 +324,24 @@ async function handleExtractState(
     throw new Error('章节正文已变更，与定稿 hash 不一致');
   }
 
-  // B6 §8.5/8.6 cutover 金丝雀：把同 run 的 QA proposals（本地解析
-  // evidenceQuote 为 UTF-16 offsets）以 pending 状态录入与 legacy 提取
-  // 相同的提案管道（INSERT OR IGNORE 幂等）；不自动确认，与 legacy
-  // 提案同等待遇。extract_state 仍照常运行以产出 shadow 对比数据。
-  await recordQaDerivedProposals(payload, content, hash);
+  // B6 single-authority guard: an explicit fallback may still be useful for
+  // diagnostics, but once normal Final-Body settlement has created the
+  // matching rebuild row, this legacy worker must not write or auto-submit a
+  // second proposal stream for the same chapter/body. The guard is keyed by
+  // the same position+body fingerprint as finalizeContinuationChapter and is
+  // deliberately checked before insertProposals.
+  const finalBodyPipelineAlreadySettled =
+    await hasFinalBodyProposalPipeline({
+      projectId: payload.projectId,
+      chapterId: payload.chapterId,
+      chapterRevisionHash: hash,
+      position: Number(ch.rows.item(0).position),
+    });
 
+  // Explicit fallback / historical compatibility only. Normal continuation
+  // finalization persists the authoritative Final-Body proposal rows in its
+  // local transaction and never creates this outbox operation. QA is read
+  // below for shadow diagnostics only; it is never submitted here.
   const messages = compileStateExtractionMessages(content, '[]');
   let raw: string;
   let finishReason: string | null | undefined;
@@ -395,21 +395,23 @@ async function handleExtractState(
     finishReason: finishReason ?? null,
     emptyReason: emptyReason ?? null,
   });
-  const inserted = await insertProposals(
-    proposals.map(p => ({
-      projectId: payload.projectId,
-      chapterId: payload.chapterId,
-      sourceRunId: payload.sourceRunId ?? null,
-      extractionContentHash: hash,
-      chapterRevisionHash: hash,
-      proposalType: p.proposalType,
-      subjectRefType: p.subjectRefType,
-      subjectRefId: p.subjectRefId,
-      payloadJson: JSON.stringify(p.payload),
-      evidenceStart: p.evidenceStart,
-      evidenceEnd: p.evidenceEnd,
-    })),
-  );
+  const inserted = finalBodyPipelineAlreadySettled
+    ? []
+    : await insertProposals(
+        proposals.map(p => ({
+          projectId: payload.projectId,
+          chapterId: payload.chapterId,
+          sourceRunId: payload.sourceRunId ?? null,
+          extractionContentHash: hash,
+          chapterRevisionHash: hash,
+          proposalType: p.proposalType,
+          subjectRefType: p.subjectRefType,
+          subjectRefId: p.subjectRefId,
+          payloadJson: JSON.stringify(p.payload),
+          evidenceStart: p.evidenceStart,
+          evidenceEnd: p.evidenceEnd,
+        })),
+      );
   // B5 §8.6 Shadow Mode：QA 提案 vs legacy 提取提案的影子对比（只记录，
   // 不写第二套长期记忆）。extract 侧用 UTF-16 slice 还原 evidenceQuote。
   await recordQaStateExtractionShadow({
@@ -423,13 +425,36 @@ async function handleExtractState(
       evidenceEnd: p.evidenceEnd,
     })),
   });
+  if (!finalBodyPipelineAlreadySettled) {
+    try {
+      await autoCommitRoutineContinuityProposals({
+        projectId: payload.projectId,
+        proposals: inserted,
+      });
+    } catch {
+      // Extract already persisted. Leftover pending rows stay confirmable.
+    }
+  }
+}
+
+async function hasFinalBodyProposalPipeline(input: {
+  projectId: number;
+  chapterId: number;
+  position: number;
+  chapterRevisionHash: string;
+}): Promise<boolean> {
+  const dedupeKey =
+    `rebuild_story_memory:auto:${input.projectId}:${input.position}:${input.chapterRevisionHash}`;
+  const row = await getOutboxByDedupe(dedupeKey);
+  if (!row || row.chapterId !== input.chapterId) return false;
   try {
-    await autoCommitRoutineContinuityProposals({
-      projectId: payload.projectId,
-      proposals: inserted,
-    });
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    return (
+      payload.stateProposalPipeline === 'final_body_v1' &&
+      payload.stateProposalFingerprint === input.chapterRevisionHash
+    );
   } catch {
-    // Extract already persisted. Leftover pending rows stay confirmable.
+    return false;
   }
 }
 
@@ -439,42 +464,6 @@ function safeSlice(text: string, start?: number, end?: number): string {
   const e = Math.min(text.length, end);
   if (s >= e) return '';
   return text.slice(s, e);
-}
-
-/**
- * B6：QA-derived proposals 进入 legacy 提案管道（pending，cutover 金丝雀）。
- * 复用 insertProposals 的 INSERT OR IGNORE 幂等；失败静默，不阻断提取。
- */
-async function recordQaDerivedProposals(
-  payload: {
-    projectId: number;
-    chapterId: number;
-    sourceRunId?: string | null;
-    llmConfigId?: number;
-  },
-  content: string,
-  hash: string,
-): Promise<void> {
-  if (!payload.sourceRunId) return;
-  try {
-    const qaResult = await getStageResult(payload.sourceRunId, 'unified_qa');
-    if (!qaResult?.outputJson) return;
-    const envelope = (JSON.parse(qaResult.outputJson) as { envelope?: unknown })
-      ?.envelope;
-    if (!envelope) return;
-    const rows = buildQaProposalInsertRows({
-      proposals: extractQaStateProposals(envelope),
-      finalBody: content,
-      finalBodyFingerprint: hash,
-      projectId: payload.projectId,
-      chapterId: payload.chapterId,
-      sourceRunId: payload.sourceRunId,
-    });
-    if (rows.length === 0) return;
-    await insertProposals(rows);
-  } catch {
-    // QA-derived proposals must never fail state extraction.
-  }
 }
 
 /** B5: 读取同一 run 的 QA structured，与 legacy 提取提案做影子对比。 */

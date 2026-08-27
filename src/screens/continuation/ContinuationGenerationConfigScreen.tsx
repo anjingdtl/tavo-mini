@@ -108,7 +108,10 @@ const MODEL_STAGES: Array<{ key: ModelStage; label: string }> = [
   { key: 'checkerLlmConfigId', label: '统一 QA' },
   { key: 'controlLlmConfigId', label: 'QA 备用模型' },
   { key: 'repairLlmConfigId', label: 'Revision Writer / Final Candidate' },
-  { key: 'stateExtractionLlmConfigId', label: 'PostWriting 状态提取（ONE Memory）' },
+  {
+    key: 'stateExtractionLlmConfigId',
+    label: '显式 fallback 状态提取（诊断）',
+  },
 ];
 
 /** Continuation-only pre-Freeze inputs; PipelineConfig owns the shared profile. */

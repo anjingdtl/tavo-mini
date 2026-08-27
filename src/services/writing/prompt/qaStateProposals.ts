@@ -9,7 +9,8 @@
  * 3. Shadow Mode（§8.6）：QA 提案与 legacy State Extraction 提案的
  *    影子对比统计（不写第二套长期记忆，只做对比与观测）。
  */
-import type { SharedWritingStageName } from '../contracts/writingPolicy';
+import { sha256Hex } from '../../continuation/hashUtils';
+import { normalizeContinuationProposalSubjectRefType } from '../../continuation/generation/types';
 
 export const QA_STATE_SHADOW_VERSION = 1 as const;
 
@@ -86,10 +87,12 @@ export function resolveEvidenceQuoteLocations(
   };
 }
 
-/** §8.3 从 QA structured 提取合法 stateProposals（坏条目过滤）。 */
-export function extractQaStateProposals(qaStructured: unknown): QaStateProposal[] {
-  if (!qaStructured || typeof qaStructured !== 'object') return [];
-  const raw = (qaStructured as Record<string, unknown>).stateProposals;
+function extractStateProposalField(
+  structured: unknown,
+  field: 'stateProposals' | 'finalStateProposals',
+): QaStateProposal[] {
+  if (!structured || typeof structured !== 'object') return [];
+  const raw = (structured as Record<string, unknown>)[field];
   if (!Array.isArray(raw)) return [];
   const output: QaStateProposal[] = [];
   for (const item of raw) {
@@ -102,6 +105,14 @@ export function extractQaStateProposals(qaStructured: unknown): QaStateProposal[
     ) {
       continue;
     }
+    const rawSubjectRefType = row.subjectRefType;
+    let subjectRefType: string | undefined;
+    if (typeof rawSubjectRefType === 'string' && rawSubjectRefType.trim()) {
+      const normalizedSubjectRefType =
+        normalizeContinuationProposalSubjectRefType(rawSubjectRefType);
+      if (!normalizedSubjectRefType) continue;
+      subjectRefType = normalizedSubjectRefType;
+    }
     const evidenceQuote =
       typeof row.evidenceQuote === 'string' ? row.evidenceQuote.trim() : '';
     if (!evidenceQuote) continue;
@@ -113,9 +124,7 @@ export function extractQaStateProposals(qaStructured: unknown): QaStateProposal[
         : {};
     output.push({
       proposalType: proposalType as QaStateProposalType,
-      ...(typeof row.subjectRefType === 'string' && row.subjectRefType
-        ? { subjectRefType: row.subjectRefType }
-        : {}),
+      ...(subjectRefType ? { subjectRefType } : {}),
       ...(typeof row.subjectRefId === 'string' && row.subjectRefId
         ? { subjectRefId: row.subjectRefId }
         : {}),
@@ -125,6 +134,18 @@ export function extractQaStateProposals(qaStructured: unknown): QaStateProposal[
     });
   }
   return output;
+}
+
+/** §8.3 从 QA structured 提取合法 stateProposals（坏条目过滤）。 */
+export function extractQaStateProposals(qaStructured: unknown): QaStateProposal[] {
+  return extractStateProposalField(qaStructured, 'stateProposals');
+}
+
+/** §8.5 从 Revision structured 提取合法 finalStateProposals。 */
+export function extractFinalStateProposals(
+  revisionStructured: unknown,
+): QaStateProposal[] {
+  return extractStateProposalField(revisionStructured, 'finalStateProposals');
 }
 
 export interface ShadowExtractProposal {
@@ -179,6 +200,8 @@ export function buildQaStateProposalShadow(input: {
 
 export interface ResolvedQaProposalRow {
   proposalType: QaStateProposalType;
+  subjectRefType?: string;
+  subjectRefId?: string;
   payload: Record<string, unknown>;
   risk: 'normal' | 'major';
   evidenceQuote: string;
@@ -206,6 +229,10 @@ export function resolveQaProposalsToOffsets(input: {
     }
     rows.push({
       proposalType: proposal.proposalType,
+      ...(proposal.subjectRefType
+        ? { subjectRefType: proposal.subjectRefType }
+        : {}),
+      ...(proposal.subjectRefId ? { subjectRefId: proposal.subjectRefId } : {}),
       payload: proposal.payload,
       risk: proposal.risk,
       evidenceQuote: proposal.evidenceQuote,
@@ -214,6 +241,96 @@ export function resolveQaProposalsToOffsets(input: {
     });
   }
   return { rows, rejectedCount };
+}
+
+export type FinalBodyStateProposalSource = 'qa' | 'revision' | 'none';
+
+export interface FinalBodyStateProposalResolution {
+  /** The only source allowed to feed the ONE proposal pipeline. */
+  source: FinalBodyStateProposalSource;
+  /** Exact body equality, not a quote/evidence heuristic. */
+  finalEqualsDraft: boolean;
+  finalBodyFingerprint: string;
+  /** Present only when the Revision supplied a candidate fingerprint. */
+  proposalSourceBodyFingerprint: string | null;
+  fingerprintMatched: boolean;
+  candidates: QaStateProposal[];
+  rows: ResolvedQaProposalRow[];
+  rejectedCount: number;
+  rejectionReason: string | null;
+}
+
+/**
+ * B6 Final-Body State Proposal resolver.
+ *
+ * This is the single authority-selection point for state proposals. The
+ * important asymmetry is intentional: QA is valid only when Final is byte for
+ * byte equal to Draft; once Revision changes the body, QA is discarded before
+ * quote resolution and only Revision.finalStateProposals can be considered.
+ * A matching quote is never sufficient to revive an old QA proposal.
+ */
+export function resolveFinalBodyStateProposals(input: {
+  draftBody: string | null | undefined;
+  finalBody: string;
+  qaStructured?: unknown;
+  revisionStructured?: unknown;
+}): FinalBodyStateProposalResolution {
+  const finalBody = String(input.finalBody ?? '');
+  const finalBodyFingerprint = sha256Hex(finalBody);
+  const finalEqualsDraft =
+    typeof input.draftBody === 'string' && input.draftBody === finalBody;
+
+  if (finalEqualsDraft) {
+    const candidates = extractQaStateProposals(input.qaStructured);
+    const resolved = resolveQaProposalsToOffsets({ proposals: candidates, finalBody });
+    return {
+      source: candidates.length > 0 ? 'qa' : 'none',
+      finalEqualsDraft: true,
+      finalBodyFingerprint,
+      proposalSourceBodyFingerprint: null,
+      fingerprintMatched: true,
+      candidates,
+      rows: resolved.rows,
+      rejectedCount: resolved.rejectedCount,
+      rejectionReason: null,
+    };
+  }
+
+  const revision =
+    input.revisionStructured && typeof input.revisionStructured === 'object'
+      ? (input.revisionStructured as Record<string, unknown>)
+      : null;
+  const proposalSourceBodyFingerprint =
+    typeof revision?.proposalSourceBodyFingerprint === 'string'
+      ? revision.proposalSourceBodyFingerprint
+      : null;
+  if (proposalSourceBodyFingerprint !== finalBodyFingerprint) {
+    return {
+      source: 'none',
+      finalEqualsDraft: false,
+      finalBodyFingerprint,
+      proposalSourceBodyFingerprint,
+      fingerprintMatched: false,
+      candidates: [],
+      rows: [],
+      rejectedCount: 0,
+      rejectionReason: 'revision_final_body_fingerprint_mismatch',
+    };
+  }
+
+  const candidates = extractFinalStateProposals(input.revisionStructured);
+  const resolved = resolveQaProposalsToOffsets({ proposals: candidates, finalBody });
+  return {
+    source: candidates.length > 0 ? 'revision' : 'none',
+    finalEqualsDraft: false,
+    finalBodyFingerprint,
+    proposalSourceBodyFingerprint,
+    fingerprintMatched: true,
+    candidates,
+    rows: resolved.rows,
+    rejectedCount: resolved.rejectedCount,
+    rejectionReason: null,
+  };
 }
 
 export interface QaProposalInsertRow {
@@ -237,23 +354,36 @@ export interface QaProposalInsertRow {
  */
 export function buildQaProposalInsertRows(input: {
   proposals: QaStateProposal[];
+  draftBody: string;
   finalBody: string;
   finalBodyFingerprint: string;
   projectId: number;
   chapterId: number;
   sourceRunId: string | null;
 }): QaProposalInsertRow[] {
-  const { rows } = resolveQaProposalsToOffsets({
-    proposals: input.proposals,
+  // Keep this legacy-shaped helper safe for tests/tools too: it can only
+  // build QA rows for an exact Draft==Final body with the real body hash.
+  // Production finalization uses resolveFinalBodyStateProposals directly.
+  if (
+    input.draftBody !== input.finalBody ||
+    input.finalBodyFingerprint !== sha256Hex(input.finalBody)
+  ) {
+    return [];
+  }
+  const resolved = resolveFinalBodyStateProposals({
+    draftBody: input.draftBody,
     finalBody: input.finalBody,
+    qaStructured: { stateProposals: input.proposals },
   });
-  return rows.map(row => ({
+  return resolved.rows.map(row => ({
     projectId: input.projectId,
     chapterId: input.chapterId,
     sourceRunId: input.sourceRunId,
     extractionContentHash: input.finalBodyFingerprint,
     chapterRevisionHash: input.finalBodyFingerprint,
     proposalType: row.proposalType,
+    subjectRefType: row.subjectRefType ?? null,
+    subjectRefId: row.subjectRefId ?? null,
     payloadJson: JSON.stringify(row.payload),
     evidenceStart: row.evidenceStart,
     evidenceEnd: row.evidenceEnd,

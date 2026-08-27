@@ -116,6 +116,148 @@ function optionalRequirementIds(
   return { valid: true, value: values.map(item => (item as string).trim()) };
 }
 
+const REVISION_WRAPPER_KEYS = [
+  'data',
+  'result',
+  'output',
+  'response',
+  'payload',
+  'revision',
+  'brief',
+  'plan',
+  'revisionPlan',
+  'revision_report',
+  'report',
+] as const;
+
+const REVISION_CONTENT_ALIASES = [
+  'finalContent',
+  'revisedContent',
+  'revisedText',
+  'finalBody',
+  'revisedBody',
+  'final_body',
+  'revised_body',
+  'body',
+] as const;
+
+const REVISION_ACTION_ALIASES = [
+  'changes',
+  'modifications',
+  'edits',
+  'corrections',
+] as const;
+
+/**
+ * Revision is the only structured stage whose payload has appeared behind a
+ * few harmless compatibility envelopes in OpenAI-compatible gateways. Keep
+ * that compatibility at the Shared Writer boundary: no scenario adapter or
+ * finalizer is allowed to invent a second interpretation.
+ *
+ * This is shape normalization only. It does not infer QA findings, state
+ * proposals, offsets, or any semantic correction. In particular, a
+ * `stateProposals` field is never promoted to `finalStateProposals` here.
+ */
+export function normalizeStructuredWriterPayload(
+  stage: SharedWritingStageName,
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
+  if (stage !== 'revision') return parsed;
+
+  const hasRevisionSignal = (value: Record<string, unknown>): boolean => {
+    const direct = [
+      'content',
+      'strategy',
+      'actions',
+      'preserve',
+      'ending',
+      'verdict',
+      'instructions',
+      'segmentRepairs',
+      'patches',
+    ].some(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (direct) return true;
+    // A string report is a legacy Brief payload; an object report is a
+    // wrapper and must still be unwrapped below so B7 fields are not lost.
+    return typeof value.report === 'string' && value.report.trim().length > 0;
+  };
+
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+
+  let selected = parsed;
+  if (!hasRevisionSignal(selected)) {
+    for (const key of REVISION_WRAPPER_KEYS) {
+      const nested = asRecord(selected[key]);
+      if (!nested) continue;
+      const normalizedNested = normalizeStructuredWriterPayload(
+        stage,
+        nested,
+      );
+      if (hasRevisionSignal(normalizedNested)) {
+        // Retain only revision metadata that a wrapper may legitimately carry.
+        // Arbitrary wrapper fields must not become part of the business
+        // contract or accidentally look like a QA report.
+        const inherited: Record<string, unknown> = {};
+        for (const metadataKey of [
+          'schemaVersion',
+          'finalStateProposals',
+          'proposalSourceBodyFingerprint',
+          'evidenceQuote',
+          'diagnostics',
+          'validNoOpRequirementIds',
+          'validNoOpReasons',
+        ]) {
+          if (Object.prototype.hasOwnProperty.call(selected, metadataKey)) {
+            inherited[metadataKey] = selected[metadataKey];
+          }
+        }
+        selected = { ...inherited, ...normalizedNested };
+        break;
+      }
+    }
+  }
+
+  const normalized = { ...selected };
+  if (
+    !Object.prototype.hasOwnProperty.call(normalized, 'content') ||
+    !String(normalized.content || '').trim()
+  ) {
+    for (const key of REVISION_CONTENT_ALIASES) {
+      const value = normalized[key];
+      if (typeof value === 'string' && value.trim()) {
+        normalized.content = value;
+        break;
+      }
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'actions')) {
+    for (const key of REVISION_ACTION_ALIASES) {
+      if (Array.isArray(normalized[key])) {
+        normalized.actions = normalized[key];
+        break;
+      }
+    }
+  }
+  if (
+    !Object.prototype.hasOwnProperty.call(normalized, 'strategy') &&
+    typeof normalized.mode === 'string' &&
+    normalized.mode.trim()
+  ) {
+    normalized.strategy = normalized.mode;
+  }
+  if (
+    !Object.prototype.hasOwnProperty.call(normalized, 'ending') &&
+    typeof normalized.conclusion === 'string' &&
+    normalized.conclusion.trim()
+  ) {
+    normalized.ending = normalized.conclusion;
+  }
+  return normalized;
+}
+
 export function isStructuredWriterStage(stage: SharedWritingStageName): boolean {
   // Phase 4 (二 §7.2): the unified `qa` stage is structurally identical to
   // the legacy review/audit/factCheck trio for adoption purposes (json
@@ -146,15 +288,31 @@ export function adoptStructuredWriterText(input: {
   const selection = selectStructuredCandidate({
     content,
     reasoning,
+    allowSingleItemArray: input.stage === 'revision',
     expectedRootKeys:
       input.stage === 'revision'
-        ? ['content', 'strategy', 'actions', 'preserve', 'ending', 'verdict']
+        ? [
+            'content',
+            'body',
+            'finalContent',
+            'revisedBody',
+            'strategy',
+            'actions',
+            'preserve',
+            'ending',
+            'verdict',
+            'report',
+          ]
         : ['content', 'verdict', 'findings'],
     findingKeys: ['findings', 'actions', 'issues', 'errors', 'warnings'],
   });
   if (selection.candidate?.text) {
+    const normalized = normalizeStructuredWriterPayload(
+      input.stage,
+      selection.candidate.parsed,
+    );
     return {
-      text: selection.candidate.text,
+      text: JSON.stringify(normalized),
       adoptedFrom: selection.candidate.channel,
     };
   }
@@ -201,7 +359,10 @@ export function isAdoptableStructuredReport(
         parsed.actions ||
         parsed.instructions ||
         parsed.preserve ||
-        parsed.ending,
+        parsed.ending ||
+        parsed.segmentRepairs ||
+        parsed.patches ||
+        parsed.report,
     );
   }
   return true;

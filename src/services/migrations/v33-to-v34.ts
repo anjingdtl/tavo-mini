@@ -190,7 +190,11 @@ export function buildSchema34ArtifactsCreateSql(): string {
     )),
     CHECK(eligibility_status IN ('eligible', 'rejected', 'intermediate')),
     CHECK(repair_round >= 0),
-    UNIQUE(run_id, content_hash),
+    -- The same exact body is allowed once per producing stage. Final must
+    -- retain the byte-exact body hash when it is equal to Revision/Draft
+    -- cross-stage uniqueness would force an invisible suffix into Final and
+    -- break Final-Body fingerprint binding.
+    UNIQUE(run_id, content_hash, stage),
     FOREIGN KEY(run_id) REFERENCES continuation_generation_runs(id) ON DELETE CASCADE,
     FOREIGN KEY(parent_artifact_id) REFERENCES continuation_generation_artifacts(id) ON DELETE SET NULL
   )`;

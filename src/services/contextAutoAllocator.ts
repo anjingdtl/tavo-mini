@@ -24,6 +24,7 @@ import {
   serializeContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
+import { resolveEffectiveMaxOutputTokens } from './llm/providerCapabilities';
 
 export {
   buildContinuationPolicyPreview,
@@ -182,19 +183,39 @@ const clamp = (value: number, min: number, max: number): number =>
 export function resolveElasticStageOutputReservation(params: {
   contextWindow: number;
   modelMaxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
 }): number {
   const contextWindow = Math.max(0, Math.floor(Number(params.contextWindow) || 0));
   const configured = Math.max(
     0,
     Math.floor(Number(params.modelMaxOutputTokens) || 0),
   );
+  const effectiveConfigured =
+    configured > 0
+      ? resolveEffectiveMaxOutputTokens({
+          providerType: params.providerType,
+          modelName: params.modelName,
+          url: params.url,
+          contextWindow,
+          configuredMaxOutputTokens: configured,
+          providerAdapterId: params.providerAdapterId,
+        })
+      : 0;
   const reserve = Math.floor(
     contextWindow * ELASTIC_STAGE_OUTPUT_RESERVE_RATIO,
   );
-  if (configured > 0 && reserve > 0) {
-    return Math.max(MIN_PIPELINE_TOKENS, Math.min(configured, reserve));
+  if (effectiveConfigured > 0 && reserve > 0) {
+    return Math.max(
+      MIN_PIPELINE_TOKENS,
+      Math.min(effectiveConfigured, reserve),
+    );
   }
-  if (configured > 0) return Math.max(MIN_PIPELINE_TOKENS, configured);
+  if (effectiveConfigured > 0) {
+    return Math.max(MIN_PIPELINE_TOKENS, effectiveConfigured);
+  }
   return Math.max(MIN_PIPELINE_TOKENS, reserve);
 }
 
@@ -595,10 +616,18 @@ const OUTLINE_PIPELINE_STAGES_V3: OutlinePipelineStageV3[] = [
 export function resolveOutlineElasticStageReservations(params: {
   contextWindow: number;
   modelMaxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
 }): Record<OutlinePipelineStageV3, number> {
   const reservation = resolveElasticStageOutputReservation({
     contextWindow: params.contextWindow,
     modelMaxOutputTokens: params.modelMaxOutputTokens,
+    providerType: params.providerType,
+    modelName: params.modelName,
+    url: params.url,
+    providerAdapterId: params.providerAdapterId,
   });
   return Object.fromEntries(
     OUTLINE_PIPELINE_STAGES_V3.map(stage => [stage, reservation]),
@@ -627,6 +656,10 @@ export type SharedStageMaxOutputTokens = {
 export function buildSharedStageMaxOutputTokens(input: {
   contextWindow: number;
   modelMaxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   outlineStageBudgets?: ReadonlyArray<{
     stage: string;
     requestMaxTokens?: number | null;
@@ -663,11 +696,22 @@ export function resolveFrozenStageMaxOutputTokens(input: {
   stage: string;
   contextWindow: number;
   modelMaxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   sharedStageMaxOutputTokens?: Record<string, unknown> | null;
 }): number {
   const modelMax = Math.max(
     MIN_PIPELINE_TOKENS,
-    Number(input.modelMaxOutputTokens) || 1024,
+    resolveEffectiveMaxOutputTokens({
+      providerType: input.providerType,
+      modelName: input.modelName,
+      url: input.url,
+      contextWindow: input.contextWindow,
+      configuredMaxOutputTokens: input.modelMaxOutputTokens,
+      providerAdapterId: input.providerAdapterId,
+    }),
   );
   const stageMax = Number(input.sharedStageMaxOutputTokens?.[input.stage]);
   if (Number.isFinite(stageMax) && stageMax > 0) {
@@ -679,6 +723,10 @@ export function resolveFrozenStageMaxOutputTokens(input: {
   return resolveElasticStageOutputReservation({
     contextWindow: input.contextWindow,
     modelMaxOutputTokens: input.modelMaxOutputTokens,
+    providerType: input.providerType,
+    modelName: input.modelName,
+    url: input.url,
+    providerAdapterId: input.providerAdapterId,
   });
 }
 
@@ -701,6 +749,10 @@ export function allocateOutlinePipelineBudgetV3(params: {
   contextWindow: number;
   requestedTier: OutlineReasoningTierV3;
   modelMaxOutputTokens?: number;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   requestMaxTokenOverrides?: Partial<
     Record<OutlinePipelineStageV3, number>
   >;
@@ -714,10 +766,24 @@ export function allocateOutlinePipelineBudgetV3(params: {
     contextWindow,
     requestedTier,
     modelMaxOutputTokens,
+    providerType,
+    modelName,
+    url,
+    providerAdapterId,
     requestMaxTokenOverrides,
     visibleOutputFloors,
     estimatedMandatoryInputTokens,
   } = params;
+  const effectiveModelMaxOutputTokens =
+    Number.isFinite(modelMaxOutputTokens) && (modelMaxOutputTokens ?? 0) > 0
+      ? resolveEffectiveMaxOutputTokens({
+          providerType,
+          modelName,
+          url,
+          configuredMaxOutputTokens: modelMaxOutputTokens,
+          providerAdapterId,
+        })
+      : undefined;
   const policy = params.policy ?? DEFAULT_OUTLINE_PIPELINE_BUDGET_POLICY_V3;
 
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
@@ -778,7 +844,7 @@ export function allocateOutlinePipelineBudgetV3(params: {
     const availableOutput = Math.min(
       configuredOutputCap,
       Number.isFinite(modelMaxOutputTokens) && (modelMaxOutputTokens ?? 0) > 0
-        ? (modelMaxOutputTokens as number)
+        ? effectiveModelMaxOutputTokens!
         : Infinity,
     );
     // `requestMaxTokens` is the provider reservation.  The visible JSON and
@@ -825,6 +891,10 @@ export function allocateOutlinePipelineBudgetV3(params: {
 export function buildOutlineElasticBudgetPreview(params: {
   contextWindow: number;
   modelMaxOutputTokens?: number | null;
+  providerType?: string | null;
+  modelName?: string | null;
+  url?: string | null;
+  providerAdapterId?: string | null;
   requestedTier?: OutlineReasoningTierV3;
   policy?: OutlinePipelineBudgetPolicyV3;
 }): OutlinePipelineBudgetAllocationV3 {
@@ -834,6 +904,10 @@ export function buildOutlineElasticBudgetPreview(params: {
     contextWindow: params.contextWindow,
     requestedTier,
     modelMaxOutputTokens: params.modelMaxOutputTokens ?? undefined,
+    providerType: params.providerType,
+    modelName: params.modelName,
+    url: params.url,
+    providerAdapterId: params.providerAdapterId,
     requestMaxTokenOverrides: requestMaxTokens,
     policy: params.policy,
   });
