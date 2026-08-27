@@ -41,9 +41,15 @@ export {
 export {
   ELASTIC_OUTPUT_RESERVE_RATIO,
   deriveElasticOutputReservation,
+  normalizePositiveCapability,
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
   resolveEffectiveMaxOutputTokens,
+  resolveModelOutputCapability,
   resolveProviderOutputBudget,
 } from './llm/providerCapabilities';
+
+import { resolveModelOutputCapability } from './llm/providerCapabilities';
 
 export interface LLMCallConfig {
   temperature?: number;
@@ -75,6 +81,10 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
   const config = await db.getLLMConfig();
   const raw = config as unknown as LLMRequestConfig & { base_url?: string };
   const providerType = raw.provider_type || 'openai_compatible';
+  const capability = resolveModelOutputCapability({
+    contextWindow: raw.context_window,
+    configuredMaxOutputTokens: raw.max_output_tokens,
+  });
   const allowInsecureLanHttp =
     typeof (db as any).getAllowInsecureLanHttp === 'function'
       ? await (db as any).getAllowInsecureLanHttp()
@@ -86,8 +96,11 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
     api_key: config.api_key,
     model_name: config.model_name,
     url: normalizeChatCompletionUrl(config.base_url),
-    context_window: raw.context_window,
-    max_output_tokens: raw.max_output_tokens,
+    context_window:
+      capability.source === 'unknown'
+        ? undefined
+        : Number(raw.context_window),
+    max_output_tokens: capability.maxOutputTokens ?? undefined,
     provider_adapter_id: raw.provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
   };
@@ -101,6 +114,10 @@ export async function resolveLLMRequestConfigById(
   const config = configs.find(item => item.id === configId);
   if (!config) throw new Error(`未找到 LLM 配置：${configId}`);
   const providerType = config.provider_type || 'openai_compatible';
+  const capability = resolveModelOutputCapability({
+    contextWindow: config.context_window,
+    configuredMaxOutputTokens: config.max_output_tokens,
+  });
   const allowInsecureLanHttp =
     typeof (db as any).getAllowInsecureLanHttp === 'function'
       ? await (db as any).getAllowInsecureLanHttp()
@@ -112,8 +129,11 @@ export async function resolveLLMRequestConfigById(
     api_key: config.api_key,
     model_name: config.model_name,
     url: normalizeChatCompletionUrl(config.base_url),
-    context_window: config.context_window,
-    max_output_tokens: config.max_output_tokens,
+    context_window:
+      capability.source === 'unknown'
+        ? undefined
+        : Number(config.context_window),
+    max_output_tokens: capability.maxOutputTokens ?? undefined,
     provider_adapter_id: (config as typeof config & { provider_adapter_id?: string | null })
       .provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),

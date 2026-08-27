@@ -34,7 +34,6 @@ import {
 import {
   resolveCanonBudget,
   SOURCE_CHUNK_RATIO_NORMAL,
-  DEFAULT_OUTPUT_BASELINE_BY_PROFILE,
   MIN_SOURCE_CHUNK_TOKENS,
   MIN_CHUNK_CHAR_SIZE,
 } from './canonBudgetPolicy';
@@ -425,9 +424,9 @@ export function precheckCanonAnalysis(input: {
  *
  * Per the original-analysis quality spec (§6.2 / §7.1) there is no
  * Canon-specific output ceiling, no 4× input scaling and no 25% share. The
- * fallback per-profile baseline is used only when the config does not declare
- * a value. The selected Provider capability adapter is the only place that
- * may translate an otherwise provider-invalid wire value.
+ * AUTO/unknown output capability is derived from the same context_window by
+ * the shared capability resolver. The selected Provider capability adapter is
+ * the only place that may translate an otherwise provider-invalid wire value.
  */
 export function resolveExtractionMaxTokens(input: {
   profile: AnalysisProfile;
@@ -438,19 +437,14 @@ export function resolveExtractionMaxTokens(input: {
   /** Full provider identity for the shared logical → wire adapter. */
   providerConfig?: ProviderCapabilityConfig;
 }): number {
-  const profileBaseline =
-    DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configured =
-    input.maxOutputTokens && input.maxOutputTokens > 0
-      ? input.maxOutputTokens
-      : profileBaseline;
-  // Honour the planner's stored outputReserve when it carries the configured
-  // logical value (new runs), then apply the same Provider adapter used by the
-  // transport. A stored reserve is never an independent product cap.
-  const logical =
-    input.outputReserve && input.outputReserve > 0
-      ? Math.max(configured, input.outputReserve)
-      : configured;
+  void input.profile;
+  const configured = input.maxOutputTokens;
+  // A persisted planner reserve is telemetry for the already-created plan,
+  // not a capability source. Resolve from the current frozen model config so
+  // old plans cannot reintroduce a small 8192-style output ceiling.
+  void input.effectiveInputBudget;
+  void input.outputReserve;
+  const logical = configured;
   if (input.providerConfig) {
     return resolveProviderOutputBudget({
       config: {
@@ -460,7 +454,10 @@ export function resolveExtractionMaxTokens(input: {
       requestedMaxTokens: logical,
     }).wireMaxTokens;
   }
-  return logical;
+  if (logical && logical > 0) return Math.floor(logical);
+  throw new Error(
+    'Canon extraction 缺少有效的 context_window / max_output_tokens，已拒绝使用固定输出默认值。',
+  );
 }
 
 /**

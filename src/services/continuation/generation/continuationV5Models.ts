@@ -6,6 +6,11 @@
  */
 import type { LLMRequestConfig } from '../../llm/types';
 import { resolveLLMRequestConfig, resolveLLMRequestConfigById } from '../../llm';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+  resolveModelOutputCapability,
+} from '../../llm/providerCapabilities';
 import type {
   ContinuationGenerationSettings,
   FrozenContinuationModelConfig,
@@ -70,17 +75,27 @@ export function freezeV5ModelConfig(
   if (!config) {
     throw new ContinuationCapabilityBlockedError('缺少 V5 阶段模型配置。');
   }
+  let contextWindow: number;
+  let maxOutputTokens: number;
+  try {
+    contextWindow = requireModelContextWindow(config.context_window);
+    maxOutputTokens = requireModelMaxOutputTokens({
+      contextWindow,
+      configuredMaxOutputTokens: config.max_output_tokens,
+    });
+  } catch (error) {
+    throw new ContinuationCapabilityBlockedError(
+      error instanceof Error ? error.message : '模型能力不可用。',
+    );
+  }
   return {
     configId: modelConfigId(config),
     name: String(config.name || `LLM 配置 #${config.id}`),
     providerType: config.provider_type,
     url: config.url,
     modelName: config.model_name,
-    contextWindow: requirePositive(config.context_window, 'context_window'),
-    maxOutputTokens: requirePositive(
-      config.max_output_tokens,
-      'max_output_tokens',
-    ),
+    contextWindow,
+    maxOutputTokens,
     providerAdapterId: config.provider_adapter_id,
     allowInsecureLanHttp: Boolean(config.allow_insecure_lan_http),
     thinking: freezeContinuationThinking(config.model_name, config.thinking),
@@ -115,7 +130,11 @@ function pickAuditorConfig(
 ): LLMRequestConfig {
   const score = (config: LLMRequestConfig) => {
     const window = Number(config.context_window) || 0;
-    const maxOut = Number(config.max_output_tokens) || 0;
+    const maxOut =
+      resolveModelOutputCapability({
+        contextWindow: config.context_window,
+        configuredMaxOutputTokens: config.max_output_tokens,
+      }).maxOutputTokens ?? 0;
     const id = Number(config.id) || 0;
     return window * 1_000_000 + maxOut * 100 + id;
   };

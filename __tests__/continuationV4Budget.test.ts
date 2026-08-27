@@ -126,14 +126,32 @@ describe('Continuation V4 stage budget resolver', () => {
     });
   });
 
-  test('缺少阶段 max output 能力时不以 context window 冒充模型上限', () => {
+  test('缺少阶段 max output 时从同一 context window 弹性派生', () => {
+    const budget = resolveContinuationStageBudget({
+      stage: 'checker',
+      frozenPolicy: cloneDefaultContextAutomationPolicy(),
+      frozenModelConfig: {
+        configId: 1,
+        contextWindow: 16_000,
+        maxOutputTokens: undefined as never,
+      },
+      compiledPromptTokens: 100,
+      protocolSkeletonTokens: 50,
+      targetChapterChars: 100,
+      writerDraftTokens: 500,
+    });
+    expect(budget.declaredMaxOutputTokens).toBe(Math.floor(16_000 * 0.2));
+    expect(budget.wireMaxOutputTokens).toBe(Math.floor(16_000 * 0.2));
+  });
+
+  test('缺少 context window 和 max output 时 fail-closed', () => {
     expect(() =>
       resolveContinuationStageBudget({
         stage: 'checker',
         frozenPolicy: cloneDefaultContextAutomationPolicy(),
         frozenModelConfig: {
           configId: 1,
-          contextWindow: 16_000,
+          contextWindow: undefined as never,
           maxOutputTokens: undefined as never,
         },
         compiledPromptTokens: 100,
@@ -141,7 +159,7 @@ describe('Continuation V4 stage budget resolver', () => {
         targetChapterChars: 100,
         writerDraftTokens: 500,
       }),
-    ).toThrow(/max_output_tokens/);
+    ).toThrow(/context_window/);
   });
 
   test('hard context 实测值大于编译 Prompt 时会参与可用输出计算', () => {

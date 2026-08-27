@@ -14,6 +14,7 @@ import {
 } from '../../llm';
 import type { LLMRequestConfig } from '../../llm/types';
 import {
+  normalizePositiveCapability,
   resolveProviderOutputBudget,
   type ProviderCapabilityConfig,
 } from '../../llm/providerCapabilities';
@@ -22,7 +23,6 @@ import type { BoundedSourceChapter } from '../types';
 import { CanonQueryService } from './canonQueryService';
 import type { HistoricalChapterCandidate, HistoricalDigest } from './types';
 
-const LEGACY_HISTORY_INPUT_CHAR_BUDGET = 18_000;
 const HISTORY_PROMPT_OVERHEAD_TOKENS = 1_200;
 type Row = Record<string, any>;
 
@@ -108,22 +108,24 @@ export function resolveHistoricalDigestInputCharBudget(
   maxOutputTokens: number | null | undefined,
   providerConfig?: ProviderCapabilityConfig,
 ): number {
-  if (!Number.isFinite(contextWindow) || (contextWindow ?? 0) <= 0) {
-    return LEGACY_HISTORY_INPUT_CHAR_BUDGET;
+  const window = normalizePositiveCapability(contextWindow);
+  if (window == null) {
+    throw new Error(
+      '历史摘要缺少模型 context_window；已拒绝使用固定正文输入预算。',
+    );
   }
   const outputReserve = resolveHistoricalDigestMaxTokens(
     maxOutputTokens,
     providerConfig,
   );
-  return Math.max(
-    LEGACY_HISTORY_INPUT_CHAR_BUDGET,
-    Math.floor(
-      ((contextWindow as number) -
-        outputReserve -
-        HISTORY_PROMPT_OVERHEAD_TOKENS) *
-        1.5,
-    ),
-  );
+  const availableInputTokens =
+    window - outputReserve - HISTORY_PROMPT_OVERHEAD_TOKENS;
+  if (availableInputTokens <= 0) {
+    throw new Error(
+      `历史摘要模型窗口不足：context_window=${window}，输出预算=${outputReserve}。`,
+    );
+  }
+  return Math.max(1, Math.floor(availableInputTokens * 1.5));
 }
 
 export function resolveHistoricalDigestMaxTokens(

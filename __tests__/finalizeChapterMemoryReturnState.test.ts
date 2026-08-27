@@ -26,8 +26,11 @@ import { getProjectStoryMemory } from '../src/data/repositories/storyMemoryRepos
 import type { Chapter } from '../src/types/novel';
 
 const mockCallLLMResult = jest.fn();
+const mockResolveLLMRequestConfig = jest.fn();
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
+  resolveLLMRequestConfig: (...args: unknown[]) =>
+    mockResolveLLMRequestConfig(...args),
 }));
 
 jest.mock(
@@ -162,6 +165,15 @@ describe('AE-04: finalizeChapterMemory returned state vs persisted state', () =>
   beforeEach(() => {
     jest.useFakeTimers();
     mockCallLLMResult.mockReset();
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      id: 1,
+      provider_type: 'openai_compatible',
+      api_key: 'test-key',
+      model_name: 'story-memory-test-model',
+      url: 'https://example.test/v1/chat/completions',
+      context_window: 32768,
+      max_output_tokens: 24576,
+    });
   });
 
   afterEach(() => {

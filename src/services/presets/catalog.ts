@@ -33,7 +33,7 @@ export const PRESET_CATALOG: PresetCatalogItem[] = [
       extra_instructions: '保持角色身份、能力边界、关系和连续性事实不漂移；避免突然新增无法解释的设定、流水账式概括和机械收束。',
       temperature: 0.78,
       top_p: 0.9,
-      max_tokens: 4000,
+      max_tokens: 0,
     },
   },
   {
@@ -48,7 +48,7 @@ export const PRESET_CATALOG: PresetCatalogItem[] = [
       extra_instructions: '不要直接宣布谜底，不要用“为了制造悬念”解释写法；误导必须公平，关键证据不能凭空出现，结尾留下具体问题或行动压力。',
       temperature: 0.74,
       top_p: 0.88,
-      max_tokens: 4000,
+      max_tokens: 0,
     },
   },
   {
@@ -63,7 +63,7 @@ export const PRESET_CATALOG: PresetCatalogItem[] = [
       extra_instructions: '【信息揭示、悬念与伏笔】先给可观察的细节和局部判断，再逐步补足因果；伏笔必须能回溯，误导来自人物视角限制而非作者隐瞒。\n【冲突与章节结构】每章至少让一段关系、判断或行动发生变化；开头从具体处境进入，中段增加现实阻力，结尾留下下一步选择或未解决的情绪压力。\n【适用机制】适合家庭、职场、成长、关系和低烈度悬疑；用重复场景的细微差异表现人物弧。\n【禁止项与反模式】避免网络腔、金句堆叠、空泛形容词、每段总结主题、过度比喻、连续内心独白和把人物写成观点容器；不要用突然的巧合、作者旁白或大段背景说明替代场景和因果。',
       temperature: 0.8,
       top_p: 0.92,
-      max_tokens: 4000,
+      max_tokens: 0,
     },
   },
   {
@@ -78,7 +78,7 @@ export const PRESET_CATALOG: PresetCatalogItem[] = [
       extra_instructions: '【信息揭示与伏笔】伏笔先以自然细节出现，后续回收时改变人物判断；误导必须来自视角、利益或证词差异，不能靠作者藏掉已经知道的信息。\n【冲突与结构】让调查目标与人物关系、资源限制和时间压力相互牵制；章节中至少发生一次不可逆选择。\n【意象与感官】重复的灯光、声音、记录、门锁或天气可作为证据载体，但每次出现都应增加新含义。\n【禁止项与反模式】禁止凭空出现关键证据、突然改写人物动机、用大段解释替代场景、连续反转却没有因果、用“为了制造悬念”说明技巧或把读者当作被动接受者。',
       temperature: 0.74,
       top_p: 0.88,
-      max_tokens: 4000,
+      max_tokens: 0,
     },
   },
 ];

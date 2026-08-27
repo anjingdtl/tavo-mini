@@ -10,7 +10,6 @@ import {
   resolveCanonRequestMaxTokens,
   SOURCE_CHUNK_RATIO_NORMAL,
   RETRY_CHUNK_RATIOS,
-  DEFAULT_OUTPUT_BASELINE_BY_PROFILE,
 } from '../src/services/continuation/canon/canonBudgetPolicy';
 
 describe('resolveCanonBudget', () => {
@@ -114,16 +113,27 @@ describe('resolveCanonBudget', () => {
     );
   });
 
-  it('falls back to a derived default window when context_window is missing', () => {
+  it('fails closed when context_window is missing', () => {
     const budget = resolveCanonBudget({
       profile: 'deep',
       declaredContextWindow: null,
       configuredMaxOutputTokens: 4_096,
       promptOverhead: 600,
     });
+    expect(budget.ok).toBe(false);
+    expect(budget.declaredContextWindow).toBe(0);
+    expect(budget.reason).toContain('context_window');
+  });
+
+  it('derives an unset output capability from the declared context window', () => {
+    const budget = resolveCanonBudget({
+      profile: 'deep',
+      declaredContextWindow: 32_768,
+      configuredMaxOutputTokens: null,
+      promptOverhead: 600,
+    });
+    expect(budget.declaredMaxOutputTokens).toBe(Math.floor(32_768 * 0.2));
     expect(budget.ok).toBe(true);
-    // 8x max_output_tokens floor = 32768
-    expect(budget.declaredContextWindow).toBeGreaterThanOrEqual(32_768);
   });
 });
 
@@ -137,13 +147,23 @@ describe('resolveCanonRequestMaxTokens', () => {
     ).toBe(100_000);
   });
 
-  it('uses the profile baseline only when config is missing', () => {
+  it('derives the request output from context when max output is unset', () => {
     expect(
       resolveCanonRequestMaxTokens({
         profile: 'deep',
         configuredMaxOutputTokens: null,
+        contextWindow: 32_768,
       }),
-    ).toBe(DEFAULT_OUTPUT_BASELINE_BY_PROFILE.deep);
+    ).toBe(Math.floor(32_768 * 0.2));
+  });
+
+  it('fails closed when both model capability fields are missing', () => {
+    expect(() =>
+      resolveCanonRequestMaxTokens({
+        profile: 'deep',
+        configuredMaxOutputTokens: null,
+      }),
+    ).toThrow('固定输出默认值');
   });
 
   it('never applies a Canon-specific 64K/96K ceiling', () => {

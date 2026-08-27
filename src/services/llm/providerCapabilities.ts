@@ -40,6 +40,20 @@ export interface LLMOutputBudgetResolution {
   trace: LLMOutputBudgetTrace;
 }
 
+export type ModelOutputCapabilitySource =
+  | 'configured'
+  | 'elastic_context'
+  | 'unknown';
+
+export interface ModelOutputCapabilityResolution {
+  /**
+   * The logical model output capability. `null` means that neither the
+   * persisted capability nor a usable context window was supplied.
+   */
+  maxOutputTokens: number | null;
+  source: ModelOutputCapabilitySource;
+}
+
 /**
  * Only a missing logical output setting uses this ratio. It is an elastic
  * policy, not a fixed token ceiling: the result scales with the selected
@@ -83,10 +97,66 @@ const ADAPTERS: readonly LLMProviderCapabilityAdapter[] = [
   GENERIC_OPENAI_COMPATIBLE_ADAPTER,
 ];
 
-function positiveInteger(value: unknown): number | null {
+export function normalizePositiveCapability(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return Math.max(1, Math.floor(parsed));
+}
+
+// Keep the private name local to this module so old callers cannot accidentally
+// treat a zero/NaN capability as a real model limit.
+const positiveInteger = normalizePositiveCapability;
+
+/**
+ * Resolve a model's logical output capability in one place.
+ *
+ * `configuredMaxOutputTokens` is an explicit provider/model capability when
+ * it is positive. A blank/zero value is the documented AUTO sentinel: derive
+ * the reservation from the same model's current context window. No product
+ * default token count is allowed here; if the context is also unknown the
+ * result stays unknown and callers must fail closed or ask for configuration.
+ */
+export function resolveModelOutputCapability(input: {
+  contextWindow?: unknown;
+  configuredMaxOutputTokens?: unknown;
+}): ModelOutputCapabilityResolution {
+  const configured = normalizePositiveCapability(
+    input.configuredMaxOutputTokens,
+  );
+  if (configured != null) {
+    return { maxOutputTokens: configured, source: 'configured' };
+  }
+  const derived = deriveElasticOutputReservation(input.contextWindow);
+  return derived == null
+    ? { maxOutputTokens: null, source: 'unknown' }
+    : { maxOutputTokens: derived, source: 'elastic_context' };
+}
+
+export function requireModelContextWindow(
+  value: unknown,
+  label = 'context_window',
+): number {
+  const contextWindow = normalizePositiveCapability(value);
+  if (contextWindow == null) {
+    throw new Error(
+      `${label} 未配置或无效；请填写模型文档声明的上下文窗口，禁止使用固定默认值。`,
+    );
+  }
+  return contextWindow;
+}
+
+export function requireModelMaxOutputTokens(input: {
+  contextWindow?: unknown;
+  configuredMaxOutputTokens?: unknown;
+  label?: string;
+}): number {
+  const resolved = resolveModelOutputCapability(input);
+  if (resolved.maxOutputTokens == null) {
+    throw new Error(
+      `${input.label ?? 'max_output_tokens'} 未配置且无法从 context_window 弹性推导；请填写模型 context_window。`,
+    );
+  }
+  return resolved.maxOutputTokens;
 }
 
 export function deriveElasticOutputReservation(
@@ -119,8 +189,10 @@ export function resolveProviderOutputBudget(input: {
   const adapter = resolveAdapter(input.config);
   const requested =
     positiveInteger(input.requestedMaxTokens) ??
-    positiveInteger(input.config.max_output_tokens) ??
-    deriveElasticOutputReservation(input.config.context_window);
+    resolveModelOutputCapability({
+      contextWindow: input.config.context_window,
+      configuredMaxOutputTokens: input.config.max_output_tokens,
+    }).maxOutputTokens;
   if (requested == null) {
     throw new Error(
       'LLM 输出预算未解析：请提供本次请求 max_tokens、模型 max_output_tokens 或 context_window。',

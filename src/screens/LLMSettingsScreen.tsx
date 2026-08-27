@@ -37,8 +37,10 @@ const emptyDraft: LLMConfig = {
   model_name: '',
   is_active: 0,
   provider_type: 'openai_compatible',
-  context_window: 4096,
-  max_output_tokens: 4000,
+  // 0 means AUTO/unknown. The model's output reservation is derived from its
+  // declared context window by the shared capability resolver.
+  context_window: 0,
+  max_output_tokens: 0,
 };
 
 export const LLMSettingsScreen: React.FC = () => {
@@ -120,6 +122,9 @@ export const LLMSettingsScreen: React.FC = () => {
     if (!draft.base_url.trim()) missing.push('API 地址');
     if (!draft.api_key.trim()) missing.push('API Key');
     if (!draft.model_name.trim()) missing.push('模型名称');
+    if (!(Number(draft.context_window) > 0)) {
+      missing.push('模型文档中的 context_window');
+    }
     if (missing.length > 0) {
       Alert.alert(
         '配置不完整',
@@ -192,15 +197,30 @@ export const LLMSettingsScreen: React.FC = () => {
         return;
       }
       isEditingRef.current = true;
+      const resolveImportedCapability = (
+        value: unknown,
+        currentValue: number,
+      ): number => {
+        if (value === undefined) return currentValue;
+        const parsedValue = Number(value);
+        return Number.isFinite(parsedValue) && parsedValue > 0
+          ? Math.floor(parsedValue)
+          : 0;
+      };
       setDraft(current => ({
         ...current,
         name: parsed.name || current.name || 'QA 测试配置',
         base_url: String(parsed.base_url),
         api_key: String(parsed.api_key),
         model_name: String(parsed.model_name),
-        context_window: Number(parsed.context_window) || current.context_window,
-        max_output_tokens:
-          Number(parsed.max_output_tokens) || current.max_output_tokens,
+        context_window: resolveImportedCapability(
+          parsed.context_window,
+          current.context_window,
+        ),
+        max_output_tokens: resolveImportedCapability(
+          parsed.max_output_tokens,
+          current.max_output_tokens,
+        ),
       }));
       if (typeof parsed.allow_insecure_lan_http === 'boolean') {
         await setAllowInsecureLanHttp(parsed.allow_insecure_lan_http);
@@ -482,14 +502,14 @@ export const LLMSettingsScreen: React.FC = () => {
         <Field
           testID="llm-context-window"
           label="上下文长度"
-          value={String(draft.context_window)}
+          value={draft.context_window > 0 ? String(draft.context_window) : ''}
           onChangeText={text => {
             const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
             updateDraft({
               context_window: Number.isFinite(value) ? value : 0,
             });
           }}
-          placeholder="4096"
+          placeholder="填写模型文档声明值"
           keyboardType="numeric"
         />
         <View
@@ -516,9 +536,8 @@ export const LLMSettingsScreen: React.FC = () => {
                   { color: theme.colors.textSecondary },
                 ]}
               >
-                打开预算模拟窗口。模拟值用于 Preview；在模拟窗口页选择
-                「应用并同步模型窗口」时，会把当前保存模型的
-                context_window / max_output_tokens 一并写为 80/20 弹性包络。
+                打开 V3 预算模拟窗口。模拟值只用于 Preview；不会反向改写
+                当前保存模型的真实 context_window / max_output_tokens。
               </Text>
             </View>
             <Button
@@ -541,16 +560,22 @@ export const LLMSettingsScreen: React.FC = () => {
         <Field
           testID="llm-max-output-tokens"
           label="最大输出 Token"
-          value={String(draft.max_output_tokens)}
+          value={
+            draft.max_output_tokens > 0 ? String(draft.max_output_tokens) : ''
+          }
           onChangeText={text => {
             const value = parseInt(text.replace(/[^0-9]/g, ''), 10);
             updateDraft({
               max_output_tokens: Number.isFinite(value) ? value : 0,
             });
           }}
-          placeholder="4000"
+          placeholder="留空：按 context_window 自动派生"
           keyboardType="numeric"
         />
+        <Text style={[styles.fieldHint, { color: theme.colors.textSecondary }]}>
+          最大输出 Token 可留空或填 0：运行时会按当前模型的 context_window × 20% 弹性派生，
+          再根据阶段需求、推理开销和 Provider 协议收缩；不会使用固定 4000/8192 兜底。
+        </Text>
 
         <View style={styles.actionRow}>
           <Button
@@ -632,6 +657,7 @@ const styles = StyleSheet.create({
   networkPolicyText: { flex: 1, gap: spacing.xs },
   networkPolicyTitle: { fontSize: 14, fontWeight: '800' },
   networkPolicyDescription: { fontSize: 12, lineHeight: 18 },
+  fieldHint: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
   contextAutomation: {
     flexDirection: 'row',
     alignItems: 'center',

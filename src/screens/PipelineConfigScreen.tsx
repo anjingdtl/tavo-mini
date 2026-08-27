@@ -26,10 +26,12 @@ const DEFAULT_CONFIG: PipelineConfig = {
   reviewPresetId: null,
   factCheckPresetId: null,
   proofPresetId: null,
-  draftMaxTokens: 4000,
-  reviewMaxTokens: 1500,
-  factCheckMaxTokens: 1500,
-  proofMaxTokens: 4000,
+  // Legacy fields are AUTO sentinels. Current V3 stages derive their request
+  // budget from the frozen model capability; they are not product defaults.
+  draftMaxTokens: 0,
+  reviewMaxTokens: 0,
+  factCheckMaxTokens: 0,
+  proofMaxTokens: 0,
 };
 
 export const PipelineConfigScreen: React.FC = () => {

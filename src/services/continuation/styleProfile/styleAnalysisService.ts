@@ -27,6 +27,10 @@ import {
 } from '../canon/canonRepository';
 import { activateSnapshotAndStyleProfile } from '../canon/activateSnapshotAndStyleProfile';
 import { callLLMResult, resolveLLMRequestConfigById } from '../../llm';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+} from '../../llm/providerCapabilities';
 import type {
   ChatMessage,
   LLMCallConfig,
@@ -268,14 +272,13 @@ export async function runStyleAnalysis(
 
     // Resolve the frozen model config to learn the ACTUAL context window.
     const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
-    const contextWindow =
-      requestConfig.context_window && requestConfig.context_window > 0
-        ? requestConfig.context_window
-        : 8192;
-    const maxOutputTokens =
-      requestConfig.max_output_tokens && requestConfig.max_output_tokens > 0
-        ? requestConfig.max_output_tokens
-        : 4096;
+    const contextWindow = requireModelContextWindow(
+      requestConfig.context_window,
+    );
+    const maxOutputTokens = requireModelMaxOutputTokens({
+      contextWindow,
+      configuredMaxOutputTokens: requestConfig.max_output_tokens,
+    });
 
     // Re-read the sample passages (bounded) to embed short reference spans in
     // the prompt. We pass ONLY bounded, pre-clipped spans — never long copies.

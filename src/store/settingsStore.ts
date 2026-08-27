@@ -34,8 +34,10 @@ const emptyLLMConfig: LLMConfig = {
   api_key: '',
   model_name: '',
   is_active: 1,
-  context_window: 4096,
-  max_output_tokens: 4000,
+  // 0 is the persisted AUTO/unknown sentinel. Runtime derives output from
+  // the selected model context; the store must not manufacture a capability.
+  context_window: 0,
+  max_output_tokens: 0,
 };
 
 export const useSettingsStore = create<SettingsState>(set => ({

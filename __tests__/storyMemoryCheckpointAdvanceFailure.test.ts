@@ -5,6 +5,7 @@ import {
 } from '../src/services/storyMemory/storyMemoryCheckpointEligibility';
 
 const mockCallLLMResult = jest.fn();
+const mockResolveLLMRequestConfig = jest.fn();
 const mockGetChapters = jest.fn();
 const mockEnsureRow = jest.fn();
 const mockEnsurePolicy = jest.fn();
@@ -15,6 +16,8 @@ const mockMarkDirty = jest.fn();
 
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
+  resolveLLMRequestConfig: (...args: unknown[]) =>
+    mockResolveLLMRequestConfig(...args),
 }));
 
 jest.mock('../src/services/database', () => ({
@@ -143,6 +146,15 @@ describe('advance checkpoint failure vs old checkpoint validity (H3)', () => {
       },
     );
     mockGetContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      id: 1,
+      provider_type: 'openai_compatible',
+      api_key: 'test-key',
+      model_name: 'story-memory-test-model',
+      url: 'https://example.test/v1/chat/completions',
+      context_window: 32768,
+      max_output_tokens: 24576,
+    });
   });
 
   it('T9a: failed first batch keeps previous status clean (old checkpoint stays usable)', async () => {

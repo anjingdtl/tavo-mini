@@ -10,6 +10,16 @@ import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
 import { executeTransaction } from '../connection/transaction';
 
+/**
+ * Persisted capability sentinel: zero means "unknown / derive at runtime".
+ * Never replace this with a product-sized token default. The active request
+ * facade resolves the output elastically from the same model's context window.
+ */
+function normalizeStoredCapability(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : 0;
+}
+
 function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
   return {
     id: Number(row?.id || 1),
@@ -19,8 +29,8 @@ function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
     api_key: row?.api_key || '',
     model_name: row?.model_name || '',
     is_active: Number(row?.is_active ?? 1),
-    context_window: Number(row?.context_window ?? 4096),
-    max_output_tokens: Number(row?.max_output_tokens ?? 4000),
+    context_window: normalizeStoredCapability(row?.context_window),
+    max_output_tokens: normalizeStoredCapability(row?.max_output_tokens),
   };
 }
 
@@ -54,7 +64,7 @@ export async function getLLMConfigs(): Promise<LLMConfig[]> {
         name, provider_type, base_url, api_key, model_name, is_active,
         context_window, max_output_tokens
       ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-      ['默认配置', 'openai_compatible', '', '', '', 4096, 4000],
+      ['默认配置', 'openai_compatible', '', '', '', 0, 0],
     );
     return getLLMConfigs();
   }
@@ -101,8 +111,6 @@ export async function saveLLMConfig(
   const providerType = config.provider_type || 'openai_compatible';
   const baseUrl = (config.base_url || '').trim();
   const modelName = (config.model_name || '').trim();
-  const contextWindow = Number(config.context_window ?? 4096);
-  const maxOutputTokens = Number(config.max_output_tokens ?? 4000);
   const database = await openDatabase();
   // 修复#A: UPDATE 不再写 is_active 字段，避免用过时的 draft.is_active 把刚被 setActiveLLMConfig
   // 激活的配置又写回 0。is_active 的写入权专属 setActiveLLMConfig / INSERT 初始值。
@@ -111,6 +119,21 @@ export async function saveLLMConfig(
 
   let id = Number(config.id || 0);
   if (id > 0) {
+    const existing = await one<{
+      context_window: number;
+      max_output_tokens: number;
+    }>(
+      'SELECT context_window, max_output_tokens FROM llm_config WHERE id = ?',
+      [id],
+    );
+    const contextWindow =
+      config.context_window === undefined
+        ? normalizeStoredCapability(existing?.context_window)
+        : normalizeStoredCapability(config.context_window);
+    const maxOutputTokens =
+      config.max_output_tokens === undefined
+        ? normalizeStoredCapability(existing?.max_output_tokens)
+        : normalizeStoredCapability(config.max_output_tokens);
     await execute(
       database,
       `UPDATE llm_config SET
@@ -129,6 +152,8 @@ export async function saveLLMConfig(
       ],
     );
   } else {
+    const contextWindow = normalizeStoredCapability(config.context_window);
+    const maxOutputTokens = normalizeStoredCapability(config.max_output_tokens);
     const result = await execute(
       database,
       `INSERT INTO llm_config (

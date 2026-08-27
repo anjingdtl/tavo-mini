@@ -137,10 +137,12 @@ export async function getPipelineConfig(options?: {
     reviewPresetId: presetId('pipeline_review_preset_id'),
     factCheckPresetId: presetId('pipeline_factcheck_preset_id'),
     proofPresetId: presetId('pipeline_proof_preset_id'),
-    draftMaxTokens: Number(get('pipeline_draft_max_tokens') || 4000),
-    reviewMaxTokens: Number(get('pipeline_review_max_tokens') || 1500),
-    factCheckMaxTokens: Number(get('pipeline_factcheck_max_tokens') || 1500),
-    proofMaxTokens: Number(get('pipeline_proof_max_tokens') || 4000),
+    // Legacy per-stage values use zero as AUTO. Structured stages derive from
+    // the frozen model; old rows must not be revived with fixed token defaults.
+    draftMaxTokens: Number(get('pipeline_draft_max_tokens') || 0),
+    reviewMaxTokens: Number(get('pipeline_review_max_tokens') || 0),
+    factCheckMaxTokens: Number(get('pipeline_factcheck_max_tokens') || 0),
+    proofMaxTokens: Number(get('pipeline_proof_max_tokens') || 0),
     briefVisibleOutputFloor: Number(
       get('pipeline_brief_visible_output_floor') || 1200,
     ),

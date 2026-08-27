@@ -68,6 +68,8 @@ describe('Canon LLM analysis', () => {
       model_name: 'test-model',
       url: 'https://example.com/chat/completions',
       api_key: 'test',
+      context_window: 32768,
+      max_output_tokens: 8192,
     });
   });
 
@@ -99,7 +101,7 @@ describe('Canon LLM analysis', () => {
           content: expect.stringContaining('bodyStart=12'),
         }),
       ]),
-      8000,
+      undefined,
       expect.objectContaining({
         responseFormat: 'json_object',
         scenario: 'continuation_canon_analysis',
@@ -130,9 +132,8 @@ describe('Canon LLM analysis', () => {
     expect(outcome.result.worldRules).toEqual([]);
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      // No Canon-specific output ceiling: the request sends the full configured
-      // max_output_tokens, falling back to the standard-profile baseline (8192)
-      // when the config does not declare one. Thinking is left untouched.
+      // No Canon-specific output ceiling: the request sends the captured
+      // model capability from the test configuration.
       8192,
       expect.objectContaining({
         queueClass: 'canon_analysis',
@@ -699,9 +700,8 @@ describe('Canon LLM analysis', () => {
 
       // The model's configured output budget is preserved across all three
       // attempts; only the source chunk shrinks along 30% → 20% → 12%. The
-      // request uses the deep-profile baseline (8192) since the mock config
-      // does not declare max_output_tokens; the plan's stored outputReserve is
-      // never allowed to compress a real configured value.
+      // The request uses the captured model capability; the plan's stored
+      // outputReserve is never allowed to compress a real configured value.
       expect(
         (callLLMResult as jest.Mock).mock.calls.map(call => call[1]),
       ).toEqual([8192, 8192, 8192]);

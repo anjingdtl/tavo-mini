@@ -14,6 +14,7 @@ const mockDb = {
   saveStoryMemoryBatchUpdate: jest.fn(async (_input?: unknown) => undefined),
 };
 const mockCallLLMResult = jest.fn();
+const mockResolveLLMRequestConfig = jest.fn();
 const mockRunCheckpointBatch = jest.fn();
 
 jest.mock('../src/services/database', () => ({
@@ -39,6 +40,8 @@ jest.mock('../src/services/database', () => ({
 }));
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
+  resolveLLMRequestConfig: (...args: unknown[]) =>
+    mockResolveLLMRequestConfig(...args),
 }));
 jest.mock('../src/services/storyMemory/storyMemoryCheckpointService', () => ({
   runStoryMemoryCheckpointBatch: (...args: unknown[]) =>
@@ -112,6 +115,15 @@ describe('story memory rebuild', () => {
     });
     mockDb.getNearestStoryMemorySnapshot.mockResolvedValue(null);
     mockDb.getContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      id: 1,
+      provider_type: 'openai_compatible',
+      api_key: 'test-key',
+      model_name: 'story-memory-test-model',
+      url: 'https://example.test/v1/chat/completions',
+      context_window: 32768,
+      max_output_tokens: 8192,
+    });
     mockDb.setStoryMemoryBuildStatus.mockResolvedValue(undefined);
     mockDb.getChapterMemoryPatch.mockResolvedValue(null);
     mockDb.saveStoryMemoryUpdate.mockResolvedValue(undefined);

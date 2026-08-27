@@ -1,10 +1,12 @@
 import type { ChatMessage, LLMRequestConfig } from '../llm';
 import * as llm from '../llm';
-import { resolveElasticStageOutputReservation } from '../contextAutoAllocator';
 import { estimateMessagesTokens, estimateTokens, clipTextToTokenBudget } from '../../utils/tokenEstimator';
 import * as db from '../database';
 import { normalizeChatCompletionUrl } from '../llm/openAICompatibleProvider';
-import { checkpointMaxTokens as legacyCheckpointMaxTokens } from './storyMemoryBudget';
+import {
+  resolveModelOutputCapability,
+  resolveProviderOutputBudget,
+} from '../llm/providerCapabilities';
 import { allocateElasticStageContextBudget, type ElasticContextDemand, type ElasticDemandRequirement } from '../pipeline/elasticBudgetAllocator';
 import { deriveDefaultSafetyMargin } from '../pipeline/budgetAllocator';
 import type {
@@ -44,9 +46,13 @@ export interface StoryMemoryOutputBudgetInput {
   maxOutputTokens?: number | null;
   requestConfig?: Pick<
     LLMRequestConfig,
-    'provider_type' | 'model_name' | 'url' | 'max_output_tokens'
+    | 'provider_type'
+    | 'model_name'
+    | 'url'
+    | 'context_window'
+    | 'max_output_tokens'
   > & { provider_adapter_id?: string | null };
-  /** Compatibility input used only when the model has no capability data. */
+  /** Deprecated task demand; it is never used as model capability. */
   legacyOutputTokens: number;
   batchSize: number;
 }
@@ -62,25 +68,28 @@ export interface StoryMemoryOutputBudgetInput {
 export function resolveStoryMemoryOutputBudget(
   input: StoryMemoryOutputBudgetInput,
 ): number {
-  const contextWindow = Math.max(0, Math.floor(Number(input.contextWindow) || 0));
-  const maxOutputTokens = Math.max(
-    0,
-    Math.floor(Number(input.maxOutputTokens) || 0),
-  );
-  if (contextWindow > 0 || maxOutputTokens > 0) {
-    return resolveElasticStageOutputReservation({
-      contextWindow,
-      modelMaxOutputTokens: maxOutputTokens || undefined,
-      providerType: input.requestConfig?.provider_type,
-      modelName: input.requestConfig?.model_name,
-      url: input.requestConfig?.url,
-      providerAdapterId: input.requestConfig?.provider_adapter_id,
-    });
+  void input.legacyOutputTokens;
+  void input.batchSize;
+  const capability = resolveModelOutputCapability({
+    contextWindow: input.contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  }).maxOutputTokens;
+  if (capability == null) return 0;
+  if (input.requestConfig) {
+    return resolveProviderOutputBudget({
+      config: {
+        provider_type: input.requestConfig.provider_type,
+        model_name: input.requestConfig.model_name,
+        url: input.requestConfig.url,
+        context_window:
+          input.requestConfig.context_window ?? input.contextWindow,
+        max_output_tokens: capability,
+        provider_adapter_id: input.requestConfig.provider_adapter_id,
+      },
+      requestedMaxTokens: capability,
+    }).wireMaxTokens;
   }
-  return legacyCheckpointMaxTokens({
-    memoryPatchMaxTokens: input.legacyOutputTokens,
-    batchSize: input.batchSize,
-  });
+  return capability;
 }
 
 export type StoryMemoryRequestPlanStrategy =
@@ -108,6 +117,7 @@ export const STORY_MEMORY_V2_OUTPUT_MIN_PER_CHAPTER = 4096;
 
 export function resolveStoryMemoryV2OutputBudget(input: {
   batchSize: number;
+  contextWindow?: number | null;
   modelMaxOutputTokens?: number | null;
 }): number {
   const size = Math.max(1, Math.floor(Number(input.batchSize) || 1));
@@ -116,8 +126,11 @@ export function resolveStoryMemoryV2OutputBudget(input: {
     STORY_MEMORY_V2_OUTPUT_BASE_TOKENS +
       STORY_MEMORY_V2_OUTPUT_PER_CHAPTER * size,
   );
-  const modelCap = Math.max(0, Math.floor(Number(input.modelMaxOutputTokens) || 0));
-  return modelCap > 0 ? Math.min(target, modelCap) : target;
+  const modelCap = resolveModelOutputCapability({
+    contextWindow: input.contextWindow,
+    configuredMaxOutputTokens: input.modelMaxOutputTokens,
+  }).maxOutputTokens;
+  return modelCap == null ? 0 : Math.min(target, modelCap);
 }
 
 export interface StoryMemoryObservationRequestPlan {
@@ -183,10 +196,10 @@ export function planStoryMemoryObservationRequest(input: {
   const contextWindow = Math.max(0, Math.floor(input.config.contextWindow || 0));
   const maxTokens = resolveStoryMemoryV2OutputBudget({
     batchSize: input.batchSize,
+    contextWindow: input.config.contextWindow,
     modelMaxOutputTokens: input.config.maxOutputTokens,
   });
-  const capabilityKnown =
-    input.config.contextWindow > 0 || input.config.maxOutputTokens > 0;
+  const capabilityKnown = maxTokens > 0;
   const minimumOutput =
     STORY_MEMORY_V2_OUTPUT_MIN_PER_CHAPTER * Math.max(1, input.batchSize);
   if (
@@ -212,7 +225,26 @@ export function planStoryMemoryObservationRequest(input: {
     };
   }
 
-  if (!capabilityKnown || contextWindow <= 0) {
+  if (!capabilityKnown) {
+    return {
+      messages: [],
+      maxTokens,
+      estimatedInputTokens: 0,
+      contextWindow,
+      safetyMargin: 0,
+      softInputLimit: 0,
+      burstInputLimit: 0,
+      hardInputLimit: 0,
+      capabilityKnown: false,
+      fullPrompt: false,
+      strategy: 'infeasible',
+      reason:
+        'Story Memory 缺少有效模型能力：请填写模型 context_window；max_output_tokens 留空时会自动按该窗口弹性派生。',
+      includedModuleIds: [],
+      droppedModuleIds: input.materials.modules.map(module => module.id),
+    };
+  }
+  if (contextWindow <= 0) {
     const messages = buildMessagesFromObservationMaterials(input.materials);
     return {
       messages,
@@ -388,6 +420,7 @@ export function planStoryMemoryObservationMessages(input: {
   const contextWindow = Math.max(0, Math.floor(input.config.contextWindow || 0));
   const maxTokens = resolveStoryMemoryV2OutputBudget({
     batchSize: input.batchSize,
+    contextWindow: input.config.contextWindow,
     modelMaxOutputTokens: input.config.maxOutputTokens,
   });
   const minimumOutput =
@@ -416,8 +449,7 @@ export function planStoryMemoryObservationMessages(input: {
       softInputLimit,
       burstInputLimit,
       hardInputLimit,
-      capabilityKnown:
-        input.config.contextWindow > 0 || input.config.maxOutputTokens > 0,
+      capabilityKnown: maxTokens > 0,
       fullPrompt: false,
       strategy,
       reason: `当前模型 max_output_tokens=${input.config.maxOutputTokens}，低于 Protocol V2 单批最低输出能力 ${minimumOutput}（context_window=${contextWindow}）。`,
@@ -425,7 +457,7 @@ export function planStoryMemoryObservationMessages(input: {
       droppedModuleIds: [],
     };
   }
-  const fits = estimatedInputTokens <= burstInputLimit;
+  const fits = maxTokens > 0 && estimatedInputTokens <= burstInputLimit;
   const strategy: StoryMemoryRequestPlanStrategy = fits
     ? 'full_prompt'
     : input.batchSize > 1
@@ -440,8 +472,7 @@ export function planStoryMemoryObservationMessages(input: {
     softInputLimit,
     burstInputLimit,
     hardInputLimit,
-    capabilityKnown:
-      input.config.contextWindow > 0 || input.config.maxOutputTokens > 0,
+    capabilityKnown: maxTokens > 0,
     fullPrompt: true,
     strategy,
     reason: fits
@@ -484,8 +515,7 @@ export function planStoryMemoryRequest(input: {
   const fits =
     maxTokens > 0 &&
     (contextWindow <= 0 || estimatedInputTokens <= maxInputTokens);
-  const capabilityKnown =
-    input.config.contextWindow > 0 || input.config.maxOutputTokens > 0;
+  const capabilityKnown = maxTokens > 0;
 
   return {
     messages: input.messages,
@@ -588,8 +618,25 @@ export function planStoryMemoryElasticRequest(input: {
     batchSize: input.batchSize,
   });
   const safetyMargin = deriveDefaultSafetyMargin(contextWindow);
-  const capabilityKnown =
-    input.config.contextWindow > 0 || input.config.maxOutputTokens > 0;
+  const capabilityKnown = maxTokens > 0;
+
+  if (!capabilityKnown) {
+    return {
+      messages: [],
+      maxTokens,
+      estimatedInputTokens: 0,
+      contextWindow,
+      safetyMargin,
+      softInputLimit: 0,
+      burstInputLimit: 0,
+      hardInputLimit: 0,
+      capabilityKnown: false,
+      fullPrompt: false,
+      strategy: 'infeasible',
+      reason: 'Story Memory 缺少有效模型能力：已拒绝使用固定输出预算。',
+      clippedModuleIds: [],
+    };
+  }
 
   const demands = input.materials.modules.map(moduleToDemand);
   const result = allocateElasticStageContextBudget({
@@ -747,8 +794,8 @@ export async function freezeStoryMemoryLLMConfig(): Promise<FrozenStoryMemoryLLM
       Number(requestConfig.max_output_tokens ?? active?.max_output_tokens) || 0,
     ),
   );
-  // A freshly created local config has schema defaults (4096 / 4000) but no
-  // actual model selected. Treat that as capability-unknown until a model is
+  // A freshly created local config has the zero AUTO/unknown sentinel and no
+  // actual model selected. Treat it as capability-unknown until a model is
   // configured; otherwise an unconfigured app would fail preflight before it
   // can surface the provider's normal configuration error.
   const capabilityConfigured = Boolean(requestConfig.model_name.trim());

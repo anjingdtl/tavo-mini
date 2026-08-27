@@ -2,7 +2,6 @@ import type { ContextConfig } from '../types/novel';
 
 export const DEFAULT_TEMPERATURE = 0.8;
 export const DEFAULT_TOP_P = 0.9;
-export const DEFAULT_MAX_TOKENS = 4000;
 export const DEFAULT_SLIDING_WINDOW_SIZE = 4000;
 export const DEFAULT_RESOURCE_BUDGET = 2000;
 export const DEFAULT_SUMMARY_BUDGET = 20000;

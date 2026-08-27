@@ -139,8 +139,9 @@ describe('repair plan P1 — checkpoint empty-response recovery', () => {
     mockGetContextConfig.mockResolvedValue({ memoryPatchMaxTokens: 1200 });
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'story-memory-test-model',
       context_window: 32768,
-      max_output_tokens: 8192,
+      max_output_tokens: 24576,
     });
     mockSaveBatch.mockResolvedValue(undefined);
   });
@@ -250,12 +251,13 @@ describe('repair plan P1 — checkpoint empty-response recovery', () => {
 
   it('truncated output at the model cap splits a 3-chapter batch (3 → 1+2) and succeeds', async () => {
     const batch = [chapter(0), chapter(1), chapter(2)];
-    // Model cap: max_output_tokens=2000 → budget cannot grow after the first
-    // truncated reply, so the coordinator signals BATCH_TOO_LARGE.
+    // A three-chapter request fits the declared model capability; a truncated
+    // primary reply makes the coordinator signal BATCH_TOO_LARGE.
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'story-memory-test-model',
       context_window: 32768,
-      max_output_tokens: 2000,
+      max_output_tokens: 24576,
     });
     const truncated = validBatchPatchJson(batch).slice(0, 80);
     mockCallLLMResult

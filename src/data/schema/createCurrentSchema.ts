@@ -185,7 +185,8 @@ export function createCurrentSchemaStatements(): string[] {
         writing_style TEXT NOT NULL DEFAULT '',
         temperature REAL NOT NULL DEFAULT 0.8,
         top_p REAL NOT NULL DEFAULT 0.9,
-        max_tokens INTEGER NOT NULL DEFAULT 4000,
+        -- Legacy writer-style metadata, zero is AUTO and does not cap model output.
+        max_tokens INTEGER NOT NULL DEFAULT 0,
         extra_instructions TEXT NOT NULL DEFAULT '',
         semantic_json TEXT,
         compatibility_json TEXT,
@@ -205,8 +206,11 @@ export function createCurrentSchemaStatements(): string[] {
         model_name TEXT NOT NULL DEFAULT '',
         is_active INTEGER NOT NULL DEFAULT 0,
         provider_type TEXT NOT NULL DEFAULT 'openai_compatible',
-        context_window INTEGER NOT NULL DEFAULT 4096,
-        max_output_tokens INTEGER NOT NULL DEFAULT 4000
+        -- Zero is the AUTO/unknown sentinel. Runtime derives output from the
+        -- same model context_window, there is no product-sized capability
+        -- default in the schema.
+        context_window INTEGER NOT NULL DEFAULT 0,
+        max_output_tokens INTEGER NOT NULL DEFAULT 0
       )
     `,
     `

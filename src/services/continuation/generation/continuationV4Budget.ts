@@ -4,7 +4,11 @@ import type {
   RatioCurve,
 } from '../../contextAutomationPolicy';
 import type { ContinuationContextBudgetPlan } from '../../writing/scenario/continuationStageCapacity';
-import { resolveEffectiveMaxOutputTokens } from '../../llm/providerCapabilities';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+  resolveEffectiveMaxOutputTokens,
+} from '../../llm/providerCapabilities';
 
 export type { ContinuationV4Stage } from '../../contextAutomationPolicy';
 
@@ -88,15 +92,6 @@ const STAGES: ContinuationV4Stage[] = [
   'control',
   'repair',
 ];
-
-function requirePositiveNumber(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new Error(
-      `${label} 必须来自有效的冻结模型能力，收到：${String(value)}`,
-    );
-  }
-  return Math.floor(value);
-}
 
 function nonNegativeNumber(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
@@ -214,14 +209,13 @@ function resolveDemand(input: {
 export function resolveContinuationStageBudget(
   input: ResolveContinuationStageBudgetInput,
 ): ContinuationV4StageBudget {
-  const contextWindow = requirePositiveNumber(
+  const contextWindow = requireModelContextWindow(
     input.frozenModelConfig.contextWindow,
-    'context_window',
   );
-  const declaredMaxOutputTokens = requirePositiveNumber(
-    input.frozenModelConfig.maxOutputTokens,
-    'max_output_tokens',
-  );
+  const declaredMaxOutputTokens = requireModelMaxOutputTokens({
+    contextWindow,
+    configuredMaxOutputTokens: input.frozenModelConfig.maxOutputTokens,
+  });
   const wireMaxOutputTokens = resolveEffectiveMaxOutputTokens({
     providerType: input.frozenModelConfig.providerType,
     modelName: input.frozenModelConfig.modelName,

@@ -409,12 +409,14 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
           ),
           plannerRequestFingerprint: result.requestFingerprint,
         });
-        // 批次消耗上限由弹性预算池自动分配（用户无需感知）：按模型上下文窗口
-        // 给出宽松防失控上限；每个单章请求仍受弹性预算精确约束。
+        // 批次消耗上限由弹性预算池自动分配（用户无需感知）。没有真实
+        // context_window 时保持未分配，禁止用某个常见模型窗口冒充当前模型能力。
         try {
           const requestConfig = await resolveLLMRequestConfig();
-          const contextWindow =
-            Number(requestConfig?.context_window) || 128000;
+          const contextWindow = Number(requestConfig?.context_window) || 0;
+          if (contextWindow <= 0) {
+            throw new Error('当前模型尚未声明 context_window。');
+          }
           await batchRepo.updateBatchBudget(
             batchId,
             deriveAutomaticBatchBudget({
@@ -424,7 +426,8 @@ export const useMultiChapterBatchStore = create<MultiChapterBatchState>(
             }),
           );
         } catch {
-          // 自动分配失败不阻断规划；保持无上限（单章弹性预算仍生效）。
+          // 自动分配失败不阻断规划；保持未分配，单章请求仍会在发送前
+          // 通过统一能力解析器进行 fail-closed 校验。
         }
         set({ plan: result.plan, loading: false });
         return result.plan;

@@ -323,7 +323,9 @@ export const openAICompatibleProvider: LLMProvider = {
           model: config.model_name.trim(),
           messages: [{ role: 'user', content: '请回复“连接成功”。' }],
           temperature: 0,
-          max_tokens: 16,
+          // Connection probes deliberately omit max_tokens. A probe must not
+          // become another product-wide output default; the provider may use
+          // its own minimal response behavior for this short fixed prompt.
           stream: false,
         }),
         signal: timeoutController.signal,

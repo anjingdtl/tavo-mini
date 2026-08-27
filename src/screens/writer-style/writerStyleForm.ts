@@ -90,7 +90,7 @@ export function formFromWriterStyleAsset(
     extraInstructions: [...(semantic.extraInstructions || [])],
     temperature: String(asset.temperature ?? 0.8),
     topP: String(asset.top_p ?? 0.9),
-    maxTokens: String(asset.max_tokens ?? 4000),
+    maxTokens: String(asset.max_tokens ?? 0),
     isDefault: asset.is_default === 1,
   };
 }

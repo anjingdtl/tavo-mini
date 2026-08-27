@@ -29,7 +29,7 @@ describe('preset construction adapter', () => {
       ...draft,
       temperature: 0.8,
       top_p: 0.9,
-      max_tokens: 4000,
+      max_tokens: 0,
     });
   });
 

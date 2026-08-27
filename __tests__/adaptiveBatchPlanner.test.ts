@@ -280,7 +280,7 @@ describe('planAdaptiveBatching', () => {
     expect(chunk.chunkEndChar).toBeLessThan(600_000);
   });
 
-  it('falls back to a derived default window when context_window is not declared', () => {
+  it('fails closed when context_window is not declared', () => {
     const chapters = [cjkChapter(1, 200)];
     const plan = planAdaptiveBatching({
       chapters,
@@ -289,9 +289,9 @@ describe('planAdaptiveBatching', () => {
       contextWindow: null,
       maxOutputTokens: 4_096,
     });
-    expect(plan.ok).toBe(true);
-    // 8× max_output_tokens = 32768 floor, minus reserve & overhead.
-    expect(plan.effectiveInputBudget).toBeGreaterThan(0);
+    expect(plan.ok).toBe(false);
+    expect(plan.reason).toContain('context_window');
+    expect(plan.effectiveInputBudget).toBe(0);
   });
 });
 

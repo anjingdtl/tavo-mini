@@ -170,7 +170,9 @@ export function parsePresetArtifactJSON(
       extra_instructions: imported.legacy.extraInstructions,
       temperature: Number((value as any).temperature) || 0.8,
       top_p: Number((value as any).top_p) || 0.9,
-      max_tokens: Number((value as any).openai_max_tokens) || 4000,
+      // Missing Tavern metadata means AUTO; an imported positive value is
+      // preserved as compatibility metadata and never controls app runtime.
+      max_tokens: Number((value as any).openai_max_tokens) || 0,
       semantic: imported.semantic,
       source_format: 'sillytavern_openai',
       compatibility: imported.envelope,

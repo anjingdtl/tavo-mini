@@ -267,7 +267,10 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
         );
         checkedUsage = true;
         expect(Number(row?.used_llm_calls ?? 0)).toBe(1);
-        expect(Number(row?.used_input_tokens ?? 0)).toBeGreaterThan(0);
+        // This synthetic provider failure explicitly declares
+        // requestMayHaveExecuted=false, so no input usage is billable for
+        // attempt 1 even though the call itself is counted.
+        expect(Number(row?.used_input_tokens ?? 0)).toBe(0);
         return {
           text: '正文',
           inputTokens: 100,

@@ -35,6 +35,10 @@ import { estimateTokens } from '../utils/tokenEstimator';
 import * as db from '../services/database';
 import { buildContext } from '../services/contextBuilder';
 import { callLLMResult, resolveLLMRequestConfig } from '../services/llm';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+} from '../services/llm/providerCapabilities';
 import type { Chapter, Fragment, FragmentType } from '../types/novel';
 
 const TYPE_OPTIONS: { value: FragmentType; label: string }[] = [
@@ -154,7 +158,13 @@ export const FreeformEditor: React.FC = () => {
       const config = await db.getContextConfig();
       const presets = await db.getPresetsByProject(currentProject.id);
       const requestConfig = await resolveLLMRequestConfig();
-      const outputBudget = presets[0]?.max_tokens || 2000;
+      const contextWindow = requireModelContextWindow(
+        requestConfig.context_window,
+      );
+      const outputBudget = requireModelMaxOutputTokens({
+        contextWindow,
+        configuredMaxOutputTokens: requestConfig.max_output_tokens,
+      });
       const pseudoChapter: Chapter = {
         id: 0,
         project_id: currentProject.id,
@@ -177,7 +187,7 @@ export const FreeformEditor: React.FC = () => {
         presets[0],
         {
           retrievalUserPrompt: steerText,
-          contextWindow: Number(requestConfig.context_window) || 0,
+          contextWindow,
           reservedOutputTokens: outputBudget,
         },
       );
@@ -193,6 +203,7 @@ export const FreeformEditor: React.FC = () => {
         {
           max_tokens: outputBudget,
           scenario: 'freeform_continue',
+          requestConfig,
         },
       );
       if (result.text?.trim()) {

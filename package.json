@@ -17,7 +17,8 @@
     "test:ci": "jest --runInBand --ci",
     "test:coverage": "jest --runInBand --ci --coverage",
     "verify:version": "node scripts/check-version-consistency.js",
-    "verify": "npm run lint && npm run typecheck && npm run verify:version && npm run test:ci",
+    "verify:elastic": "node scripts/check-elastic-capability-regression.js",
+    "verify": "npm run lint && npm run typecheck && npm run verify:elastic && npm run verify:version && npm run test:ci",
     "postinstall": "node scripts/patch-sqlite-storage-gradle.js && node scripts/patch-deps.js",
     "start": "react-native start",
     "test": "jest"

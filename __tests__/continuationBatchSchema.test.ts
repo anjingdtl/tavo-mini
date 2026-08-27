@@ -56,7 +56,7 @@ describe('continuation batch schema 53/54', () => {
   });
 
   it('SCHEMA_VERSION includes the Final-body artifact hash migration', () => {
-    expect(SCHEMA_VERSION).toBe(57);
+    expect(SCHEMA_VERSION).toBe(58);
   });
 
   describe('fresh install', () => {

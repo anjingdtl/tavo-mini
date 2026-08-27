@@ -69,8 +69,9 @@ import { migrateV53ToV54 } from './v53-to-v54';
 import { migrateV54ToV55 } from './v54-to-v55';
 import { migrateV55ToV56 } from './v55-to-v56';
 import { migrateV56ToV57 } from './v56-to-v57';
+import { migrateV57ToV58 } from './v57-to-v58';
 
-export const SCHEMA_VERSION = 57;
+export const SCHEMA_VERSION = 58;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -429,6 +430,15 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV56ToV57,
   },
+  {
+    from: 57,
+    to: 58,
+    breaking: false,
+    // Empty legacy model rows lose only fake defaults; configured model
+    // capability values are deliberately preserved by the migration.
+    buildStatements: noSchemaStatements,
+    migrate: migrateV57ToV58,
+  },
 ];
 
 export async function runMigrations(
@@ -492,6 +502,8 @@ export async function runMigrations(
       // Idempotent logic migration: artifact content uniqueness is now
       // stage-local so the Final body hash remains exact.
       await migrateV56ToV57(db);
+    } else if (migration.from === 57 && migration.to === 58) {
+      await migrateV57ToV58(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

@@ -8,11 +8,15 @@ import {
 } from '../writerStyle/semantic';
 import type { WriterStyleSemanticV1 } from '../writerStyle/types';
 
-/** 与现有 presets 表 / OpenAI 兼容 provider 使用的默认值保持一致。 */
+/**
+ * Local asset defaults. `max_tokens: 0` means AUTO/unspecified metadata;
+ * runtime model output is resolved from the active LLM capability instead of
+ * from a writer-style asset.
+ */
 export const PRESET_DEFAULT_VALUES = {
   temperature: 0.8,
   top_p: 0.9,
-  max_tokens: 4000,
+  max_tokens: 0,
 } as const;
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -111,8 +115,8 @@ export function parseShineWriterPresetV1(
   if (preset.top_p <= 0 || preset.top_p > 1) {
     throw new Error('作家风格 Top P 必须大于 0 且不超过 1。');
   }
-  if (preset.max_tokens <= 0) {
-    throw new Error('作家风格最大输出 Token 必须大于 0。');
+  if (preset.max_tokens < 0) {
+    throw new Error('作家风格最大输出 Token 不能为负数。');
   }
   return preset;
 }

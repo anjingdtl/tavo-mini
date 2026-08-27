@@ -24,7 +24,10 @@ import {
   serializeContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from './contextAutomationPolicy';
-import { resolveEffectiveMaxOutputTokens } from './llm/providerCapabilities';
+import {
+  requireModelContextWindow,
+  resolveEffectiveMaxOutputTokens,
+} from './llm/providerCapabilities';
 
 export {
   buildContinuationPolicyPreview,
@@ -188,35 +191,22 @@ export function resolveElasticStageOutputReservation(params: {
   url?: string | null;
   providerAdapterId?: string | null;
 }): number {
-  const contextWindow = Math.max(0, Math.floor(Number(params.contextWindow) || 0));
-  const configured = Math.max(
-    0,
-    Math.floor(Number(params.modelMaxOutputTokens) || 0),
-  );
-  const effectiveConfigured =
-    configured > 0
-      ? resolveEffectiveMaxOutputTokens({
-          providerType: params.providerType,
-          modelName: params.modelName,
-          url: params.url,
-          contextWindow,
-          configuredMaxOutputTokens: configured,
-          providerAdapterId: params.providerAdapterId,
-        })
-      : 0;
+  const contextWindow = requireModelContextWindow(params.contextWindow);
+  const effectiveConfigured = resolveEffectiveMaxOutputTokens({
+    providerType: params.providerType,
+    modelName: params.modelName,
+    url: params.url,
+    contextWindow,
+    configuredMaxOutputTokens: params.modelMaxOutputTokens,
+    providerAdapterId: params.providerAdapterId,
+  });
   const reserve = Math.floor(
     contextWindow * ELASTIC_STAGE_OUTPUT_RESERVE_RATIO,
   );
-  if (effectiveConfigured > 0 && reserve > 0) {
-    return Math.max(
-      MIN_PIPELINE_TOKENS,
-      Math.min(effectiveConfigured, reserve),
-    );
-  }
-  if (effectiveConfigured > 0) {
-    return Math.max(MIN_PIPELINE_TOKENS, effectiveConfigured);
-  }
-  return Math.max(MIN_PIPELINE_TOKENS, reserve);
+  return Math.max(
+    MIN_PIPELINE_TOKENS,
+    Math.min(effectiveConfigured, Math.max(MIN_PIPELINE_TOKENS, reserve)),
+  );
 }
 
 /**

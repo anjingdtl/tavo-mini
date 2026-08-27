@@ -63,7 +63,7 @@ describe('preset construction AI contract', () => {
       spec: 'shinewriter-preset-v1',
       temperature: 0.8,
       top_p: 0.9,
-      max_tokens: 4000,
+      max_tokens: 0,
     });
     expect(callLLMResult).toHaveBeenCalledWith(
       expect.any(Array),

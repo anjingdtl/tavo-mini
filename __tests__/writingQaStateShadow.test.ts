@@ -70,7 +70,7 @@ describe('B5 — extractQaStateProposals（§8.3 QA JSON 增加 stateProposals�
       stateProposals: [
         {
           proposalType: 'character_state',
-          subjectRefType: 'character',
+          subjectRefType: 'canon_character',
           subjectRefId: '柳如烟',
           payload: { emotion: '坚定' },
           evidenceQuote: '柳如烟把信物放在案上',

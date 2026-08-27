@@ -688,10 +688,21 @@ describe('Story Memory Protocol V2 normalizer and deterministic compiler', () =>
 
 describe('Story Memory Protocol V2 bounded requests', () => {
   it('uses the prescribed bounded output reservations', () => {
-    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 1 })).toBe(8192);
-    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 2 })).toBe(14336);
-    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 3 })).toBe(20480);
-    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 3, modelMaxOutputTokens: 12288 })).toBe(12288);
+    const capability = { contextWindow: 131_072 };
+    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 1, ...capability })).toBe(8192);
+    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 2, ...capability })).toBe(14336);
+    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 3, ...capability })).toBe(20480);
+    expect(
+      resolveStoryMemoryV2OutputBudget({
+        batchSize: 3,
+        ...capability,
+        modelMaxOutputTokens: 12288,
+      }),
+    ).toBe(12288);
+  });
+
+  it('fails closed when both model capability fields are unknown', () => {
+    expect(resolveStoryMemoryV2OutputBudget({ batchSize: 1 })).toBe(0);
   });
 
   it('packs whole modules and never clips an item', () => {

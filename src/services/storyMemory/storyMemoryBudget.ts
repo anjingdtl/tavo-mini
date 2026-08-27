@@ -1,4 +1,5 @@
 import { estimateTokens } from '../../utils/tokenEstimator';
+import { resolveModelOutputCapability } from '../llm/providerCapabilities';
 
 /**
  * V2.11.38 repair plan P1 §6.3 — Story Memory checkpoint budget planner.
@@ -20,8 +21,8 @@ import { estimateTokens } from '../../utils/tokenEstimator';
  * still cannot fit.
  */
 
+/** Minimum JSON budget required by the checkpoint protocol, not a capability. */
 export const MIN_CHECKPOINT_OUTPUT_TOKENS = 2400;
-export const MAX_CHECKPOINT_OUTPUT_TOKENS = 16000;
 /** Fixed protocol / prompt overhead + safety margin reserved for input. */
 const PROTOCOL_SAFETY_TOKENS = 256;
 
@@ -44,10 +45,12 @@ export interface CheckpointBudgetInput {
 export function safeOutputMaxForModel(
   input: CheckpointBudgetInput,
 ): number {
-  let cap = MAX_CHECKPOINT_OUTPUT_TOKENS;
-  if (input.maxOutputTokens != null && input.maxOutputTokens > 0) {
-    cap = Math.min(cap, Math.floor(input.maxOutputTokens));
-  }
+  void input.memoryPatchMaxTokens;
+  const capability = resolveModelOutputCapability({
+    contextWindow: input.contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  }).maxOutputTokens;
+  let cap = capability ?? 0;
   if (input.contextWindow != null && input.contextWindow > 0) {
     const inputTokens =
       input.estimatedInputTokens != null && input.estimatedInputTokens > 0
@@ -64,8 +67,9 @@ export function safeOutputMaxForModel(
 
 /**
  * Model-capability-aware checkpoint output budget.
- * Keeps the legacy derivation (base × √batch, clamped 2400..16000) and then
- * clamps by what the active model can actually accept.
+ * Keeps the legacy demand shape (base × √batch, with the protocol minimum)
+ * and then clamps by what the active model can actually accept. The model
+ * capability is always required; there is no product-sized output fallback.
  *
  * Returns 0 when the model window cannot fit even the protocol + input —
  * the caller must fail with an actionable hint. A small but positive value
@@ -74,13 +78,13 @@ export function safeOutputMaxForModel(
  * length-truncation recovery path shrinks the batch afterwards.
  */
 export function checkpointMaxTokens(input: CheckpointBudgetInput): number {
-  const base = Math.max(1, input.memoryPatchMaxTokens || 1200);
+  const base = Number.isFinite(input.memoryPatchMaxTokens)
+    ? Math.max(1, Math.floor(input.memoryPatchMaxTokens))
+    : 0;
+  if (base <= 0) return 0;
   const scaled =
     base * Math.max(1, Math.sqrt(Math.max(1, Math.floor(input.batchSize) || 1)));
-  const bounded = Math.min(
-    MAX_CHECKPOINT_OUTPUT_TOKENS,
-    Math.max(MIN_CHECKPOINT_OUTPUT_TOKENS, Math.round(scaled)),
-  );
+  const bounded = Math.max(MIN_CHECKPOINT_OUTPUT_TOKENS, Math.round(scaled));
   const cap = safeOutputMaxForModel(input);
   if (cap <= 0) return 0;
   return Math.min(bounded, cap);
@@ -140,7 +144,7 @@ export function nextCheckpointBudget(
   maxOutputTokens?: number,
   model?: { contextWindow?: number; estimatedInputTokens?: number },
 ): number {
-  const doubled = Math.max(current * 2, 4800);
+  const doubled = Math.max(1, Math.round(current)) * 2;
   const cap = safeOutputMaxForModel({
     memoryPatchMaxTokens: 1,
     batchSize: 1,

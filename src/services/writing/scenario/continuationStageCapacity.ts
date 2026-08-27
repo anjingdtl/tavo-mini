@@ -3,7 +3,11 @@
  * the current chapter demand.  The ratios below are product policy, not token
  * ceilings: no category gets an absolute token cap.
  */
-import { resolveEffectiveMaxOutputTokens } from '../../llm/providerCapabilities';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+  resolveEffectiveMaxOutputTokens,
+} from '../../llm/providerCapabilities';
 
 export const CONTINUATION_BUDGET_POLICY = {
   contextUtilizationRatio: 0.8,
@@ -95,8 +99,6 @@ export interface ContinuationWriterOutputBudget {
   retryOutputTokens: number;
 }
 
-const FALLBACK_CONTEXT_WINDOW = 8192;
-
 function positive(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
@@ -158,11 +160,14 @@ export function planStageCapacity(input: {
   providerAdapterId?: string | null;
   promptSkeletonTokens?: number;
 }): ResolvedStageCapacity {
-  const contextWindow = positive(input.contextWindow, FALLBACK_CONTEXT_WINDOW);
+  const contextWindow = requireModelContextWindow(input.contextWindow);
   const effectiveWindow = Math.floor(
     contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
   );
-  const declaredOutputTokens = positive(input.maxOutputTokens, contextWindow);
+  const declaredOutputTokens = requireModelMaxOutputTokens({
+    contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  });
   const effectiveOutputTokens = resolveEffectiveMaxOutputTokens({
     providerType: input.providerType,
     modelName: input.modelName,
@@ -209,14 +214,15 @@ export function resolveContinuationWriterOutputBudget(input: {
   requestedMaxOutputTokens?: number;
   hardContextTokens?: number;
 }): ContinuationWriterOutputBudget {
-  const contextWindow = positive(input.contextWindow, FALLBACK_CONTEXT_WINDOW);
+  const contextWindow = requireModelContextWindow(input.contextWindow);
   const effectiveWindow = Math.floor(
     contextWindow * CONTINUATION_BUDGET_POLICY.contextUtilizationRatio,
   );
-  const declaredOutput = positive(
-    input.requestedMaxOutputTokens ?? input.configuredMaxOutputTokens,
+  const declaredOutput = requireModelMaxOutputTokens({
     contextWindow,
-  );
+    configuredMaxOutputTokens:
+      input.requestedMaxOutputTokens ?? input.configuredMaxOutputTokens,
+  });
   const outputShareCap = Math.floor(
     contextWindow * CONTINUATION_BUDGET_POLICY.maxOutputRatio,
   );

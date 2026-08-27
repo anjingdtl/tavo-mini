@@ -274,7 +274,8 @@ export const TAVERN_OPENAI_BASELINE_V1: Record<string, unknown> = {
   top_p: 0.9,
   frequency_penalty: 0,
   presence_penalty: 0,
-  openai_max_tokens: 300,
+  // Omitted for newly exported styles: the consuming app/model owns output
+  // capability. Imported Tavern values remain preserved as compatibility data.
   prompts: [],
   prompt_order: [],
 };

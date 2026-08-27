@@ -258,7 +258,9 @@ async function assembleSmartSplit(
     },
     { role: 'user', content: JSON.stringify(candidates) },
   ];
-  const result = await callLLM(messages, 4000);
+  // Let the shared provider capability resolver derive the request output
+  // from the active model context. Import must not carry its own fixed cap.
+  const result = await callLLM(messages);
   if (!result) {
     throw new Error('LLM 未返回结果，请检查 LLM 配置后重试。');
   }

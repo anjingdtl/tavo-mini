@@ -93,7 +93,7 @@ export async function createPreset(
   const result = await execute(
     database,
     `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions, source_format, source_fingerprint, asset_contract_version)
-     VALUES (?, ?, ?, ?, ?, 0.8, 0.9, 4000, ?, 'legacy_shinewriter', '', 1)`,
+     VALUES (?, ?, ?, ?, ?, 0.8, 0.9, 0, ?, 'legacy_shinewriter', '', 1)`,
     [
       0,
       name,
@@ -187,7 +187,7 @@ export async function ensureDefaultPreset(
   const result = await execute(
     target,
     `INSERT INTO presets (project_id, name, is_default, system_prompt, writing_style, temperature, top_p, max_tokens, extra_instructions, source_format, source_fingerprint, asset_contract_version)
-     VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 4000, ?, 'legacy_shinewriter', '', 1)`,
+     VALUES (?, ?, 1, ?, ?, 0.8, 0.9, 0, ?, 'legacy_shinewriter', '', 1)`,
     [
       0,
       '默认作家风格',

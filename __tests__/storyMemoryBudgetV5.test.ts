@@ -30,9 +30,10 @@ describe('Story Memory Budget V5 adapter', () => {
   it.each([
     [1_000_000, 200_000, 200_000],
     [1_000_000, 64_000, 64_000],
-    [128_000, 32_000, 25_600],
+    [128_000, 32_000, 32_000],
+    [128_000, 0, 25_600],
   ])(
-    'uses the shared elastic output reservation for %s/%s',
+    'preserves explicit capability and derives AUTO from context for %s/%s',
     (contextWindow, maxOutputTokens, expected) => {
       expect(
         resolveStoryMemoryOutputBudget({

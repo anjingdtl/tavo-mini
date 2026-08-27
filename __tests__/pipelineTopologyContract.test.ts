@@ -327,8 +327,8 @@ describe('Case 4 — Schema 54 → 55 migration (real sql.js)', () => {
     }
   });
 
-  test('SCHEMA_VERSION advanced to 55', () => {
-    expect(SCHEMA_VERSION).toBe(56);
+  test('SCHEMA_VERSION advanced to current', () => {
+    expect(SCHEMA_VERSION).toBe(58);
   });
 
   test('fresh-install DDL already carries pipeline_topology_version (both tables)', () => {

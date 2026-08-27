@@ -11,6 +11,7 @@ const mockDb = {
   getStructuredStoryMemoryEnabled: jest.fn(async () => true),
 };
 const mockCallLLMResult = jest.fn();
+const mockResolveLLMRequestConfig = jest.fn();
 
 jest.mock('../src/services/database', () => ({
   getChapterById: (...args: unknown[]) => mockDb.getChapterById(...args),
@@ -34,6 +35,8 @@ jest.mock('../src/services/database', () => ({
 
 jest.mock('../src/services/llm', () => ({
   callLLMResult: (...args: unknown[]) => mockCallLLMResult(...args),
+  resolveLLMRequestConfig: (...args: unknown[]) =>
+    mockResolveLLMRequestConfig(...args),
 }));
 
 import {
@@ -50,6 +53,15 @@ describe('twenty-chapter story memory lifecycle', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.clearAllMocks();
+    mockResolveLLMRequestConfig.mockResolvedValue({
+      id: 1,
+      provider_type: 'openai_compatible',
+      api_key: 'test-key',
+      model_name: 'story-memory-test-model',
+      url: 'https://example.test/v1/chat/completions',
+      context_window: 32768,
+      max_output_tokens: 8192,
+    });
   });
 
   afterEach(() => {

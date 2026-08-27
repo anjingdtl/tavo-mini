@@ -115,6 +115,10 @@ import {
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
 } from '../../llm';
+import {
+  normalizePositiveCapability,
+  resolveModelOutputCapability,
+} from '../../llm/providerCapabilities';
 import type { LLMRequestMetrics } from '../../llm/types';
 import {
   estimateMessagesTokens,
@@ -507,26 +511,17 @@ export interface StartAnalysisInput {
 }
 
 /**
- * Minimum context window a local model needs to even attempt Canon analysis.
- * Used in error messages so the user understands the floor (Spec §1 / S1).
- * Matches the llama.cpp n_ctx clamp floor; anything smaller cannot reserve the
- * standard output baseline plus any input.
+ * Additional compatibility overhead for the legacy estimator. It is not a
+ * model output default; the active adaptive planner measures its prompt
+ * skeleton from the actual extraction contract.
  */
-export const CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW = 4096;
+const LEGACY_ANALYSIS_MISC_OVERHEAD_TOKENS = 256;
 
 /**
- * Per-batch prompt overhead (instructions, JSON skeleton, field spec) in
- * tokens. Pre-computed once from the shared prompt spec so the budget planner
- * does not have to build a full prompt just to estimate.
- */
-const CANON_PROMPT_OVERHEAD_TOKENS = 600;
-
-/**
- * Online models may expose a much larger context than local llama.cpp. Use the
- * configured window to group consecutive chapters aggressively while reserving
- * the configured logical output budget. If the provider does
- * not declare a window, retain the conservative legacy three-chapter grouping
- * instead of guessing.
+ * Use the configured model window to group consecutive chapters while
+ * reserving the model output capability. Missing capability returns zero so a
+ * caller can fail closed; this compatibility helper never guesses a chapter
+ * count from a fixed model default.
  *
  * NOTE: the canonical batch planner is now `planAdaptiveBatching` in
  * adaptiveBatchPlanner.ts (30% source-chunk target). This function is retained
@@ -542,20 +537,17 @@ export function resolveContextDrivenChaptersPerBatch(input: {
   chapterCount: number;
   largestChapterInputTokens: number;
 }): number {
-  if (
-    input.providerType === 'llama_cpp' ||
-    !Number.isFinite(input.contextWindow) ||
-    (input.contextWindow ?? 0) <= 0
-  ) {
-    return 3;
-  }
-  // Full configured max output, never compressed by an internal cap.
-  const outputReserve = Math.max(16_384, input.maxOutputTokens ?? 16_384);
+  const contextWindow = normalizePositiveCapability(input.contextWindow);
+  const outputReserve = resolveModelOutputCapability({
+    contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  }).maxOutputTokens;
+  if (contextWindow == null || outputReserve == null) return 0;
   const inputBudget = Math.max(
     1,
-    (input.contextWindow as number) -
+    contextWindow -
       outputReserve -
-      CANON_PROMPT_OVERHEAD_TOKENS,
+      estimatePromptOverhead({ profile: 'standard' }),
   );
   const each = Math.max(1, input.largestChapterInputTokens);
   return Math.max(
@@ -576,22 +568,21 @@ export function resolveQualityFirstChaptersPerBatch(input: {
 
 /**
  * Per-chapter text budget used by the legacy `extractMaterialWithLlm` fallback
- * path (when an old interrupted run resumes without a persisted adaptive plan).
- * The canonical path uses `resolveChapterTextLimitFromBudget`. This online
- * fallback cap is generous so normal chapters pass untouched; it does NOT
- * affect max output or thinking.
+ * path. It is derived from the saved model context; missing context returns
+ * zero and the caller must refuse rather than silently clipping to a guessed
+ * window.
  */
-const CANON_ONLINE_CHAPTER_TEXT_LIMIT = 24_000;
-
 export function resolveCanonChapterTextLimit(input: {
   providerType?: string | null;
   contextWindow?: number | null;
 }): number {
-  return input.providerType !== 'llama_cpp' &&
-    Number.isFinite(input.contextWindow) &&
-    (input.contextWindow ?? 0) > 0
-    ? CANON_ONLINE_CHAPTER_TEXT_LIMIT
-    : 6000;
+  void input.providerType;
+  const contextWindow = normalizePositiveCapability(input.contextWindow);
+  return contextWindow == null
+    ? 0
+    : resolveChapterTextLimitFromBudget(
+        Math.floor(contextWindow * SOURCE_CHUNK_RATIO_NORMAL),
+      );
 }
 
 export interface AnalysisTokenBudgetPlan {
@@ -608,8 +599,8 @@ export interface AnalysisTokenBudgetPlan {
 /**
  * Legacy per-batch window-fit estimator. The canonical path is now
  * `planAdaptiveBatching`. This legacy function is retained for any caller that
- * still references it; it honours the configured logical output baseline (no
- * Canon-owned 65K/32K internal cap) when downgrading.
+ * still references it; it uses the shared model-capability resolver and
+ * refuses missing metadata instead of manufacturing an output/window pair.
  */
 export function planAnalysisTokenBudget(input: {
   chapters: BoundedSourceChapter[];
@@ -621,41 +612,34 @@ export function planAnalysisTokenBudget(input: {
   maxOutputTokens?: number | null;
   contextWindowCeiling?: number;
 }): AnalysisTokenBudgetPlan {
-  const isLocal = input.providerType === 'llama_cpp';
-  // 在线模型未配置 context_window 时用 32K 保守默认
-  const fallbackOnlineWindow = 32_768;
-  const declaredWindow =
-    input.contextWindow ?? (isLocal ? null : fallbackOnlineWindow);
-  if (declaredWindow == null) {
-    // 本地模型未声明窗口：按 clamp floor 4096 处理（旧行为）
+  void input.providerType;
+  const declaredWindow = normalizePositiveCapability(input.contextWindow);
+  const outputBaseline = resolveModelOutputCapability({
+    contextWindow: declaredWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  }).maxOutputTokens;
+  if (declaredWindow == null || outputBaseline == null) {
     return {
-      ok: true,
+      ok: false,
       downgraded: false,
-      perBatch: Math.max(1, input.perBatch),
-      sliceCharBudget: 6000,
+      perBatch: 0,
+      sliceCharBudget: 0,
       inputEstimate: 0,
       effectiveWindow: 0,
+      reason:
+        'Canon 分析缺少有效的 context_window；max_output_tokens 留空时必须由该窗口弹性派生。',
     };
   }
-  const ceiling =
-    input.contextWindowCeiling ?? CANON_LOCAL_MODEL_MIN_CONTEXT_WINDOW;
-  const effectiveWindow = Math.min(declaredWindow, ceiling);
-  // Full configured output (or a per-profile baseline when unconfigured). Never
-  // a Canon-specific 32K/65K ceiling.
-  const profileOutputBaseline: Record<AnalysisProfile, number> = {
-    quick: 4096,
-    standard: 8192,
-    deep: 8192,
-  };
-  const outputBaseline =
-    (input.maxOutputTokens && input.maxOutputTokens > 0
-      ? input.maxOutputTokens
-      : profileOutputBaseline[input.profile]) ?? 8192;
-  const overhead = CANON_PROMPT_OVERHEAD_TOKENS + 256; // prompt + misc safety
-  // 在线模型用 24000 字符 slice（与 extractMaterialWithLlm 一致），本地模型用 6000
-  const initialSliceCharBudget = isLocal
-    ? 6000
-    : CANON_ONLINE_CHAPTER_TEXT_LIMIT;
+  const ceiling = normalizePositiveCapability(input.contextWindowCeiling);
+  const effectiveWindow = ceiling == null
+    ? declaredWindow
+    : Math.min(declaredWindow, ceiling);
+  const overhead =
+    estimatePromptOverhead({ profile: input.profile }) +
+    LEGACY_ANALYSIS_MISC_OVERHEAD_TOKENS;
+  const initialSliceCharBudget = resolveChapterTextLimitFromBudget(
+    Math.floor(effectiveWindow * SOURCE_CHUNK_RATIO_NORMAL),
+  );
 
   const fitsWindow = (
     perBatch: number,
@@ -3292,7 +3276,13 @@ export async function extractMaterialUntilCovered(
     ? packBudget.sourceChunkTargetTokens
     : adaptivePlan?.targetInputBudget ??
       adaptivePlan?.effectiveInputBudget ??
-      4096;
+      0;
+  if (totalTokenBudget <= 0) {
+    throw new Error(
+      packBudget.reason ??
+        'Canon 分析缺少有效的模型上下文能力，已拒绝使用固定输入预算。',
+    );
+  }
 
   const sliceAdaptivePlan = {
     effectiveInputBudget: totalTokenBudget,
@@ -3300,15 +3290,25 @@ export async function extractMaterialUntilCovered(
     outputReserve:
       packBudget.configuredMaxOutputTokens ||
       adaptivePlan?.outputReserve ||
-      8192,
+      0,
     retryOutputCeiling:
       packBudget.configuredMaxOutputTokens ||
       adaptivePlan?.retryOutputCeiling ||
-      8192,
+      0,
     promptOverhead:
-      packBudget.promptOverhead || adaptivePlan?.promptOverhead || 600,
+      packBudget.promptOverhead ||
+      adaptivePlan?.promptOverhead ||
+      estimatePromptOverhead({ profile, materialType }),
     estimatedBatchCount: adaptivePlan?.estimatedBatchCount ?? 1,
   };
+  if (
+    sliceAdaptivePlan.outputReserve <= 0 ||
+    sliceAdaptivePlan.retryOutputCeiling <= 0
+  ) {
+    throw new Error(
+      'Canon 分析缺少有效的模型输出能力，已拒绝使用固定输出预算。',
+    );
+  }
 
   let startCursor: { chapterId: number; charOffset: number } | null = null;
   const mergedParts: ChapterExtractionResult[] = [];
@@ -3443,6 +3443,11 @@ export async function extractMaterialWithLlm(
       });
       return budget.sourceChunkTargetTokens;
     })();
+  if (baseTokenBudget <= 0) {
+    throw new Error(
+      'Canon 分析缺少有效的模型上下文能力，已拒绝使用固定输入预算。',
+    );
+  }
   const chunkNotice = chunkMetadata
     ? `\n注意：本章由于篇幅过大，已按字符区间切分为 ${
         chunkMetadata.chunkCount
@@ -3938,7 +3943,13 @@ async function runTargetedRescanForMissingDimensions(input: {
         const tokenBudget =
           rescanAdaptivePlan?.targetInputBudget ??
           rescanAdaptivePlan?.effectiveInputBudget ??
-          4096;
+          0;
+        if (tokenBudget <= 0) {
+          throw new Error(
+            rescanBudget.reason ??
+              'Canon 定向补扫缺少有效的模型上下文能力，已拒绝使用固定输入预算。',
+          );
+        }
         const slicePlan = planSourceSlice({
           chapters: roundChapters,
           totalTokenBudget: tokenBudget,
@@ -4054,6 +4065,11 @@ export async function extractWithLlm(
     providerType: requestConfig.provider_type,
     contextWindow: requestConfig.context_window,
   });
+  if (chapterTextLimit <= 0) {
+    throw new Error(
+      'Canon 分析缺少模型 context_window；已拒绝使用固定正文截断与输出预算。',
+    );
+  }
   const prompt = [
     '你是严谨的原著 Canon 分析器。只允许根据下面给出的章节正文提取事实，禁止利用外部知识或补写。',
     '必须只返回一个合法 JSON 对象，不要 Markdown，不要解释。schemaVersion 必须为 1。',
@@ -4074,7 +4090,7 @@ export async function extractWithLlm(
   ].join('\n');
   const text = await callLLM(
     [{ role: 'user', content: prompt }],
-    profile === 'deep' ? 8000 : 5000,
+    undefined,
     {
       responseFormat: 'json_object',
       queueClass: 'background',

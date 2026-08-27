@@ -2,14 +2,18 @@ import {
   checkpointMaxTokens,
   nextCheckpointBudget,
   safeOutputMaxForModel,
-  MIN_CHECKPOINT_OUTPUT_TOKENS,
 } from '../src/services/storyMemory/storyMemoryBudget';
 
 describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
   it('safeOutputMax is capped by configured max_output_tokens', () => {
-    expect(safeOutputMaxForModel({ memoryPatchMaxTokens: 1200, batchSize: 1 })).toBe(
-      16000,
-    );
+    expect(
+      safeOutputMaxForModel({
+        memoryPatchMaxTokens: 1200,
+        batchSize: 1,
+        contextWindow: 100_000,
+        maxOutputTokens: 16_000,
+      }),
+    ).toBe(16_000);
     expect(
       safeOutputMaxForModel({
         memoryPatchMaxTokens: 1200,
@@ -25,6 +29,7 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
         memoryPatchMaxTokens: 1200,
         batchSize: 1,
         contextWindow: 8192,
+        maxOutputTokens: 8192,
         estimatedInputTokens: 3000,
       }),
     ).toBe(8192 - 3000 - 256);
@@ -38,6 +43,17 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
         maxOutputTokens: 2000,
       }),
     ).toBe(2000);
+  });
+
+  it('derives an unset output capability from context_window × 20%', () => {
+    expect(
+      safeOutputMaxForModel({
+        memoryPatchMaxTokens: 1200,
+        batchSize: 1,
+        contextWindow: 8192,
+        estimatedInputTokens: 0,
+      }),
+    ).toBe(Math.floor(8192 * 0.2));
   });
 
   it('returns 0 when the window cannot fit protocol + input at all', () => {
@@ -66,6 +82,7 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
         memoryPatchMaxTokens: 1200,
         batchSize: 1,
         contextWindow: 4000,
+        maxOutputTokens: 4000,
         estimatedInputTokens: 3500,
       }),
     ).toBe(4000 - 3500 - 256);
@@ -80,17 +97,13 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
     ).toBe(0);
   });
 
-  it('legacy two-arg derivation is preserved', () => {
-    expect(checkpointMaxTokens({ memoryPatchMaxTokens: 1200, batchSize: 1 })).toBe(
-      MIN_CHECKPOINT_OUTPUT_TOKENS,
-    );
-    expect(checkpointMaxTokens({ memoryPatchMaxTokens: 8000, batchSize: 10 })).toBe(
-      16000,
-    );
+  it('fails closed when no model capability is available', () => {
+    expect(checkpointMaxTokens({ memoryPatchMaxTokens: 1200, batchSize: 1 })).toBe(0);
+    expect(checkpointMaxTokens({ memoryPatchMaxTokens: 8000, batchSize: 10 })).toBe(0);
   });
 
   it('nextCheckpointBudget never exceeds the model max_output_tokens', () => {
-    expect(nextCheckpointBudget(2400)).toBe(4800);
+    expect(nextCheckpointBudget(2400)).toBe(0);
     expect(nextCheckpointBudget(2400, 3000)).toBe(3000);
     expect(nextCheckpointBudget(2400, 2000)).toBe(2000);
     expect(nextCheckpointBudget(2400, 4000)).toBe(4000);
@@ -118,7 +131,7 @@ describe('storyMemoryBudget planner (repair plan P1 §6.3)', () => {
         estimatedInputTokens: 1000,
       }),
     ).toBe(1200);
-    // 无模型能力声明时保持原语义。
-    expect(nextCheckpointBudget(2400, undefined)).toBe(4800);
+    // 无模型能力声明时 fail-closed，不恢复旧的固定输出预算。
+    expect(nextCheckpointBudget(2400, undefined)).toBe(0);
   });
 });

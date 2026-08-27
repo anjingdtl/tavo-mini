@@ -31,6 +31,8 @@
  * model.
  */
 import {
+  normalizePositiveCapability,
+  resolveModelOutputCapability,
   resolveProviderOutputBudget,
   type ProviderCapabilityConfig,
 } from '../../llm/providerCapabilities';
@@ -69,30 +71,6 @@ export const MAX_SOURCE_CHUNK_RETRIES = RETRY_CHUNK_RATIOS.length;
 export const MIN_SOURCE_CHUNK_TOKENS = 1024;
 
 /**
- * Default context window when the LLM config does not declare one. Scales with
- * the configured output baseline so the input budget stays usable. NOT a
- * capability ceiling — it is only a fallback for missing metadata.
- */
-export const DEFAULT_CONTEXT_WINDOW_MULTIPLIER = 8;
-export const DEFAULT_CONTEXT_WINDOW_FLOOR = 32_768;
-
-/**
- * Fallback output baseline per profile, used ONLY when the LLM config does not
- * declare `max_output_tokens`. It is never applied as a ceiling on top of a
- * configured value: a configured `max_output_tokens` remains the logical
- * reserve. A Provider capability adapter may translate it at the wire boundary
- * when the selected endpoint has a smaller documented request limit.
- */
-export const DEFAULT_OUTPUT_BASELINE_BY_PROFILE: Record<
-  'quick' | 'standard' | 'deep',
-  number
-> = {
-  quick: 4096,
-  standard: 8192,
-  deep: 8192,
-};
-
-/**
  * Minimum chunk char size when a single chapter must be split into pieces.
  * Smaller chunks are not worth analysing.
  */
@@ -118,9 +96,9 @@ export interface CanonBudgetInput {
 export interface CanonBudgetPlan {
   /** User-declared logical output capability before provider translation. */
   declaredMaxOutputTokens: number;
-  /** Real declared context window (resolved with fallback if missing). */
+  /** Real declared context window; zero means the capability is unavailable. */
   declaredContextWindow: number;
-  /** Real configured max output tokens (resolved with fallback if missing). */
+  /** Provider-valid output reserve derived from the model capability. */
   configuredMaxOutputTokens: number;
   /** Target source-chunk token size for this attempt. */
   sourceChunkTargetTokens: number;
@@ -151,30 +129,40 @@ export interface CanonBudgetPlan {
 export function resolveCanonBudget(
   input: CanonBudgetInput,
 ): CanonBudgetPlan {
-  const profileBaseline =
-    DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const declaredMaxOutputTokens =
-    input.configuredMaxOutputTokens && input.configuredMaxOutputTokens > 0
-      ? input.configuredMaxOutputTokens
-      : profileBaseline;
-  const configuredMaxOutputTokens = input.providerConfig
-    ? resolveProviderOutputBudget({
-        config: {
-          ...input.providerConfig,
-          max_output_tokens: declaredMaxOutputTokens,
-        },
-        requestedMaxTokens: declaredMaxOutputTokens,
-      }).wireMaxTokens
-    : declaredMaxOutputTokens;
   const declaredContextWindow =
-    input.declaredContextWindow && input.declaredContextWindow > 0
-      ? input.declaredContextWindow
-      : Math.max(
-          configuredMaxOutputTokens * DEFAULT_CONTEXT_WINDOW_MULTIPLIER,
-          DEFAULT_CONTEXT_WINDOW_FLOOR,
-        );
+    normalizePositiveCapability(input.declaredContextWindow) ?? 0;
+  const logicalOutput = resolveModelOutputCapability({
+    contextWindow: declaredContextWindow,
+    configuredMaxOutputTokens: input.configuredMaxOutputTokens,
+  }).maxOutputTokens;
+  const declaredMaxOutputTokens = logicalOutput ?? 0;
+  const configuredMaxOutputTokens =
+    declaredMaxOutputTokens > 0 && input.providerConfig
+      ? resolveProviderOutputBudget({
+          config: {
+            ...input.providerConfig,
+            context_window: declaredContextWindow,
+            max_output_tokens: declaredMaxOutputTokens,
+          },
+          requestedMaxTokens: declaredMaxOutputTokens,
+        }).wireMaxTokens
+      : declaredMaxOutputTokens;
   const chunkRatio = input.chunkRatio ?? SOURCE_CHUNK_RATIO_NORMAL;
   const promptOverhead = input.promptOverhead;
+
+  if (declaredContextWindow <= 0 || declaredMaxOutputTokens <= 0) {
+    return {
+      declaredContextWindow,
+      declaredMaxOutputTokens,
+      configuredMaxOutputTokens,
+      sourceChunkTargetTokens: 0,
+      promptOverhead,
+      chunkRatio,
+      ok: false,
+      reason:
+        'Canon 分析需要模型文档声明的 context_window；max_output_tokens 留空时会按该窗口的 20% 弹性派生，无法使用固定默认值。',
+    };
+  }
 
   const rawSourceChunkTarget = Math.floor(
     declaredContextWindow * chunkRatio,
@@ -242,14 +230,19 @@ export function resolveCanonBudget(
 export function resolveCanonRequestMaxTokens(input: {
   profile: 'quick' | 'standard' | 'deep';
   configuredMaxOutputTokens: number | null | undefined;
+  contextWindow?: number | null;
   providerConfig?: ProviderCapabilityConfig;
 }): number {
-  const profileBaseline =
-    DEFAULT_OUTPUT_BASELINE_BY_PROFILE[input.profile] ?? 8192;
-  const configured =
-    input.configuredMaxOutputTokens && input.configuredMaxOutputTokens > 0
-      ? input.configuredMaxOutputTokens
-      : profileBaseline;
+  void input.profile;
+  const configured = resolveModelOutputCapability({
+    contextWindow: input.contextWindow ?? input.providerConfig?.context_window,
+    configuredMaxOutputTokens: input.configuredMaxOutputTokens,
+  }).maxOutputTokens;
+  if (configured == null) {
+    throw new Error(
+      'Canon 请求缺少有效的 context_window / max_output_tokens，已拒绝使用固定输出默认值。',
+    );
+  }
   if (!input.providerConfig) return configured;
   return resolveProviderOutputBudget({
     config: {

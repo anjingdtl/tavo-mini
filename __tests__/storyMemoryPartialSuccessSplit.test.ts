@@ -178,11 +178,12 @@ async function chaptersOfProject(): Promise<Chapter[]> {
 describe('P1 fix: split-batch partial success must survive second-half failure', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // 小 max_output_tokens：3 章组合输出被截断后预算无法扩容 → 触发拆分。
+    // 真实模型能力足够承载三章；首个响应以 length 截断，随后验证拆分。
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'story-memory-test-model',
       context_window: 32768,
-      max_output_tokens: 2000,
+      max_output_tokens: 24576,
     });
   });
 
@@ -323,8 +324,9 @@ describe('governance §9: split child progress (onChildBatchComplete)', () => {
     // Small max_output_tokens forces a 3-chapter batch to split.
     mockGetActiveLLMConfig.mockResolvedValue({
       id: 1,
+      model_name: 'story-memory-test-model',
       context_window: 32768,
-      max_output_tokens: 2000,
+      max_output_tokens: 24576,
     });
   });
 

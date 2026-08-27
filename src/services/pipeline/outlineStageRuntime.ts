@@ -12,6 +12,10 @@ import {
   resolveLLMRequestConfig,
   type LLMRequestConfig,
 } from '../llm';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+} from '../llm/providerCapabilities';
 import { runSharedOutlineWriterAction } from '../writing/execution/runOutlineSharedWriterAction';
 import {
   computeInputFingerprint,
@@ -193,11 +197,20 @@ function buildExecutionSnapshot(params: {
   executionProfile?: PipelineConfig['executionProfile'];
   generationQualityProfile?: PipelineConfig['generationQualityProfile'];
 }): PipelineExecutionSnapshot {
-  const contextWindow = Number(params.requestConfig.context_window) || 0;
-  if (!(contextWindow > 0)) {
+  let contextWindow: number;
+  let modelMaxOutputTokens: number;
+  try {
+    contextWindow = requireModelContextWindow(
+      params.requestConfig.context_window,
+    );
+    modelMaxOutputTokens = requireModelMaxOutputTokens({
+      contextWindow,
+      configuredMaxOutputTokens: params.requestConfig.max_output_tokens,
+    });
+  } catch {
     throw new OutlineContextError(
       'OUTLINE_MODEL_UNAVAILABLE',
-      '当前模型未配置有效上下文窗口，无法冻结流水线执行配置。',
+      '当前模型未配置有效的 context_window，无法冻结流水线执行配置；最大输出将由有效窗口自动派生。',
       'open_llm_settings',
     );
   }
@@ -268,7 +281,7 @@ function buildExecutionSnapshot(params: {
   const briefMaxTokens = isStructured
     ? resolveElasticStageOutputReservation({
         contextWindow,
-        modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+        modelMaxOutputTokens,
         providerType: params.requestConfig.provider_type,
         modelName: params.requestConfig.model_name,
         url: params.requestConfig.url,
@@ -288,14 +301,14 @@ function buildExecutionSnapshot(params: {
           const allocation = allocateOutlinePipelineBudgetV3({
             contextWindow,
             requestedTier,
-            modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+            modelMaxOutputTokens,
             providerType: params.requestConfig.provider_type,
             modelName: params.requestConfig.model_name,
             url: params.requestConfig.url,
             providerAdapterId: params.requestConfig.provider_adapter_id,
             requestMaxTokenOverrides: resolveOutlineElasticStageReservations({
               contextWindow,
-              modelMaxOutputTokens: params.requestConfig.max_output_tokens,
+              modelMaxOutputTokens,
               providerType: params.requestConfig.provider_type,
               modelName: params.requestConfig.model_name,
               url: params.requestConfig.url,
@@ -404,7 +417,7 @@ function buildExecutionSnapshot(params: {
       modelName: params.requestConfig.model_name,
       url: params.requestConfig.url,
       contextWindow,
-      maxOutputTokens: params.requestConfig.max_output_tokens,
+      maxOutputTokens: modelMaxOutputTokens,
       allowInsecureLanHttp: params.requestConfig.allow_insecure_lan_http,
       thinking: params.requestConfig.thinking,
     },

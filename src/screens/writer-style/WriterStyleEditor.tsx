@@ -235,7 +235,9 @@ export function WriterStyleEditor({
         is_default: form.isDefault ? 1 : 0,
         temperature: Number(form.temperature) || 0.8,
         top_p: Number(form.topP) || 0.9,
-        max_tokens: Number(form.maxTokens) || 4000,
+        // Writer-style max_tokens is legacy asset metadata. Blank/invalid is
+        // AUTO (0); the active model capability owns runtime output sizing.
+        max_tokens: Number(form.maxTokens) || 0,
       });
       if (andSetActive && projectId) {
         await db.setProjectResourceEnabled(projectId, 'preset', asset.id, true);

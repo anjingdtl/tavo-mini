@@ -157,7 +157,7 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
       id, name, provider_type, base_url, api_key, model_name, is_active,
       context_window, max_output_tokens
     ) VALUES (1, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    ['默认配置', 'openai_compatible', '', '', '', 4096, 4000],
+    ['默认配置', 'openai_compatible', '', '', '', 0, 0],
   );
   await execute(
     database,
@@ -181,7 +181,7 @@ async function seedDefaults(database: SQLite.SQLiteDatabase): Promise<void> {
         `INSERT INTO llm_config (
           name, provider_type, base_url, api_key, model_name, is_active,
           context_window, max_output_tokens
-        ) VALUES (?, 'openai_compatible', '', '', '', 1, 4096, 4000)`,
+        ) VALUES (?, 'openai_compatible', '', '', '', 1, 0, 0)`,
         ['默认配置'],
       );
     }

@@ -42,7 +42,7 @@ describe('Canon analysis lifecycle contracts', () => {
   });
 
   it('uses the configured online context window to maximize Canon batch size', () => {
-    expect(
+      expect(
       resolveContextDrivenChaptersPerBatch({
         providerType: 'openai_compatible',
         contextWindow: 1_000_000,
@@ -59,7 +59,7 @@ describe('Canon analysis lifecycle contracts', () => {
         chapterCount: 30,
         largestChapterInputTokens: 4_000,
       }),
-    ).toBe(3);
+    ).toBe(0);
   });
 
   it('defaults every pending Canon family to confirmed when its snapshot is activated', () => {

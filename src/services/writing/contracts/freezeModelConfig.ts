@@ -3,6 +3,10 @@ import type {
   WritingCredentialRef,
 } from './writingSource';
 import type { FrozenStageModelConfig } from './writingPolicy';
+import {
+  requireModelContextWindow,
+  requireModelMaxOutputTokens,
+} from '../../llm/providerCapabilities';
 
 export function writingCredentialRef(
   configId: number | null | undefined,
@@ -26,11 +30,11 @@ export function freezeWritingModelConfig(input: {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }): FrozenModelConfig {
   const credentialRef = writingCredentialRef(input.configId);
-  const contextWindow = Math.max(
-    1024,
-    Number(input.contextWindow) || 8192,
-  );
-  const configuredMaxOutputTokens = Number(input.maxOutputTokens);
+  const contextWindow = requireModelContextWindow(input.contextWindow);
+  const maxOutputTokens = requireModelMaxOutputTokens({
+    contextWindow,
+    configuredMaxOutputTokens: input.maxOutputTokens,
+  });
   return {
     configId: input.configId,
     provider: input.provider || 'openai_compatible',
@@ -39,10 +43,7 @@ export function freezeWritingModelConfig(input: {
     url: String(input.url || ''),
     name: input.name || input.modelName || '',
     contextWindow,
-    maxOutputTokens:
-      Number.isFinite(configuredMaxOutputTokens) && configuredMaxOutputTokens > 0
-        ? Math.max(1, Math.floor(configuredMaxOutputTokens))
-        : Math.max(1, Math.floor(contextWindow * 0.2)),
+    maxOutputTokens,
     allowInsecureLanHttp: Boolean(input.allowInsecureLanHttp),
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
