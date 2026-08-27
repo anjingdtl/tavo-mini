@@ -128,11 +128,30 @@ const STAGE_RESULT_METADATA_SELECT = `
   max_output_tokens, NULL AS output_json, artifact_id, error_code,
   error_message, started_at, completed_at, created_at, updated_at`;
 
+const STATE_PROPOSAL_METADATA_SELECT = `
+  id, project_id, chapter_id, source_run_id, extraction_content_hash,
+  chapter_revision_hash, proposal_type, subject_ref_type, subject_ref_id,
+  NULL AS payload_json, proposal_fingerprint, evidence_start, evidence_end,
+  status, decision_note, decided_at, created_at, updated_at`;
+
+const STATE_EVENT_METADATA_SELECT = `
+  id, proposal_id, project_id, chapter_id, chapter_position,
+  chapter_revision_hash, event_type, NULL AS entity_refs_json,
+  NULL AS payload_json, valid_from_position, valid_to_position,
+  created_at, invalidated_at, invalidation_reason`;
+
+const OUTBOX_METADATA_SELECT = `
+  id, project_id, chapter_id, operation, NULL AS payload_json, dedupe_key,
+  state, attempt_count, last_error, created_at, updated_at, completed_at`;
+
 type LargePayloadTable =
   | 'continuation_generation_runs'
   | 'continuation_generation_artifacts'
   | 'continuation_generation_stage_results'
-  | 'pipeline_stage_attempts';
+  | 'pipeline_stage_attempts'
+  | 'continuation_state_proposals'
+  | 'continuation_state_events'
+  | 'continuation_state_sync_outbox';
 
 type LargePayloadColumn =
   | 'context_snapshot_json'
@@ -143,7 +162,9 @@ type LargePayloadColumn =
   | 'frozen_request_json'
   | 'reasoning_content_temp'
   | 'response_candidate_temp'
-  | 'validation_details_json';
+  | 'validation_details_json'
+  | 'entity_refs_json'
+  | 'payload_json';
 
 async function readLargePayloadColumn(input: {
   table: LargePayloadTable;
@@ -212,6 +233,48 @@ async function materializeStageResultRow(
     params: [result.id],
   });
   return { ...result, outputJson };
+}
+
+async function materializeProposalRow(row: any): Promise<ContinuationStateProposal> {
+  const payloadJson = await readLargePayloadColumn({
+    table: 'continuation_state_proposals',
+    column: 'payload_json',
+    whereSql: 'id = ?',
+    params: [row.id],
+  });
+  return rowProposal({ ...row, payload_json: payloadJson ?? '' });
+}
+
+async function materializeEventRow(row: any): Promise<ContinuationStateEvent> {
+  const [entityRefsJson, payloadJson] = await Promise.all([
+    readLargePayloadColumn({
+      table: 'continuation_state_events',
+      column: 'entity_refs_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+    readLargePayloadColumn({
+      table: 'continuation_state_events',
+      column: 'payload_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+  ]);
+  return rowEvent({
+    ...row,
+    entity_refs_json: entityRefsJson ?? '[]',
+    payload_json: payloadJson ?? '',
+  });
+}
+
+async function materializeOutboxRow(row: any): Promise<ContinuationOutboxItem> {
+  const payloadJson = await readLargePayloadColumn({
+    table: 'continuation_state_sync_outbox',
+    column: 'payload_json',
+    whereSql: 'id = ?',
+    params: [row.id],
+  });
+  return rowOutbox({ ...row, payload_json: payloadJson ?? '' });
 }
 
 function rowRun(r: any): ContinuationGenerationRun {
@@ -2484,13 +2547,14 @@ export async function insertProposals(
   // 事务提交后，统一查询每行对应的记录（新插入或已存在的冲突行）。
   for (const { proposalFingerprint: fp, row: r } of preparedRows) {
     const [existing] = await db.executeSql(
-      `SELECT * FROM continuation_state_proposals
+      `SELECT ${STATE_PROPOSAL_METADATA_SELECT}
+       FROM continuation_state_proposals
        WHERE project_id = ? AND chapter_id = ? AND chapter_revision_hash = ?
          AND proposal_fingerprint = ?`,
       [r.projectId, r.chapterId, r.chapterRevisionHash, fp],
     );
     if (existing.rows.length > 0)
-      out.push(rowProposal(existing.rows.item(0)));
+      out.push(await materializeProposalRow(existing.rows.item(0)));
   }
   return out;
 }
@@ -2502,19 +2566,20 @@ export async function listProposals(
   const db = await openDatabase();
   const [res] = status
     ? await db.executeSql(
-        `SELECT * FROM continuation_state_proposals
+        `SELECT ${STATE_PROPOSAL_METADATA_SELECT}
+         FROM continuation_state_proposals
          WHERE project_id = ? AND status = ? ORDER BY created_at DESC`,
         [projectId, status],
       )
     : await db.executeSql(
-        `SELECT * FROM continuation_state_proposals
+        `SELECT ${STATE_PROPOSAL_METADATA_SELECT}
+         FROM continuation_state_proposals
          WHERE project_id = ? ORDER BY created_at DESC`,
         [projectId],
       );
-  const out: ContinuationStateProposal[] = [];
-  for (let i = 0; i < res.rows.length; i++)
-    out.push(rowProposal(res.rows.item(i)));
-  return out;
+  const rows: any[] = [];
+  for (let i = 0; i < res.rows.length; i++) rows.push(res.rows.item(i));
+  return Promise.all(rows.map(materializeProposalRow));
 }
 
 /**
@@ -2605,16 +2670,16 @@ export async function listValidEventsBefore(
 ): Promise<ContinuationStateEvent[]> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_state_events
+    `SELECT ${STATE_EVENT_METADATA_SELECT}
+     FROM continuation_state_events
      WHERE project_id = ? AND invalidated_at IS NULL
        AND valid_from_position < ?
      ORDER BY valid_from_position ASC, created_at ASC`,
     [projectId, targetPosition],
   );
-  const out: ContinuationStateEvent[] = [];
-  for (let i = 0; i < res.rows.length; i++)
-    out.push(rowEvent(res.rows.item(i)));
-  return out;
+  const rows: any[] = [];
+  for (let i = 0; i < res.rows.length; i++) rows.push(res.rows.item(i));
+  return Promise.all(rows.map(materializeEventRow));
 }
 
 export async function invalidateEventsFromPosition(
@@ -2665,11 +2730,12 @@ export async function getProposalById(
 ): Promise<ContinuationStateProposal | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_state_proposals WHERE id = ?',
+    `SELECT ${STATE_PROPOSAL_METADATA_SELECT}
+       FROM continuation_state_proposals WHERE id = ?`,
     [id],
   );
   if (res.rows.length === 0) return null;
-  return rowProposal(res.rows.item(0));
+  return materializeProposalRow(res.rows.item(0));
 }
 
 export async function insertEntity(input: {
@@ -2774,19 +2840,21 @@ export async function enqueueOutbox(input: {
       };
     }
     const [existing] = await db.executeSql(
-      'SELECT * FROM continuation_state_sync_outbox WHERE dedupe_key = ?',
+      `SELECT ${OUTBOX_METADATA_SELECT}
+         FROM continuation_state_sync_outbox WHERE dedupe_key = ?`,
       [input.dedupeKey],
     );
-    if (existing.rows.length > 0) return rowOutbox(existing.rows.item(0));
+    if (existing.rows.length > 0) return materializeOutboxRow(existing.rows.item(0));
     throw new Error('outbox insert failed');
   } catch (e) {
     // Some drivers/stubs still surface the UNIQUE violation as a throw rather
     // than rowsAffected === 0; keep this path so behavior is consistent.
     const [res] = await db.executeSql(
-      'SELECT * FROM continuation_state_sync_outbox WHERE dedupe_key = ?',
+      `SELECT ${OUTBOX_METADATA_SELECT}
+         FROM continuation_state_sync_outbox WHERE dedupe_key = ?`,
       [input.dedupeKey],
     );
-    if (res.rows.length > 0) return rowOutbox(res.rows.item(0));
+    if (res.rows.length > 0) return materializeOutboxRow(res.rows.item(0));
     throw e instanceof Error ? e : new Error('outbox insert failed');
   }
 }
@@ -2802,7 +2870,8 @@ export async function listPendingOutbox(
   // while the already-adopted last chapter waited). apply_event is a
   // bookkeeping no-op and is next; rebuilds stay FIFO among themselves.
   const [res] = await db.executeSql(
-    `SELECT * FROM continuation_state_sync_outbox
+    `SELECT ${OUTBOX_METADATA_SELECT}
+     FROM continuation_state_sync_outbox
      WHERE state IN ('pending', 'interrupted')
      ORDER BY CASE operation
        WHEN 'extract_state' THEN 0
@@ -2812,10 +2881,9 @@ export async function listPendingOutbox(
      LIMIT ?`,
     [limit],
   );
-  const out: ContinuationOutboxItem[] = [];
-  for (let i = 0; i < res.rows.length; i++)
-    out.push(rowOutbox(res.rows.item(i)));
-  return out;
+  const rows: any[] = [];
+  for (let i = 0; i < res.rows.length; i++) rows.push(res.rows.item(i));
+  return Promise.all(rows.map(materializeOutboxRow));
 }
 
 /** The latest adopted continuation run is the authoritative source for a
@@ -2913,11 +2981,12 @@ export async function getOutboxByDedupe(
 ): Promise<ContinuationOutboxItem | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_state_sync_outbox WHERE dedupe_key = ?',
+    `SELECT ${OUTBOX_METADATA_SELECT}
+       FROM continuation_state_sync_outbox WHERE dedupe_key = ?`,
     [dedupeKey],
   );
   if (res.rows.length === 0) return null;
-  return rowOutbox(res.rows.item(0));
+  return materializeOutboxRow(res.rows.item(0));
 }
 
 /**
@@ -3030,11 +3099,12 @@ export async function getOutboxById(
 ): Promise<ContinuationOutboxItem | null> {
   const db = await openDatabase();
   const [res] = await db.executeSql(
-    'SELECT * FROM continuation_state_sync_outbox WHERE id = ?',
+    `SELECT ${OUTBOX_METADATA_SELECT}
+       FROM continuation_state_sync_outbox WHERE id = ?`,
     [id],
   );
   if (res.rows.length === 0) return null;
-  return rowOutbox(res.rows.item(0));
+  return materializeOutboxRow(res.rows.item(0));
 }
 
 /**
@@ -3048,19 +3118,20 @@ export async function listOutboxForProject(
   const db = await openDatabase();
   const [res] = state
     ? await db.executeSql(
-        `SELECT * FROM continuation_state_sync_outbox
+        `SELECT ${OUTBOX_METADATA_SELECT}
+         FROM continuation_state_sync_outbox
          WHERE project_id = ? AND state = ? ORDER BY updated_at DESC`,
         [projectId, state],
       )
     : await db.executeSql(
-        `SELECT * FROM continuation_state_sync_outbox
+        `SELECT ${OUTBOX_METADATA_SELECT}
+         FROM continuation_state_sync_outbox
          WHERE project_id = ? ORDER BY updated_at DESC`,
         [projectId],
       );
-  const out: ContinuationOutboxItem[] = [];
-  for (let i = 0; i < res.rows.length; i++)
-    out.push(rowOutbox(res.rows.item(i)));
-  return out;
+  const rows: any[] = [];
+  for (let i = 0; i < res.rows.length; i++) rows.push(res.rows.item(i));
+  return Promise.all(rows.map(materializeOutboxRow));
 }
 
 /** Transaction helper for multi-statement local commits (no LLM). */

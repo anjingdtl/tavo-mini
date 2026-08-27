@@ -144,6 +144,185 @@ export interface MultiChapterBatchItemRunRow {
   completedAt: number | null;
 }
 
+/**
+ * Batch headers are metadata-heavy but still carry planner prompts, source
+ * text, and continuation policy JSON. Keep the normal list/read path below a
+ * mobile CursorWindow limit; the materializer restores those fields with
+ * bounded substr() reads only for a row the caller actually requested.
+ */
+const BATCH_PAYLOAD_CHUNK_CHARS = 128 * 1024;
+const BATCH_METADATA_SELECT = `
+  id, project_id, status, NULL AS source_prompt, chapter_count,
+  target_words_per_chapter, pipeline_mode, reasoning_effort,
+  NULL AS planner_output_json, planner_hash, NULL AS planner_request_json,
+  planner_request_fingerprint, start_position, expected_tail_chapter_id,
+  current_ordinal, completed_count, active_item_ordinal,
+  max_llm_calls, max_input_tokens, max_output_tokens,
+  used_llm_calls, used_input_tokens, used_output_tokens,
+  outline_workflow_version, context_budget_version, pipeline_topology_version,
+  writing_mode, NULL AS continuation_anchor_json,
+  NULL AS continuation_execution_policy_json, execution_profile,
+  pause_reason, error_code, error_message, lease_owner, lease_expires_at,
+  row_version, created_at, updated_at, started_at, completed_at, cancelled_at`;
+const BATCH_ITEM_METADATA_SELECT = `
+  batch_id, ordinal, title, NULL AS synopsis, NULL AS key_beats_json,
+  NULL AS carry_in, NULL AS carry_out, target_words, status, chapter_id,
+  active_pipeline_task_id, active_continuation_run_id, active_run_no,
+  completion_quality, adoption_fingerprint, adopted_revision_id,
+  retry_count, next_retry_at, error_code, error_message,
+  created_at, updated_at, completed_at`;
+const BATCH_ITEM_RUN_METADATA_SELECT = `
+  batch_id, ordinal, run_no, pipeline_task_id,
+  NULL AS llm_config_snapshot_json, reason, status, created_at, completed_at`;
+
+type BatchPayloadTable =
+  | 'multi_chapter_batches'
+  | 'multi_chapter_batch_items'
+  | 'multi_chapter_batch_item_runs';
+type BatchPayloadColumn =
+  | 'source_prompt'
+  | 'planner_output_json'
+  | 'planner_request_json'
+  | 'continuation_anchor_json'
+  | 'continuation_execution_policy_json'
+  | 'synopsis'
+  | 'key_beats_json'
+  | 'carry_in'
+  | 'carry_out'
+  | 'llm_config_snapshot_json';
+
+async function readBatchPayload(input: {
+  table: BatchPayloadTable;
+  column: BatchPayloadColumn;
+  whereSql: string;
+  params: any[];
+}): Promise<string | null> {
+  const db = await openDatabase();
+  const [lengthResult] = await db.executeSql(
+    `SELECT length(${input.column}) AS payload_length
+       FROM ${input.table}
+      WHERE ${input.whereSql}`,
+    input.params,
+  );
+  if (lengthResult.rows.length === 0) return null;
+  const rawLength = lengthResult.rows.item(0).payload_length;
+  if (rawLength == null) return null;
+  const totalLength = Number(rawLength);
+  if (!Number.isFinite(totalLength) || totalLength < 0) return null;
+  if (totalLength === 0) return '';
+
+  let payload = '';
+  for (
+    let offset = 1;
+    offset <= totalLength;
+    offset += BATCH_PAYLOAD_CHUNK_CHARS
+  ) {
+    const [chunkResult] = await db.executeSql(
+      `SELECT substr(${input.column}, ?, ?) AS payload_chunk
+         FROM ${input.table}
+        WHERE ${input.whereSql}`,
+      [offset, BATCH_PAYLOAD_CHUNK_CHARS, ...input.params],
+    );
+    if (chunkResult.rows.length === 0) break;
+    payload += String(chunkResult.rows.item(0).payload_chunk ?? '');
+  }
+  return payload;
+}
+
+async function materializeBatchRow(row: Row): Promise<MultiChapterBatchRow> {
+  const [sourcePrompt, plannerOutputJson, plannerRequestJson, anchorJson, policyJson] =
+    await Promise.all([
+      readBatchPayload({
+        table: 'multi_chapter_batches',
+        column: 'source_prompt',
+        whereSql: 'id = ?',
+        params: [row.id],
+      }),
+      readBatchPayload({
+        table: 'multi_chapter_batches',
+        column: 'planner_output_json',
+        whereSql: 'id = ?',
+        params: [row.id],
+      }),
+      readBatchPayload({
+        table: 'multi_chapter_batches',
+        column: 'planner_request_json',
+        whereSql: 'id = ?',
+        params: [row.id],
+      }),
+      readBatchPayload({
+        table: 'multi_chapter_batches',
+        column: 'continuation_anchor_json',
+        whereSql: 'id = ?',
+        params: [row.id],
+      }),
+      readBatchPayload({
+        table: 'multi_chapter_batches',
+        column: 'continuation_execution_policy_json',
+        whereSql: 'id = ?',
+        params: [row.id],
+      }),
+    ]);
+  return mapBatchRow({
+    ...row,
+    source_prompt: sourcePrompt ?? '',
+    planner_output_json: plannerOutputJson,
+    planner_request_json: plannerRequestJson,
+    continuation_anchor_json: anchorJson,
+    continuation_execution_policy_json: policyJson,
+  });
+}
+
+async function materializeBatchItemRow(
+  row: Row,
+): Promise<MultiChapterBatchItemRow> {
+  const [synopsis, keyBeatsJson, carryIn, carryOut] = await Promise.all([
+    readBatchPayload({
+      table: 'multi_chapter_batch_items',
+      column: 'synopsis',
+      whereSql: 'batch_id = ? AND ordinal = ?',
+      params: [row.batch_id, row.ordinal],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batch_items',
+      column: 'key_beats_json',
+      whereSql: 'batch_id = ? AND ordinal = ?',
+      params: [row.batch_id, row.ordinal],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batch_items',
+      column: 'carry_in',
+      whereSql: 'batch_id = ? AND ordinal = ?',
+      params: [row.batch_id, row.ordinal],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batch_items',
+      column: 'carry_out',
+      whereSql: 'batch_id = ? AND ordinal = ?',
+      params: [row.batch_id, row.ordinal],
+    }),
+  ]);
+  return mapBatchItemRow({
+    ...row,
+    synopsis: synopsis ?? '',
+    key_beats_json: keyBeatsJson ?? '[]',
+    carry_in: carryIn,
+    carry_out: carryOut,
+  });
+}
+
+async function materializeBatchItemRunRow(
+  row: Row,
+): Promise<MultiChapterBatchItemRunRow> {
+  const snapshot = await readBatchPayload({
+    table: 'multi_chapter_batch_item_runs',
+    column: 'llm_config_snapshot_json',
+    whereSql: 'batch_id = ? AND ordinal = ? AND run_no = ?',
+    params: [row.batch_id, row.ordinal, row.run_no],
+  });
+  return mapRunRow({ ...row, llm_config_snapshot_json: snapshot ?? '{}' });
+}
+
 interface FrozenBatchPlannerEnvelope {
   schemaVersion: 1;
   requestJson: string | null;
@@ -425,10 +604,11 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
 export async function getBatchById(
   batchId: string,
 ): Promise<MultiChapterBatchRow | null> {
-  const row = await one('SELECT * FROM multi_chapter_batches WHERE id = ?', [
-    batchId,
-  ]);
-  return row ? mapBatchRow(row) : null;
+  const row = await one(
+    `SELECT ${BATCH_METADATA_SELECT} FROM multi_chapter_batches WHERE id = ?`,
+    [batchId],
+  );
+  return row ? materializeBatchRow(row) : null;
 }
 
 /** Latest non-terminal batch for a project (running/paused/ready/waiting). */
@@ -436,12 +616,12 @@ export async function getActiveBatchByProject(
   projectId: number,
 ): Promise<MultiChapterBatchRow | null> {
   const row = await one(
-    `SELECT * FROM multi_chapter_batches
+    `SELECT ${BATCH_METADATA_SELECT} FROM multi_chapter_batches
      WHERE project_id = ? AND status NOT IN ('completed', 'cancelled', 'failed')
      ORDER BY updated_at DESC LIMIT 1`,
     [projectId],
   );
-  return row ? mapBatchRow(row) : null;
+  return row ? materializeBatchRow(row) : null;
 }
 
 export async function updateBatchStatus(
@@ -741,10 +921,11 @@ export async function getBatchItems(
   batchId: string,
 ): Promise<MultiChapterBatchItemRow[]> {
   const rows = await all(
-    'SELECT * FROM multi_chapter_batch_items WHERE batch_id = ? ORDER BY ordinal ASC',
+    `SELECT ${BATCH_ITEM_METADATA_SELECT}
+       FROM multi_chapter_batch_items WHERE batch_id = ? ORDER BY ordinal ASC`,
     [batchId],
   );
-  return rows.map(mapBatchItemRow);
+  return Promise.all(rows.map(materializeBatchItemRow));
 }
 
 export async function getBatchItem(
@@ -752,10 +933,11 @@ export async function getBatchItem(
   ordinal: number,
 ): Promise<MultiChapterBatchItemRow | null> {
   const row = await one(
-    'SELECT * FROM multi_chapter_batch_items WHERE batch_id = ? AND ordinal = ?',
+    `SELECT ${BATCH_ITEM_METADATA_SELECT}
+       FROM multi_chapter_batch_items WHERE batch_id = ? AND ordinal = ?`,
     [batchId, ordinal],
   );
-  return row ? mapBatchItemRow(row) : null;
+  return row ? materializeBatchItemRow(row) : null;
 }
 
 export async function updateBatchItem(
@@ -859,11 +1041,12 @@ export async function getItemRuns(
   ordinal: number,
 ): Promise<MultiChapterBatchItemRunRow[]> {
   const rows = await all(
-    `SELECT * FROM multi_chapter_batch_item_runs
+    `SELECT ${BATCH_ITEM_RUN_METADATA_SELECT}
+       FROM multi_chapter_batch_item_runs
      WHERE batch_id = ? AND ordinal = ? ORDER BY run_no ASC`,
     [batchId, ordinal],
   );
-  return rows.map(mapRunRow);
+  return Promise.all(rows.map(materializeBatchItemRunRow));
 }
 
 /**

@@ -101,6 +101,10 @@ describeUpgrade('real user DB Schema42 → 43 upgrade (manual evidence)', () => 
     __setDatabaseForTest(wrapped as never);
 
     const before = await snapshot();
+    const beforeLlm = await wrapped.executeSql(
+      `SELECT id, base_url, api_key, model_name, context_window, max_output_tokens
+       FROM llm_config ORDER BY id`,
+    );
     const beforeSchema = await wrapped.executeSql(
       "SELECT value FROM settings WHERE key = 'schema_version'",
     );
@@ -120,8 +124,36 @@ describeUpgrade('real user DB Schema42 → 43 upgrade (manual evidence)', () => 
       // projects — pre-upgrade rows gain the column with NULL, asserted
       // separately below.
       if (t === 'projects') continue;
+      // Schema 58 intentionally normalizes the historical empty/default LLM
+      // row from 4096/4000 to the explicit AUTO sentinel 0/0. Compare that
+      // capability contract separately below; all other columns must remain
+      // byte-for-byte stable.
+      if (t === 'llm_config') continue;
       if (before[t] === '__missing__' && after[t] === '__missing__') continue;
       expect(after[t]).toBe(before[t]);
+    }
+    const afterLlm = await wrapped.executeSql(
+      `SELECT id, base_url, api_key, model_name, context_window, max_output_tokens
+       FROM llm_config ORDER BY id`,
+    );
+    expect(afterLlm[0].rows.length).toBe(beforeLlm[0].rows.length);
+    for (let i = 0; i < beforeLlm[0].rows.length; i += 1) {
+      const beforeRow = beforeLlm[0].rows.item(i);
+      const afterRow = afterLlm[0].rows.item(i);
+      expect(afterRow.id).toBe(beforeRow.id);
+      expect(afterRow.base_url).toBe(beforeRow.base_url);
+      expect(afterRow.api_key).toBe(beforeRow.api_key);
+      expect(afterRow.model_name).toBe(beforeRow.model_name);
+      const emptyCapability =
+        !String(beforeRow.base_url || '').trim() &&
+        !String(beforeRow.model_name || '').trim() &&
+        !String(beforeRow.api_key || '').trim();
+      expect(Number(afterRow.context_window)).toBe(
+        emptyCapability ? 0 : Number(beforeRow.context_window),
+      );
+      expect(Number(afterRow.max_output_tokens)).toBe(
+        emptyCapability ? 0 : Number(beforeRow.max_output_tokens),
+      );
     }
     const [projectStyles] = await wrapped.executeSql(
       'SELECT COUNT(*) AS c FROM projects WHERE active_writer_style_id IS NOT NULL',

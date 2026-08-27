@@ -170,6 +170,66 @@ describe('B4 — resolveQaEvidenceProjection', () => {
     expect(noRelevant.fallbackReason).toBe('no-entity-hit');
   });
 
+  test('keeps candidate ids aligned when an included relevant item has no rendered block', () => {
+    const { frozenContext, artifacts, requirements } = qaInput();
+    const validMaterial = frozenContext.materials.find(
+      item => item.source.kind === 'character' && item.source.content.includes('柳如烟'),
+    );
+    expect(validMaterial).toBeDefined();
+    const validItem = frozenContext.rendered.items.find(
+      item => item.candidateId === validMaterial?.source.candidateId,
+    );
+    expect(validItem).toBeDefined();
+
+    const missingSource = makeSource({
+      kind: 'worldbook',
+      content: '未渲染条目：只用于验证候选 ID 对齐。',
+      requirement: 'optional',
+    });
+    const missingItem = {
+      candidateId: missingSource.candidateId,
+      allocatedTokens: 32,
+      actualTokens: 0,
+      included: true,
+      clipped: false,
+      renderedHash: 'missing-rendered-block',
+    };
+    const validHeader = `【character:${validMaterial!.source.candidateId}】`;
+    const validStart = frozenContext.rendered.text.indexOf(validHeader);
+    expect(validStart).toBeGreaterThanOrEqual(0);
+    const nextBlock = frozenContext.rendered.text.indexOf('\n\n【', validStart + validHeader.length);
+    const validBlock = frozenContext.rendered.text
+      .slice(validStart, nextBlock < 0 ? undefined : nextBlock)
+      .trim();
+
+    const result = resolveQaEvidenceProjection({
+      stage: 'qa',
+      frozenContext: {
+        ...frozenContext,
+        materials: [
+          ...frozenContext.materials,
+          {
+            source: missingSource,
+            sourceOrder: frozenContext.materials.length,
+            demandTokens: estimateTokens(missingSource.content),
+          },
+        ],
+        rendered: {
+          ...frozenContext.rendered,
+          text: validBlock,
+          items: [missingItem, validItem!],
+        },
+      },
+      artifacts,
+      requirements,
+    });
+
+    expect(result.enabled).toBe(true);
+    expect(result.includedCandidateIds).toContain(validMaterial!.source.candidateId);
+    expect(result.includedCandidateIds).not.toContain(missingSource.candidateId);
+    expect(result.text).toContain('柳如烟');
+  });
+
   test('mandatory truths survive even when evidence projection is disabled (fallback keeps union)', () => {
     // fail-safe 语义：enabled=false 时调用方必须回到 union projection。
     const { frozenContext, requirements } = qaInput();

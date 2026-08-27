@@ -119,9 +119,16 @@ export function resolveQaEvidenceProjection(input: {
       const kind = kindById.get(id);
       return kind !== undefined && RELEVANT_EVIDENCE_KINDS.includes(kind);
     });
+  // Keep the id attached while filtering absent/truncated rendered blocks.
+  // Filtering the blocks alone would shift the array index and could make a
+  // valid hit inherit the metadata of an earlier candidate whose block was
+  // not rendered.
   const relevantBlocks = relevantIds
-    .map(id => extractRenderedBlock(renderedText, kindById.get(id)!, id))
-    .filter(Boolean);
+    .map(id => ({
+      id,
+      block: extractRenderedBlock(renderedText, kindById.get(id)!, id),
+    }))
+    .filter(item => Boolean(item.block));
 
   if (relevantBlocks.length === 0) {
     // 场景没有可过滤的相关条目（例如纯 outline 场景）→ 回退 union。
@@ -141,8 +148,7 @@ export function resolveQaEvidenceProjection(input: {
   const hitBlocks: string[] = [];
   const hitIds: string[] = [];
   const hitKinds: WritingSourceKind[] = [];
-  relevantBlocks.forEach((block, index) => {
-    const id = relevantIds[index];
+  relevantBlocks.forEach(({ id, block }) => {
     const source = sourceById.get(id);
     const name = entityName(block, source);
     if (!name || name.length < 2 || !haystack.includes(name)) return;

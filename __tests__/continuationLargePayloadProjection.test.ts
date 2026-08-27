@@ -16,7 +16,18 @@ import {
   getRunById,
   getLatestArtifactForStage,
   getStageResult,
+  enqueueOutbox,
+  getOutboxByDedupe,
+  listPendingOutbox,
 } from '../src/services/continuation/generation/generationRepository';
+import {
+  createBatch,
+  createBatchItem,
+  createItemRun,
+  getBatchById,
+  getBatchItems,
+  getItemRuns,
+} from '../src/data/repositories/multiChapterBatchRepository';
 import { getTaskAttempts } from '../src/data/repositories/pipelineStageAttemptRepository';
 import { createPipelineTaskWithCheckpoints } from '../src/data/repositories/pipelineTaskRepository';
 import { createStageAttempt } from '../src/data/repositories/pipelineStageAttemptRepository';
@@ -26,6 +37,8 @@ const PROJECT_ID = 9811;
 const CHAPTER_ID = 9812;
 const RUN_ID = 'ct_large_payload_projection';
 const TASK_ID = 'task_large_payload_projection';
+const BATCH_ID = 'batch_large_payload_projection';
+const OUTBOX_DEDUPE_KEY = 'large-payload-projection-outbox';
 const now = new Date().toISOString();
 const LARGE_TEXT = '大字段'.repeat(380_000);
 
@@ -38,7 +51,7 @@ async function sql(sqlText: string, params: any[] = []): Promise<any> {
 function installCursorWindowGuard(db: InMemorySqliteDb): InMemorySqliteDb {
   const widePayloadRead = (sqlText: string): boolean => {
     const normalized = sqlText.replace(/\s+/g, ' ').trim();
-    if (/SELECT \* FROM (continuation_generation_artifacts|continuation_generation_stage_results|pipeline_stage_attempts)/i.test(normalized)) {
+    if (/SELECT \* FROM (continuation_generation_artifacts|continuation_generation_stage_results|pipeline_stage_attempts|multi_chapter_batches|multi_chapter_batch_items|multi_chapter_batch_item_runs|continuation_state_proposals|continuation_state_events|continuation_state_sync_outbox)/i.test(normalized)) {
       return true;
     }
     if (/\b(source_snapshot_json|context_trace_json)\b/i.test(normalized)) {
@@ -140,6 +153,39 @@ describe('SQLite large-payload projection and on-demand loading', () => {
       llmConfigSnapshotJson: '{}',
       clientRequestId: 'large-payload-client',
     });
+    await createBatch({
+      id: BATCH_ID,
+      projectId: PROJECT_ID,
+      sourcePrompt: LARGE_TEXT,
+      chapterCount: 1,
+      targetWordsPerChapter: 3000,
+      pipelineMode: 'full',
+    });
+    await createBatchItem({
+      batchId: BATCH_ID,
+      ordinal: 1,
+      title: '大字段批次条目',
+      synopsis: LARGE_TEXT,
+      keyBeatsJson: LARGE_TEXT,
+      carryIn: LARGE_TEXT,
+      carryOut: LARGE_TEXT,
+      targetWords: 3000,
+    });
+    await createItemRun({
+      batchId: BATCH_ID,
+      ordinal: 1,
+      runNo: 1,
+      pipelineTaskId: TASK_ID,
+      llmConfigSnapshotJson: LARGE_TEXT,
+      reason: 'large payload projection',
+    });
+    await enqueueOutbox({
+      projectId: PROJECT_ID,
+      chapterId: CHAPTER_ID,
+      operation: 'extract_state',
+      payload: { padding: LARGE_TEXT },
+      dedupeKey: OUTBOX_DEDUPE_KEY,
+    });
 
     // Install only after seeding so the test exercises real SQLite rows and
     // the guard covers every repository read under test.
@@ -169,6 +215,35 @@ describe('SQLite large-payload projection and on-demand loading', () => {
       expect.objectContaining({
         id: 'att_large_payload',
         frozenRequestJson: LARGE_TEXT,
+      }),
+    ]);
+  });
+
+  test('batch and state-sync hot paths project large payloads before loading them', async () => {
+    await expect(getBatchById(BATCH_ID)).resolves.toMatchObject({
+      id: BATCH_ID,
+      sourcePrompt: LARGE_TEXT,
+    });
+    await expect(getBatchItems(BATCH_ID)).resolves.toEqual([
+      expect.objectContaining({
+        synopsis: LARGE_TEXT,
+        keyBeatsJson: LARGE_TEXT,
+        carryIn: LARGE_TEXT,
+        carryOut: LARGE_TEXT,
+      }),
+    ]);
+    await expect(getItemRuns(BATCH_ID, 1)).resolves.toEqual([
+      expect.objectContaining({ llmConfigSnapshotJson: LARGE_TEXT }),
+    ]);
+    await expect(getOutboxByDedupe(OUTBOX_DEDUPE_KEY)).resolves.toEqual(
+      expect.objectContaining({
+        payloadJson: JSON.stringify({ padding: LARGE_TEXT }),
+      }),
+    );
+    await expect(listPendingOutbox()).resolves.toEqual([
+      expect.objectContaining({
+        dedupeKey: OUTBOX_DEDUPE_KEY,
+        payloadJson: JSON.stringify({ padding: LARGE_TEXT }),
       }),
     ]);
   });

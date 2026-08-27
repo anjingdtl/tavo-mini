@@ -33,7 +33,28 @@ function mockCloneStore() {
 const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
   const normalized = sql.replace(/\s+/g, ' ').trim();
 
-  if (/SELECT \* FROM continuation_generation_stage_results/i.test(normalized)) {
+  const payloadRead = normalized.match(
+    /SELECT (length|substr)\((content|output_json)\).* FROM (continuation_generation_artifacts|continuation_generation_stage_results)/i,
+  );
+  if (payloadRead) {
+    const table = payloadRead[3].toLowerCase();
+    const column = payloadRead[2].toLowerCase();
+    const id = params[params.length - 1];
+    const row = table === 'continuation_generation_artifacts'
+      ? mockStore.artifacts.find(item => item.id === id)
+      : mockStore.stageResults.find(item => item.id === id);
+    const value = row?.[column] == null ? null : String(row[column]);
+    if (payloadRead[1].toLowerCase() === 'length') {
+      return mockResult(value == null ? [] : [{ payload_length: value.length }]);
+    }
+    const offset = Number(params[0] || 1) - 1;
+    const size = Number(params[1] || 0);
+    return mockResult(
+      value == null ? [] : [{ payload_chunk: value.slice(offset, offset + size) }],
+    );
+  }
+
+  if (/FROM continuation_generation_stage_results/i.test(normalized)) {
     const rows = mockStore.stageResults.filter(row => {
       if (/WHERE run_id = \? AND stage = \?/i.test(normalized)) {
         return row.run_id === params[0] && row.stage === params[1];
@@ -99,11 +120,10 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
     return mockResult([], 1);
   }
 
-  if (/SELECT \* FROM continuation_generation_artifacts WHERE id/i.test(normalized)) {
-    return mockResult(mockStore.artifacts.filter(row => row.id === params[0]));
-  }
-
-  if (/SELECT \* FROM continuation_generation_artifacts WHERE run_id/i.test(normalized)) {
+  if (/FROM continuation_generation_artifacts/i.test(normalized)) {
+    if (/WHERE id = \?/i.test(normalized)) {
+      return mockResult(mockStore.artifacts.filter(row => row.id === params[0]));
+    }
     const rows = mockStore.artifacts
       .filter(
         row =>
