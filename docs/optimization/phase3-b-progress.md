@@ -1,20 +1,22 @@
 # Phase III-B 施工进度
 
-更新时间：2026-08-27（接手快照）
-当前状态：**PHASE III-B FINAL ACCEPTANCE IN PROGRESS / NO-GO**
+更新时间：2026-08-28（B 轮最终验收）
+当前状态：**PHASE III-B FINAL SEALED / GO**
 
 ## B 轮复核结果（2026-08-28）
 
-- `git fetch` 后当前 HEAD 为 `56ec411636d0e5bb7d802e8d009c82d2f24bf153`，实现 tip `90f10e3` 保留；其后仅进度文档提交。
-- State Proposal / Evidence QA / PostWriting、最终发送 messages/receipt/physical ledger 与 `pipeline_tasks` 热路径已做源码审查，并以 7 suites / 32 tests 定向回归；`npm run verify:elastic`、`npm run typecheck`、`npm run verify` 均通过（lint 0 errors / 216 existing warnings）。
-- Debug APK 尚未构建成功：`npm run apk:debug` 两次、直接 `gradlew assembleDebug --no-daemon` 一次，均在 Gradle 编译开始前因宿主 Java loopback pipe 的 `Unable to establish loopback connection` / `Invalid argument: connect` 失败。
-- 因没有最新 APK，未执行 `adb install -r`，也未启动 Outline / Continuation 的真实 Fast≥3、Standard≥5、Quality≥5 矩阵；禁止以既有 APK 或历史样本替代。
-- 当前结论仍是 **NO-GO**。仅处理 III-B B 轮；待宿主构建环境恢复后从 APK 构建继续，不启动 C 轮。
+- 当前实现 tip 为 `be835da`；本次仅封存 III-B B 轮，C 轮未启动。
+- State Proposal / Evidence QA / PostWriting、最终发送 messages/receipt/physical ledger 与 `pipeline_tasks` 大载荷热路径均已完成真实复核；最终 30 章的 Evidence QA、状态来源、Final fingerprint、PostWriting `extract_state` 次数均已登记在 [phase3-b-final-report.md](F:/ClaudeWorkSpace/projects/TAVO-MINI/docs/optimization/phase3-b-final-report.md)。
+- `npm run verify:elastic`、`npm run typecheck`、`npm run verify` 均通过；lint 0 errors / 216 existing warnings，505 suites passed（3 skipped），3637 tests passed（8 skipped）。
+- 最新 Debug APK 构建成功，SHA-256 为 `1383E792F5B251F5025AD090BBD70B06547D89D3C87E09BEF5A6B123995FEB51`；在 `emulator-5554` 上仅执行 `adb install -r`，结果 `Success`，UI 启动正常。
+- Outline 与 Continuation 真实矩阵均满足极速 3/3、标准 5/5、质量 5/5；所有最终 adopted run 完成，旧 retry 的失败/截断 receipt 未被隐藏。
+- 当前结论为 **PHASE III-B FINAL SEALED / GO**。保留历史段落中的旧 NO-GO/GO 文字作为审计记录，以本节与最终报告为当前结论。
 
-> 重要校正：本文件下方保留了此前阶段性记录，其中部分旧条目曾写成
-> `PHASE III-B FINAL SEALED / GO`。截至本接手快照，三档真实 LLM 矩阵、
-> 当前 HEAD 的最终全量门禁和最终报告复核尚未完成，因此不得据此宣布 GO；
-> 以本节“当前接手快照”为最高优先级。
+---
+
+## 历史接手与施工记录（不构成当前验收结论）
+
+以下内容保留接手时的 NO-GO 快照、阶段性修复记录和历史验证材料，仅供审计追溯；当前结论以本文顶部 B 轮最终验收结果和 [phase3-b-final-report.md](F:/ClaudeWorkSpace/projects/TAVO-MINI/docs/optimization/phase3-b-final-report.md) 为准。
 
 ## 范围约束
 
