@@ -131,8 +131,9 @@ const REVISION_BRIEF_CONTRACT = [
   '    subjectRefType / subjectRefId / payload / evidenceQuote / risk，',
   '    subjectRefType（如提供）只能是 canon_character / continuation_entity / plotline / world；Canon 剧情线统一写 plotline。',
   '    evidenceQuote 必须是最终正文中逐字存在的短引文 4~80 字符）。',
-  '若输出了 finalStateProposals，必须同时输出 proposalSourceBodyFingerprint',
-  '    （= 最终正文 content 的 sha256 hex），状态提案只允许绑定该最终正文。',
+  '若输出了 finalStateProposals，客户端必须在最终正文 content 或局部修复组装完成后',
+  '    计算并绑定 proposalSourceBodyFingerprint（sha256 hex）；模型不要猜测或伪造该字段，',
+  '    状态提案只允许绑定该最终正文。',
   '禁止输出任何 UTF-16 offset / start / end；offset 由客户端解析。',
 ].join('\n');
 

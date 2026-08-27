@@ -1,7 +1,6 @@
 import { sha256Hex } from '../src/services/continuation/hashUtils';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
 import {
-  finalizeWritingKernelObservability,
   resetWritingObservabilityForTests,
 } from '../src/services/writing/observability';
 import { runWritingStages } from '../src/services/writing/stages/writingStageRunner';
@@ -117,7 +116,7 @@ describe('Revision structured output contract (P0)', () => {
     expect(persisted).toEqual([]);
   });
 
-  test('proposal fingerprint mismatch fails closed before persistence', async () => {
+  test('binds provider proposals to the locally assembled final body', async () => {
     const content = '修订正文包含新事实。';
     const response = revisionResponse(
       JSON.stringify({
@@ -126,7 +125,7 @@ describe('Revision structured output contract (P0)', () => {
           {
             proposalType: 'plot_advance',
             payload: { fact: '新事实' },
-            evidenceQuote: '新事实',
+            evidenceQuote: '正文包含新事实',
             risk: 'normal',
           },
         ],
@@ -134,16 +133,18 @@ describe('Revision structured output contract (P0)', () => {
       }),
       'stop',
     );
-    const { result, persisted, trace, frozenContext } = await runRevision(response);
+    const { result, persisted } = await runRevision(response);
 
-    await expect(result).rejects.toMatchObject({
-      code: 'SHARED_WRITER_INVALID_STATE_PROPOSAL_CONTRACT',
-    });
-    expect(persisted).toEqual([]);
-    const finalized = finalizeWritingKernelObservability(trace, frozenContext);
-    expect(finalized.observability?.llm.physicalRequestCount).toBe(1);
-    expect(finalized.observability?.llm.inputTokens).toBe(100);
-    expect(finalized.observability?.llm.outputTokens).toBe(100);
+    const results = await result;
+    expect(results[0].status).toBe('completed');
+    const artifact = results[0].artifact as SharedWritingArtifact;
+    expect(artifact.structured?.proposalSourceBodyFingerprint).toBe(
+      sha256Hex(content),
+    );
+    expect(artifact.diagnostics).toContain(
+      'revision_state_proposal_fingerprint_bound_locally',
+    );
+    expect(persisted).toHaveLength(1);
   });
 
   test('invalid segment repair uses same-response full revision fallback', async () => {
@@ -171,6 +172,51 @@ describe('Revision structured output contract (P0)', () => {
       '同一次响应中的完整终稿。',
     );
     expect(callStage).toHaveBeenCalledTimes(1);
+    expect(persisted).toHaveLength(1);
+  });
+
+  test('binds proposals after local segment-repair assembly', async () => {
+    const finalBody = '第一段修复完成。';
+    const response = revisionResponse(
+      JSON.stringify({
+        schemaVersion: 1,
+        strategy: 'segment_repair',
+        actions: [{ covers: ['qa-1'], instruction: '改成安全表述' }],
+        preserve: ['已成立的事件因果'],
+        ending: 'keep',
+        segmentRepairs: [
+          {
+            anchorId: 'draft-p-001',
+            paragraphHash: sha256Hex(draftBody),
+            replacementText: finalBody,
+            findingIds: ['qa-1'],
+            reason: '同一响应中的局部修复',
+          },
+        ],
+        finalStateProposals: [
+          {
+            proposalType: 'plot_advance',
+            payload: { fact: '修复完成' },
+            evidenceQuote: '修复完成',
+            risk: 'normal',
+          },
+        ],
+        proposalSourceBodyFingerprint: sha256Hex('模型无法可靠计算的值'),
+      }),
+      'stop',
+    );
+    const { result, persisted } = await runRevision(response);
+
+    const results = await result;
+    expect(results[0].status).toBe('completed');
+    const artifact = results[0].artifact as SharedWritingArtifact;
+    expect(artifact.body).toBe(finalBody);
+    expect(artifact.structured?.proposalSourceBodyFingerprint).toBe(
+      sha256Hex(finalBody),
+    );
+    expect(artifact.diagnostics).toContain(
+      'revision_state_proposal_fingerprint_bound_locally',
+    );
     expect(persisted).toHaveLength(1);
   });
 });

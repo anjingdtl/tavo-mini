@@ -26,6 +26,34 @@ export interface RevisionStructuredContractValidation {
 }
 
 /**
+ * Bind revision state proposals after the client has assembled the actual
+ * Final body. A model cannot reliably calculate SHA-256, and B7 segment
+ * repair may assemble a body that was never present verbatim in the model
+ * response. The local body remains authoritative; the returned structured
+ * contract is only enriched with that deterministic binding.
+ */
+export function bindRevisionStateProposalFingerprint(input: {
+  parsed: Record<string, unknown>;
+  finalBody: string;
+}): { parsed: Record<string, unknown>; rebound: boolean } {
+  const proposals = input.parsed.finalStateProposals;
+  if (!Array.isArray(proposals) || proposals.length === 0) {
+    return { parsed: input.parsed, rebound: false };
+  }
+  const expected = sha256Hex(String(input.finalBody ?? ''));
+  if (input.parsed.proposalSourceBodyFingerprint === expected) {
+    return { parsed: input.parsed, rebound: false };
+  }
+  return {
+    parsed: {
+      ...input.parsed,
+      proposalSourceBodyFingerprint: expected,
+    },
+    rebound: true,
+  };
+}
+
+/**
  * The compact QA admission contract is intentionally stricter than the
  * historical Review/Audit adapters.  Revision must only see findings that
  * already carry the complete structured semantics; this validator never

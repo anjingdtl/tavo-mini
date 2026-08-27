@@ -25,6 +25,7 @@ import {
   compileSharedWriterFormatterPrompt,
   isAdoptableStructuredReport,
   hasExplicitRevisionNoOp,
+  bindRevisionStateProposalFingerprint,
   shouldRunWriterFormatter,
   validateRevisionStructuredContract,
 } from './writerRecovery';
@@ -919,6 +920,17 @@ function finalizeWriterArtifact(
       artifact.body = draftBody;
     }
     if (compactRevision) {
+      const boundStateProposals = bindRevisionStateProposalFingerprint({
+        parsed: artifact.structured!,
+        finalBody: artifact.body,
+      });
+      if (boundStateProposals.rebound) {
+        artifact.structured = boundStateProposals.parsed;
+        artifact.diagnostics = [
+          ...(artifact.diagnostics || []),
+          'revision_state_proposal_fingerprint_bound_locally',
+        ];
+      }
       const validation = validateRevisionStructuredContract({
         parsed: artifact.structured,
         finalBody: artifact.body,
