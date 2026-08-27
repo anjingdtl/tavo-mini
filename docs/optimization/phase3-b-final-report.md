@@ -1,8 +1,33 @@
-# Phase III-B Final Report
+# Phase III-B Final Acceptance Report
 
-更新时间：2026-08-27
+更新时间：2026-08-28
 
-当前状态：**PHASE III-B FINAL SEALED / GO**
+当前状态：**PHASE III-B FINAL ACCEPTANCE IN PROGRESS / NO-GO**
+
+> 本页下方保留 2026-08-27 的历史封板记录，不能作为当前 HEAD 的验收结论。
+> 2026-08-28 的 B 轮复核已重新执行定向 7 suites / 32 tests、
+> `npm run verify:elastic`、`npm run typecheck`、`npm run verify`（均通过）；
+> 但 Debug APK 连续三次在 Gradle 尚未开始编译前因宿主 Java loopback
+> `Invalid argument: connect` 失败。没有最新 APK，就没有执行 `adb install -r`，
+> 也没有启动 Outline / Continuation 的真实 3/5/5 矩阵。因此不得宣布 GO。
+
+## 当前 B 轮硬门禁（2026-08-28）
+
+| 门禁 | 实测结果 | 当前结论 |
+| --- | --- | --- |
+| State Proposal / Evidence QA / PostWriting 定向回归 | 7 suites / 32 tests PASS；Final==Draft 仅 QA、Final!=Draft 仅 Revision+fingerprint、正常路径 `extract_state=0` | PASS |
+| 最终 model-visible messages / receipt / physical ledger | 定向回归 PASS；receipt 由实际 dispatch 的同一 `compiled.messages` 构建并保留 usage、finishReason、physical/fallback count | PASS |
+| `pipeline_tasks` 热路径审查 | 生产源码未发现 `SELECT * FROM pipeline_tasks`；读取为窄投影/分块载荷 | PASS |
+| `npm run verify:elastic` / `npm run typecheck` / `npm run verify` | PASS（lint 0 errors / 216 existing warnings） | PASS |
+| 最新 Debug APK 构建 | FAIL：Gradle daemon 的 JDK loopback pipe 初始化报 `Unable to establish loopback connection`；`--no-daemon` 同样失败 | BLOCKED |
+| `adb install -r` 最新 APK | 未执行，不能以旧 APK 替代最新构建 | BLOCKED |
+| Outline / Continuation 真机 3/5/5 矩阵 | 未启动；无最新 APK 时不伪造或复用历史样本 | BLOCKED |
+
+**当前决策：NO-GO。** 只保留 III-B B 轮；待宿主机 Java/Gradle loopback 故障消除后，从最新 Debug APK 构建、`adb install -r` 和真实矩阵继续。
+
+---
+
+## 2026-08-27 历史记录（不构成当前验收）
 
 ## 范围
 

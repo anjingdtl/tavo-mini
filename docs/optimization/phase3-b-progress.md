@@ -3,6 +3,14 @@
 更新时间：2026-08-27（接手快照）
 当前状态：**PHASE III-B FINAL ACCEPTANCE IN PROGRESS / NO-GO**
 
+## B 轮复核结果（2026-08-28）
+
+- `git fetch` 后当前 HEAD 为 `56ec411636d0e5bb7d802e8d009c82d2f24bf153`，实现 tip `90f10e3` 保留；其后仅进度文档提交。
+- State Proposal / Evidence QA / PostWriting、最终发送 messages/receipt/physical ledger 与 `pipeline_tasks` 热路径已做源码审查，并以 7 suites / 32 tests 定向回归；`npm run verify:elastic`、`npm run typecheck`、`npm run verify` 均通过（lint 0 errors / 216 existing warnings）。
+- Debug APK 尚未构建成功：`npm run apk:debug` 两次、直接 `gradlew assembleDebug --no-daemon` 一次，均在 Gradle 编译开始前因宿主 Java loopback pipe 的 `Unable to establish loopback connection` / `Invalid argument: connect` 失败。
+- 因没有最新 APK，未执行 `adb install -r`，也未启动 Outline / Continuation 的真实 Fast≥3、Standard≥5、Quality≥5 矩阵；禁止以既有 APK 或历史样本替代。
+- 当前结论仍是 **NO-GO**。仅处理 III-B B 轮；待宿主构建环境恢复后从 APK 构建继续，不启动 C 轮。
+
 > 重要校正：本文件下方保留了此前阶段性记录，其中部分旧条目曾写成
 > `PHASE III-B FINAL SEALED / GO`。截至本接手快照，三档真实 LLM 矩阵、
 > 当前 HEAD 的最终全量门禁和最终报告复核尚未完成，因此不得据此宣布 GO；
