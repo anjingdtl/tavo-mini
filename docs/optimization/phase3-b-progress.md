@@ -1,13 +1,64 @@
 # Phase III-B 施工进度
 
-更新时间：2026-08-27
-当前状态：**PHASE III-B FINAL SEALED / GO**
+更新时间：2026-08-27（接手快照）
+当前状态：**PHASE III-B FINAL ACCEPTANCE IN PROGRESS / NO-GO**
+
+> 重要校正：本文件下方保留了此前阶段性记录，其中部分旧条目曾写成
+> `PHASE III-B FINAL SEALED / GO`。截至本接手快照，三档真实 LLM 矩阵、
+> 当前 HEAD 的最终全量门禁和最终报告复核尚未完成，因此不得据此宣布 GO；
+> 以本节“当前接手快照”为最高优先级。
 
 ## 范围约束
 
-- 基线：`origin/main`（施工前 HEAD：`4f06fbb63ae6a3202febf0d024090b2dd2d0f615`）。
+- 唯一施工基线：`F:\ClaudeWorkSpace\projects\TAVO-MINI`。
+- 开工核对：`git fetch` 已完成；当前 `origin/main=86784869839cdee669ca6a16bd1c87fe0851e67d`，本地 `main` 起点相同。
+- 当前本地 HEAD：`90f10e3fed08a2665717840097d4e736cc9e567f`，比 `origin/main` 超前 5 个独立修复提交；不要把这些提交回退或重置。
 - B0-B5 保持既有行为；本轮只处理 B6、B7、B8，不启动 C 轮。
-- 当前工作树包含本轮施工改动及既有用户未提交文件；最终提交只纳入本轮明确文件。
+- 工作区没有已跟踪文件改动；以下 4 项是开工前已存在的未跟踪文件，必须保留、不得清理或擅自提交：`-`、`docs/optimization/TAVO-MINI_第二期_最终生产源码穿透测试与自修复封板方案_V1.0.md`、`emulator-5554`、`qa_import_preset.json`。
+
+## 当前接手快照（2026-08-27）
+
+### 已完成并独立提交的 PDCA 修复
+
+每项均已执行 Red → Do → targeted verify → Check，并独立提交；接手后不要重复制造同一提交：
+
+1. `b4b6db5 fix(llm): enforce elastic output budgets at call sites`
+   - 给 `callLLM` / `callLLMResult` 增加 TypeScript AST 固定数字参数回归扫描。
+   - 修复 Plotline、summaryGenerator、continuationOrdering、resourceSourceSnapshot、noteRetriever、styleAnalyzer 的业务上限参数。
+   - 定向 8 suites / 66 tests 通过；`npm run verify:elastic`、`npm run typecheck` 通过。
+2. `6f7e7c6 fix(writing): fail closed on invalid revision contracts`
+   - Revision `finishReason=length` 失败关闭。
+   - Compact Revision 严格校验 structured contract、字段缺失、JSON 截断、状态提案指纹、Segment/Full fallback。
+   - 新增稳定 Red Test：`__tests__/writingRevisionFormatContract.test.ts`。
+   - 定向 9 suites / 50 tests 通过；`npm run typecheck` 通过。
+3. `a8cfcf4 fix(writing): preserve frozen materials in revision prompts`
+   - Draft / QA / Revision 的 model-visible messages 增加显式 Chapter Truth Projection、Requirement Checklist 和冻结资料块。
+   - Revision allowlist 补齐 seam、anchor、chapter、preset、character、worldbook、note、episodic memory 等边界资料。
+   - 测试覆盖 receipt fingerprint 与 Freeze 后 live source 不漂移；定向 prompt/evidence/chapter-truth/receipt 测试 7 suites / 50 tests 通过。
+4. `8e2cd61 fix(storage): project and chunk large pipeline payloads`
+   - `pipeline_tasks`、`pipeline_stage_attempts`、continuation artifact/stage result 热路径改为 metadata projection + 按需分块加载，避免大 JSON/BLOB 直接进入 CursorWindow。
+   - 新增真实 sql.js 大 payload / CursorWindow guard 红测；定向 5 suites / 20 tests 通过。
+5. `90f10e3 fix(writing): reconcile physical request accounting`
+   - Request Receipt、usage、stage artifact、continuation ledger、DB outbox 对齐 physical dispatch / protocol fallback 计数。
+   - 失败路径也保留实际物理计数；多 stage attempt/result 索引修正。
+   - 定向 6 suites / 20 tests 通过。
+
+### 已有证据与当前限制
+
+- 已有历史真实证据：Outline Issue=3、Clean=2、Fast=1；Evidence QA 有真实命中样本；Continuation 有过一次真实采纳/定稿闭环。
+- 这些数量不满足本轮最终矩阵要求（Outline 与 Continuation 均需 Fast≥3、Standard≥5、Quality≥5），不能作为 GO。
+- 当前阶段没有重新执行完整 `npm run verify:elastic`、`npm run typecheck`、`npm run verify`、Debug APK build/install 和完整真实矩阵；必须在当前 `90f10e3...` HEAD 上重跑并留证。
+- 当前进度仍需继续核查 State Proposal / Evidence QA / PostWriting closure 的真实 receipt、stage ledger、usage、outbox 一致性；现有单测不能替代真实请求证据。
+- 最终报告 `docs/optimization/phase3-b-final-report.md` 仍含旧的 GO 文字；在全部硬门禁满足前不得沿用该结论，最终收口时必须按真实结果更新。
+
+## 接手后的严格执行顺序
+
+1. **State Proposal / Evidence QA PDCA**：先读 `qaStateProposals.ts`、finalization、outbox worker 及相关测试；如发现任何问题，先写稳定 Red Test，再 Do、targeted verify、Check、Act，并单独 commit。必须证明 Final==Draft 才读 QA proposals；Final!=Draft 只读 Revision proposals；fingerprint 等于 Final body；evidenceQuote 在 Final body 唯一命中；正常 PostWriting 的 `extract_state` outbox/LLM 为 0。
+2. **资料注入与调用对账**：从最终发送的 `messages` / request receipt 核对 Draft、QA、Revision 的章节边界、Canon、Source Boundary、真实上一章 Seam/Anchor、Story Memory、Structured State、Writer Style、相关人物/世界书/资料、Chapter Truth Projection/Requirement Checklist；同时验证无 future leakage、无 Freeze 后 live read 漂移，且 physical calls 与 usage、stage ledger、outbox 一致。
+3. **SQLite 全面热路径审查**：继续搜索所有大表读取，特别是 `pipeline_tasks`，禁止热路径 `SELECT *` 读取大 JSON/BLOB；补低内存/大 payload 回归证据。若有缺口按独立 PDCA commit 修复。
+4. **最终门禁**：按顺序执行 `npm run verify:elastic`、`npm run typecheck`、`npm run verify`；构建最新 Debug APK，只能 `adb install -r`，不得 uninstall / `pm clear`，保留设备上的项目、LLM 配置、Writer Style、Canon、Story Memory。
+5. **真实矩阵**：Outline 与 Continuation 各执行 Fast≥3、Standard≥5、Quality≥5；每章记录真实 physical calls、Draft/QA/Revision 输入/输出 tokens、finishReason、Evidence QA hit/fallback、Segment Repair/Full Revision、State Proposal source、Final fingerprint、PostWriting `extract_state` 次数，并核对模型可见 request messages。
+6. **最终报告**：只有上述硬门禁全部真实满足后，更新 `docs/optimization/phase3-b-final-report.md` 与本进度文档为 `PHASE III-B FINAL SEALED / GO`；任何一项 NO-GO 都必须如实保留，停止在 B 轮，不启动 C 轮。
 
 ## 已完成施工
 
