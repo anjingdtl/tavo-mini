@@ -149,6 +149,8 @@ const QA_STRUCTURED_REPORT_CONTRACT = [
   '必须包含 verdict（只能是 pass 或 needs_revision）和 findings（必须是数组）。content 如输出只能是一句简短摘要。',
   'verdict=pass 时 findings 必须为 []；verdict=needs_revision 时 findings 至少有一条。',
   '每条 finding 必须包含非空 issue、severity（只能是 blocking 或 warning），并且 target 或 requirementIds 至少有一个可定位值，以及 instruction 或 target 至少有一个可执行值。',
+  '只报告最多 3 条最高优先级问题；每条 issue、target、instruction 都保持简短，',
+  '    不要复述正文、展开分析或输出未要求的长字段，确保 JSON 在本次输出预算内完整结束。',
   '不得从普通 content、自然语言或正则猜测、自动补造 severity、target、requirementIds 或 instruction；无法完整表达时必须使用 pass 与 findings=[]。',
 ].join('\n');
 

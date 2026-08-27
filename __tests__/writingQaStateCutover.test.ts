@@ -131,6 +131,23 @@ describe('B6 — buildQaProposalInsertRows（进入 legacy 提案管道）', () 
 });
 
 describe('B6 — Revision contract posts final-state proposals（§8.5）', () => {
+  test('compact QA prompt bounds findings density so JSON can close in budget', () => {
+    const { frozenContext } = buildWritingKernelFreezeTrace({
+      request: outlineRequest({}),
+    });
+    const compiled = compileSharedWritingPrompt({
+      stage: 'qa',
+      frozenContext,
+      artifacts: {
+        draft: { stage: 'draft', body: '正文' },
+      },
+      requirements: frozenContext.requirements,
+      stagePolicy: frozenContext.stagePolicy,
+    });
+    expect(compiled.messages[1].content).toContain('最多 3 条最高优先级问题');
+    expect(compiled.messages[1].content).toContain('确保 JSON 在本次输出预算内完整结束');
+  });
+
   test('revision prompt includes finalStateProposals + proposalSourceBodyFingerprint', () => {
     const { frozenContext } = buildWritingKernelFreezeTrace({
       request: outlineRequest({}),

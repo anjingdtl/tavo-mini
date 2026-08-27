@@ -620,7 +620,7 @@ export function compileSharedWriterFormatterPrompt(input: {
         input.stage === 'revision'
           ? 'JSON 必须包含 strategy、actions、preserve、ending；如候选已有正文则放入 content。'
           : input.stage === 'qa'
-          ? 'QA JSON 必须包含 verdict（只能是 pass 或 needs_revision）和 findings 数组；pass 必须 findings=[]，needs_revision 必须至少一条完整 finding。每条 finding 必须有非空 issue、severity（blocking 或 warning）、target 或 requirementIds，以及 instruction 或 target。只能整理候选已有语义，不得猜测或补造字段。'
+          ? 'QA JSON 必须包含 verdict（只能是 pass 或 needs_revision）和 findings 数组；pass 必须 findings=[]，needs_revision 必须至少一条完整 finding。每条 finding 必须有非空 issue、severity（blocking 或 warning）、target 或 requirementIds，以及 instruction 或 target。最多保留 3 条最高优先级问题，字段保持简短；只能整理候选已有语义，不得猜测或补造字段。'
           : 'JSON 必须包含 content、verdict、findings；没有问题时 findings 必须是 []。',
       ]
         .filter(Boolean)
