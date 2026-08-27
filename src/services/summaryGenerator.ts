@@ -35,7 +35,7 @@ export async function generateSummary(chapterId: number): Promise<boolean> {
         }\n\n正文：\n${chapter.content}`,
       },
     ],
-    1200,
+    undefined,
     // scenario/projectId 修复：原调用未传 config，scenario 回退 'chat'，
     // 用量统计面板混入 chat 类别且无项目归属
     { scenario: 'chapter_summary', projectId: chapter.project_id },

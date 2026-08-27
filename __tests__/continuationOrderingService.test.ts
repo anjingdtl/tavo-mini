@@ -54,7 +54,7 @@ describe('orderSourceFiles', () => {
     expect(resolveLLMRequestConfigById).toHaveBeenCalledWith(1);
     expect(mockCallLLMResult).toHaveBeenCalledWith(
       expect.any(Array),
-      1024,
+      undefined,
       expect.objectContaining({
         requestConfig: expect.objectContaining({ id: 1 }),
       }),

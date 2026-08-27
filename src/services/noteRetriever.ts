@@ -102,7 +102,7 @@ export async function retrieveNoteFragments(
   try {
     const result = await callLLMResult(
       buildNoteRetrievalMessages(query, candidates),
-      2000,
+      undefined,
       { scenario: 'note_retrieve', temperature: 0.3, projectId },
     );
     const jsonStr = extractJSON(result.text || '') || '{"selected":[]}';

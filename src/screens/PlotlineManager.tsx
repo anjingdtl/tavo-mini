@@ -52,7 +52,7 @@ export const PlotlineManager: React.FC = () => {
           { role: 'system', content: '你是小说策划。请输出严格 JSON：{"plotlines":[{"name":"名称","description":"描述"}]}' },
           { role: 'user', content: `根据以下章节信息设计 3-5 条情节线：\n${chapterText || '暂无章节'}` },
         ],
-        1200,
+        undefined,
       );
       const json = result ? extractJSON(result) : null;
       if (!json) throw new Error('模型没有返回有效 JSON。');

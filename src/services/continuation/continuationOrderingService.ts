@@ -58,7 +58,7 @@ export async function orderSourceFiles(
     const requestConfig = await resolveLLMRequestConfigById(modelConfigId);
     const response = await callLLMResult(
       [{ role: 'user', content: prompt }],
-      1024,
+      undefined,
       {
         responseFormat: 'json_object',
         temperature: 0.1,

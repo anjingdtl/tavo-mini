@@ -9,6 +9,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const ts = require('typescript');
 
 const sourceRoot = path.resolve(__dirname, '..', 'src');
 const excludedPath = `${path.sep}services${path.sep}migrations${path.sep}`;
@@ -56,6 +57,34 @@ for (const filePath of listSourceFiles(sourceRoot)) {
       violations.push(`${path.relative(process.cwd(), filePath)}:${line} ${rule.message}`);
     }
   }
+
+  // A literal second argument bypasses the shared capability resolver.  This
+  // is intentionally an AST check rather than a regex so multiline calls and
+  // harmless numeric values elsewhere in a module do not evade the gate.
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      (node.expression.text === 'callLLM' || node.expression.text === 'callLLMResult')
+    ) {
+      const second = node.arguments[1];
+      if (second && ts.isNumericLiteral(second)) {
+        const line = sourceFile.getLineAndCharacterOfPosition(second.getStart(sourceFile)).line + 1;
+        violations.push(
+          `${path.relative(process.cwd(), filePath)}:${line} ${node.expression.text} maxTokens must come from provider capabilities / frozen stage capacity, not a fixed numeric argument`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
 }
 
 if (violations.length > 0) {

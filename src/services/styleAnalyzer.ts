@@ -54,7 +54,7 @@ export async function analyzeNoteStyleFromContent(
       { role: 'system', content: ANALYZE_SYSTEM_PROMPT },
       { role: 'user', content: content.slice(0, 50000) },
     ],
-    2000,
+    undefined,
     { scenario: 'style_analyze', temperature: 0.4 },
   );
 
