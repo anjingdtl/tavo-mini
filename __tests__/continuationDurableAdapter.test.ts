@@ -158,6 +158,41 @@ describe('continuation shared-writer durable adapter', () => {
     expect(persisted.requestReceipts[0].outcome).toBe('failed');
   });
 
+  it('persists failed provider usage alongside the failed request receipt', async () => {
+    const adapter = createContinuationDurableAdapter({
+      run: { id: 'ct_adapter' } as any,
+      snapshot: snapshot(),
+    });
+    await adapter.persistStageFailure?.(
+      'revision',
+      Object.assign(new Error('Revision contract rejected'), {
+        requestReceipts: [
+          {
+            requestId: 'req_contract_rejected',
+            requestFingerprint: 'ghi',
+            outcome: 'succeeded',
+            kind: 'logical_stage',
+            finishReason: 'stop',
+            physicalRequestCount: 1,
+            protocolFallbackCount: 0,
+            usage: {
+              inputTokens: 33445,
+              outputTokens: 3767,
+              totalTokens: 37212,
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(mockUpdateStageResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputTokens: 33445,
+        outputTokens: 3767,
+      }),
+    );
+  });
+
   it('can reload a structured report without issuing a duplicate request', async () => {
     mockGetStageResult.mockResolvedValue({
       status: 'success',

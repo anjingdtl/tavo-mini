@@ -399,6 +399,18 @@ export async function executeSharedWriterStage(input: {
           responseFormat: compiled.responseFormat,
         }),
     });
+    // Record the provider call before parsing/contract validation. A response
+    // can be physically successful yet be rejected by the local writer
+    // contract; that request still belongs in the chapter's token and
+    // physical-request ledger.
+    recordWriterCall(stageInput, {
+      stage,
+      kind: classifyWritingLlmCall({}),
+      result: injected,
+      physicalRequestCount: injected.physicalRequestCount ?? 1,
+      protocolFallbackCount: injected.protocolFallbackCount ?? 0,
+      durationMs: Date.now() - injectedStartedAt,
+    });
     let injectedAdopted: ReturnType<typeof adoptStructuredWriterText> = {
       text: String(injected.text || ''),
       adoptedFrom: injected.text ? 'content' : null,
@@ -420,14 +432,6 @@ export async function executeSharedWriterStage(input: {
         kind: classifyWritingLlmCall({}),
         physicalRequestCount: injected.physicalRequestCount,
         protocolFallbackCount: injected.protocolFallbackCount,
-      });
-      recordWriterCall(stageInput, {
-        stage,
-        kind: classifyWritingLlmCall({}),
-        result: injected,
-        physicalRequestCount: injected.physicalRequestCount ?? 1,
-        protocolFallbackCount: injected.protocolFallbackCount ?? 0,
-        durationMs: Date.now() - injectedStartedAt,
       });
       attachRequestReceipts(artifact, stageInput, receipts);
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
@@ -496,6 +500,17 @@ export async function executeSharedWriterStage(input: {
         },
         stageInput.abortSignal,
       ),
+  });
+  // Keep observability truthful even when a later local contract check rejects
+  // the provider response. The receipt is not a substitute for the chapter
+  // ledger: both must contain the same physical call.
+  recordWriterCall(stageInput, {
+    stage,
+    kind: classifyWritingLlmCall({}),
+    result: primary,
+    physicalRequestCount: primary.physicalRequestCount,
+    protocolFallbackCount: primary.protocolFallbackCount,
+    durationMs: Date.now() - primaryStartedAt,
   });
   if (primary.finishReason === 'content_filter') {
     throw annotateWriterReceipts(
@@ -589,6 +604,14 @@ export async function executeSharedWriterStage(input: {
           stageInput.abortSignal,
         ),
     });
+    recordWriterCall(stageInput, {
+      stage,
+      kind: classifyWritingLlmCall({ isFormatter: true }),
+      result: formatted,
+      physicalRequestCount: formatted.physicalRequestCount,
+      protocolFallbackCount: formatted.protocolFallbackCount,
+      durationMs: Date.now() - formatterStartedAt,
+    });
     adopted = adoptStructuredWriterText({
       stage,
       outputContract: compiled.outputContract,
@@ -630,22 +653,6 @@ export async function executeSharedWriterStage(input: {
         physicalRequestCount: formatted.physicalRequestCount,
         protocolFallbackCount: formatted.protocolFallbackCount,
       });
-      recordWriterCall(stageInput, {
-        stage,
-        kind: classifyWritingLlmCall({}),
-        result: primary,
-        physicalRequestCount: primary.physicalRequestCount,
-        protocolFallbackCount: primary.protocolFallbackCount,
-        durationMs: formatterStartedAt - primaryStartedAt,
-      });
-      recordWriterCall(stageInput, {
-        stage,
-        kind: classifyWritingLlmCall({ isFormatter: true }),
-        result: formatted,
-        physicalRequestCount: formatted.physicalRequestCount,
-        protocolFallbackCount: formatted.protocolFallbackCount,
-        durationMs: Date.now() - formatterStartedAt,
-      });
       attachRequestReceipts(artifact, stageInput, receipts);
       await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
       return artifact;
@@ -679,14 +686,6 @@ export async function executeSharedWriterStage(input: {
       kind: classifyWritingLlmCall({}),
       physicalRequestCount: primary.physicalRequestCount,
       protocolFallbackCount: primary.protocolFallbackCount,
-    });
-    recordWriterCall(stageInput, {
-      stage,
-      kind: classifyWritingLlmCall({}),
-      result: primary,
-      physicalRequestCount: primary.physicalRequestCount,
-      protocolFallbackCount: primary.protocolFallbackCount,
-      durationMs: Date.now() - primaryStartedAt,
     });
     attachRequestReceipts(artifact, stageInput, receipts);
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);

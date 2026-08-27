@@ -36,6 +36,23 @@ function receiptNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function receiptUsageTotal(
+  receipts: unknown[],
+  field: 'inputTokens' | 'outputTokens',
+): number | null {
+  let total = 0;
+  let found = false;
+  for (const item of receipts) {
+    const usage = (item as { usage?: Record<string, unknown> })?.usage;
+    const value = usage?.[field];
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) continue;
+    total += parsed;
+    found = true;
+  }
+  return found ? total : null;
+}
+
 function summarizeReceiptAccounting(
   receiptsValue: unknown,
   usage: SharedWritingArtifact['usage'] | undefined,
@@ -179,6 +196,22 @@ export function createContinuationDurableAdapter(input: {
       if (!node) return;
       const receipts = (error as { requestReceipts?: unknown }).requestReceipts;
       const accounting = summarizeReceiptAccounting(receipts, undefined);
+      const diagnostic = (error as {
+        writerDiagnostics?: {
+          inputTokens?: number | null;
+          outputTokens?: number | null;
+        };
+      }).writerDiagnostics;
+      const inputTokens =
+        receiptUsageTotal(accounting.receipts, 'inputTokens') ??
+        (Number.isFinite(Number(diagnostic?.inputTokens))
+          ? Number(diagnostic?.inputTokens)
+          : null);
+      const outputTokens =
+        receiptUsageTotal(accounting.receipts, 'outputTokens') ??
+        (Number.isFinite(Number(diagnostic?.outputTokens))
+          ? Number(diagnostic?.outputTokens)
+          : null);
       await updateStageResult({
         runId: input.run.id,
         stage: node,
@@ -194,6 +227,8 @@ export function createContinuationDurableAdapter(input: {
           physicalRequestCount: accounting.physicalRequestCount,
           protocolFallbackCount: accounting.protocolFallbackCount,
         }),
+        inputTokens,
+        outputTokens,
       });
     },
     async persistStageSkip(stage, result: SharedWritingStageResult) {

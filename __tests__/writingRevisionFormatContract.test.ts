@@ -1,5 +1,9 @@
 import { sha256Hex } from '../src/services/continuation/hashUtils';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
+import {
+  finalizeWritingKernelObservability,
+  resetWritingObservabilityForTests,
+} from '../src/services/writing/observability';
 import { runWritingStages } from '../src/services/writing/stages/writingStageRunner';
 import type {
   SharedWritingArtifact,
@@ -59,6 +63,7 @@ function makePersistAdapter() {
 }
 
 async function runRevision(response: any) {
+  resetWritingObservabilityForTests();
   const freeze = buildWritingKernelFreezeTrace({
     request: continuationRequest({ pipelineTopologyVersion: 'compact_standard' }),
   });
@@ -75,7 +80,13 @@ async function runRevision(response: any) {
     persistAdapter: adapter,
     callStage,
   });
-  return { result, callStage, persisted };
+  return {
+    result,
+    callStage,
+    persisted,
+    trace: freeze.trace,
+    frozenContext: freeze.frozenContext,
+  };
 }
 
 describe('Revision structured output contract (P0)', () => {
@@ -123,12 +134,16 @@ describe('Revision structured output contract (P0)', () => {
       }),
       'stop',
     );
-    const { result, persisted } = await runRevision(response);
+    const { result, persisted, trace, frozenContext } = await runRevision(response);
 
     await expect(result).rejects.toMatchObject({
       code: 'SHARED_WRITER_INVALID_STATE_PROPOSAL_CONTRACT',
     });
     expect(persisted).toEqual([]);
+    const finalized = finalizeWritingKernelObservability(trace, frozenContext);
+    expect(finalized.observability?.llm.physicalRequestCount).toBe(1);
+    expect(finalized.observability?.llm.inputTokens).toBe(100);
+    expect(finalized.observability?.llm.outputTokens).toBe(100);
   });
 
   test('invalid segment repair uses same-response full revision fallback', async () => {
