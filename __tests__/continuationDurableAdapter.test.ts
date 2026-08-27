@@ -80,12 +80,23 @@ describe('continuation shared-writer durable adapter', () => {
     await adapter.persistStageArtifact('draft', {
       stage: 'draft',
       body: '正文',
-      usage: { inputTokens: 111, outputTokens: 222, totalTokens: 333 },
+      usage: {
+        inputTokens: 111,
+        outputTokens: 222,
+        totalTokens: 333,
+        logicalStageCallCount: 1,
+        formatterCallCount: 0,
+        physicalRequestCount: 2,
+        protocolFallbackCount: 1,
+      },
       requestReceipts: [
         {
           requestId: 'req_1',
           requestFingerprint: 'abc',
           outcome: 'succeeded',
+          kind: 'logical_stage',
+          physicalRequestCount: 2,
+          protocolFallbackCount: 1,
         } as any,
       ],
     });
@@ -109,6 +120,12 @@ describe('continuation shared-writer durable adapter', () => {
         outcome: 'succeeded',
       }),
     );
+    expect(persisted).toMatchObject({
+      logicalStageCallCount: 1,
+      formatterCallCount: 0,
+      physicalRequestCount: 2,
+      protocolFallbackCount: 1,
+    });
   });
 
   it('persists failed-request receipts on the existing stage ledger row', async () => {

@@ -50,6 +50,10 @@ export interface WritingRequestReceipt {
   responseFormat: 'json_object' | 'text';
   usage?: WritingRequestReceiptUsage;
   finishReason?: string | null;
+  /** Number of provider HTTP dispatches represented by this logical receipt. */
+  physicalRequestCount: number;
+  /** Physical dispatches caused by an adapter protocol fallback. */
+  protocolFallbackCount: number;
   outcome: WritingRequestReceiptOutcome;
   resultArtifactRef?: string;
   kind: 'logical_stage' | 'formatter';
@@ -140,6 +144,8 @@ export function buildWritingRequestReceipt(input: {
     generationTraceId: input.generationTraceId,
     ...identity,
     requestFingerprint: computeWritingRequestFingerprint(identity),
+    physicalRequestCount: 0,
+    protocolFallbackCount: 0,
     outcome: 'started',
   };
 }
@@ -161,6 +167,8 @@ export function completeWritingRequestReceipt(
     usage?: WritingRequestReceiptUsage;
     finishReason?: string | null;
     resultArtifactRef?: string;
+    physicalRequestCount?: number;
+    protocolFallbackCount?: number;
   },
 ): WritingRequestReceipt {
   return {
@@ -169,6 +177,14 @@ export function completeWritingRequestReceipt(
     usage: input.usage,
     finishReason: input.finishReason,
     resultArtifactRef: input.resultArtifactRef,
+    physicalRequestCount:
+      input.physicalRequestCount == null
+        ? receipt.physicalRequestCount
+        : Math.max(0, Number(input.physicalRequestCount) || 0),
+    protocolFallbackCount:
+      input.protocolFallbackCount == null
+        ? receipt.protocolFallbackCount
+        : Math.max(0, Number(input.protocolFallbackCount) || 0),
   };
 }
 

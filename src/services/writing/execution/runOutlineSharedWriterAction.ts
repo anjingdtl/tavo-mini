@@ -21,6 +21,12 @@ import { resolveSharedStageSkip } from '../contracts/writingPolicy';
 import { isCompactPipelineTopology } from '../../pipeline/outlineWorkflowVersion';
 import type { SharedWriterFailureDiagnostics } from '../stages/writerCore';
 
+function nonNegativeReceiptNumber(value: unknown, fallback: number): number {
+  if (value == null) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 /**
  * Reserve billing/attempt bookkeeping only for a stage that can actually
  * issue a physical request. Runtime Revision skips depend on the already
@@ -119,9 +125,10 @@ export async function runSharedOutlineWriterAction(input: {
       });
     },
     run: async () => {
-      const attemptIds: string[] = [];
+      const attempts: Array<{ id: string; stage: SharedWritingStage; index: number }> = [];
       const requestVersion = stages[0] === 'draft' ? 1 : 32;
-      for (const stage of stages) {
+      for (let index = 0; index < stages.length; index += 1) {
+        const stage = stages[index];
         const recordedStage = stage === 'revision' ? 'brief' : stage;
         const reserveAttempt = await shouldReserveOutlineStageAttempt({
           stage,
@@ -142,7 +149,7 @@ export async function runSharedOutlineWriterAction(input: {
           llmConfigSnapshotJson: '{}',
           clientRequestId: attemptId,
         });
-        attemptIds.push(attemptId);
+        attempts.push({ id: attemptId, stage, index });
       }
       try {
         const results = await runWritingStages({
@@ -154,12 +161,14 @@ export async function runSharedOutlineWriterAction(input: {
           abortSignal: input.abortSignal,
         });
         await Promise.all(
-          attemptIds.map((id, index) => {
+          attempts.map(({ id, stage, index }) => {
             const usage = (
               results[index]?.artifact as { usage?: {
                 inputTokens?: number;
                 outputTokens?: number;
                 totalTokens?: number;
+                physicalRequestCount?: number;
+                protocolFallbackCount?: number;
               } } | undefined
             )?.usage;
             const receipts = (
@@ -167,9 +176,63 @@ export async function runSharedOutlineWriterAction(input: {
                 requestReceipts?: unknown;
               } | undefined
             )?.requestReceipts;
+            const receiptList = Array.isArray(receipts) ? receipts : [];
+            const primaryReceipt = receiptList.find(
+              item => (item as { kind?: unknown })?.kind === 'logical_stage',
+            ) as
+              | {
+                  requestFingerprint?: unknown;
+                  finishReason?: unknown;
+                  physicalRequestCount?: unknown;
+                  protocolFallbackCount?: unknown;
+                }
+              | undefined;
+            const physicalRequestCount = receiptList.reduce(
+              (sum, item) =>
+                sum +
+                nonNegativeReceiptNumber(
+                  (item as { physicalRequestCount?: unknown })
+                    ?.physicalRequestCount,
+                  1,
+                ),
+              0,
+            );
+            const protocolFallbackCount = receiptList.reduce(
+              (sum, item) =>
+                sum +
+                Math.max(
+                  0,
+                  Number(
+                    (item as { protocolFallbackCount?: unknown })
+                      ?.protocolFallbackCount,
+                  ) || 0,
+                ),
+              0,
+            );
+            const usagePhysicalRequestCount = nonNegativeReceiptNumber(
+              usage?.physicalRequestCount,
+              physicalRequestCount,
+            );
+            const usageProtocolFallbackCount = nonNegativeReceiptNumber(
+              usage?.protocolFallbackCount,
+              protocolFallbackCount,
+            );
+            if (
+              receiptList.length > 0 &&
+              (usagePhysicalRequestCount !== physicalRequestCount ||
+                usageProtocolFallbackCount !== protocolFallbackCount)
+            ) {
+              throw new Error(
+                `WRITING_ACCOUNTING_RECEIPT_MISMATCH: stage=${stage} usage=${usagePhysicalRequestCount}/${usageProtocolFallbackCount} receipt=${physicalRequestCount}/${protocolFallbackCount}`,
+              );
+            }
             return updateStageAttempt({
               id,
               status: 'succeeded',
+              requestFingerprint:
+                typeof primaryReceipt?.requestFingerprint === 'string'
+                  ? primaryReceipt.requestFingerprint
+                  : undefined,
               completedAt: Date.now(),
               formatterUsed: Boolean(
                 (results[index]?.artifact as { formatterUsed?: boolean } | undefined)
@@ -178,6 +241,22 @@ export async function runSharedOutlineWriterAction(input: {
               inputTokens: Number(usage?.inputTokens || 0),
               outputTokens: Number(usage?.outputTokens || 0),
               totalTokens: Number(usage?.totalTokens || 0),
+              finishReason:
+                typeof primaryReceipt?.finishReason === 'string'
+                  ? primaryReceipt.finishReason
+                  : null,
+              validationDetailsJson: JSON.stringify({
+                version: 1,
+                requestReceiptCount: receiptList.length,
+                physicalRequestCount: usagePhysicalRequestCount,
+                protocolFallbackCount: usageProtocolFallbackCount,
+                finishReasons: receiptList.map(item =>
+                  typeof (item as { finishReason?: unknown })?.finishReason ===
+                    'string'
+                    ? (item as { finishReason: string }).finishReason
+                    : null,
+                ),
+              }),
               frozenRequestJson: Array.isArray(receipts)
                 ? JSON.stringify(receipts)
                 : null,
@@ -206,11 +285,21 @@ export async function runSharedOutlineWriterAction(input: {
             : 'failed';
         const failedReceipts = (error as { requestReceipts?: unknown })
           .requestReceipts;
+        const failedReceiptList = Array.isArray(failedReceipts)
+          ? failedReceipts
+          : [];
+        const failedPrimaryReceipt = failedReceiptList.find(
+          item => (item as { kind?: unknown })?.kind === 'logical_stage',
+        ) as { requestFingerprint?: unknown } | undefined;
         await Promise.all(
-          attemptIds.map(id =>
+          attempts.map(({ id }) =>
             updateStageAttempt({
               id,
               status,
+              requestFingerprint:
+                typeof failedPrimaryReceipt?.requestFingerprint === 'string'
+                  ? failedPrimaryReceipt.requestFingerprint
+                  : undefined,
               failureClass,
               errorCode:
                 typeof errorRecord.code === 'string'

@@ -88,6 +88,8 @@ export interface CreateStageAttemptInput {
 export interface UpdateStageAttemptInput {
   id: string;
   status: PipelineAttemptStatus;
+  /** Resolved fingerprint of the primary model-visible request. */
+  requestFingerprint?: string;
   failureClass?: string | null;
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -303,6 +305,7 @@ export async function updateStageAttempt(
   const sets: string[] = ['status = ?'];
   const params: unknown[] = [input.status];
   const fields: Array<[string, unknown]> = [
+    ['request_fingerprint', input.requestFingerprint],
     ['failure_class', input.failureClass],
     ['error_code', input.errorCode],
     ['error_message', input.errorMessage],

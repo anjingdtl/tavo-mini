@@ -418,15 +418,15 @@ export async function executeSharedWriterStage(input: {
       );
       attachUsage(artifact, injected, {
         kind: classifyWritingLlmCall({}),
-        physicalRequestCount: 1,
-        protocolFallbackCount: 0,
+        physicalRequestCount: injected.physicalRequestCount,
+        protocolFallbackCount: injected.protocolFallbackCount,
       });
       recordWriterCall(stageInput, {
         stage,
         kind: classifyWritingLlmCall({}),
         result: injected,
-        physicalRequestCount: 1,
-        protocolFallbackCount: 0,
+        physicalRequestCount: injected.physicalRequestCount ?? 1,
+        protocolFallbackCount: injected.protocolFallbackCount ?? 0,
         durationMs: Date.now() - injectedStartedAt,
       });
       attachRequestReceipts(artifact, stageInput, receipts);
@@ -776,7 +776,10 @@ async function invokePhysicalWriterCall<T>(input: {
     const aborted = Boolean(input.stageInput.abortSignal?.aborted);
     const completed = finishRequestReceipt(
       started,
-      {},
+      error as {
+        physicalRequestCount?: number;
+        protocolFallbackCount?: number;
+      },
       aborted ? 'cancelled' : 'failed',
       input.stageInput,
     );
@@ -804,6 +807,8 @@ function finishRequestReceipt(
     reasoningTokens?: number | null;
     finishReason?: string | null;
     usage?: { prompt?: number; completion?: number; total?: number };
+    physicalRequestCount?: number;
+    protocolFallbackCount?: number;
   },
   outcome: 'succeeded' | 'failed' | 'cancelled',
   stageInput: SharedWritingStageInput,
@@ -820,6 +825,14 @@ function finishRequestReceipt(
     },
     finishReason: result.finishReason ?? null,
     resultArtifactRef: `artifact:${stageInput.frozenContext.generationTraceId}:${receipt.stage}`,
+    physicalRequestCount:
+      result.physicalRequestCount == null
+        ? 1
+        : Math.max(0, Number(result.physicalRequestCount) || 0),
+    protocolFallbackCount:
+      result.protocolFallbackCount == null
+        ? 0
+        : Math.max(0, Number(result.protocolFallbackCount) || 0),
   });
   recordWritingRequestReceipt(stageInput.trace, completed);
   return completed;

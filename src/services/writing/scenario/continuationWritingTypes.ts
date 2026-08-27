@@ -12,6 +12,8 @@ export interface StageLlmCallResult {
   text: string;
   usage?: { prompt?: number; completion?: number };
   finishReason?: string | null;
+  physicalRequestCount?: number;
+  protocolFallbackCount?: number;
   emptyReason?:
     | 'length'
     | 'content_filter'

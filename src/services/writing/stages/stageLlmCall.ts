@@ -25,15 +25,31 @@ export async function callWritingStageLLM(
   const accounting = createWritingPhysicalRequestAccounting(
     config.physicalRequestHooks,
   );
-  const result = await callLLMResult(
-    messages,
-    maxTokens,
-    {
-      ...config,
-      physicalRequestHooks: accounting.hooks,
-    },
-    abortSignal,
-  );
+  let result: LLMResult;
+  try {
+    result = await callLLMResult(
+      messages,
+      maxTokens,
+      {
+        ...config,
+        physicalRequestHooks: accounting.hooks,
+      },
+      abortSignal,
+    );
+  } catch (error) {
+    // A transport error can happen after one or more provider requests have
+    // already been sent (for example, primary protocol rejection followed by
+    // a fallback transport failure). Preserve that count for the failed
+    // receipt and the durable stage-attempt ledger.
+    const next =
+      error instanceof Error ? error : new Error(String(error || 'LLM failed'));
+    const snapshot = accounting.snapshot();
+    Object.assign(next, {
+      physicalRequestCount: snapshot.physicalRequestCount,
+      protocolFallbackCount: snapshot.protocolFallbackCount,
+    });
+    throw next;
+  }
   const snapshot = accounting.snapshot();
   return {
     ...result,

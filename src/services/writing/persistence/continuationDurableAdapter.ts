@@ -30,6 +30,77 @@ function ledgerStage(
   return null;
 }
 
+function receiptNumber(value: unknown, fallback: number): number {
+  if (value == null) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function summarizeReceiptAccounting(
+  receiptsValue: unknown,
+  usage: SharedWritingArtifact['usage'] | undefined,
+): {
+  receipts: unknown[];
+  logicalStageCallCount: number;
+  formatterCallCount: number;
+  physicalRequestCount: number;
+  protocolFallbackCount: number;
+} {
+  const receipts = Array.isArray(receiptsValue) ? receiptsValue : [];
+  const logicalStageCallCount = receipts.filter(
+    item => (item as { kind?: unknown })?.kind === 'logical_stage',
+  ).length;
+  const formatterCallCount = receipts.filter(
+    item => (item as { kind?: unknown })?.kind === 'formatter',
+  ).length;
+  const physicalRequestCount = receipts.reduce(
+    (sum, item) =>
+      sum +
+      receiptNumber(
+        (item as { physicalRequestCount?: unknown })?.physicalRequestCount,
+        1,
+      ),
+    0,
+  );
+  const protocolFallbackCount = receipts.reduce(
+    (sum, item) =>
+      sum +
+      receiptNumber(
+        (item as { protocolFallbackCount?: unknown })?.protocolFallbackCount,
+        0,
+      ),
+    0,
+  );
+  if (
+    usage?.physicalRequestCount != null &&
+    receipts.length > 0 &&
+    receiptNumber(usage.physicalRequestCount, 0) !== physicalRequestCount
+  ) {
+    throw new Error(
+      `WRITING_ACCOUNTING_RECEIPT_MISMATCH: usage physical=${usage.physicalRequestCount} receipt physical=${physicalRequestCount}`,
+    );
+  }
+  if (
+    usage?.protocolFallbackCount != null &&
+    receipts.length > 0 &&
+    receiptNumber(usage.protocolFallbackCount, 0) !== protocolFallbackCount
+  ) {
+    throw new Error(
+      `WRITING_ACCOUNTING_RECEIPT_MISMATCH: usage fallback=${usage.protocolFallbackCount} receipt fallback=${protocolFallbackCount}`,
+    );
+  }
+  return {
+    receipts,
+    logicalStageCallCount:
+      usage?.logicalStageCallCount ?? logicalStageCallCount,
+    formatterCallCount: usage?.formatterCallCount ?? formatterCallCount,
+    physicalRequestCount:
+      usage?.physicalRequestCount ?? physicalRequestCount,
+    protocolFallbackCount:
+      usage?.protocolFallbackCount ?? protocolFallbackCount,
+  };
+}
+
 export function createContinuationDurableAdapter(input: {
   run: ContinuationGenerationRun;
   snapshot: ContinuationContextSnapshotV5;
@@ -78,6 +149,10 @@ export function createContinuationDurableAdapter(input: {
       }
       const node = continuationNode(stage);
       if (node) {
+        const accounting = summarizeReceiptAccounting(
+          artifact.requestReceipts,
+          artifact.usage,
+        );
         await updateStageResult({
           runId: input.run.id,
           stage: node,
@@ -86,9 +161,13 @@ export function createContinuationDurableAdapter(input: {
             schemaVersion: 1,
             envelope: artifact.structured || { content: artifact.body },
             contentHash: hashContent(artifact.body || ''),
-            ...(Array.isArray(artifact.requestReceipts)
-              ? { requestReceipts: artifact.requestReceipts }
+            ...(accounting.receipts.length > 0
+              ? { requestReceipts: accounting.receipts }
               : {}),
+            logicalStageCallCount: accounting.logicalStageCallCount,
+            formatterCallCount: accounting.formatterCallCount,
+            physicalRequestCount: accounting.physicalRequestCount,
+            protocolFallbackCount: accounting.protocolFallbackCount,
           }),
           inputTokens: artifact.usage?.inputTokens,
           outputTokens: artifact.usage?.outputTokens,
@@ -99,6 +178,7 @@ export function createContinuationDurableAdapter(input: {
       const node = continuationNode(stage);
       if (!node) return;
       const receipts = (error as { requestReceipts?: unknown }).requestReceipts;
+      const accounting = summarizeReceiptAccounting(receipts, undefined);
       await updateStageResult({
         runId: input.run.id,
         stage: node,
@@ -106,7 +186,13 @@ export function createContinuationDurableAdapter(input: {
         outputJson: JSON.stringify({
           schemaVersion: 1,
           error: error instanceof Error ? error.message : String(error || ''),
-          ...(Array.isArray(receipts) ? { requestReceipts: receipts } : {}),
+          ...(accounting.receipts.length > 0
+            ? { requestReceipts: accounting.receipts }
+            : {}),
+          logicalStageCallCount: accounting.logicalStageCallCount,
+          formatterCallCount: accounting.formatterCallCount,
+          physicalRequestCount: accounting.physicalRequestCount,
+          protocolFallbackCount: accounting.protocolFallbackCount,
         }),
       });
     },
