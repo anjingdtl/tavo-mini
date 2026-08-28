@@ -180,7 +180,22 @@ APK / install-r：
 - 配置 DB Check：`test-logs/phase3-c-c1-android/c1-multi-llm-switch-final.sqlite` 的窄投影显示 `默认配置`（`is_active=1`、真实模型、`context_window=1000000`、`max_output_tokens=0`）与 `Phase3C-Virtual-LLM`（`is_active=0`、`context_window=128000`、`max_output_tokens=0`）共存，`settings.context_auto_input=1000000`；没有读取或输出密钥。该快照只证明配置保存、切换、恢复和重启持久化，不证明虚拟 provider 或长篇正文链路。
 - 因第四次真实轮次在第 2 章 Draft 已进入结果未知，尚未达到“真实完成 3 章后”的切换点；本轮没有用虚拟配置替代真实 5/20/50/100，也没有生成虚拟长测 Final Artifact。虚拟配置回归仅作为用户要求的耗时控制补充，C1 真实长程门禁仍为 NO-GO。
 
-Act：当前真实长程基线仍未满足“真实 5/20/50/100 基线完成”门禁，已按真实证据标记 NO-GO；C2 继续阻断，不进入下一阶段。新增 watchdog 修复由独立 commit `aa7acc6c` 封存。后续只可在 C1 内继续真实证据与非 GO 的虚拟配置回归，不以虚拟结果、Known Issue、后续优化或基本完成替代门禁。
+- 用户要求“长测超过 3 章后改用虚拟 LLM”后，先按低成本真实路径复测：在现有 App 中新建隔离项目 `phase3c-c1-fast-real`（project id `61`），确认当前真实配置仍为默认 `GLM-5.3-Flash`，流水线档位切换为极速并冻结为 `one_shot`、`reasoning_effort=low`，通过真实 UI 创建 `5` 章 × `500` 字批次。虚拟 LLM 没有参与该真实批次，也没有把虚拟结果计入 C1 GO。
+- 该批次由真实 GLM Planner 成功生成并冻结 5 章计划：`batch_planner success`，输入 `372`、输出 `1,834`、总计 `2,206` tokens；批次 ID 为 `batch_mtcqz9br_v6m7qj`。规划预览显示“批次已冻结：极速”，真实 Android 起始截图为 `test-logs/phase3-c-c1-android/screen-c1-fast-real-planning-start2.png`，低成本批次表单为 `screen-c1-fast-real-batch-form-5x500-with-prompt.png`。
+- 真实写作 Check：第 1 章 Draft 成功，`input=2,278`、`output=8,820`、`total=11,098`、`finish_reason=stop`，随后真实第 2 章 Draft 在 `570,000ms` watchdog 触发 `total_timeout`，被 fail-closed 为 `outcome_unknown`；没有自动重试、没有点击“确认后继续”，没有重复付费请求。批次最终为 `paused_timeout_unknown` / `BATCH_LLM_OUTCOME_UNKNOWN`，`completed_count=1/5`、`used_llm_calls=1`。
+- DB Check（无 force-stop 的 live 窄投影快照）：`test-logs/phase3-c-c1-android/c1-fast-real-current-live.sqlite`，`PRAGMA integrity_check=ok`；项目 61 的批次为 `execution_profile=one_shot`、`reasoning_effort=low`、`1/5`；第 1 项 `succeeded`、第 2 项 `outcome_unknown`、第 3–5 项 `pending`。第 1 章正文长度 `2,429`，第 2 章正文长度 `0`，没有可将未知结果当作 Final Artifact 的证据。
+- Receipt/usage Check：同一快照的真实 `llm_usage_logs` 记录 `batch_planner success`（`2,206` total）、`pipeline_draft success`（`11,098` total）和 `pipeline_draft error / total_timeout`（输入 `7,602`，输出 `0`）；辅助 Planner 与失败请求均可见，没有隐藏为 0。批次条目、Pipeline attempt 和 usage ledger 的状态一致。
+- 当前 UI 在最后一次 ADB 只读核验中明确显示“批次已暂停 / 结果未知 / 请求可能已在服务端执行，重新执行可能产生重复费用”；随后模拟器从 ADB 断开，尝试再次拉取截图/XML 得到 `device 'emulator-5554' not found`，因此没有生成或宣称不存在的最终 UI 文件。已保存的 live DB 是本轮可靠的 DB/Receipt 证据。
+- 本轮没有达到“真实完成 3 章后”的虚拟切换点，未点击结果未知批次的继续按钮；虚拟配置仍只用于前述配置保存、切换、恢复真实配置和重启持久化回归。虚拟 endpoint/model 没有 `保存并测试`、没有写作请求、没有 Final Artifact，不能替代真实 5/20/50/100 矩阵。
+
+Act：当前真实长程基线仍未满足“真实 5/20/50/100 基线完成”门禁，且本轮再次在第 2 章 Draft 进入 `outcome_unknown`，因此 C1 继续 NO-GO；C2 继续阻断，不进入下一阶段。新增 watchdog 修复由独立 commit `aa7acc6c` 封存，本轮仅新增测试记录，未修改源码。后续接手 agent 必须先恢复并确认 `emulator-5554`，不得对未知请求盲重试；只能继续 C1 的真实证据采集，虚拟 LLM 只能作为非 GO 的多配置切换/应用补充，不以虚拟结果、Known Issue、后续优化或基本完成替代门禁。
+
+交接检查点（2026-08-28）：
+
+- 当前分支为 `main`，源码工作树除既有未跟踪方案文件与 `scripts/qa/__pycache__/` 外无未提交源码改动；本次待提交仅为本进度文档。
+- 最新已验证源码 HEAD 为 `a25985aa`；本地 `main` 比 `origin/main` 超前 9 个 commit。下一位 agent 接手后应先按原用户要求重新执行 `git status`、`git fetch`、`git branch -vv`、`git log --oneline -20`，再确认远端状态。
+- C0-A/C0-B/C0-C 已有独立 commit 并记录真实 Android Check；C1 只有 fail-closed 采集器/timeout 修复和 NO-GO 真实尝试，C2–C10 尚未施工。禁止生成 requirement closure/final report 或宣布任何 Phase III-C/III GO。
+- 本次 push 前的最后门禁：确认 progress 文档只包含本轮事实；`git diff --check`；仅提交该文档；推送完成后将 push commit 作为下一位 agent 的起点。
 
 ### C2 → C10
 
