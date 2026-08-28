@@ -2,7 +2,7 @@
  * Context Budget V3 — auto-config apply path (Plan §11 / §23 GO Gate #3).
  *
  * Verifies the V3 apply:
- *   - Writes context_auto_mode + context_auto_policy_v3 + LLM configs + presets
+ *   - Writes the selected model context_window + V3 settings
  *   - Does NOT UPDATE any resource max_tokens (T9)
  *   - Persists a deterministic policy (T16 determinism)
  *   - Leaves V2 fixed budgets (sliding_window_size / resource_budget / etc.)
@@ -35,8 +35,6 @@ jest.mock('../src/data/repositories/contextAutoRepository', () => ({
   buildAppliedRecord: jest.fn(),
   getContextAutomationPolicy: jest.fn().mockResolvedValue(null),
   getContextAutomationPolicyV3: jest.fn().mockResolvedValue(null),
-  setContextAutoLastApplied: jest.fn(),
-  setContextAutoMode: jest.fn(),
   setContextAutomationPolicy: jest.fn(),
   setContextAutomationPolicyV3: jest.fn(),
 }));
@@ -45,11 +43,6 @@ import { openDatabase } from '../src/data/connection/openDatabase';
 import { all } from '../src/data/connection/query';
 import { executeTransaction } from '../src/services/database/transaction';
 import {
-  setContextAutoLastApplied,
-  setContextAutoMode,
-  setContextAutomationPolicyV3,
-} from '../src/data/repositories/contextAutoRepository';
-import {
   applyContextAutoAllocationV3,
   countResourcesForProject,
 } from '../src/services/contextAutoAllocator';
@@ -57,9 +50,6 @@ import {
 const mockedOpenDatabase = openDatabase as jest.Mock;
 const mockedAll = all as jest.Mock;
 const mockedExecuteTransaction = executeTransaction as jest.Mock;
-const mockedSetContextAutoMode = setContextAutoMode as jest.Mock;
-const mockedSetContextAutomationPolicyV3 = setContextAutomationPolicyV3 as jest.Mock;
-const mockedSetContextAutoLastApplied = setContextAutoLastApplied as jest.Mock;
 
 describe('applyContextAutoAllocationV3', () => {
   beforeEach(() => {
@@ -67,13 +57,14 @@ describe('applyContextAutoAllocationV3', () => {
     mockedOpenDatabase.mockReset();
     mockedOpenDatabase.mockResolvedValue({});
     mockedAll.mockReset();
-    // countLlmConfigs + countAllPresets
-    mockedAll.mockResolvedValue([{ c: 1 }]);
+    mockedAll.mockResolvedValue([
+      { id: 1, is_active: 1, context_window: 128000, max_output_tokens: 0 },
+    ]);
     mockedExecuteTransaction.mockReset();
     mockedExecuteTransaction.mockResolvedValue(undefined);
   });
 
-  test('writes ONLY mode/policy/input — never llm_config / presets / resource max_tokens (Closure §6)', async () => {
+  test('writes selected model capability + mode/policy/mirror, never presets/resources', async () => {
     await applyContextAutoAllocationV3(200_000);
     expect(mockedExecuteTransaction).toHaveBeenCalledTimes(1);
     const [, statements] = mockedExecuteTransaction.mock.calls[0];
@@ -102,11 +93,8 @@ describe('applyContextAutoAllocationV3', () => {
           s.params[1] === '200000',
       ),
     ).toBe(true);
-    // Closure Plan §6 / Gate 05: V3 apply must NOT bulk-overwrite every model's
-    // real context_window / max_output_tokens, nor flatten all presets. 32K /
-    // 128K / 1M models keep their own windows; the frozen per-task request
-    // config supplies the real window at run time.
-    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(false);
+    // C0-A: only the selected/active model's real context_window is updated.
+    expect(sqls.some((s: string) => s.includes('UPDATE llm_config'))).toBe(true);
     expect(sqls.some((s: string) => s.includes('UPDATE presets'))).toBe(false);
     // GO Gate #3: NEVER touch resource max_tokens
     expect(sqls.some((s: string) => s.includes('UPDATE characters'))).toBe(false);
@@ -127,26 +115,40 @@ describe('applyContextAutoAllocationV3', () => {
     expect(settingsKeys).not.toContain('episodic_memory_budget_tokens');
     expect(settingsKeys).not.toContain('summary_budget_tokens');
     expect(settingsKeys).not.toContain('memory_patch_max_tokens');
-    // Only the three V3 settings keys are written.
+    // V3 settings and the last-applied receipt are written in the same
+    // transaction; max_output_tokens is not among the writes, so AUTO=0 stays
+    // intact in the model row.
     expect(settingsKeys.sort()).toEqual(
-      ['context_auto_input', 'context_auto_mode', 'context_auto_policy_v3'].sort(),
+      [
+        'context_auto_input',
+        'context_auto_last_applied',
+        'context_auto_mode',
+        'context_auto_policy_v3',
+      ].sort(),
     );
   });
 
   test('affectedCounts report zero model/preset writes (honest, not misleading)', async () => {
     const record = await applyContextAutoAllocationV3(200_000);
-    expect(record.affectedCounts.llmConfigs).toBe(0);
+    expect(record.affectedCounts.llmConfigs).toBe(1);
     expect(record.affectedCounts.presets).toBe(0);
   });
 
-  test('mode + policyV3 + lastApplied are persisted', async () => {
+  test('mode + policyV3 + lastApplied are persisted transactionally', async () => {
     await applyContextAutoAllocationV3(200_000);
-    expect(mockedSetContextAutoMode).toHaveBeenCalledWith('v3');
-    expect(mockedSetContextAutomationPolicyV3).toHaveBeenCalledTimes(1);
-    expect(mockedSetContextAutoLastApplied).toHaveBeenCalledTimes(1);
-    const lastApplied = mockedSetContextAutoLastApplied.mock.calls[0][0];
+    const [, statements] = mockedExecuteTransaction.mock.calls[0];
+    const lastApplied = JSON.parse(
+      statements.find(
+        (s: any) => s.params?.[0] === 'context_auto_last_applied',
+      ).params[1],
+    );
     expect(lastApplied.policyVersion).toBe('context-automation-v3');
     expect(lastApplied.policySchemaVersion).toBe(3);
+    expect(lastApplied.syncedContextWindow).toEqual({
+      configId: 1,
+      contextWindow: 200_000,
+      maxOutputTokens: 0,
+    });
     expect(lastAffectedAffectedCountsResourcesZero(lastApplied)).toBe(true);
   });
 

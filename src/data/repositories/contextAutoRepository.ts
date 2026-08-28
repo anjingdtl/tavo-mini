@@ -35,9 +35,10 @@ export type ContextAutoMode = 'v2' | 'v3';
 
 export interface ContextAutoAppliedRecord {
   /** Schema 1 records predate the versioned Continuation policy. */
-  schemaVersion?: 1 | 2;
+  schemaVersion?: 1 | 2 | 3;
   maxContextTokens: number;
   appliedAt: number; // Unix 毫秒
+  /** V2 records contain the fixed allocation; V3 writes an omitted legacy field. */
   allocation: AllocationResult;
   policySchemaVersion?: number;
   policyVersion?: string;

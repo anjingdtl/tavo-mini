@@ -372,21 +372,17 @@ export function deriveLLMCapabilityFromAutoWindow(maxContextTokens: number): {
 export const DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW = 1_000_000;
 
 /**
- * Default the simulation input from a saved `context_auto_input`, otherwise
- * the *preferred saved* LLM's real `context_window`. Never fall back to
- * active / configs[0] — that would treat another model as the new draft.
+ * Resolve the display value from the selected model capability. The settings
+ * key is only a legacy display mirror, so it must never win over a saved
+ * model's current `context_window`.
  */
 export function resolveContextAutoSimulationDefault(params: {
   savedInput: number | null;
   preferredConfigId?: number | null;
-  configs: Array<{ id: number; context_window?: number }>;
+  configs: Array<{ id: number; context_window?: number; is_active?: number }>;
   referenceContextWindow?: number | null;
   fallback?: number;
 }): number {
-  const saved = Number(params.savedInput);
-  if (Number.isFinite(saved) && saved > 0) {
-    return Math.round(saved);
-  }
   const preferredId = Number(params.preferredConfigId);
   if (Number.isSafeInteger(preferredId) && preferredId > 0) {
     const preferred = params.configs.find(
@@ -397,9 +393,33 @@ export function resolveContextAutoSimulationDefault(params: {
       return Math.round(preferredWindow);
     }
   }
+  // An unsaved draft must not display or mutate the active saved model while
+  // the user is still editing the draft. The reference value belongs to that
+  // draft and therefore wins before the active-model fallback.
+  if (
+    params.preferredConfigId !== undefined &&
+    params.preferredConfigId !== null &&
+    (!Number.isSafeInteger(preferredId) || preferredId <= 0)
+  ) {
+    const reference = Number(params.referenceContextWindow);
+    if (Number.isFinite(reference) && reference > 0) {
+      return Math.round(reference);
+    }
+  }
+  const active = params.configs.find(item => Number(item.is_active) === 1);
+  const activeWindow = Number(active?.context_window);
+  if (Number.isFinite(activeWindow) && activeWindow > 0) {
+    return Math.round(activeWindow);
+  }
   const reference = Number(params.referenceContextWindow);
   if (Number.isFinite(reference) && reference > 0) {
-    return Math.round(reference);
+      return Math.round(reference);
+  }
+  // Compatibility fallback for installations whose saved model has not yet
+  // declared a capability. It is never used when a model window is present.
+  const saved = Number(params.savedInput);
+  if (Number.isFinite(saved) && saved > 0) {
+    return Math.round(saved);
   }
   return params.fallback ?? DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW;
 }
@@ -409,6 +429,7 @@ export function resolveContextAutoSimulationDefault(params: {
 // ============================================================================
 
 import { openDatabase } from '../data/connection/openDatabase';
+import { execute } from '../data/connection/execute';
 import { executeTransaction, type SqlStatement } from './database/transaction';
 import { all } from '../data/connection/query';
 import { DEFAULT_CONTEXT_CONFIG } from '../constants/defaults';
@@ -416,8 +437,6 @@ import { setContextConfig } from '../data/repositories/settingsRepository';
 import {
   getContextAutomationPolicy,
   getContextAutomationPolicyV3,
-  setContextAutoInput,
-  setContextAutoLastApplied,
   setContextAutoMode,
   setContextAutomationPolicy,
   setContextAutomationPolicyV3,
@@ -488,6 +507,11 @@ export interface ContextAutoAppliedRecordV3 {
   mode: ContextAutoMode;
   policy: ContextAutomationPolicyV3;
   policyHash: string;
+  syncedContextWindow: {
+    configId: number;
+    contextWindow: number;
+    maxOutputTokens: number;
+  };
   affectedCounts: {
     llmConfigs: number;
     presets: number;
@@ -495,41 +519,104 @@ export interface ContextAutoAppliedRecordV3 {
 }
 
 /**
- * Apply V3 auto-config. Writes ONLY the V3 mode marker + policy + the chosen
- * context input size:
+ * Apply V3 auto-config. Writes the V3 mode marker + policy + the chosen model
+ * capability and its display mirror:
  *   - the V3 policy/mode marker for settings compatibility
  *   - context_auto_policy_v3 = {policy}
  *   - context_auto_input = maxContextTokens
  *
- * Deliberately does NOT write (Closure Plan §6):
- *   - llm_config.context_window / max_output_tokens — each model keeps its REAL
- *     capability (32K / 128K / 1M stay distinct). A single global UPDATE would
- *     flatten every model to one window, contradicting V3's model-relative
- *     envelope. The frozen per-task request config supplies the real window at
- *     run time.
- *   - presets.max_tokens — same anti-pattern; presets keep their values.
- *   - sliding_window_size / resource_budget / story_state_budget_tokens /
- *     episodic_memory_budget_tokens / memory_patch_max_tokens (V3 computes
- *     these at request time from the frozen task model + policy).
- *   - characters / notes / worldbook_entries / worldbook_collections
- *     max_tokens (Plan §11 — V3 never bulk-UPDATEs resource max_tokens).
+ * V3 keeps the policy and resource budgets separate from model capability, but
+ * the chosen model window itself is authoritative and is synchronized here.
+ * Only the selected saved model row is updated; `max_output_tokens` is copied
+ * as-is, so zero remains the persisted AUTO sentinel.
  */
+type ContextAutoTargetConfig = {
+  id: number;
+  is_active: number;
+  contextWindow: number;
+  maxOutputTokens: number;
+};
+
+async function resolveContextAutoTargetConfig(
+  preferredConfigId?: number | null,
+): Promise<ContextAutoTargetConfig | null> {
+  const rows = await all<{
+    id: number;
+    is_active: number;
+    context_window: number;
+    max_output_tokens: number;
+  }>(
+    'SELECT id, is_active, context_window, max_output_tokens FROM llm_config ORDER BY is_active DESC, id ASC',
+  );
+  if (preferredConfigId !== undefined && preferredConfigId !== null) {
+    const preferred = Number(preferredConfigId);
+    if (!Number.isSafeInteger(preferred) || preferred <= 0) {
+      throw new Error('LLM 配置尚未保存，无法同步模型真实能力。');
+    }
+    const row = rows.find(item => Number(item.id) === preferred);
+    if (!row) {
+      throw new Error('指定的 LLM 配置不存在，已拒绝同步模型真实能力。');
+    }
+    return {
+      id: preferred,
+      is_active: Number(row.is_active) === 1 ? 1 : 0,
+      contextWindow: Math.max(0, Math.floor(Number(row.context_window) || 0)),
+      maxOutputTokens: Math.max(
+        0,
+        Math.floor(Number(row.max_output_tokens) || 0),
+      ),
+    };
+  }
+  const row = rows.find(item => Number(item.is_active) === 1);
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    is_active: 1,
+    contextWindow: Math.max(0, Math.floor(Number(row.context_window) || 0)),
+    maxOutputTokens: Math.max(
+      0,
+      Math.floor(Number(row.max_output_tokens) || 0),
+    ),
+  };
+}
+
+async function setContextAutoInputMirror(contextWindow: number): Promise<void> {
+  const database = await openDatabase();
+  if (Number.isFinite(contextWindow) && contextWindow > 0) {
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['context_auto_input', String(Math.floor(contextWindow))],
+    );
+    return;
+  }
+  await execute(database, 'DELETE FROM settings WHERE key = ?', [
+    'context_auto_input',
+  ]);
+}
+
 export async function restoreContextAutoDefaults(): Promise<void> {
   const defaultPolicy = cloneDefaultContextAutomationPolicy();
   const defaultPolicyV3 = cloneDefaultContextAutomationPolicyV3();
   await setContextAutomationPolicy(defaultPolicy);
   await setContextAutomationPolicyV3(defaultPolicyV3);
   await setContextAutoMode('v3');
-  await setContextAutoInput(DEFAULT_CONTEXT_AUTO_SIMULATION_WINDOW);
+  const active = await resolveContextAutoTargetConfig();
+  if (active) await setContextAutoInputMirror(active.contextWindow);
   await setContextConfig({
     ...DEFAULT_CONTEXT_CONFIG,
   });
-  // Explicitly do NOT write llm_config.context_window / max_output_tokens.
+  // Restore policy defaults only; the saved model capability remains the
+  // authority and is mirrored into the legacy display key above.
 }
 
 export async function applyContextAutoAllocationV3(
   maxContextTokens: number,
-  options: { policy?: ContextAutomationPolicyV3 } = {},
+  options: {
+    policy?: ContextAutomationPolicyV3;
+    /** Saved model selected in LLM Settings; omitted means active model. */
+    llmConfigId?: number | null;
+  } = {},
 ): Promise<ContextAutoAppliedRecordV3> {
   if (!Number.isFinite(maxContextTokens) || maxContextTokens <= 0) {
     throw new Error(
@@ -544,53 +631,72 @@ export async function applyContextAutoAllocationV3(
       : cloneDefaultContextAutomationPolicyV3());
   const policyHash = hashContextAutomationPolicyV3(policy);
   const serializedPolicyV3 = serializeContextAutomationPolicyV3(policy);
-  const statements: SqlStatement[] = [
-    {
-      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
-      params: ['context_auto_input', String(Math.round(maxContextTokens))],
-    },
-    { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_mode', 'v3'] },
-    { sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)', params: ['context_auto_policy_v3', serializedPolicyV3] },
-  ];
-  // Explicitly DO NOT add UPDATE llm_config / presets / characters / notes /
-  // worldbook_* statements. V3 leaves every model's real context_window,
-  // max_output_tokens and resource max_tokens untouched (Closure Plan §6).
-  const db = await openDatabase();
-  await executeTransaction(db, statements);
-  const record: ContextAutoAppliedRecordV3 = {
-    schemaVersion: 3,
-    maxContextTokens,
-    appliedAt: Date.now(),
-    mode: 'v3',
-    policy,
-    policyHash,
-    // V3 writes no model / preset / resource rows, so nothing is "affected"
-    // in the bulk-overwrite sense. Counts stay 0 so the UI never claims V3
-    // mutated model capabilities.
-    affectedCounts: { llmConfigs: 0, presets: 0 },
+  const normalizedContextWindow = Math.round(maxContextTokens);
+  const target = await resolveContextAutoTargetConfig(options.llmConfigId);
+  if (!target) {
+    throw new Error('当前没有已启用的 LLM 配置，无法同步模型真实能力。');
+  }
+  const appliedAt = Date.now();
+  const syncedContextWindow = {
+    configId: target.id,
+    contextWindow: normalizedContextWindow,
+    maxOutputTokens: target.maxOutputTokens,
   };
-  // Persist the last-applied record via the shared V2-shaped store so existing
-  // UI helpers can read it; the V3 schemaVersion field lets the screen render
-  // the correct copy.
-  await setContextAutoMode('v3');
-  await setContextAutomationPolicyV3(policy);
-  await setContextAutoLastApplied({
-    schemaVersion: 2,
-    maxContextTokens,
-    appliedAt: record.appliedAt,
-    allocation: undefined as any,
+  const lastApplied = {
+    schemaVersion: 3 as const,
+    maxContextTokens: normalizedContextWindow,
+    appliedAt,
     policySchemaVersion: 3,
     policyVersion: 'context-automation-v3',
     policyHash,
+    syncedContextWindow,
     affectedCounts: {
-      llmConfigs: 0,
+      llmConfigs: 1,
       presets: 0,
       characters: 0,
       notes: 0,
       worldbookEntries: 0,
       worldbookCollections: 0,
     },
-  });
+  };
+  const statements: SqlStatement[] = [
+    {
+      sql: 'UPDATE llm_config SET context_window = ? WHERE id = ?',
+      params: [normalizedContextWindow, target.id],
+    },
+    ...(target.is_active === 1
+      ? [
+          {
+            sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+            params: ['context_auto_input', String(normalizedContextWindow)],
+          },
+        ]
+      : []),
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_mode', 'v3'],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_policy_v3', serializedPolicyV3],
+    },
+    {
+      sql: 'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+      params: ['context_auto_last_applied', JSON.stringify(lastApplied)],
+    },
+  ];
+  const db = await openDatabase();
+  await executeTransaction(db, statements);
+  const record: ContextAutoAppliedRecordV3 = {
+    schemaVersion: 3,
+    maxContextTokens: normalizedContextWindow,
+    appliedAt,
+    mode: 'v3',
+    policy,
+    policyHash,
+    syncedContextWindow,
+    affectedCounts: { llmConfigs: 1, presets: 0 },
+  };
   return record;
 }
 

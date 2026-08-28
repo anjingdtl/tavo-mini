@@ -68,28 +68,28 @@ describe('mergeDraftCapabilityFromPersisted', () => {
 
 describe('resolveContextAutoSimulationDefault', () => {
   const configs = [
-    { id: 5, context_window: 128_000 },
-    { id: 9, context_window: 1_000_000 },
+    { id: 5, context_window: 128_000, is_active: 1 },
+    { id: 9, context_window: 1_000_000, is_active: 0 },
   ];
 
-  it('prefers the saved simulation input over any model window', () => {
+  it('prefers the selected saved model capability over a legacy mirror value', () => {
     expect(
       resolveContextAutoSimulationDefault({
         savedInput: 512_000,
         preferredConfigId: 9,
         configs,
       }),
-    ).toBe(512_000);
+    ).toBe(1_000_000);
   });
 
-  it('uses the preferred saved LLM window when no simulation is stored', () => {
+  it('uses the active saved model capability when no model is explicitly selected', () => {
     expect(
       resolveContextAutoSimulationDefault({
-        savedInput: null,
-        preferredConfigId: 9,
+        savedInput: 512_000,
+        preferredConfigId: null,
         configs,
       }),
-    ).toBe(1_000_000);
+    ).toBe(128_000);
   });
 
   it('does not fall back to another model for an unsaved draft', () => {

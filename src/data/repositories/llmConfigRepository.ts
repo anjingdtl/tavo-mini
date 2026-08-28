@@ -20,6 +20,22 @@ function normalizeStoredCapability(value: unknown): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : 0;
 }
 
+/** Keep the legacy settings key as a display mirror, never as runtime truth. */
+async function syncContextAutoMirror(contextWindow: number): Promise<void> {
+  const database = await openDatabase();
+  if (Number.isFinite(contextWindow) && contextWindow > 0) {
+    await execute(
+      database,
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      ['context_auto_input', String(Math.floor(contextWindow))],
+    );
+    return;
+  }
+  await execute(database, 'DELETE FROM settings WHERE key = ?', [
+    'context_auto_input',
+  ]);
+}
+
 function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
   return {
     id: Number(row?.id || 1),
@@ -120,10 +136,11 @@ export async function saveLLMConfig(
   let id = Number(config.id || 0);
   if (id > 0) {
     const existing = await one<{
+      is_active: number;
       context_window: number;
       max_output_tokens: number;
     }>(
-      'SELECT context_window, max_output_tokens FROM llm_config WHERE id = ?',
+      'SELECT is_active, context_window, max_output_tokens FROM llm_config WHERE id = ?',
       [id],
     );
     const contextWindow =
@@ -151,6 +168,9 @@ export async function saveLLMConfig(
         id,
       ],
     );
+    if (Number(existing?.is_active) === 1 && contextWindow > 0) {
+      await syncContextAutoMirror(contextWindow);
+    }
   } else {
     const contextWindow = normalizeStoredCapability(config.context_window);
     const maxOutputTokens = normalizeStoredCapability(config.max_output_tokens);
@@ -218,8 +238,8 @@ export function resolveLLMConfigIdForContextSync(
  *
  * Writers: the LLM Settings page save, or the user-confirmed
  * "apply and sync model window" action on the Context Auto screen.
- * `applyContextAutoAllocationV3` itself stays simulation-only and never
- * calls this — simulation windows stay in `context_auto_input`.
+ * `context_auto_input` remains a display mirror for the active model; runtime
+ * capability reads continue to come from the saved `llm_config` row.
  * Unknown / unsaved ids fail closed and do not touch any other row.
  */
 export async function updateLLMCapabilityWindow(
@@ -232,14 +252,14 @@ export async function updateLLMCapabilityWindow(
   if (!Number.isFinite(window) || window <= 0) {
     throw new Error('上下文长度必须为正数。');
   }
-  if (!Number.isFinite(maxOutput) || maxOutput <= 0) {
-    throw new Error('最大输出 Token 必须为正数。');
+  if (!Number.isFinite(maxOutput) || maxOutput < 0) {
+    throw new Error('最大输出 Token 必须为 0 或正数。');
   }
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error('LLM 配置尚未保存，无法写入模型真实能力。');
   }
-  const existing = await one<{ id: number }>(
-    'SELECT id FROM llm_config WHERE id = ?',
+  const existing = await one<{ id: number; is_active: number }>(
+    'SELECT id, is_active FROM llm_config WHERE id = ?',
     [id],
   );
   if (!existing) {
@@ -250,6 +270,9 @@ export async function updateLLMCapabilityWindow(
     'UPDATE llm_config SET context_window = ?, max_output_tokens = ? WHERE id = ?',
     [window, maxOutput, id],
   );
+  if (Number(existing.is_active) === 1) {
+    await syncContextAutoMirror(window);
+  }
 }
 
 /** Refresh a saved draft's displayed capability from the persisted row. */
@@ -293,6 +316,11 @@ export async function setActiveLLMConfig(id: number): Promise<void> {
   await execute(database, 'UPDATE llm_config SET is_active = 1 WHERE id = ?', [
     id,
   ]);
+  const active = await one<{ context_window: number }>(
+    'SELECT context_window FROM llm_config WHERE id = ?',
+    [id],
+  );
+  await syncContextAutoMirror(Number(active?.context_window) || 0);
 }
 
 export async function deleteLLMConfig(id: number): Promise<void> {

@@ -536,8 +536,8 @@ export const LLMSettingsScreen: React.FC = () => {
                   { color: theme.colors.textSecondary },
                 ]}
               >
-                打开 V3 预算模拟窗口。模拟值只用于 Preview；不会反向改写
-                当前保存模型的真实 context_window / max_output_tokens。
+                设置当前已保存模型的真实 context_window。模型切换后会显示对应能力，
+                正在运行的任务仍使用自己的冻结值。
               </Text>
             </View>
             <Button
@@ -569,12 +569,12 @@ export const LLMSettingsScreen: React.FC = () => {
               max_output_tokens: Number.isFinite(value) ? value : 0,
             });
           }}
-          placeholder="留空：按 context_window 自动派生"
+          placeholder="留空或填 0：AUTO"
           keyboardType="numeric"
         />
         <Text style={[styles.fieldHint, { color: theme.colors.textSecondary }]}>
-          最大输出 Token 可留空或填 0：运行时会按当前模型的 context_window × 20% 弹性派生，
-          再根据阶段需求、推理开销和 Provider 协议收缩；不会使用固定 4000/8192 兜底。
+          最大输出 Token 可留空或填 0：数据库保留 0，运行时才按当前模型的 context_window
+          弹性派生；不会把派生值写回模型能力。
         </Text>
 
         <View style={styles.actionRow}>
