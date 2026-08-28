@@ -51,8 +51,11 @@ export const LLM_TIMEOUTS = {
   connectionMs: 20_000,
   normalMs: 60_000,
   // Pipeline stages use this only as a last-resort client watchdog. A valid
-  // response that arrives earlier is always accepted as-is.
-  chapterDraftMs: 300_000,
+  // response that arrives earlier is always accepted as-is. Long-form cloud
+  // requests can spend several minutes queued or reasoning before returning;
+  // keep the cutoff just below the ten-minute provider window so a slow but
+  // valid request is not converted into an outcome-unknown duplicate hazard.
+  chapterDraftMs: 570_000,
   // Canon extraction sends chapter context and asks for evidence-rich JSON.
   // Cloud providers can legitimately queue this longer than an ordinary chat.
   // DeepSeek keeps an accepted request connected for up to ten minutes before
@@ -220,6 +223,7 @@ export function resolveLLMTimeoutPolicy(
     scenario.startsWith('continuation_') ||
     scenario.startsWith('story_memory_') ||
     scenario === 'pipeline_draft' ||
+    scenario === 'pipeline_qa' ||
     scenario === 'pipeline_review' ||
     scenario === 'pipeline_factcheck' ||
     scenario === 'pipeline_proof'
