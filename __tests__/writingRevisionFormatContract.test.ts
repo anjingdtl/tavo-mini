@@ -62,6 +62,17 @@ function makePersistAdapter() {
 }
 
 async function runRevision(response: any) {
+  return runSharedStage('revision', response, {
+    draft: { stage: 'draft', body: draftBody },
+    qa: { stage: 'qa', body: qaBody },
+  });
+}
+
+async function runSharedStage(
+  stage: 'draft' | 'qa' | 'revision',
+  response: any,
+  artifacts: Record<string, any> = {},
+) {
   resetWritingObservabilityForTests();
   const freeze = buildWritingKernelFreezeTrace({
     request: continuationRequest({ pipelineTopologyVersion: 'compact_standard' }),
@@ -71,11 +82,8 @@ async function runRevision(response: any) {
   const result = runWritingStages({
     frozenContext: freeze.frozenContext,
     trace: freeze.trace,
-    stages: ['revision'],
-    artifacts: {
-      draft: { stage: 'draft', body: draftBody },
-      qa: { stage: 'qa', body: qaBody },
-    },
+    stages: [stage],
+    artifacts,
     persistAdapter: adapter,
     callStage,
   });
@@ -89,6 +97,23 @@ async function runRevision(response: any) {
 }
 
 describe('Revision structured output contract (P0)', () => {
+  test.each([
+    ['draft', '截断但看似完整的初稿。'],
+    ['qa', qaBody],
+  ] as const)('%s length-terminated output fails closed before persistence', async (stage, text) => {
+    const { result, callStage, persisted } = await runSharedStage(
+      stage,
+      revisionResponse(text, 'length'),
+      stage === 'qa' ? { draft: { stage: 'draft', body: draftBody } } : {},
+    );
+
+    await expect(result).rejects.toMatchObject({
+      code: 'SHARED_WRITER_TRUNCATED_OUTPUT',
+    });
+    expect(callStage).toHaveBeenCalledTimes(1);
+    expect(persisted).toEqual([]);
+  });
+
   test('length-terminated JSON fails closed before persistence', async () => {
     const response = revisionResponse(
       JSON.stringify(validFullRevision('截断前看似完整的长正文。')),

@@ -513,27 +513,24 @@ export async function executeSharedWriterStage(input: {
     protocolFallbackCount: primary.protocolFallbackCount,
     durationMs: Date.now() - primaryStartedAt,
   });
+  try {
+    assertWriterFinishReason(stage, primary);
+  } catch (error) {
+    throw annotateWriterReceipts(
+      annotateWriterFailure(error, {
+        stage,
+        result: primary,
+        adoptedText: '',
+      }),
+      receipts,
+    );
+  }
   if (primary.finishReason === 'content_filter') {
     throw annotateWriterReceipts(
       annotateWriterFailure(
         Object.assign(new Error(`${stage} 被内容安全策略拦截`), {
           code: 'SHARED_WRITER_CONTENT_FILTER',
         }),
-        { stage, result: primary },
-      ),
-      receipts,
-    );
-  }
-  if (
-    stage === 'revision' &&
-    String(primary.finishReason || '').toLowerCase() === 'length'
-  ) {
-    throw annotateWriterReceipts(
-      annotateWriterFailure(
-        Object.assign(
-          new Error('Revision 输出以 finishReason=length 截断，拒绝持久化'),
-          { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
-        ),
         { stage, result: primary },
       ),
       receipts,
@@ -613,6 +610,19 @@ export async function executeSharedWriterStage(input: {
       protocolFallbackCount: formatted.protocolFallbackCount,
       durationMs: Date.now() - formatterStartedAt,
     });
+    try {
+      assertWriterFinishReason(stage, formatted);
+    } catch (error) {
+      throw annotateWriterReceipts(
+        annotateWriterFailure(error, {
+          stage,
+          result: formatted,
+          adoptedText: '',
+          formatterUsed: true,
+        }),
+        receipts,
+      );
+    }
     adopted = adoptStructuredWriterText({
       stage,
       outputContract: compiled.outputContract,
@@ -852,14 +862,9 @@ function finalizeWriterArtifact(
   text: string,
   result?: Partial<LLMResult>,
 ): SharedWritingArtifact {
+  assertWriterFinishReason(stage, result);
   const artifact = parseSharedWriterOutput(stage, text);
   if (stage === 'revision') {
-    if (String(result?.finishReason || '').toLowerCase() === 'length') {
-      throw Object.assign(
-        new Error('Revision 输出以 finishReason=length 截断，拒绝持久化'),
-        { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
-      );
-    }
     const compactRevision =
       stageInput.stagePolicy.values?.pipelineTopologyVersion ===
       'compact_standard';
@@ -967,6 +972,17 @@ function finalizeWriterArtifact(
   }
   assertStructuredReport(stage, artifact);
   return artifact;
+}
+
+function assertWriterFinishReason(
+  stage: SharedWritingStageName,
+  result?: Pick<LLMResult, 'finishReason'>,
+): void {
+  if (String(result?.finishReason || '').toLowerCase() !== 'length') return;
+  throw Object.assign(
+    new Error(`${stage} 输出以 finishReason=length 截断，拒绝持久化`),
+    { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
+  );
 }
 
 function attachUsage(
