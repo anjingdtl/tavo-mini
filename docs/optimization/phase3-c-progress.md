@@ -135,6 +135,38 @@ APK / install-r：
 
 Act：四项 UI Complexity Gate 均 PASS，已由独立 commit `279e1257` 封存；现在允许进入 C1。尚未建立任何长程基线，未宣布 Phase III-C/Phase III 最终 GO。
 
-### C1 → C10
+### C1 — Long-Horizon baseline（NO-GO，已停止在 C1）
 
-尚未开始。C0-C 已独立提交，按方案先建立当前 HEAD 的真实 Long-Horizon baseline。
+Plan：当前 Exact HEAD 为 `1d42a827`。严格先采集当前实现的真实基线，目标矩阵为 5/20/50/100 章；在 C1 基线完成前不实现 Memory Delta、Memoization 或 Prefetch。采集范围限定为本次新增项目/批次，不读取旧项目的 mock/fake provider 行作为证据。
+
+Red Test：
+
+- 新增 `__tests__/phase3CLongHorizonBaseline.test.ts`，先运行 `npx jest __tests__/phase3CLongHorizonBaseline.test.ts --runInBand`；采集器文件尚不存在时 2/2 tests 按预期失败，锁定 5/20/50/100 矩阵、逐章字段和缺失证据不得转成 0 的 fail-closed 契约。
+
+最小实现：
+
+- 新增 `scripts/qa/collect-phase3-c-baseline.js`，使用 `DatabaseSync(..., { readOnly: true })` 对指定项目/批次做窄投影采集；读取章节、Pipeline task/checkpoint/attempt、Writing Observability/Request Receipt、usage、batch ledger、Story Memory、Canon boundary、state proposal 和 Final Artifact 指纹，不读取或输出 API key/完整 prompt/正文。
+- 采集器按章节全局 position 生成 `chapterIndex`，planner 调用在每批首项做确定性归属；Writer Physical Calls、Total Paid LLM Calls、planner/observer/Story Memory 调用、阶段 tokens、重试/fallback、上下文输入、Final char/fingerprint、Story Memory/DB payload 等分别记录。缺失证据保留 `null` 或 `not_applicable` 并进入 `evidence.missing`，矩阵自动 NO-GO。
+- 连续性检查字段仅记录证据可见性和 `manual_review_required`，不把没有自动判定的 Canon、边界、future leakage、人物状态、世界规则、Timeline 或 seam 宣称为 PASS。
+
+Targeted verify：
+
+- `npx jest __tests__/phase3CLongHorizonBaseline.test.ts --runInBand`：2/2 PASS。
+- `npm run typecheck`：PASS；`npm run verify:elastic`：PASS；`npm run lint`：PASS（仓库既有 warnings，无 errors；新增采集器无 errors）。
+- 对现有 C0-C 快照执行采集器得到 5/20/50/100 全部 `NO-GO`，因为该快照没有 C1 批次；该负向结果仅验证 fail-closed，不计入真实基线。
+
+APK / install-r 与真实基线尚未完成；下一步先构建当前 HEAD APK、`adb install -r`，再使用模拟器现有真实 LLM 执行 5/20/50/100 矩阵。若任一必需真实运行失败，C1 标记 NO-GO，停止进入 C2。
+
+实际执行与 Check：
+
+- `npm run apk:debug` PASS；产物仍为 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `5E0FDD7079A3CFA4E8519AFD3C47D314083DFCBC89793BBAC953C93145B0D73B`。`adb -s emulator-5554 install -r` PASS；`versionCode=2210100`、`versionName=V2.21.1`、`firstInstallTime=2026-08-10 09:49:20` 保持不变；没有卸载、`pm clear` 或重置数据。
+- 通过现有 App UI 新建隔离基线项目 `phase3c-c1-baseline`（project id 57），使用已保存的真实 `GLM-5.3-Flash`、5 章、每章 3000 字，planner 真实请求成功并将 5 章计划冻结；UI 证据为 `test-logs/phase3-c-c1-android/ui-planning-preview-after-save.xml`、`ui-planning-preview-bottom-3.xml`，DB 中 `batch_planner=success` 1 次。
+- 通过 UI 点击“开始批量写作”后真实第 1 章进入 `running_pipeline → draft → qa`。Draft 真实成功：`input=2274`、`output=6871`、`total=9145`、`finish_reason=stop`；随后 QA 真实请求以 `total_timeout` 结束，`failure_class=outcome_unknown`、`error_code=total_timeout`。UI 落入“批次已暂停 / 结果未知”：`test-logs/phase3-c-c1-android/ui-batch-paused-result-unknown.xml`、`screen-batch-paused-result-unknown.png`。
+- 一致性 DB 快照 `test-logs/phase3-c-c1-android/batch-paused-clean.sqlite`：`integrity_check=ok`；批次 `paused_timeout_unknown` / `BATCH_LLM_OUTCOME_UNKNOWN`，第 1 项 `outcome_unknown`，Pipeline task `failed`；QA attempt `outcome_unknown`，无 Final Body/Final Artifact，章节正文长度为 0。真实 usage ledger 同时记录 `pipeline_planner=success`、`pipeline_draft=success`、`pipeline_qa=error`，未隐藏失败请求或辅助付费请求。
+- 只读基线采集器报告 `test-logs/phase3-c-c1-android/c1-baseline-real-no-go.json` 明确为 `decision=NO-GO`：5 章完成数 `0/5`，20/50/100 目标均未完成；第 1 章缺 `finalCharCount`/`finalFingerprint`，其余章节保持 pending 和 null，不把缺失证据转换为 0 或 PASS。真实证明模式为 `android-existing-config` / `GLM-5.3-Flash`。
+
+Act：真实长程基线的最小 Smoke 已因真实 QA `total_timeout` 进入结果未知并 fail-closed，C1 不满足“真实 5/20/50/100 基线完成”门禁。已生成 NO-GO 证据并停止，不进入 C2；不以 Known Issue、后续优化或基本完成替代门禁。后续阶段必须等待 C1 在新的 PDCA 修复/复测回合中重新达到 GO。
+
+### C2 → C10
+
+尚未开始；因 C1 NO-GO 按顺序门禁阻断。
