@@ -138,6 +138,7 @@ export async function prepareContinuationRun(
     projectId: snapshot.projectId,
     chapterId: snapshot.targetChapterId,
     scenario: 'continuation',
+    targetChars: snapshot.settingsSnapshot.values.targetChapterChars,
     instruction: {
       title: `Continuation chapter ${snapshot.targetPosition}`,
       synopsis: snapshot.bundles.userInstruction,

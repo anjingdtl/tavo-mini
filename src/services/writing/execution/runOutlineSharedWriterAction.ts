@@ -20,11 +20,70 @@ import { evaluateRuntimeStageSkip } from '../stages/evaluateRuntimeStageSkip';
 import { resolveSharedStageSkip } from '../contracts/writingPolicy';
 import { isCompactPipelineTopology } from '../../pipeline/outlineWorkflowVersion';
 import type { SharedWriterFailureDiagnostics } from '../stages/writerCore';
+import { compactWritingRequestReceipt } from '../contracts/writingRequestReceipt';
 
 function nonNegativeReceiptNumber(value: unknown, fallback: number): number {
   if (value == null) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function nullableReceiptNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function safeReceiptList(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => compactWritingRequestReceipt(item as any));
+}
+
+function receiptRuntimeProjection(item: any): Record<string, unknown> {
+  return {
+    requestId: item?.requestId || null,
+    writingRunId: item?.writingRunId || null,
+    generationTraceId: item?.generationTraceId || null,
+    scenario: item?.scenario || null,
+    stage: item?.stage || null,
+    providerAdapterId: item?.providerAdapterId || null,
+    llmConfigId: item?.llmConfigId ?? null,
+    model: item?.model || null,
+    qualityProfile: item?.qualityProfile || null,
+    executionProfile: item?.executionProfile || null,
+    thinking: item?.thinking || null,
+    reasoningEffort: item?.reasoningEffort || null,
+    targetChars: item?.targetChars ?? null,
+    actualPromptTokens: item?.actualPromptTokens ?? null,
+    configuredContextWindow: item?.configuredContextWindow ?? null,
+    completionCapability: item?.completionCapability ?? null,
+    wireMaxTokens: item?.wireMaxTokens ?? null,
+    providerCompletionLimit: item?.providerCompletionLimit ?? null,
+    timings: item?.timings || null,
+    usage: item?.usage || null,
+    finishReason: item?.finishReason ?? null,
+    emptyReason: item?.emptyReason ?? null,
+    failureClass: item?.failureClass ?? null,
+    requestMayHaveExecuted: item?.requestMayHaveExecuted ?? null,
+    providerRequestId: item?.providerRequestId ?? null,
+    physicalRequestCount: item?.physicalRequestCount ?? 0,
+    protocolFallbackCount: item?.protocolFallbackCount ?? 0,
+    outcome: item?.outcome || null,
+  };
+}
+
+function safeFrozenModelSnapshot(frozenContext: FrozenWritingContext): string {
+  return JSON.stringify({
+    version: 1,
+    configId: frozenContext.model.configId,
+    provider: frozenContext.model.provider,
+    providerAdapterId: frozenContext.model.providerAdapterId ?? null,
+    model: frozenContext.model.modelName,
+    contextWindow: frozenContext.model.contextWindow,
+    maxOutputTokens: frozenContext.model.maxOutputTokens,
+    thinking: frozenContext.model.thinking ?? null,
+    reasoningEffort: frozenContext.model.reasoningEffort ?? null,
+  });
 }
 
 /**
@@ -146,7 +205,8 @@ export async function runSharedOutlineWriterAction(input: {
           attemptNo,
           requestVersion,
           requestFingerprint: `${trace.freezeFingerprint}:${recordedStage}`,
-          llmConfigSnapshotJson: '{}',
+          llmConfigId: frozenContext.model.configId,
+          llmConfigSnapshotJson: safeFrozenModelSnapshot(frozenContext),
           clientRequestId: attemptId,
         });
         attempts.push({ id: attemptId, stage, index });
@@ -183,10 +243,23 @@ export async function runSharedOutlineWriterAction(input: {
               | {
                   requestFingerprint?: unknown;
                   finishReason?: unknown;
+                  emptyReason?: unknown;
+                  providerRequestId?: unknown;
+                  failureClass?: unknown;
+                  requestMayHaveExecuted?: unknown;
                   physicalRequestCount?: unknown;
                   protocolFallbackCount?: unknown;
+                  timings?: { parseCompletedAt?: unknown };
+                  usage?: {
+                    inputTokens?: unknown;
+                    outputTokens?: unknown;
+                    totalTokens?: unknown;
+                    reasoningTokens?: unknown;
+                    visibleOutputTokens?: unknown;
+                  };
                 }
               | undefined;
+            const primaryUsage = primaryReceipt?.usage;
             const physicalRequestCount = receiptList.reduce(
               (sum, item) =>
                 sum +
@@ -217,6 +290,7 @@ export async function runSharedOutlineWriterAction(input: {
               usage?.protocolFallbackCount,
               protocolFallbackCount,
             );
+            const persistedReceipts = safeReceiptList(receipts);
             if (
               receiptList.length > 0 &&
               (usagePhysicalRequestCount !== physicalRequestCount ||
@@ -238,18 +312,43 @@ export async function runSharedOutlineWriterAction(input: {
                 (results[index]?.artifact as { formatterUsed?: boolean } | undefined)
                   ?.formatterUsed,
               ),
-              inputTokens: Number(usage?.inputTokens || 0),
-              outputTokens: Number(usage?.outputTokens || 0),
-              totalTokens: Number(usage?.totalTokens || 0),
+              lastProgressAt: nullableReceiptNumber(
+                primaryReceipt?.timings?.parseCompletedAt,
+              ),
+              inputTokens:
+                primaryUsage && Object.prototype.hasOwnProperty.call(primaryReceipt, 'usage')
+                  ? nullableReceiptNumber(primaryUsage.inputTokens)
+                  : nullableReceiptNumber(usage?.inputTokens),
+              outputTokens:
+                primaryUsage && Object.prototype.hasOwnProperty.call(primaryReceipt, 'usage')
+                  ? nullableReceiptNumber(primaryUsage.outputTokens)
+                  : nullableReceiptNumber(usage?.outputTokens),
+              totalTokens:
+                primaryUsage && Object.prototype.hasOwnProperty.call(primaryReceipt, 'usage')
+                  ? nullableReceiptNumber(primaryUsage.totalTokens)
+                  : nullableReceiptNumber(usage?.totalTokens),
+              reasoningTokens: nullableReceiptNumber(primaryUsage?.reasoningTokens),
               finishReason:
                 typeof primaryReceipt?.finishReason === 'string'
                   ? primaryReceipt.finishReason
                   : null,
+              emptyReason:
+                typeof primaryReceipt?.emptyReason === 'string'
+                  ? primaryReceipt.emptyReason
+                  : null,
+              providerRequestId:
+                typeof primaryReceipt?.providerRequestId === 'string'
+                  ? primaryReceipt.providerRequestId
+                  : null,
+              visibleOutputTokens: nullableReceiptNumber(
+                primaryUsage?.visibleOutputTokens,
+              ),
               validationDetailsJson: JSON.stringify({
                 version: 1,
                 requestReceiptCount: receiptList.length,
                 physicalRequestCount: usagePhysicalRequestCount,
                 protocolFallbackCount: usageProtocolFallbackCount,
+                runtimeObservability: receiptList.map(receiptRuntimeProjection),
                 finishReasons: receiptList.map(item =>
                   typeof (item as { finishReason?: unknown })?.finishReason ===
                     'string'
@@ -257,9 +356,10 @@ export async function runSharedOutlineWriterAction(input: {
                     : null,
                 ),
               }),
-              frozenRequestJson: Array.isArray(receipts)
-                ? JSON.stringify(receipts)
-                : null,
+              frozenRequestJson:
+                persistedReceipts.length > 0
+                  ? JSON.stringify(persistedReceipts)
+                  : null,
             });
           }),
         );
@@ -290,7 +390,50 @@ export async function runSharedOutlineWriterAction(input: {
           : [];
         const failedPrimaryReceipt = failedReceiptList.find(
           item => (item as { kind?: unknown })?.kind === 'logical_stage',
-        ) as { requestFingerprint?: unknown } | undefined;
+        ) as
+          | {
+              requestFingerprint?: unknown;
+              providerRequestId?: unknown;
+              failureClass?: unknown;
+              requestMayHaveExecuted?: unknown;
+              timings?: { parseCompletedAt?: unknown };
+              usage?: {
+                inputTokens?: unknown;
+                outputTokens?: unknown;
+                totalTokens?: unknown;
+                reasoningTokens?: unknown;
+                visibleOutputTokens?: unknown;
+              };
+              finishReason?: unknown;
+              emptyReason?: unknown;
+            }
+          | undefined;
+        const failedPrimaryUsage = failedPrimaryReceipt?.usage;
+        const failedPersistedReceipts = safeReceiptList(failedReceipts);
+        const failedHasReceiptUsage =
+          failedPrimaryReceipt != null &&
+          Object.prototype.hasOwnProperty.call(failedPrimaryReceipt, 'usage');
+        const failedInputTokens = failedHasReceiptUsage
+          ? nullableReceiptNumber(failedPrimaryUsage?.inputTokens)
+          : writerDiagnostics?.inputTokens ?? null;
+        const failedOutputTokens = failedHasReceiptUsage
+          ? nullableReceiptNumber(failedPrimaryUsage?.outputTokens)
+          : writerDiagnostics?.outputTokens ?? null;
+        const failedTotalTokens = failedHasReceiptUsage
+          ? nullableReceiptNumber(failedPrimaryUsage?.totalTokens)
+          : writerDiagnostics?.totalTokens ?? null;
+        const failedReasoningTokens = failedHasReceiptUsage
+          ? nullableReceiptNumber(failedPrimaryUsage?.reasoningTokens)
+          : writerDiagnostics?.reasoningTokens ?? null;
+        const failedVisibleOutputTokens = failedHasReceiptUsage
+          ? nullableReceiptNumber(failedPrimaryUsage?.visibleOutputTokens)
+          : writerDiagnostics?.visibleOutputTokens ?? null;
+        const failedFailureClass =
+          typeof failureClass === 'string'
+            ? failureClass
+            : typeof failedPrimaryReceipt?.failureClass === 'string'
+            ? failedPrimaryReceipt.failureClass
+            : null;
         await Promise.all(
           attempts.map(({ id }) =>
             updateStageAttempt({
@@ -300,7 +443,7 @@ export async function runSharedOutlineWriterAction(input: {
                 typeof failedPrimaryReceipt?.requestFingerprint === 'string'
                   ? failedPrimaryReceipt.requestFingerprint
                   : undefined,
-              failureClass,
+              failureClass: failedFailureClass,
               errorCode:
                 typeof errorRecord.code === 'string'
                   ? errorRecord.code
@@ -313,28 +456,52 @@ export async function runSharedOutlineWriterAction(input: {
               providerRequestId:
                 typeof errorRecord.providerRequestId === 'string'
                   ? errorRecord.providerRequestId
+                  : typeof failedPrimaryReceipt?.providerRequestId === 'string'
+                  ? failedPrimaryReceipt.providerRequestId
                   : null,
               formatterUsed: Boolean(
                 (error as { formatterUsed?: boolean }).formatterUsed,
               ),
               completedAt: Date.now(),
-              inputTokens: writerDiagnostics?.inputTokens ?? 0,
-              outputTokens: writerDiagnostics?.outputTokens ?? 0,
-              totalTokens: writerDiagnostics?.totalTokens ?? 0,
-              reasoningTokens: writerDiagnostics?.reasoningTokens ?? null,
-              finishReason: writerDiagnostics?.finishReason ?? null,
-              emptyReason: writerDiagnostics?.emptyReason ?? null,
+              lastProgressAt: nullableReceiptNumber(
+                failedPrimaryReceipt?.timings?.parseCompletedAt,
+              ),
+              inputTokens: failedInputTokens,
+              outputTokens: failedOutputTokens,
+              totalTokens: failedTotalTokens,
+              reasoningTokens: failedReasoningTokens,
+              finishReason:
+                typeof failedPrimaryReceipt?.finishReason === 'string'
+                  ? failedPrimaryReceipt.finishReason
+                  : writerDiagnostics?.finishReason ?? null,
+              emptyReason:
+                typeof failedPrimaryReceipt?.emptyReason === 'string'
+                  ? failedPrimaryReceipt.emptyReason
+                  : writerDiagnostics?.emptyReason ?? null,
               responseChannel: writerDiagnostics?.responseChannel,
-              visibleOutputTokens:
-                writerDiagnostics?.visibleOutputTokens ?? null,
+              visibleOutputTokens: failedVisibleOutputTokens,
               parseFailureCode: writerDiagnostics?.parseFailureCode,
               responseCandidateChannel:
                 writerDiagnostics?.responseCandidateChannel,
-              validationDetailsJson:
-                writerDiagnostics?.validationDetailsJson,
-              frozenRequestJson: Array.isArray(failedReceipts)
-                ? JSON.stringify(failedReceipts)
-                : null,
+              validationDetailsJson: JSON.stringify({
+                version: 1,
+                writerDiagnostics: writerDiagnostics?.validationDetailsJson
+                  ? JSON.parse(writerDiagnostics.validationDetailsJson)
+                  : null,
+                runtimeObservability: failedReceiptList.map(
+                  receiptRuntimeProjection,
+                ),
+                failureClass: failedFailureClass,
+                requestMayHaveExecuted:
+                  failedPrimaryReceipt?.requestMayHaveExecuted ??
+                  (typeof errorRecord.requestMayHaveExecuted === 'boolean'
+                    ? errorRecord.requestMayHaveExecuted
+                    : null),
+              }),
+              frozenRequestJson:
+                failedPersistedReceipts.length > 0
+                  ? JSON.stringify(failedPersistedReceipts)
+                  : null,
             }),
           ),
         );

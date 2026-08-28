@@ -7,7 +7,9 @@ import type { LLMProvider } from '../../types/llmProvider';
 import type {
   ChatMessage,
   LLMGenerateOptions,
+  LLMOutputBudgetTrace,
   LLMRequestConfig,
+  LLMRequestMetrics,
   LLMResult,
   LLMQueueClass,
   ReasoningEffort,
@@ -376,10 +378,20 @@ export const openAICompatibleProvider: LLMProvider = {
     const projectId = options.projectId;
     const llmConfigId = config.id;
     const llmConfigName = config.name;
+    // Request-boundary timestamps are observation only. They deliberately sit
+    // outside the timeout controller so queue wait remains visible without
+    // changing the existing watchdog semantics.
+    const queuedAt = Date.now();
 
     try {
       const result = await scheduleLLMRequest(
         async queueSignal => {
+          const dispatchStartedAt = Date.now();
+          let requestSentAt: number | undefined;
+          let responseReceivedAt: number | undefined;
+          let parseCompletedAt: number | undefined;
+          let providerRequestId: string | undefined;
+          let outputBudgetTrace: LLMOutputBudgetTrace | undefined;
           const timeoutController = createLLMTimeoutController({
             policy: resolveLLMTimeoutPolicy(scenario, 'openai_compatible'),
             taskId: options.taskId,
@@ -396,6 +408,7 @@ export const openAICompatibleProvider: LLMProvider = {
               config,
               requestedMaxTokens: options.max_tokens,
             });
+            outputBudgetTrace = outputBudget.trace;
             const requestBody: Record<string, unknown> = {
               model: config.model_name,
               messages,
@@ -424,6 +437,7 @@ export const openAICompatibleProvider: LLMProvider = {
             const sendRequest = async (kind: string) => {
               await options.physicalRequestHooks?.beforeRequest?.({ kind });
               try {
+                if (requestSentAt === undefined) requestSentAt = Date.now();
                 const response = await fetch(config.url, {
                   method: 'POST',
                   headers: {
@@ -433,16 +447,21 @@ export const openAICompatibleProvider: LLMProvider = {
                   body: JSON.stringify(requestBody),
                   signal: timeoutController.signal,
                 });
+                responseReceivedAt = Date.now();
+                const responseRequestId =
+                  typeof response.headers?.get === 'function'
+                    ? response.headers.get('x-request-id') ||
+                      response.headers.get('request-id') ||
+                      response.headers.get('x-amzn-requestid') ||
+                      undefined
+                    : undefined;
+                if (responseRequestId) providerRequestId = responseRequestId;
                 try {
                   await options.physicalRequestHooks?.afterRequest?.({
                     kind,
                     outcome: 'response',
                     httpStatus: response.status,
-                    providerRequestId:
-                      response.headers.get('x-request-id') ||
-                      response.headers.get('request-id') ||
-                      response.headers.get('x-amzn-requestid') ||
-                      undefined,
+                    providerRequestId: responseRequestId,
                   });
                 } catch {
                   // Durable accounting is intentionally fail-closed before a
@@ -492,6 +511,7 @@ export const openAICompatibleProvider: LLMProvider = {
                   text,
                 );
               if (!responseFormatUnsupported && !disabledThinkingUnsupported) {
+                parseCompletedAt = Date.now();
                 throw formatLLMError(response.status, text, response.headers);
               }
               if (responseFormatUnsupported) delete requestBody.response_format;
@@ -502,6 +522,7 @@ export const openAICompatibleProvider: LLMProvider = {
               response = await sendRequest('protocol_fallback');
             }
             if (!response.ok) {
+              parseCompletedAt = Date.now();
               throw formatLLMError(
                 response.status,
                 await response.text(),
@@ -517,6 +538,7 @@ export const openAICompatibleProvider: LLMProvider = {
             // misleading "model does not support JSON" message.
             if (!Array.isArray(data.choices) || data.choices.length === 0) {
               if (data && typeof data === 'object' && 'error' in data) {
+                parseCompletedAt = Date.now();
                 throw formatLLMError(
                   200,
                   JSON.stringify(data.error),
@@ -566,6 +588,15 @@ export const openAICompatibleProvider: LLMProvider = {
                 : Math.max(0, outputTokens - reasoningTokens);
             const promptCache = parsePromptCacheUsage(usage);
             timeoutController.markProgress('progress');
+            parseCompletedAt = Date.now();
+            const metrics = buildProviderRequestMetrics({
+              base: timeoutController.metrics,
+              queuedAt,
+              dispatchStartedAt,
+              requestSentAt,
+              responseReceivedAt,
+              parseCompletedAt,
+            });
             return {
               text,
               reasoningText,
@@ -576,18 +607,36 @@ export const openAICompatibleProvider: LLMProvider = {
               totalTokens,
               promptCacheHitTokens: promptCache.hitTokens,
               promptCacheMissTokens: promptCache.missTokens,
+              providerRequestId: providerRequestId ?? null,
               finishReason,
               emptyReason,
-              metrics: { ...timeoutController.metrics },
+              metrics,
               rawUsage: data.usage,
               outputBudget: outputBudget.trace,
             };
           } catch (error: any) {
-            throw toLLMRequestError(
+            if (responseReceivedAt !== undefined && parseCompletedAt === undefined) {
+              parseCompletedAt = Date.now();
+            }
+            const normalized = toLLMRequestError(
               error,
               timeoutController,
               'API 请求失败，请检查网络或服务商状态。',
             );
+            Object.assign(normalized, {
+              metrics: buildProviderRequestMetrics({
+                base: timeoutController.metrics,
+                queuedAt,
+                dispatchStartedAt,
+                requestSentAt,
+                responseReceivedAt,
+                parseCompletedAt,
+              }),
+              outputBudget: outputBudgetTrace,
+              providerRequestId:
+                normalized.providerRequestId || providerRequestId || undefined,
+            });
+            throw normalized;
           } finally {
             timeoutController.dispose();
           }
@@ -636,3 +685,46 @@ export const openAICompatibleProvider: LLMProvider = {
     }
   },
 };
+
+function buildProviderRequestMetrics(input: {
+  base: LLMRequestMetrics;
+  queuedAt: number;
+  dispatchStartedAt: number;
+  requestSentAt?: number;
+  responseReceivedAt?: number;
+  parseCompletedAt?: number;
+}): LLMRequestMetrics {
+  const now = Date.now();
+  const requestSentAt = input.requestSentAt;
+  const responseReceivedAt = input.responseReceivedAt;
+  const parseCompletedAt = input.parseCompletedAt;
+  return {
+    ...input.base,
+    queuedAt: input.queuedAt,
+    dispatchStartedAt: input.dispatchStartedAt,
+    ...(requestSentAt == null ? {} : { requestSentAt }),
+    ...(responseReceivedAt == null ? {} : { responseReceivedAt }),
+    ...(parseCompletedAt == null ? {} : { parseCompletedAt }),
+    queueWaitMs: Math.max(0, input.dispatchStartedAt - input.queuedAt),
+    ...(requestSentAt == null
+      ? {}
+      : {
+          providerElapsedMs: Math.max(
+            0,
+            (responseReceivedAt ?? parseCompletedAt ?? now) - requestSentAt,
+          ),
+        }),
+    ...(responseReceivedAt == null
+      ? {}
+      : {
+          parseMs: Math.max(
+            0,
+            (parseCompletedAt ?? now) - responseReceivedAt,
+          ),
+        }),
+    totalMs: Math.max(
+      0,
+      (parseCompletedAt ?? responseReceivedAt ?? now) - input.queuedAt,
+    ),
+  };
+}

@@ -95,6 +95,8 @@ export interface WritingRequest {
   projectId: number;
   chapterId: number;
   scenario: WritingScenario;
+  /** Observation-only target size for continuation requests. */
+  targetChars?: number | null;
   instruction: WritingInstruction;
   sourceBundle: WritingSourceBundle;
   model: FrozenModelConfig;

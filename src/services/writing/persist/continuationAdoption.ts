@@ -453,10 +453,20 @@ async function defaultStageCaller(input: {
   );
   return {
     text: result.text ?? '',
+    reasoningText: result.reasoningText ?? null,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    totalTokens: result.totalTokens,
+    reasoningTokens: result.reasoningTokens ?? null,
+    visibleOutputTokens: result.visibleOutputTokens ?? null,
     usage: {
       prompt: result.rawUsage?.prompt_tokens,
       completion: result.rawUsage?.completion_tokens,
     },
+    rawUsage: result.rawUsage,
+    metrics: result.metrics,
+    outputBudget: result.outputBudget,
+    providerRequestId: result.providerRequestId ?? null,
     finishReason: result.finishReason,
     emptyReason: result.emptyReason,
   };

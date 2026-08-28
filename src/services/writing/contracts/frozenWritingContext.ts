@@ -74,6 +74,8 @@ export interface FrozenWritingContext {
   generationTraceId: string;
   projectId: number;
   chapterId: number;
+  /** Observation-only target size; never used to compile a prompt. */
+  targetChars?: number | null;
   instruction: WritingInstruction;
   sourceBundle: {
     mandatory: WritingSource[];

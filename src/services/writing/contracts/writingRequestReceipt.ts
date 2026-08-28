@@ -6,7 +6,9 @@
  * + stage + artifacts, then compared to messagesFingerprint.
  */
 import { sha256Hex } from '../../continuation/hashUtils';
-import type { ChatMessage } from '../../llm/types';
+import type { ChatMessage, LLMOutputBudgetTrace, LLMRequestMetrics } from '../../llm/types';
+import type { LLMFailureClass } from '../../llm/requestPolicy';
+import { resolveProviderOutputBudget } from '../../llm/providerCapabilities';
 import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { SHARED_PROMPT_COMPILER_VERSION } from '../prompt/sharedPromptCompiler';
 import { resolveQualityProfileFromValues } from './generationQualityProfile';
@@ -14,29 +16,50 @@ import { resolveExecutionProfileFromValues } from './executionProfile';
 import { stableWritingJson } from './writingFingerprint';
 import type { FrozenWritingContext } from './frozenWritingContext';
 import type { SharedWritingStageName } from './writingPolicy';
+import type { WritingScenario } from './writingSource';
 
 export type WritingRequestReceiptOutcome =
   | 'succeeded'
   | 'failed'
+  | 'outcome_unknown'
   | 'cancelled'
   | 'blocked'
   | 'started';
 
 export interface WritingRequestReceiptUsage {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
   reasoningTokens?: number | null;
+  visibleOutputTokens?: number | null;
+}
+
+export interface WritingRequestReceiptTimings {
+  queuedAt: number | null;
+  dispatchStartedAt: number | null;
+  requestSentAt: number | null;
+  responseReceivedAt: number | null;
+  parseCompletedAt: number | null;
+  persistCompletedAt: number | null;
+  queueWaitMs: number | null;
+  providerElapsedMs: number | null;
+  parseMs: number | null;
+  persistMs: number | null;
+  totalMs: number | null;
 }
 
 export interface WritingRequestReceipt {
   version: 1;
   requestId: string;
   generationTraceId: string;
+  writingRunId: string;
+  scenario: WritingScenario;
   stage: string;
   qualityProfile: 'fast' | 'standard' | 'quality' | null;
   executionProfile: 'standard' | 'one_shot';
   provider: string;
+  providerAdapterId: string | null;
+  llmConfigId: number | null;
   model: string;
   thinking: { type: 'enabled' | 'disabled' };
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
@@ -47,9 +70,23 @@ export interface WritingRequestReceipt {
   messagesFingerprint: string;
   requestFingerprint: string;
   maxOutputTokens: number;
+  /** Configured/frozen completion capability, separate from the wire value. */
+  completionCapability: number | null;
+  /** Final max_tokens value selected for the current physical request. */
+  wireMaxTokens: number;
+  providerCompletionLimit: number | null;
+  configuredContextWindow: number | null;
+  targetChars: number | null;
+  /** Provider-reported prompt tokens; null means the provider did not report usage. */
+  actualPromptTokens: number | null;
   responseFormat: 'json_object' | 'text';
   usage?: WritingRequestReceiptUsage;
   finishReason?: string | null;
+  emptyReason?: string | null;
+  failureClass: LLMFailureClass | null;
+  requestMayHaveExecuted: boolean | null;
+  providerRequestId: string | null;
+  timings: WritingRequestReceiptTimings;
   /** Number of provider HTTP dispatches represented by this logical receipt. */
   physicalRequestCount: number;
   /** Physical dispatches caused by an adapter protocol fallback. */
@@ -102,6 +139,7 @@ export function buildWritingRequestReceipt(input: {
   thinking: { type: 'enabled' | 'disabled' };
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
   kind?: 'logical_stage' | 'formatter';
+  scenario?: WritingScenario;
 }): WritingRequestReceipt {
   receiptSeq += 1;
   const values = input.frozenContext.stagePolicy?.values;
@@ -120,6 +158,16 @@ export function buildWritingRequestReceipt(input: {
       : 'draft') as SharedWritingStageName,
   });
   const requestId = `req_${input.generationTraceId}_${input.stage}_${Date.now()}_${receiptSeq}`;
+  const targetChars = readNonNegativeNumber(
+    values?.targetChapterChars ?? values?.targetChars ?? input.frozenContext.targetChars,
+  );
+  const completionCapability = readNonNegativeNumber(
+    input.frozenContext.model?.maxOutputTokens,
+  );
+  const outputBoundary = resolveReceiptOutputBoundary(
+    input.frozenContext,
+    input.compiled.maxTokens,
+  );
   const identity: WritingRequestIdentity = {
     stage: String(input.stage),
     kind: input.kind || 'logical_stage',
@@ -142,8 +190,27 @@ export function buildWritingRequestReceipt(input: {
     version: 1,
     requestId,
     generationTraceId: input.generationTraceId,
+    writingRunId: input.frozenContext.writingRunId,
+    scenario: input.scenario || 'outline',
     ...identity,
+    providerAdapterId:
+      outputBoundary?.adapterId ||
+      input.frozenContext.model?.providerAdapterId ||
+      null,
+    llmConfigId: input.frozenContext.model?.configId ?? null,
     requestFingerprint: computeWritingRequestFingerprint(identity),
+    completionCapability,
+    wireMaxTokens: outputBoundary?.wireMaxTokens ?? input.compiled.maxTokens,
+    providerCompletionLimit: outputBoundary?.providerLimit ?? null,
+    configuredContextWindow: readNonNegativeNumber(
+      input.frozenContext.model?.contextWindow,
+    ),
+    targetChars,
+    actualPromptTokens: null,
+    failureClass: null,
+    requestMayHaveExecuted: false,
+    providerRequestId: null,
+    timings: emptyWritingRequestReceiptTimings(),
     physicalRequestCount: 0,
     protocolFallbackCount: 0,
     outcome: 'started',
@@ -166,6 +233,14 @@ export function completeWritingRequestReceipt(
     outcome: WritingRequestReceiptOutcome;
     usage?: WritingRequestReceiptUsage;
     finishReason?: string | null;
+    emptyReason?: string | null;
+    failureClass?: LLMFailureClass | null;
+    requestMayHaveExecuted?: boolean | null;
+    providerRequestId?: string | null;
+    actualPromptTokens?: number | null;
+    outputBudget?: LLMOutputBudgetTrace | null;
+    metrics?: LLMRequestMetrics | null;
+    timings?: Partial<WritingRequestReceiptTimings>;
     resultArtifactRef?: string;
     physicalRequestCount?: number;
     protocolFallbackCount?: number;
@@ -174,9 +249,39 @@ export function completeWritingRequestReceipt(
   return {
     ...receipt,
     outcome: input.outcome,
-    usage: input.usage,
-    finishReason: input.finishReason,
-    resultArtifactRef: input.resultArtifactRef,
+    usage: input.usage === undefined ? receipt.usage : input.usage,
+    ...(input.finishReason !== undefined
+      ? { finishReason: input.finishReason }
+      : {}),
+    ...(input.emptyReason !== undefined
+      ? { emptyReason: input.emptyReason }
+      : {}),
+    ...(input.failureClass !== undefined
+      ? { failureClass: input.failureClass }
+      : {}),
+    ...(input.requestMayHaveExecuted !== undefined
+      ? { requestMayHaveExecuted: input.requestMayHaveExecuted }
+      : {}),
+    ...(input.providerRequestId !== undefined
+      ? { providerRequestId: input.providerRequestId }
+      : {}),
+    ...(input.actualPromptTokens !== undefined
+      ? { actualPromptTokens: input.actualPromptTokens }
+      : {}),
+    ...(input.outputBudget
+      ? {
+          wireMaxTokens: input.outputBudget.wireMaxTokens,
+          providerCompletionLimit: input.outputBudget.providerLimit,
+        }
+      : {}),
+    timings: mergeWritingRequestReceiptTimings(
+      receipt.timings,
+      input.metrics,
+      input.timings,
+    ),
+    ...(input.resultArtifactRef !== undefined
+      ? { resultArtifactRef: input.resultArtifactRef }
+      : {}),
     physicalRequestCount:
       input.physicalRequestCount == null
         ? receipt.physicalRequestCount
@@ -188,12 +293,99 @@ export function completeWritingRequestReceipt(
   };
 }
 
+function readNonNegativeNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function resolveReceiptOutputBoundary(
+  frozenContext: FrozenWritingContext,
+  requestedMaxTokens: number,
+): LLMOutputBudgetTrace | null {
+  try {
+    return resolveProviderOutputBudget({
+      config: {
+        provider_type: frozenContext.model.provider as 'openai_compatible',
+        model_name: frozenContext.model.modelName,
+        url: frozenContext.model.url || '',
+        context_window: frozenContext.model.contextWindow,
+        max_output_tokens: frozenContext.model.maxOutputTokens,
+        provider_adapter_id: frozenContext.model.providerAdapterId,
+      },
+      requestedMaxTokens,
+    }).trace;
+  } catch {
+    // Receipt construction must remain available for a failed Ready request;
+    // the provider boundary will still report the configuration failure.
+    return null;
+  }
+}
+
+export function emptyWritingRequestReceiptTimings(): WritingRequestReceiptTimings {
+  return {
+    queuedAt: null,
+    dispatchStartedAt: null,
+    requestSentAt: null,
+    responseReceivedAt: null,
+    parseCompletedAt: null,
+    persistCompletedAt: null,
+    queueWaitMs: null,
+    providerElapsedMs: null,
+    parseMs: null,
+    persistMs: null,
+    totalMs: null,
+  };
+}
+
+function mergeWritingRequestReceiptTimings(
+  current: WritingRequestReceiptTimings,
+  metrics?: LLMRequestMetrics | null,
+  override?: Partial<WritingRequestReceiptTimings>,
+): WritingRequestReceiptTimings {
+  const next: WritingRequestReceiptTimings = { ...current };
+  if (metrics) {
+    const mapped: Partial<WritingRequestReceiptTimings> = {
+      queuedAt: metrics.queuedAt ?? null,
+      dispatchStartedAt: metrics.dispatchStartedAt ?? metrics.startedAt ?? null,
+      requestSentAt: metrics.requestSentAt ?? null,
+      responseReceivedAt: metrics.responseReceivedAt ?? null,
+      parseCompletedAt: metrics.parseCompletedAt ?? null,
+      queueWaitMs: metrics.queueWaitMs ?? null,
+      providerElapsedMs: metrics.providerElapsedMs ?? null,
+      parseMs: metrics.parseMs ?? null,
+      totalMs: metrics.totalMs ?? null,
+    };
+    for (const [key, value] of Object.entries(mapped)) {
+      if (value !== null && value !== undefined) {
+        next[key as keyof WritingRequestReceiptTimings] = value as never;
+      }
+    }
+  }
+  if (override) {
+    for (const [key, value] of Object.entries(override)) {
+      if (value !== undefined) {
+        next[key as keyof WritingRequestReceiptTimings] = value as never;
+      }
+    }
+  }
+  return next;
+}
+
 /** Drop any accidental large payload before SQLite JSON persistence. */
 export function compactWritingRequestReceipt(
   receipt: WritingRequestReceipt,
 ): WritingRequestReceipt {
   const compact = { ...receipt };
-  delete (compact as { messages?: unknown }).messages;
-  delete (compact as { prompt?: unknown }).prompt;
+  for (const key of [
+    'messages',
+    'prompt',
+    'rawPrompt',
+    'rawBody',
+    'requestBody',
+    'responseBody',
+    'body',
+  ]) {
+    delete (compact as Record<string, unknown>)[key];
+  }
   return compact;
 }

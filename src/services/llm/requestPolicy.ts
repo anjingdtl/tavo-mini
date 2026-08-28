@@ -1,4 +1,8 @@
-import type { LLMProviderType, LLMRequestMetrics } from './types';
+import type {
+  LLMOutputBudgetTrace,
+  LLMProviderType,
+  LLMRequestMetrics,
+} from './types';
 
 export type LLMErrorCode =
   | 'cancelled'
@@ -40,6 +44,8 @@ export interface LLMFailureMetadata {
   retryAfterMs?: number;
   providerRequestId?: string;
   requestMayHaveExecuted: boolean;
+  metrics?: LLMRequestMetrics;
+  outputBudget?: LLMOutputBudgetTrace;
 }
 
 export interface LLMTimeoutPolicy {
@@ -76,6 +82,8 @@ export class LLMRequestError extends Error {
   readonly retryAfterMs?: number;
   readonly providerRequestId?: string;
   readonly requestMayHaveExecuted: boolean;
+  readonly metrics?: LLMRequestMetrics;
+  readonly outputBudget?: LLMOutputBudgetTrace;
 
   constructor(
     message: string,
@@ -93,6 +101,8 @@ export class LLMRequestError extends Error {
     this.retryAfterMs = metadata?.retryAfterMs;
     this.providerRequestId = metadata?.providerRequestId;
     this.requestMayHaveExecuted = metadata?.requestMayHaveExecuted ?? true;
+    this.metrics = metadata?.metrics;
+    this.outputBudget = metadata?.outputBudget;
   }
 }
 

@@ -45,6 +45,7 @@ export function freezeWritingContext(input: {
     generationTraceId: input.request.generationTraceId,
     projectId: input.request.projectId,
     chapterId: input.request.chapterId,
+    targetChars: input.request.targetChars ?? null,
     instruction: { ...input.request.instruction },
     sourceBundle: {
       mandatory: input.request.sourceBundle.mandatory.map(source => ({ ...source })),

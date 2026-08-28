@@ -1,7 +1,11 @@
 /**
  * THE one Shared Writer Core. Every post-Freeze prose stage goes through here.
  */
-import type { LLMRequestConfig, LLMResult } from '../../llm/types';
+import type {
+  LLMRequestConfig,
+  LLMRequestMetrics,
+  LLMResult,
+} from '../../llm/types';
 import {
   selectStructuredCandidate,
   type StructuredCandidateChannel,
@@ -435,7 +439,7 @@ export async function executeSharedWriterStage(input: {
         protocolFallbackCount: injected.protocolFallbackCount,
       });
       attachRequestReceipts(artifact, stageInput, receipts);
-      await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+      await persistWriterArtifact(stage, stageInput, artifact, receipts);
       return artifact;
     } catch (error) {
       throw annotateWriterReceipts(
@@ -665,7 +669,7 @@ export async function executeSharedWriterStage(input: {
         protocolFallbackCount: formatted.protocolFallbackCount,
       });
       attachRequestReceipts(artifact, stageInput, receipts);
-      await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+      await persistWriterArtifact(stage, stageInput, artifact, receipts);
       return artifact;
     } catch (error) {
       throw annotateWriterReceipts(
@@ -699,7 +703,7 @@ export async function executeSharedWriterStage(input: {
       protocolFallbackCount: primary.protocolFallbackCount,
     });
     attachRequestReceipts(artifact, stageInput, receipts);
-    await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+    await persistWriterArtifact(stage, stageInput, artifact, receipts);
     return artifact;
   } catch (error) {
     throw annotateWriterReceipts(
@@ -730,6 +734,7 @@ function startRequestReceipt(
 ): WritingRequestReceipt {
   const receipt = buildWritingRequestReceipt({
     generationTraceId: stageInput.frozenContext.generationTraceId,
+    scenario: stageInput.trace.scenario,
     stage,
     frozenContext: stageInput.frozenContext,
     compiled,
@@ -776,6 +781,10 @@ async function invokePhysicalWriterCall<T>(input: {
         reasoningTokens?: number | null;
         finishReason?: string | null;
         usage?: { prompt?: number; completion?: number; total?: number };
+        rawUsage?: LLMResult['rawUsage'];
+        metrics?: LLMRequestMetrics;
+        outputBudget?: LLMResult['outputBudget'];
+        providerRequestId?: string | null;
       },
       'succeeded',
       input.stageInput,
@@ -789,6 +798,11 @@ async function invokePhysicalWriterCall<T>(input: {
       error as {
         physicalRequestCount?: number;
         protocolFallbackCount?: number;
+        failureClass?: string | null;
+        requestMayHaveExecuted?: boolean | null;
+        providerRequestId?: string | null;
+        metrics?: LLMRequestMetrics;
+        outputBudget?: LLMResult['outputBudget'];
       },
       aborted ? 'cancelled' : 'failed',
       input.stageInput,
@@ -815,25 +829,47 @@ function finishRequestReceipt(
     outputTokens?: number;
     totalTokens?: number;
     reasoningTokens?: number | null;
+    visibleOutputTokens?: number | null;
     finishReason?: string | null;
     usage?: { prompt?: number; completion?: number; total?: number };
+    rawUsage?: LLMResult['rawUsage'];
+    metrics?: LLMRequestMetrics;
+    outputBudget?: LLMResult['outputBudget'];
+    providerRequestId?: string | null;
+    failureClass?: string | null;
+    requestMayHaveExecuted?: boolean | null;
+    emptyReason?: string | null;
     physicalRequestCount?: number;
     protocolFallbackCount?: number;
   },
   outcome: 'succeeded' | 'failed' | 'cancelled',
   stageInput: SharedWritingStageInput,
 ): WritingRequestReceipt {
+  const usage = resolveReceiptUsage(result);
+  const failureClass =
+    outcome === 'succeeded'
+      ? null
+      : normalizeFailureClass(result.failureClass);
+  const receiptOutcome =
+    outcome === 'failed' && failureClass === 'outcome_unknown'
+      ? 'outcome_unknown'
+      : outcome;
   const completed = completeWritingRequestReceipt(receipt, {
-    outcome,
-    usage: {
-      inputTokens: Number(result.inputTokens || result.usage?.prompt || 0),
-      outputTokens: Number(result.outputTokens || result.usage?.completion || 0),
-      totalTokens: Number(
-        result.totalTokens || result.usage?.total || 0,
-      ),
-      reasoningTokens: result.reasoningTokens ?? null,
-    },
+    outcome: receiptOutcome,
+    usage,
     finishReason: result.finishReason ?? null,
+    emptyReason: result.emptyReason ?? null,
+    failureClass,
+    requestMayHaveExecuted:
+      result.requestMayHaveExecuted ??
+      (outcome === 'succeeded' ? false : true),
+    providerRequestId: result.providerRequestId ?? null,
+    actualPromptTokens: usage.inputTokens,
+    outputBudget: result.outputBudget ?? null,
+    metrics: result.metrics ?? null,
+    timings: {
+      persistMs: stageInput.persistAdapter ? null : 0,
+    },
     resultArtifactRef: `artifact:${stageInput.frozenContext.generationTraceId}:${receipt.stage}`,
     physicalRequestCount:
       result.physicalRequestCount == null
@@ -846,6 +882,144 @@ function finishRequestReceipt(
   });
   recordWritingRequestReceipt(stageInput.trace, completed);
   return completed;
+}
+
+type ReceiptResult = Parameters<typeof finishRequestReceipt>[1];
+
+function readNullableUsageValue(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function hasOwn(input: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key);
+}
+
+/**
+ * Provider usage is observation data. If rawUsage exists, its missing fields
+ * stay null even when the provider result carries local fallback estimates for
+ * business compatibility. Injected test callers without rawUsage may still
+ * provide explicit numeric usage fields.
+ */
+function resolveReceiptUsage(result: ReceiptResult) {
+  const rawUsagePresent = hasOwn(result, 'rawUsage');
+  const raw = result.rawUsage as
+    | {
+        prompt_tokens?: unknown;
+        completion_tokens?: unknown;
+        total_tokens?: unknown;
+        completion_tokens_details?: { reasoning_tokens?: unknown };
+      }
+    | undefined;
+  const read = (
+    direct: unknown,
+    rawValue: unknown,
+    nested: unknown,
+  ): number | null => {
+    if (rawUsagePresent) return readNullableUsageValue(rawValue);
+    if (direct !== undefined) return readNullableUsageValue(direct);
+    return readNullableUsageValue(nested);
+  };
+  const inputTokens = read(
+    result.inputTokens,
+    raw?.prompt_tokens,
+    result.usage?.prompt,
+  );
+  const outputTokens = read(
+    result.outputTokens,
+    raw?.completion_tokens,
+    result.usage?.completion,
+  );
+  const totalTokens = read(
+    result.totalTokens,
+    raw?.total_tokens,
+    result.usage?.total,
+  );
+  const reasoningTokens = rawUsagePresent
+    ? readNullableUsageValue(raw?.completion_tokens_details?.reasoning_tokens)
+    : readNullableUsageValue(result.reasoningTokens);
+  const visibleOutputTokens = rawUsagePresent
+    ? reasoningTokens != null && outputTokens != null
+      ? Math.max(0, outputTokens - reasoningTokens)
+      : null
+    : readNullableUsageValue(result.visibleOutputTokens);
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    reasoningTokens,
+    visibleOutputTokens,
+  };
+}
+
+function normalizeFailureClass(value: unknown):
+  | 'safe_retry'
+  | 'outcome_unknown'
+  | 'rate_limit'
+  | 'account_quota'
+  | 'config_error'
+  | 'context_error'
+  | 'content_filter'
+  | 'response_invalid'
+  | 'fatal'
+  | null {
+  return [
+    'safe_retry',
+    'outcome_unknown',
+    'rate_limit',
+    'account_quota',
+    'config_error',
+    'context_error',
+    'content_filter',
+    'response_invalid',
+    'fatal',
+  ].includes(String(value))
+    ? (String(value) as ReturnType<typeof normalizeFailureClass>)
+    : null;
+}
+
+async function persistWriterArtifact(
+  stage: SharedWritingStageName,
+  stageInput: SharedWritingStageInput,
+  artifact: SharedWritingArtifact,
+  receipts: WritingRequestReceipt[],
+): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+  } finally {
+    const completedAt = Date.now();
+    const measuredPersistMs = stageInput.persistAdapter
+      ? Math.max(0, completedAt - startedAt)
+      : 0;
+    for (let index = 0; index < receipts.length; index += 1) {
+      const current = receipts[index];
+      const durablePersistMs = current.timings.persistMs;
+      const persistMs = durablePersistMs ?? measuredPersistMs;
+      const persistCompletedAt =
+        current.timings.persistCompletedAt ?? completedAt;
+      const previousTotal = current.timings.totalMs;
+      const nextTotal =
+        previousTotal == null
+          ? current.timings.queuedAt == null
+            ? null
+            : Math.max(0, completedAt - current.timings.queuedAt)
+          : durablePersistMs != null
+            ? previousTotal
+            : previousTotal + persistMs;
+      const updated = completeWritingRequestReceipt(current, {
+        outcome: current.outcome,
+        timings: {
+          persistCompletedAt,
+          persistMs,
+          totalMs: nextTotal,
+        },
+      });
+      receipts[index] = updated;
+      recordWritingRequestReceipt(stageInput.trace, updated);
+    }
+  }
 }
 
 function attachRequestReceipts(

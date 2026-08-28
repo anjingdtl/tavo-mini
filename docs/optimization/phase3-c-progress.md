@@ -197,6 +197,56 @@ Act：当前真实长程基线仍未满足“真实 5/20/50/100 基线完成”�
 - C0-A/C0-B/C0-C 已有独立 commit 并记录真实 Android Check；C1 只有 fail-closed 采集器/timeout 修复和 NO-GO 真实尝试，C2–C10 尚未施工。禁止生成 requirement closure/final report 或宣布任何 Phase III-C/III GO。
 - 本次 push 前的最后门禁：确认 progress 文档只包含本轮事实；`git diff --check`；仅提交该文档；推送完成后将 push commit 作为下一位 agent 的起点。
 
+## C-v2 重规划分界
+
+- 原 C1 长程基线因 Runtime P0 暴露出 `total_timeout` / `outcome_unknown` 黑盒而中止；旧的 NO-GO 记录、timeout 生命周期和未知结果保护结论保留在上文，不删除、不粉饰。
+- 新 C-v2 从 `C1 — Runtime Observability First` 重启，先照亮现有成熟 Writing Pipeline 的 Request Boundary；不引入 Governor、不改变 wire budget、不修改 timeout 常数、不关闭 Thinking、不新增 Writer/Reviewer/Agent/Context/Memory/Prompt Compiler。
+- C0-A Model Capability Single Source、C0-B 项目统计/批量管理、C0-C UI Complexity Gate 均在本次开工后的 Regression Check 通过：17 suites / 121 tests PASS，`typecheck`、`verify:elastic`、`lint -- --quiet` PASS。
+- 当前 C-v2 基线 Exact HEAD 与 `origin/main` 同为 `e38b8b2e654c29561ad37ac27c77d91e4ef3d1ba`；工作区已有未跟踪文件全部属于用户/环境内容，保持不动。
+
+### C1 — Runtime Observability First（C-v2）
+
+状态：C1 Runtime Observability First GO；旧 C1 Long-Horizon NO-GO 记录继续保留；本节对应改动将在本轮独立 C1 commit 中封板。
+
+Plan：
+
+- 假设：慢请求无法解释的直接根因是观测字段分散在阶段 trace、Receipt、Provider Result 和 usage ledger 中，缺少一个与最终 messages/最终 wire budget 对齐的安全 Request Boundary 记录；当前 Receipt 的缺 usage fallback 还会把未知值写成 0。
+- 本阶段只改：每个实际 Writer/Formatter physical request 的安全 Receipt/observability metadata；队列、Provider、parse、persist 的分段生命周期；真实 Provider request id、failure class、`requestMayHaveExecuted`、finish reason、usage nullability 和物理请求数的持久化投影；对应单元/合同测试。
+- 明确不改：任何请求消息、Prompt、预算值、Governor 行为、timeout 常数、reasoning 策略、Retry 行为、Pipeline 拓扑、Mandatory Truth 投影、UI 一级导航和已有用户数据。
+- Red Test：queue/provider 分离、usage 缺失保持 null、`outcome_unknown` 保留、Receipt 禁止 raw prompt/body、physical request count 真实计数、timeout 不自动 retry、Thinking 安全 metadata 可核验。
+- Red Test 实际结果：新增 `__tests__/phase3C1RuntimeObservability.test.ts`，6 tests 中 4 项失败、2 项通过。失败点与预期一致：Receipt 缺少 `writingRunId/scenario/llmConfigId/providerAdapterId/configuredContextWindow/completionCapability/wireMaxTokens/targetChars` 等边界字段；缺 usage 被写成 `0` 而非 `null`；`outcome_unknown` 被写成 `failed` 且未保留 `providerRequestId/requestMayHaveExecuted`；`timings` 未提供 queue/provider/parse/persist/total 分段。通过项确认现有 physical request count 与未知结果不自动 retry 契约未回归。
+- CHECK-A：targeted Jest、`npm run typecheck`、`npm run verify:elastic`、`npm run lint -- --quiet`，阶段结束前 `npm run verify`。
+- CHECK-B：`npm run apk:debug`、记录 APK SHA-256、仅 `adb install -r`；保留既有 App 数据和真实 LLM 配置，通过真实 UI 运行 500 字 Fast Draft、1000 字 Standard、3000 字 Standard，并保存安全 UI/DB/Receipt/usage/filtered logcat 证据。
+- GO / NO-GO：所有 Red Test 闭环、代码门禁 PASS、APK/install-r PASS，且每个真实请求（包括 slow/timeout）能回答 queue/provider/parse/persist 分段耗时、实际 prompt tokens、最终 wire max output、Thinking/reasoning policy、Provider usage/finishReason、physical fallback、是否可能已执行、是否自动 retry；否则 C1 NO-GO 并停止，不进入 C2。
+
+最小实现：
+
+- `src/services/llm/types.ts`、`src/services/llm/requestPolicy.ts`、`src/services/llm/openAICompatibleProvider.ts`：为 Provider Result / Error 增加 provider request id、raw usage、output-budget trace 与 queue/dispatch/send/receive/parse 生命周期；保留原有请求 payload、timeout、retry、thinking 和 fallback 行为。
+- `src/services/writing/contracts/writingRequestReceipt.ts`、`src/services/writing/stages/writerCore.ts`：把安全 Request Boundary 元数据写入 Receipt；usage 缺失保持 `null`；保存 `writingRunId`、scenario、provider adapter/model/config、quality/execution/thinking/reasoning、target/context/capability/wire budget、finish/empty/failure/uncertainty、physical/fallback 计数和分段 timing；Receipt compact 投影删除 prompt/body/messages，不保存正文或 Key。
+- `src/services/writing/execution/runOutlineSharedWriterAction.ts`、`src/services/writing/persistence/continuationDurableAdapter.ts`、`src/services/writing/execution/continuationStageDriver.ts`、`src/services/writing/persist/continuationAdoption.ts`：把 Receipt 安全投影、官方 token nullability、provider boundary fields 和 durable `persistMs` 接到 attempt/stage ledger；避免 continuation 外层再次累加持久化耗时；`outcome_unknown` 仍不自动重试。
+- `src/services/writing/contracts/writingSource.ts`、`src/services/writing/contracts/frozenWritingContext.ts`、`src/services/writing/context/freezeWritingContext.ts`、`src/services/writing/scenario/continuationRunPreparation.ts`：仅传递 targetChars 作为观测输入，不参与 Freeze fingerprint 或请求行为。
+
+Targeted verify：
+
+- Red Test 首次结果已保留：6 tests 中 4 项失败、2 项通过；失败点为 Receipt 边界字段、usage nullability、`outcome_unknown` 映射和分段 timing 缺失。
+- 最小实现后 `npx jest __tests__/phase3C1RuntimeObservability.test.ts __tests__/continuationDurableAdapter.test.ts --runInBand`：2 suites / 12 tests PASS；`npm run typecheck`、`npm run verify:elastic`、`npm run lint -- --quiet` PASS。
+- 最终 `npm run verify` PASS：lint 0 errors（仓库既有 258 warnings）、typecheck、elastic、version 均 PASS；Jest `3 skipped, 513 passed` suites，`8 skipped, 3657 passed` tests，共 516 suites / 3665 tests。
+
+APK / install-r：
+
+- `npm run apk:debug` PASS；构建时仅为 JDK loopback 临时目录使用进程级 `jdk.net.unixdomain.tmpdir` 环境参数，未清理 Gradle 缓存；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小 59,826,514 bytes，SHA-256 `3F469E700E111AFB81CD7065E6828A76B5C5848A3BD9876E62C9C67A999387C1`。
+- `adb -s emulator-5554 install -r` PASS；设备包 `com.shinewriter` 为 `versionName=V2.21.1` / `versionCode=2210100`；未卸载、未 `pm clear`、未重置应用数据，既有真实 LLM 配置和项目数据保留。
+
+真实 Android / DB / Receipt / UI / logcat：
+
+- 环境核验：`adb devices` 仅使用 `emulator-5554 device`；真实配置为设备已有的 GLM-5.3-Flash/OpenAI-compatible adapter，API key 未读取、未输出。三档均通过 App 既有 UI 创建，未使用 fake/virtual provider。
+- 500 字 Fast：batch `batch_mtd69ehk_u9bjle`、run `ct_1b2eda6aa66c403ebcd4d33c937f249b`、chapter 40，UI 报告 `1/1`、完整流水线 `1`、总调用 `1`；Receipt `input/output/reasoning/visible=75737/3919/3365/554`、`finishReason=stop`、`queue/provider/parse/persist/total=0/82962/1/11/82974ms`、physical/fallback `1/0`。UI/DB/安全投影/filtered logcat：`test-logs/phase3-c1-android-current-r2/matrix-500-final.xml`、`matrix-500-final.sqlite`、`matrix-500-safe-projection.json`、`matrix-500-logcat-filtered.txt`；DB `integrity_check=ok`、projects 3、chapters 40、keys 0、敏感/崩溃匹配均为 0。
+- 1000 字 Standard：batch `batch_mtd6uh8e_2qxari`、run `ct_ddef1724b8534e55885fead36f4bfd24`、chapter 41，run `completed/adopted`；Draft 与 unified QA 各 1 次成功，Conditional Revision 按条件跳过。Draft Receipt `input/output=74796/11573`、`finishReason=stop`、provider `232781ms`、persist `10ms`、total `232793ms`；QA Receipt `input/output=22145/2693`、`finishReason=stop`、provider `67039ms`、persist `0ms`、total `67040ms`；每个阶段 physical/fallback `1/0`。证据：`standard-1000-final.sqlite`、`standard-1000-safe-projection.json`、`standard-1000-running.xml`、`standard-1000-logcat-filtered.txt`；DB `integrity_check=ok`、projects 3、chapters 41、keys 0，敏感/崩溃匹配均为 0。
+- 3000 字 Standard：batch `batch_mtd76ukt_zf0o92`、run `ct_2cf4c83b52e44d6e801c3175ff288561`、chapter 42。Draft 成功：`input/output=75126/19199`、`finishReason=stop`、provider `412890ms`、persist `13ms`、total `412904ms`；unified QA 唯一请求返回 `finishReason=length`，usage `23892/3350`、`reasoning=3343`、`visible=7`，provider `77990ms`、parse `1ms`，run 以 `SHARED_WRITER_TRUNCATED_OUTPUT` fail-closed，未自动重试；UI 明确显示“批次已暂停 / 续写运行失败”。失败请求仍有完整安全 Receipt、physical/fallback `1/0` 和 finish reason，能区分“Provider 已返回但业务 contract 拒绝”与 `outcome_unknown`。证据：`standard-3000-final-before-stop.xml`、`standard-3000-final.sqlite`、`standard-3000-safe-projection.json`、`standard-3000-logcat-filtered.txt`；DB `integrity_check=ok`、projects 3、chapters 42、keys 0，敏感/崩溃匹配均为 0。
+- 三份 safe projection 均声明 `rawPromptOrBodyStored=false`；没有把正文、完整 prompt、request/response body 或 Key 写入 Receipt/证据。所有真实调用均为单一 physical request，`protocolFallbackCount=0`；未触发 outcome-unknown auto retry。
+
+Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install-r 和 500/1000/3000 真实 Android Request Boundary Check 均完成。新 C-v2 C1 按“慢/失败可解释”标准 GO；3000 Standard 的 `finishReason=length` 是当前真实 Provider 输出上限导致的可解释 fail-closed，不冒充内容成功，也不改动 C1 之外的预算/timeout/拓扑行为。停止在 C1，不进入 C2；C2 仅记录为下一阶段建议，旧 C1 长程基线 NO-GO 仍有效。
+
 ### C2 → C10
 
-尚未开始；因 C1 NO-GO 按顺序门禁阻断。
+尚未开始；本轮按要求在 C1 Runtime Observability First 完成后停止。旧 C1 长程基线仍为 NO-GO，因此不启动 C2。

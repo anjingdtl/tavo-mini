@@ -54,6 +54,8 @@ export interface LLMResult {
    * `prompt_cache_miss_tokens`). Same contract as `promptCacheHitTokens`.
    */
   promptCacheMissTokens?: number | null;
+  /** Provider correlation id from the response headers, when supplied. */
+  providerRequestId?: string | null;
   metrics?: LLMRequestMetrics;
   errorCode?: string;
   finishReason?: string | null;
@@ -133,6 +135,17 @@ export interface LLMRequestMetrics {
   startedAt: number;
   firstTokenAt?: number;
   lastProgressAt: number;
+  /** Observation-only request-boundary timestamps. */
+  queuedAt?: number;
+  dispatchStartedAt?: number;
+  requestSentAt?: number;
+  responseReceivedAt?: number;
+  parseCompletedAt?: number;
+  /** Observation-only duration slices; they never control the request. */
+  queueWaitMs?: number;
+  providerElapsedMs?: number;
+  parseMs?: number;
+  totalMs?: number;
 }
 
 export type LLMProviderType = 'openai_compatible';

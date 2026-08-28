@@ -18,6 +18,11 @@ import type {
   WritingDurablePersistAdapter,
   WritingStageArtifacts,
 } from '../contracts/writingStage';
+import {
+  compactWritingRequestReceipt,
+  completeWritingRequestReceipt,
+  type WritingRequestReceipt,
+} from '../contracts/writingRequestReceipt';
 
 function ledgerStage(
   stage: SharedWritingStageName,
@@ -45,12 +50,47 @@ function receiptUsageTotal(
   for (const item of receipts) {
     const usage = (item as { usage?: Record<string, unknown> })?.usage;
     const value = usage?.[field];
+    if (value == null || value === '') continue;
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < 0) continue;
     total += parsed;
     found = true;
   }
   return found ? total : null;
+}
+
+/**
+ * Stamp the durable adapter portion of persistence before serializing the
+ * stage envelope. Writer Core also measures the outer adapter call; the
+ * in-place update lets that later measurement preserve this already-durable
+ * value instead of adding it twice.
+ */
+function stampPersistTiming(
+  receiptsValue: unknown,
+  startedAt: number,
+  completedAt: number,
+): void {
+  if (!Array.isArray(receiptsValue)) return;
+  const persistMs = Math.max(0, completedAt - startedAt);
+  for (let index = 0; index < receiptsValue.length; index += 1) {
+    const receipt = receiptsValue[index] as WritingRequestReceipt | undefined;
+    if (!receipt?.timings || typeof receipt.timings !== 'object') continue;
+    const previousTotal = receipt.timings.totalMs;
+    const totalMs =
+      previousTotal != null
+        ? Math.max(0, Number(previousTotal) || 0) + persistMs
+        : receipt.timings.queuedAt != null
+          ? Math.max(0, completedAt - receipt.timings.queuedAt)
+          : null;
+    receiptsValue[index] = completeWritingRequestReceipt(receipt, {
+      outcome: receipt.outcome,
+      timings: {
+        persistCompletedAt: completedAt,
+        persistMs,
+        totalMs,
+      },
+    });
+  }
 }
 
 function summarizeReceiptAccounting(
@@ -63,7 +103,9 @@ function summarizeReceiptAccounting(
   physicalRequestCount: number;
   protocolFallbackCount: number;
 } {
-  const receipts = Array.isArray(receiptsValue) ? receiptsValue : [];
+  const receipts = Array.isArray(receiptsValue)
+    ? receiptsValue.map(item => compactWritingRequestReceipt(item as any))
+    : [];
   const logicalStageCallCount = receipts.filter(
     item => (item as { kind?: unknown })?.kind === 'logical_stage',
   ).length;
@@ -151,6 +193,7 @@ export function createContinuationDurableAdapter(input: {
       }
     },
     async persistStageArtifact(stage, artifact) {
+      const persistStartedAt = Date.now();
       const mapped = ledgerStage(stage);
       if (mapped && artifact.body.trim()) {
         const existing = await getLatestArtifactForStage(input.run.id, mapped);
@@ -166,9 +209,29 @@ export function createContinuationDurableAdapter(input: {
       }
       const node = continuationNode(stage);
       if (node) {
+        // The final stage-row write serializes the receipts, so stamp the
+        // measured adapter work immediately before that write. The wrapper in
+        // Writer Core retains this durable value and does not double-add it.
+        stampPersistTiming(
+          artifact.requestReceipts,
+          persistStartedAt,
+          Date.now(),
+        );
         const accounting = summarizeReceiptAccounting(
           artifact.requestReceipts,
           artifact.usage,
+        );
+        const hasReceiptUsage = accounting.receipts.some(item => {
+          const usage = (item as { usage?: unknown })?.usage;
+          return usage != null && typeof usage === 'object';
+        });
+        const receiptInputTokens = receiptUsageTotal(
+          accounting.receipts,
+          'inputTokens',
+        );
+        const receiptOutputTokens = receiptUsageTotal(
+          accounting.receipts,
+          'outputTokens',
         );
         await updateStageResult({
           runId: input.run.id,
@@ -186,15 +249,21 @@ export function createContinuationDurableAdapter(input: {
             physicalRequestCount: accounting.physicalRequestCount,
             protocolFallbackCount: accounting.protocolFallbackCount,
           }),
-          inputTokens: artifact.usage?.inputTokens,
-          outputTokens: artifact.usage?.outputTokens,
+          inputTokens: hasReceiptUsage
+            ? receiptInputTokens
+            : artifact.usage?.inputTokens,
+          outputTokens: hasReceiptUsage
+            ? receiptOutputTokens
+            : artifact.usage?.outputTokens,
         });
       }
     },
     async persistStageFailure(stage, error) {
+      const persistStartedAt = Date.now();
       const node = continuationNode(stage);
       if (!node) return;
       const receipts = (error as { requestReceipts?: unknown }).requestReceipts;
+      stampPersistTiming(receipts, persistStartedAt, Date.now());
       const accounting = summarizeReceiptAccounting(receipts, undefined);
       const diagnostic = (error as {
         writerDiagnostics?: {

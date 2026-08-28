@@ -5,12 +5,30 @@
  * chapters. They previously lived in the legacy continuation generation
  * runner; production code must import them from here.
  */
-import type { ChatMessage } from '../../llm/types';
+import type {
+  ChatMessage,
+  LLMOutputBudgetTrace,
+  LLMRequestMetrics,
+  LLMResult,
+} from '../../llm/types';
 import type { WritingExecutionProfile } from '../contracts/executionProfile';
 
 export interface StageLlmCallResult {
   text: string;
   usage?: { prompt?: number; completion?: number };
+  reasoningText?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  reasoningTokens?: number | null;
+  visibleOutputTokens?: number | null;
+  /** Provider-reported usage stays separate from local compatibility fields. */
+  rawUsage?: LLMResult['rawUsage'];
+  /** Request-boundary observation; never controls the stage. */
+  metrics?: LLMRequestMetrics;
+  /** Logical output-budget translation observed at the provider boundary. */
+  outputBudget?: LLMOutputBudgetTrace;
+  providerRequestId?: string | null;
   finishReason?: string | null;
   physicalRequestCount?: number;
   protocolFallbackCount?: number;
