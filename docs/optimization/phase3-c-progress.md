@@ -102,7 +102,7 @@ Act：C0-B 的实现、真实 Android Check 与全量门禁均 PASS，已由独�
 
 ### C0-C — UI Complexity Gate
 
-状态：C0-C 真实 Check GO；独立 commit 待完成。C1 尚未开始。
+状态：C0-C 真实 Check GO；独立 commit `279e1257`。C1 尚未开始。
 
 Plan：专门审核 C0-A/C0-B 是否把后台能力转嫁成新的一级导航、核心写作步骤、默认技术信息或用户必须维护的开关；允许的变化只有上下文长度、项目卡统计、同页批量管理和必要的普通语言确认。
 
@@ -133,8 +133,8 @@ APK / install-r：
 - `ui-real-llm-test-result.xml`、`screen-real-llm-test-result.png`：使用模拟器已保存的真实 `GLM-5.3-Flash` 返回“测试通过 / 模型已连通 / 回复：连接成功”；未使用 mock/fake provider。
 - `after-real-llm.sqlite`：`integrity_check=ok`、Schema 59、项目 `1 章 / 20 字`、`context_window=1000000`、`max_output_tokens=0`、`context_auto_input=1000000`，Story Memory/pipeline task 保留；`logcat-app-errors.txt` 应用错误模式 0 行。
 
-Act：四项 UI Complexity Gate 均 PASS；C0-C 独立 commit 完成后允许进入 C1。尚未建立任何长程基线，未宣布 Phase III-C/Phase III 最终 GO。
+Act：四项 UI Complexity Gate 均 PASS，已由独立 commit `279e1257` 封存；现在允许进入 C1。尚未建立任何长程基线，未宣布 Phase III-C/Phase III 最终 GO。
 
 ### C1 → C10
 
-尚未开始。严格等待 C0-C 独立 commit 完成后进入。
+尚未开始。C0-C 已独立提交，按方案先建立当前 HEAD 的真实 Long-Horizon baseline。
