@@ -63,7 +63,7 @@ Act：已完成独立 commit `6a1c4d69`，允许进入 C0-B；若后续阶段真
 
 ### C0-B — 项目卡片统计与批量项目管理
 
-状态：C0-B 真实 Check GO；提交前已完成一次回归修复，独立 commit 待完成。C0-C 尚未开始。
+状态：C0-B 真实 Check GO；独立 commit `86084517`。提交前已完成一次真实 UI 回归修复并重新走完 APK/install-r/全量门禁。C0-C 尚未开始。
 
 Plan：项目卡片只显示轻量投影的章节数与统一口径正文字数；正文统计不在列表页扫描；在同一作品库页提供批量导出与批量删除，不新增一级导航或工程术语。统计口径为所有已保存可编辑章节正文的非空白 Unicode code point；大纲、Canon、原著来源、人物、世界书、笔记、Story Memory、prompt、revision、context 和 metadata 均排除。
 
@@ -98,8 +98,8 @@ APK / install-r：
 - 通过应用“恢复项目”真实流程导入其中一个 entry，UI 显示“项目「Phase3C_C0B_1」已恢复”；随后批量确认删除 3 个原选项目，最后单独删除导入副本。`after-import-copy-delete.sqlite`：`integrity_check=ok`、仅保留原有 `Phase3C_C0A_QA`，`orphanStats=0`、`orphanChapters=0`。
 - 修复复测：真实编辑器保存 `Phase3C_C0B_body_123` 后，重建 APK、install-r、重启并回到项目列表，UI 从 `0 字` 正确显示 `1 章 · 20 字`：`ui-project-list-after-fixed-install.xml`、`screen-fixed-install-card-20-chars.png`；`after-fixed-install-card-refresh.sqlite` 中 `content_length=20`、`body_char_count=20`，1M/AUTO 仍为 `context_window=1000000` / `max_output_tokens=0`，Story Memory 与 pipeline task 保留。
 
-Act：C0-B 的实现、真实 Android Check 与全量门禁均 PASS；完成独立 commit 后才进入 C0-C。C0-C 及后续阶段仍未开始，未宣布任何 Phase III/C 最终 GO。
+Act：C0-B 的实现、真实 Android Check 与全量门禁均 PASS，已由独立 commit `86084517` 封存；现在允许进入 C0-C。C0-C 及后续阶段仍未开始，未宣布任何 Phase III/C 最终 GO。
 
 ### C0-C → C10
 
-尚未开始。严格等待 C0-B 独立 commit 完成后进入。
+尚未开始。严格等待 C0-B 证据闭环文档提交后进入。
