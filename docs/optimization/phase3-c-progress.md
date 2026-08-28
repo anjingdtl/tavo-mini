@@ -100,6 +100,41 @@ APK / install-r：
 
 Act：C0-B 的实现、真实 Android Check 与全量门禁均 PASS，已由独立 commit `86084517` 封存；现在允许进入 C0-C。C0-C 及后续阶段仍未开始，未宣布任何 Phase III/C 最终 GO。
 
-### C0-C → C10
+### C0-C — UI Complexity Gate
 
-尚未开始。严格等待 C0-B 证据闭环文档提交后进入。
+状态：C0-C 真实 Check GO；独立 commit 待完成。C1 尚未开始。
+
+Plan：专门审核 C0-A/C0-B 是否把后台能力转嫁成新的一级导航、核心写作步骤、默认技术信息或用户必须维护的开关；允许的变化只有上下文长度、项目卡统计、同页批量管理和必要的普通语言确认。
+
+Red Test：
+
+- `__tests__/phase3CUiComplexityGate.test.ts` 首次运行时因缺少持久审核记录失败（1 failed / 2 passed），随后补齐审核记录并保留三项 contract check。
+
+最小实现：
+
+- 新增 `docs/optimization/phase3-c-ui-complexity-audit.md`，记录四项 0 增量门禁、禁止项、主流程与真实 Android 证据；不新增任何产品页面、一级导航或后台设置。
+- 新增 `__tests__/phase3CUiComplexityGate.test.ts`：固定五个既有 Tab、普通用户屏幕不出现 C 轮后台术语、项目卡和同页批量入口仍存在。
+
+Targeted verify：
+
+- `npx jest __tests__/phase3CUiComplexityGate.test.ts --runInBand`：3/3 PASS。
+- `npm run typecheck` PASS；`npm run verify:elastic` PASS；该 contract test 专项 lint PASS。
+
+APK / install-r：
+
+- `npm run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `5E0FDD7079A3CFA4E8519AFD3C47D314083DFCBC89793BBAC953C93145B0D73B`。
+- `adb -s emulator-5554 install -r` PASS；版本与 `firstInstallTime=2026-08-10 09:49:20` 保持；未卸载、未清数据。
+
+真实 Android / DB / Receipt / UI：
+
+- `test-logs/phase3-c-c0-c-android/ui-primary-tabs.xml`：仍为 `1 项目 / 2 资料 / 3 写作 / 构建 / 设置` 五个既有一级入口；无 C 轮新增一级导航。
+- `ui-core-writing-flow.xml` → `ui-core-chapter-editor.xml` 与 `screen-core-chapter-editor.png`：项目列表进入写作后直接到章节编辑，正文显示 `20 字`，核心路径没有新增点击步骤。
+- `ui-settings-home.xml`、`ui-llm-settings.xml`：上下文长度与 LLM 配置仍在既有设置页；没有新增后台模块开关或工程控制台。
+- `ui-real-llm-test-result.xml`、`screen-real-llm-test-result.png`：使用模拟器已保存的真实 `GLM-5.3-Flash` 返回“测试通过 / 模型已连通 / 回复：连接成功”；未使用 mock/fake provider。
+- `after-real-llm.sqlite`：`integrity_check=ok`、Schema 59、项目 `1 章 / 20 字`、`context_window=1000000`、`max_output_tokens=0`、`context_auto_input=1000000`，Story Memory/pipeline task 保留；`logcat-app-errors.txt` 应用错误模式 0 行。
+
+Act：四项 UI Complexity Gate 均 PASS；C0-C 独立 commit 完成后允许进入 C1。尚未建立任何长程基线，未宣布 Phase III-C/Phase III 最终 GO。
+
+### C1 → C10
+
+尚未开始。严格等待 C0-C 独立 commit 完成后进入。
