@@ -49,6 +49,10 @@ export interface Project {
   mode: ProjectMode;
   created_at: string;
   updated_at: string;
+  /** Materialized projection fields returned by the project library query. */
+  chapter_count?: number;
+  body_char_count?: number;
+  writing_stats_updated_at?: string;
 }
 
 export interface Chapter {

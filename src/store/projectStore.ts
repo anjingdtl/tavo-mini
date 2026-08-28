@@ -15,6 +15,7 @@ interface ProjectState {
   loadProjects: () => Promise<void>;
   createProject: (name: string, mode: ProjectMode) => Promise<number>;
   deleteProject: (id: number) => Promise<void>;
+  deleteProjects: (ids: number[]) => Promise<void>;
   renameProject: (id: number, name: string) => Promise<void>;
   setCurrentProject: (project: Project | null) => Promise<void>;
   selectWorkspaceMode: (mode: 'outline' | 'continuation') => Promise<void>;
@@ -75,8 +76,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   deleteProject: async id => {
-    await db.deleteProject(id);
-    if (get().currentProject?.id === id) {
+    await get().deleteProjects([id]);
+  },
+
+  deleteProjects: async ids => {
+    const normalizedIds = new Set(ids.map(Number));
+    await db.deleteProjects(Array.from(normalizedIds));
+    if (get().currentProject && normalizedIds.has(get().currentProject!.id)) {
       await db.setSetting('current_project_id', '');
       set({ currentProject: null });
     }

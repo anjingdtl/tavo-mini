@@ -17,6 +17,11 @@
  */
 import type { ChatMessage } from '../../llm/types';
 import {
+  buildEnsureProjectWritingStatsStatement,
+  buildProjectWritingStatsDeltaStatement,
+  countProjectBodyChars,
+} from '../../projectWritingStats';
+import {
   callLLMResult,
   resolveLLMRequestConfig,
   resolveLLMRequestConfigById,
@@ -122,7 +127,9 @@ function traceJsonForRunState(input: {
   run: ContinuationGenerationRun;
   event: Parameters<typeof appendContinuationGenerationTraceEvent>[1]['event'];
   state: ContinuationRunState;
-  stage?: import('../../continuation/generation/types').ContinuationStageName | null;
+  stage?:
+    | import('../../continuation/generation/types').ContinuationStageName
+    | null;
   reason?: string | null;
   adoption?: Partial<
     NonNullable<ContinuationContextTrace['generationTrace']>['adoption']
@@ -133,7 +140,9 @@ function traceJsonForRunState(input: {
 }): string | null {
   if (!input.run.contextSnapshotJson) return null;
   try {
-    const snapshot = JSON.parse(input.run.contextSnapshotJson) as ContinuationContextSnapshot;
+    const snapshot = JSON.parse(
+      input.run.contextSnapshotJson,
+    ) as ContinuationContextSnapshot;
     const trace = input.run.contextTraceJson
       ? (JSON.parse(input.run.contextTraceJson) as ContinuationContextTrace)
       : ({
@@ -297,10 +306,7 @@ function findNearestUniqueExcerptMatch(input: {
   }
 
   const latestStart = content.length - excerpt.length;
-  const searchStart = Math.max(
-    0,
-    originalStart - REPAIR_REBIND_SEARCH_RADIUS,
-  );
+  const searchStart = Math.max(0, originalStart - REPAIR_REBIND_SEARCH_RADIUS);
   const searchEnd = Math.min(
     latestStart,
     originalStart + REPAIR_REBIND_SEARCH_RADIUS,
@@ -1222,7 +1228,10 @@ async function assertContextFreshOrMarkOutdated(
       throw new ContinuationOutdatedError();
     }
     const settings = settingsRes.rows.item(0);
-    if (run.sourceId != null && Number(settings.active_source_id) !== Number(run.sourceId)) {
+    if (
+      run.sourceId != null &&
+      Number(settings.active_source_id) !== Number(run.sourceId)
+    ) {
       await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
         state: 'outdated',
         errorCode: 'outdated',
@@ -1289,7 +1298,10 @@ async function assertContextFreshOrMarkOutdated(
     throw new ContinuationOutdatedError();
   }
   // Source mismatch (run frozen a source that is no longer active).
-  if (run.sourceId != null && Number(activeSource.sourceId) !== Number(run.sourceId)) {
+  if (
+    run.sourceId != null &&
+    Number(activeSource.sourceId) !== Number(run.sourceId)
+  ) {
     await casUpdateRunState(run.id, ['awaiting_user', 'interrupted'], {
       state: 'outdated',
       errorCode: 'outdated',
@@ -1299,7 +1311,9 @@ async function assertContextFreshOrMarkOutdated(
     throw new ContinuationOutdatedError();
   }
   // Canon snapshot mismatch: compare active snapshot id + revision.
-  let activeCanon: Awaited<ReturnType<typeof CanonQueryService.getActiveSnapshot>>;
+  let activeCanon: Awaited<
+    ReturnType<typeof CanonQueryService.getActiveSnapshot>
+  >;
   try {
     activeCanon = await CanonQueryService.getActiveSnapshot(run.projectId);
   } catch {
@@ -1382,8 +1396,8 @@ export async function adoptArtifactAsDraft(input: {
         ? await getEligibleArtifactForRun(run.id, input.artifactId)
         : await getArtifactForRun(run.id, input.artifactId)
       : useEligibleOnly
-        ? await getLatestEligibleArtifact(run.id)
-        : await getLatestArtifact(run.id)) ?? null;
+      ? await getLatestEligibleArtifact(run.id)
+      : await getLatestArtifact(run.id)) ?? null;
   if (!artifact) {
     throw new Error(
       input.artifactId
@@ -1424,10 +1438,7 @@ export async function adoptArtifactAsDraft(input: {
   // fails and we refuse to write the chapter — the adopt cannot succeed against
   // a run that is no longer adoptable.
   // V5: only stage=final + eligible may be adopted.
-  if (
-    run.workflowVersion === 5 &&
-    artifact.stage !== 'final'
-  ) {
+  if (run.workflowVersion === 5 && artifact.stage !== 'final') {
     throw new Error('只有最终稿 V3 可被采纳');
   }
   if (
@@ -1445,21 +1456,22 @@ export async function adoptArtifactAsDraft(input: {
       completionReason: 'adopted',
       adoptedRevisionHash: adoptedHash,
       completedAt: ts,
-      contextTraceJson: traceJsonForRunState({
-        run,
-        event: 'completed',
-        state: 'completed',
-        stage: 'awaiting_user',
-        adoption: {
-          status: 'adopted',
-          adoptedRevisionHash: adoptedHash,
-        },
-        finalization: {
-          status: 'pending',
-          finalizedRevisionHash: null,
-          completionReason: 'adopted',
-        },
-      }) ?? undefined,
+      contextTraceJson:
+        traceJsonForRunState({
+          run,
+          event: 'completed',
+          state: 'completed',
+          stage: 'awaiting_user',
+          adoption: {
+            status: 'adopted',
+            adoptedRevisionHash: adoptedHash,
+          },
+          finalization: {
+            status: 'pending',
+            finalizedRevisionHash: null,
+            completionReason: 'adopted',
+          },
+        }) ?? undefined,
     },
   );
   if (!claimed) {
@@ -1493,6 +1505,18 @@ export async function adoptArtifactAsDraft(input: {
       sql: `UPDATE chapters SET content = ?, status = CASE WHEN status = 'finalized' THEN status ELSE 'draft' END, updated_at = ?
         WHERE id = ? AND updated_at = ?`,
       params: [artifact.content, ts, run.chapterId, currentUpdatedAt],
+    },
+    buildEnsureProjectWritingStatsStatement(run.projectId, ts),
+    buildProjectWritingStatsDeltaStatement(
+      run.projectId,
+      0,
+      countProjectBodyChars(artifact.content) -
+        countProjectBodyChars(currentContent),
+      ts,
+    ),
+    {
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [ts, run.projectId],
     },
   ];
   if (input.allowOpenChecks) {
@@ -1763,11 +1787,12 @@ export async function finalizeContinuationChapter(input: {
   const revisionHash = contentRevisionHash(input.content);
   const db = await openDatabase();
   const [ch] = await db.executeSql(
-    'SELECT position FROM chapters WHERE id = ?',
+    'SELECT position, content FROM chapters WHERE id = ?',
     [input.chapterId],
   );
   if (ch.rows.length === 0) throw new Error('章节不存在');
   const position = ch.rows.item(0).position as number;
+  const previousContent = String(ch.rows.item(0).content ?? '');
   const ts = new Date().toISOString();
 
   let resolvedSourceRunId: string | null = input.sourceRunId ?? null;
@@ -1843,7 +1868,9 @@ export async function finalizeContinuationChapter(input: {
     try {
       snapshot = JSON.parse(sourceRun.contextSnapshotJson);
     } catch {
-      throw new Error('Continuation Kernel snapshot 无法解析，禁止进入 PostWriting');
+      throw new Error(
+        'Continuation Kernel snapshot 无法解析，禁止进入 PostWriting',
+      );
     }
     const topology =
       snapshot?.frozenWritingContext?.stagePolicy?.values
@@ -1875,6 +1902,18 @@ export async function finalizeContinuationChapter(input: {
       sql: `UPDATE chapters SET content = ?, status = 'finalized',
         finalized_at = ?, updated_at = ? WHERE id = ?`,
       params: [input.content, ts, ts, input.chapterId],
+    },
+    buildEnsureProjectWritingStatsStatement(input.projectId, ts),
+    buildProjectWritingStatsDeltaStatement(
+      input.projectId,
+      0,
+      countProjectBodyChars(input.content) -
+        countProjectBodyChars(previousContent),
+      ts,
+    ),
+    {
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [ts, input.projectId],
     },
     {
       sql: `UPDATE project_story_memory SET status = 'dirty',

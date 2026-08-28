@@ -7,10 +7,14 @@ import {
   getContinuationChapterNumbering,
   makeContinuationChapterNumbering,
 } from './continuation/chapterNumbering/continuationChapterNumbering';
+import { buildProjectBatchArchive, bytesToBase64 } from './projectBatchService';
 
 function safeFileName(name: string): string {
   // eslint-disable-next-line no-control-regex
-  const cleaned = (name || 'novel-project').replace(/[\\/:*?"<>|\x00-\x1F]/g, '_');
+  const cleaned = (name || 'novel-project').replace(
+    /[\\/:*?"<>|\x00-\x1F]/g,
+    '_',
+  );
   return cleaned.length > 128 ? cleaned.slice(0, 128) : cleaned;
 }
 
@@ -28,7 +32,12 @@ function resolveChapterTitle(
     const resolved = numbering.getDisplayTitle(chapter);
     if (resolved) return resolved;
   }
-  return chapter.title || makeContinuationChapterNumbering(null).getDefaultTitle(chapter.position as any);
+  return (
+    chapter.title ||
+    makeContinuationChapterNumbering(null).getDefaultTitle(
+      chapter.position as any,
+    )
+  );
 }
 
 async function loadExportNumbering(
@@ -55,7 +64,8 @@ export async function exportToMarkdown(projectId: number): Promise<string> {
     const title = resolveChapterTitle(project, chapter, numbering);
     markdown += `## ${title}\n\n`;
     if (chapter.synopsis) markdown += `> ${chapter.synopsis}\n\n`;
-    if (chapter.summary_json?.brief) markdown += `> 摘要：${chapter.summary_json.brief}\n\n`;
+    if (chapter.summary_json?.brief)
+      markdown += `> 摘要：${chapter.summary_json.brief}\n\n`;
     markdown += `${chapter.content || ''}\n\n---\n\n`;
   }
 
@@ -76,10 +86,33 @@ export async function exportToText(projectId: number): Promise<string> {
   return saveTextDocument(`${projectName}.txt`, `﻿${text}`, 'text/plain');
 }
 
-export async function exportShineWriterNovelJSON(projectId: number): Promise<string> {
+export async function exportShineWriterNovelJSON(
+  projectId: number,
+): Promise<string> {
+  const artifact = await buildShineWriterNovelJSON(projectId);
+  return saveTextDocument(
+    artifact.fileName,
+    artifact.content,
+    'application/json',
+  );
+}
+
+export async function buildShineWriterNovelJSON(projectId: number): Promise<{
+  fileName: string;
+  content: string;
+}> {
   const project = await db.getProjectById(projectId);
-  const [chapters, fragments, plotlines, characters, worldbookEntries, notes, presets, outlines] = await Promise.all([
-    db.getChaptersByProject(projectId),
+  const [
+    chapters,
+    fragments,
+    plotlines,
+    characters,
+    worldbookEntries,
+    notes,
+    presets,
+    outlines,
+  ] = await Promise.all([
+    db.getChaptersByProjectForExport(projectId),
     db.getFragmentsByProject(projectId),
     db.getPlotlinesByProject(projectId),
     db.getCharactersByProject(projectId),
@@ -140,7 +173,65 @@ export async function exportShineWriterNovelJSON(projectId: number): Promise<str
   }
 
   const projectName = safeFileName(project?.name || 'novel-project');
-  return saveTextDocument(`${projectName}.shinewriter.json`, JSON.stringify(data, null, 2), 'application/json');
+  return {
+    fileName: `${projectName}.shinewriter.json`,
+    content: JSON.stringify(data, null, 2),
+  };
+}
+
+function uniqueArchiveFileName(fileName: string, used: Set<string>): string {
+  if (!used.has(fileName)) {
+    used.add(fileName);
+    return fileName;
+  }
+  const extension = '.shinewriter.json';
+  const stem = fileName.endsWith(extension)
+    ? fileName.slice(0, -extension.length)
+    : fileName;
+  let suffix = 2;
+  let candidate = `${stem} (${suffix})${extension}`;
+  while (used.has(candidate)) {
+    suffix += 1;
+    candidate = `${stem} (${suffix})${extension}`;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+/** Export complete, re-importable project packages into one ZIP artifact. */
+export async function exportProjectsAsZip(
+  projectIds: number[],
+): Promise<string> {
+  const ids = Array.from(
+    new Set(
+      projectIds.map(Number).filter(id => Number.isInteger(id) && id > 0),
+    ),
+  );
+  if (ids.length === 0) throw new Error('没有选择可导出的项目。');
+
+  const usedNames = new Set<string>();
+  const entries: Array<{ fileName: string; content: string }> = [];
+  const failures: string[] = [];
+  for (const projectId of ids) {
+    let projectName = String(projectId);
+    try {
+      const project = await db.getProjectById(projectId);
+      if (!project) throw new Error('项目不存在');
+      projectName = String(project.name || projectId);
+      const artifact = await buildShineWriterNovelJSON(projectId);
+      entries.push({
+        fileName: uniqueArchiveFileName(artifact.fileName, usedNames),
+        content: artifact.content,
+      });
+    } catch (error: any) {
+      failures.push(`「${projectName}」：${error?.message || '未知错误'}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`批量导出失败（未生成 ZIP）：${failures.join('；')}`);
+  }
+  const archive = buildProjectBatchArchive(entries);
+  return saveBinaryDocument(archive.fileName, archive.bytes, 'application/zip');
 }
 
 /**
@@ -195,19 +286,33 @@ function safeJson(text: string): unknown {
 
 function normalizeKeys(raw: string): string[] {
   if (!raw) return [];
-  return raw.split(/[,，\n]/).map((k: string) => k.trim()).filter(Boolean);
+  return raw
+    .split(/[,，\n]/)
+    .map((k: string) => k.trim())
+    .filter(Boolean);
 }
 
-export async function exportCharacterJSON(characterId: number): Promise<string> {
+export async function exportCharacterJSON(
+  characterId: number,
+): Promise<string> {
   const character = await db.getCharacterById(characterId);
   if (!character) throw new Error('未找到角色卡。');
   const data = safeJson(character.data_json) as Record<string, unknown>;
-  const exportData = 'spec' in data ? data : { spec: 'chara_card_v3', spec_version: '3.0', data };
+  const exportData =
+    'spec' in data
+      ? data
+      : { spec: 'chara_card_v3', spec_version: '3.0', data };
   const fileName = safeFileName(character.name || 'character') + '.json';
-  return saveTextDocument(fileName, JSON.stringify(exportData, null, 2), 'application/json');
+  return saveTextDocument(
+    fileName,
+    JSON.stringify(exportData, null, 2),
+    'application/json',
+  );
 }
 
-export async function exportWorldbookCollectionJSON(collectionId: number): Promise<string> {
+export async function exportWorldbookCollectionJSON(
+  collectionId: number,
+): Promise<string> {
   const collections = await db.getWorldbookCollections();
   const collection = collections.find((c: any) => c.id === collectionId);
   if (!collection) throw new Error('未找到世界书合集。');
@@ -229,7 +334,11 @@ export async function exportWorldbookCollectionJSON(collectionId: number): Promi
       })),
     },
   };
-  return saveTextDocument(fileName, JSON.stringify(exportData, null, 2), 'application/json');
+  return saveTextDocument(
+    fileName,
+    JSON.stringify(exportData, null, 2),
+    'application/json',
+  );
 }
 
 export async function exportNoteMarkdown(noteId: number): Promise<string> {
@@ -248,7 +357,9 @@ export async function exportPresetJSON(presetId: number): Promise<string> {
   if (!preset) throw new Error('未找到作家风格。');
   const fileName = safeFileName(preset.name || 'preset') + '.json';
   const exportData = {
-    spec: preset.semantic_json ? 'shinewriter-writer-style-v1' : 'shinewriter-preset-v1',
+    spec: preset.semantic_json
+      ? 'shinewriter-writer-style-v1'
+      : 'shinewriter-preset-v1',
     name: preset.name,
     system_prompt: preset.system_prompt,
     writing_style: preset.writing_style,
@@ -264,7 +375,11 @@ export async function exportPresetJSON(presetId: number): Promise<string> {
       ? { compatibility: JSON.parse(preset.compatibility_json) }
       : {}),
   };
-  return saveTextDocument(fileName, JSON.stringify(exportData, null, 2), 'application/json');
+  return saveTextDocument(
+    fileName,
+    JSON.stringify(exportData, null, 2),
+    'application/json',
+  );
 }
 
 export async function exportWriterStyleAsTavern(
@@ -273,25 +388,32 @@ export async function exportWriterStyleAsTavern(
   const styles = await db.getAllPresets();
   const style = styles.find(item => Number(item.id) === Number(styleId));
   if (!style) throw new Error('未找到作家风格。');
-  const semantic = style.semantic_json
-    ? JSON.parse(style.semantic_json)
-    : null;
+  const semantic = style.semantic_json ? JSON.parse(style.semantic_json) : null;
   const compatibility = style.compatibility_json
     ? JSON.parse(style.compatibility_json)
     : null;
   const raw = compatibility
     ? exportSillyTavernOpenAIPreset(compatibility, semantic || undefined)
     : freezeWriterStyle(style as any).semantic
-      ? (await import('./writerStyle/tavernAdapter')).exportNewWriterStyleAsTavern(
-          freezeWriterStyle(style as any).semantic!,
-        )
-      : null;
+    ? (
+        await import('./writerStyle/tavernAdapter')
+      ).exportNewWriterStyleAsTavern(freezeWriterStyle(style as any).semantic!)
+    : null;
   if (!raw) throw new Error('该旧版作家风格没有可导出的 Semantic。');
-  const fileName = safeFileName(style.name || 'writer-style') + '-SillyTavern.json';
-  return saveTextDocument(fileName, JSON.stringify(raw, null, 2), 'application/json');
+  const fileName =
+    safeFileName(style.name || 'writer-style') + '-SillyTavern.json';
+  return saveTextDocument(
+    fileName,
+    JSON.stringify(raw, null, 2),
+    'application/json',
+  );
 }
 
-async function saveTextDocument(fileName: string, content: string, mimeType: string): Promise<string> {
+async function saveTextDocument(
+  fileName: string,
+  content: string,
+  mimeType: string,
+): Promise<string> {
   const cachePath = `${RNFS.CachesDirectoryPath}/${Date.now()}-${fileName}`;
   try {
     await RNFS.writeFile(cachePath, content, 'utf8');
@@ -305,6 +427,33 @@ async function saveTextDocument(fileName: string, content: string, mimeType: str
     }
     return saved.uri;
   } finally {
-    RNFS.unlink(cachePath).catch(() => { /* ignore cleanup errors */ });
+    RNFS.unlink(cachePath).catch(() => {
+      /* ignore cleanup errors */
+    });
+  }
+}
+
+async function saveBinaryDocument(
+  fileName: string,
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<string> {
+  const cachePath = `${RNFS.CachesDirectoryPath}/${Date.now()}-${fileName}`;
+  try {
+    await RNFS.writeFile(cachePath, bytesToBase64(bytes), 'base64');
+    const [saved] = await saveDocuments({
+      sourceUris: [`file://${cachePath}`],
+      fileName,
+      mimeType,
+    });
+    if (!saved || saved.error) {
+      throw new Error(saved?.error || '未生成导出文件。');
+    }
+    if (!saved.uri) throw new Error('未取得导出文件位置。');
+    return saved.uri;
+  } finally {
+    RNFS.unlink(cachePath).catch(() => {
+      /* ignore cleanup errors */
+    });
   }
 }

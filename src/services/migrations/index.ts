@@ -29,39 +29,25 @@ import { buildV27toV28Statements } from './v27-to-v28';
 import { migrateV28ToV29 } from './v28-to-v29';
 import { buildV29toV30Statements } from './v29-to-v30';
 import { buildV30toV31Statements } from './v30-to-v31';
-import {
-  migrateV31ToV32,
-} from './v31-to-v32';
+import { migrateV31ToV32 } from './v31-to-v32';
 import { migrateV32ToV33 } from './v32-to-v33';
-import {
-  migrateV33ToV34,
-} from './v33-to-v34';
+import { migrateV33ToV34 } from './v33-to-v34';
 import { buildV34toV35Statements } from './v34-to-v35';
 import { buildV35toV36Statements } from './v35-to-v36';
 import { buildV36toV37Statements } from './v36-to-v37';
 import { buildV37toV38Statements } from './v37-to-v38';
-import {
-  migrateV38ToV39,
-} from './v38-to-v39';
+import { migrateV38ToV39 } from './v38-to-v39';
 import { migrateV39ToV40 } from './v39-to-v40';
-import {
-  migrateV40ToV41,
-} from './v40-to-v41';
-import {
-  migrateV41ToV42,
-} from './v41-to-v42';
-import {
-  migrateV42ToV43,
-} from './v42-to-v43';
+import { migrateV40ToV41 } from './v40-to-v41';
+import { migrateV41ToV42 } from './v41-to-v42';
+import { migrateV42ToV43 } from './v42-to-v43';
 import { migrateV43ToV44 } from './v43-to-v44';
 import { migrateV44ToV45 } from './v44-to-v45';
 import { migrateV45ToV46 } from './v45-to-v46';
 import { migrateV46ToV47 } from './v46-to-v47';
 import { migrateV47ToV48 } from './v47-to-v48';
 import { migrateV48ToV49 } from './v48-to-v49';
-import {
-  migrateV49ToV50,
-} from './v49-to-v50';
+import { migrateV49ToV50 } from './v49-to-v50';
 import { migrateV50ToV51 } from './v50-to-v51';
 import { migrateV51ToV52 } from './v51-to-v52';
 import { migrateV52ToV53 } from './v52-to-v53';
@@ -70,8 +56,9 @@ import { migrateV54ToV55 } from './v54-to-v55';
 import { migrateV55ToV56 } from './v55-to-v56';
 import { migrateV56ToV57 } from './v56-to-v57';
 import { migrateV57ToV58 } from './v57-to-v58';
+import { migrateV58ToV59 } from './v58-to-v59';
 
-export const SCHEMA_VERSION = 58;
+export const SCHEMA_VERSION = 59;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -438,6 +425,15 @@ const MIGRATIONS: Migration[] = [
     // capability values are deliberately preserved by the migration.
     buildStatements: noSchemaStatements,
     migrate: migrateV57ToV58,
+  },
+  {
+    from: 58,
+    to: 59,
+    breaking: false,
+    // Derived project writing stats are rebuilt from the authoritative
+    // projects/chapters rows in narrow batches.
+    buildStatements: noSchemaStatements,
+    migrate: migrateV58ToV59,
   },
 ];
 

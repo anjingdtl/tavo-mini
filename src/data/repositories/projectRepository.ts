@@ -28,6 +28,11 @@ import {
 } from './storyMemoryRepository';
 import { invalidateIdf } from '../../utils/idfCache';
 import { v4 } from '../../services/uuidBridge';
+import {
+  buildEnsureProjectWritingStatsStatement,
+  buildProjectWritingStatsDeltaStatement,
+  countProjectBodyChars,
+} from '../../services/projectWritingStats';
 
 function buildContinuationStateInvalidationStatements(input: {
   projectId: number;
@@ -57,12 +62,7 @@ function buildContinuationStateInvalidationStatements(input: {
       sql: `UPDATE continuation_state_proposals
         SET status = 'invalidated', decision_note = ?, decided_at = ?, updated_at = ?
         WHERE chapter_id = ? AND status IN ('pending', 'accepted')`,
-      params: [
-        input.reason,
-        input.timestamp,
-        input.timestamp,
-        input.chapterId,
-      ],
+      params: [input.reason, input.timestamp, input.timestamp, input.chapterId],
     },
     {
       sql: `UPDATE continuation_check_results
@@ -101,7 +101,10 @@ function buildContinuationStateInvalidationStatements(input: {
         input.projectId,
         input.keepChapterReference ? input.chapterId : null,
         'rebuild_story_memory',
-        JSON.stringify({ fromPosition: input.fromPosition, reason: input.reason }),
+        JSON.stringify({
+          fromPosition: input.fromPosition,
+          reason: input.reason,
+        }),
         dedupeKey,
         input.timestamp,
         input.timestamp,
@@ -112,7 +115,14 @@ function buildContinuationStateInvalidationStatements(input: {
 
 export async function getAllProjects(): Promise<Project[]> {
   return all<Project>(
-    'SELECT * FROM projects WHERE id > 0 ORDER BY updated_at DESC',
+    `SELECT p.*,
+        COALESCE(s.chapter_count, 0) AS chapter_count,
+        COALESCE(s.body_char_count, 0) AS body_char_count,
+        s.updated_at AS writing_stats_updated_at
+     FROM projects p
+     LEFT JOIN project_writing_stats s ON s.project_id = p.id
+     WHERE p.id > 0
+     ORDER BY p.updated_at DESC`,
   );
 }
 
@@ -134,7 +144,16 @@ export async function setProjectCollectionEnabled(
 }
 
 export async function getProjectById(id: number): Promise<Project | null> {
-  return one<Project>('SELECT * FROM projects WHERE id = ? AND id > 0', [id]);
+  return one<Project>(
+    `SELECT p.*,
+        COALESCE(s.chapter_count, 0) AS chapter_count,
+        COALESCE(s.body_char_count, 0) AS body_char_count,
+        s.updated_at AS writing_stats_updated_at
+     FROM projects p
+     LEFT JOIN project_writing_stats s ON s.project_id = p.id
+     WHERE p.id = ? AND p.id > 0`,
+    [id],
+  );
 }
 
 export async function createProject(
@@ -170,6 +189,7 @@ export async function createProject(
   // ensureDefaultPreset 可能独立写入全局预设，因此不能嵌套到这个事务中；
   // 但该预设也必须以关闭状态关联到新项目，写作时会安全回退内建默认提示词。
   await executeTransaction(database, [
+    buildEnsureProjectWritingStatsStatement(projectId, timestamp),
     {
       sql: `INSERT OR IGNORE INTO project_resources (project_id, resource_type, resource_id, enabled)
             SELECT ?, 'character', id, 0 FROM characters`,
@@ -228,11 +248,28 @@ export async function updateProject(id: number, name: string): Promise<void> {
 }
 
 export async function deleteProject(id: number): Promise<void> {
-  if (id <= 0) return; // 防止删除全局资源（project_id=0 的数据）
-  await execute(await openDatabase(), 'DELETE FROM projects WHERE id = ?', [
-    id,
+  await deleteProjects([id]);
+}
+
+/**
+ * Delete projects atomically. SQLite foreign-key cascades remove all
+ * project-scoped chapters, runs, mappings, outbox rows, and resources; a
+ * killed process therefore observes either the old set or the fully deleted
+ * set after reopening the database.
+ */
+export async function deleteProjects(ids: number[]): Promise<void> {
+  const projectIds = Array.from(
+    new Set(ids.map(Number).filter(id => Number.isInteger(id) && id > 0)),
+  );
+  if (projectIds.length === 0) return;
+  const placeholders = projectIds.map(() => '?').join(',');
+  await executeTransaction(await openDatabase(), [
+    {
+      sql: `DELETE FROM projects WHERE id IN (${placeholders})`,
+      params: projectIds,
+    },
   ]);
-  invalidateIdf(id);
+  projectIds.forEach(invalidateIdf);
 }
 
 export async function getChaptersByProject(
@@ -248,6 +285,42 @@ export async function getChaptersByProject(
 export async function getChapterById(id: number): Promise<Chapter | null> {
   const row = await one<Row>('SELECT * FROM chapters WHERE id = ?', [id]);
   return row ? parseChapter(row) : null;
+}
+
+/**
+ * Export-only chapter reader. It keeps each SQLite result window narrow and
+ * bounded while preserving the user-visible position order. The ordinary
+ * editor/context readers keep their existing semantics.
+ */
+export async function getChaptersByProjectForExport(
+  projectId: number,
+  chunkSize = 32,
+): Promise<Chapter[]> {
+  const safeChunkSize = Math.max(1, Math.floor(chunkSize));
+  const chapters: Chapter[] = [];
+  let lastPosition = -1;
+  let lastId = 0;
+  const chapterProjection = `id, project_id, position, title, synopsis, content,
+    status, summary_json, memory_summary, memory_summary_tokens, finalized_at,
+    created_at, updated_at`;
+  while (true) {
+    const rows = await all<Row>(
+      `SELECT ${chapterProjection}
+       FROM chapters
+       WHERE project_id = ?
+         AND (position > ? OR (position = ? AND id > ?))
+       ORDER BY position ASC, id ASC
+       LIMIT ?`,
+      [projectId, lastPosition, lastPosition, lastId, safeChunkSize],
+    );
+    if (rows.length === 0) break;
+    chapters.push(...rows.map(parseChapter));
+    const last = rows[rows.length - 1];
+    lastPosition = Number(last.position);
+    lastId = Number(last.id);
+    if (rows.length < safeChunkSize) break;
+  }
+  return chapters;
 }
 
 /**
@@ -314,22 +387,38 @@ export async function createChapter(
   title?: string,
 ): Promise<number> {
   const timestamp = now();
-  const result = await execute(
+  let chapterId: number | undefined;
+  await executeTransaction(
     await openDatabase(),
-    'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [
-      projectId,
-      position,
-      title || `第 ${position + 1} 章`,
-      '',
-      '',
-      'planned',
-      timestamp,
-      timestamp,
+      {
+        sql: 'INSERT INTO chapters (project_id, position, title, synopsis, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        params: [
+          projectId,
+          position,
+          title || `第 ${position + 1} 章`,
+          '',
+          '',
+          'planned',
+          timestamp,
+          timestamp,
+        ],
+      },
+      buildEnsureProjectWritingStatsStatement(projectId, timestamp),
+      buildProjectWritingStatsDeltaStatement(projectId, 1, 0, timestamp),
+      {
+        sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+        params: [timestamp, projectId],
+      },
     ],
+    {
+      onStatementComplete: (index, _rowsAffected, insertId) => {
+        if (index === 1) chapterId = insertId;
+      },
+    },
   );
-  await touchProject(projectId);
-  return result.insertId!;
+  if (chapterId == null) throw new Error('章节创建失败');
+  return chapterId;
 }
 
 export interface BulkChapterInput {
@@ -362,8 +451,24 @@ export async function createChaptersBulk(
       timestamp,
     ],
   }));
+  const bodyCharCount = chapters.reduce(
+    (total, chapter) => total + countProjectBodyChars(chapter.content),
+    0,
+  );
+  statements.push(
+    buildEnsureProjectWritingStatsStatement(projectId, timestamp),
+    buildProjectWritingStatsDeltaStatement(
+      projectId,
+      chapters.length,
+      bodyCharCount,
+      timestamp,
+    ),
+    {
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [timestamp, projectId],
+    },
+  );
   await executeTransaction(await openDatabase(), statements);
-  await touchProject(projectId);
   return chapters.length;
 }
 
@@ -410,6 +515,19 @@ export async function updateChapter(
   ];
 
   if (chapter) {
+    if ('content' in fields) {
+      const nextContent = String(fields.content ?? '');
+      statements.push(
+        buildEnsureProjectWritingStatsStatement(chapter.project_id, timestamp),
+        buildProjectWritingStatsDeltaStatement(
+          chapter.project_id,
+          0,
+          countProjectBodyChars(nextContent) -
+            countProjectBodyChars(chapter.content),
+          timestamp,
+        ),
+      );
+    }
     statements.push({
       sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
       params: [timestamp, chapter.project_id],
@@ -469,6 +587,15 @@ export async function deleteChapter(id: number): Promise<void> {
 
   let shouldInvalidateIdf = false;
   if (chapter) {
+    statements.push(
+      buildEnsureProjectWritingStatsStatement(chapter.project_id, timestamp),
+      buildProjectWritingStatsDeltaStatement(
+        chapter.project_id,
+        -1,
+        -countProjectBodyChars(chapter.content),
+        timestamp,
+      ),
+    );
     statements.push({
       sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
       params: [timestamp, chapter.project_id],

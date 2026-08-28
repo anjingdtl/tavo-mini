@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -9,10 +9,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   Download,
   FileText,
   History,
+  ListChecks,
   Pencil,
   Plus,
   Trash2,
@@ -33,9 +35,11 @@ import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import {
   exportShineWriterNovelJSON,
+  exportProjectsAsZip,
   exportToMarkdown,
   exportToText,
 } from '../services/exportService';
+import { formatProjectWritingStats } from '../services/projectWritingStats';
 import {
   pickAndPreviewProjectPackage,
   importProjectPackage,
@@ -68,6 +72,7 @@ export const ProjectListScreen: React.FC = () => {
     loadProjects,
     createProject,
     deleteProject,
+    deleteProjects,
     renameProject,
     setCurrentProject,
     workspaceMode,
@@ -96,6 +101,11 @@ export const ProjectListScreen: React.FC = () => {
   const [modeFilter, setModeFilter] = useState<'outline' | 'continuation'>(
     workspaceMode,
   );
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const filteredProjects = projects.filter(
     project =>
@@ -103,10 +113,48 @@ export const ProjectListScreen: React.FC = () => {
       (!searchQuery.trim() ||
         project.name.toLowerCase().includes(searchQuery.trim().toLowerCase())),
   );
+  const selectedCount = selectedProjectIds.size;
+  const allVisibleSelected =
+    filteredProjects.length > 0 &&
+    filteredProjects.every(project => selectedProjectIds.has(project.id));
 
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const toggleProjectSelection = (projectId: number) => {
+    setSelectedProjectIds(previous => {
+      const next = new Set(previous);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelectedProjectIds(previous => {
+      const next = new Set(previous);
+      if (allVisibleSelected) {
+        filteredProjects.forEach(project => next.delete(project.id));
+      } else {
+        filteredProjects.forEach(project => next.add(project.id));
+      }
+      return next;
+    });
+  };
+
+  const openBatchManagement = () => {
+    setBatchMode(true);
+    setSelectedProjectIds(new Set());
+  };
+
+  const closeBatchManagement = () => {
+    if (batchBusy) return;
+    setBatchMode(false);
+    setSelectedProjectIds(new Set());
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadProjects();
+    }, [loadProjects]),
+  );
 
   useEffect(() => {
     setModeFilter(workspaceMode);
@@ -114,6 +162,7 @@ export const ProjectListScreen: React.FC = () => {
 
   const selectMode = (mode: 'outline' | 'continuation') => {
     setModeFilter(mode);
+    if (batchMode) setSelectedProjectIds(new Set());
     selectWorkspaceMode(mode).catch(error => {
       Toast.show({
         type: 'error',
@@ -250,7 +299,10 @@ export const ProjectListScreen: React.FC = () => {
           `当前仍在的续写章：${diagnosis.liveChapterCount} 篇（有正文 ${diagnosis.liveChaptersWithContent} 篇）—— 一律不动。`,
           `扫描到可找回正文：约 ${diagnosis.recoverableCount} 篇`,
           `  · 已删除章节的修订（孤儿）：${diagnosis.orphanRevisionTargets}`,
-          `  · 仍存在章节的修订快照：${Math.max(0, diagnosis.revisionTargets - diagnosis.orphanRevisionTargets)}`,
+          `  · 仍存在章节的修订快照：${Math.max(
+            0,
+            diagnosis.revisionTargets - diagnosis.orphanRevisionTargets,
+          )}`,
           `  · AI 生成产物：${diagnosis.artifactBodies}`,
           '',
           '推荐「只找回已删除章」：新建「…（找回）」项目，与你事故后另写的十多章彻底分离。',
@@ -283,6 +335,51 @@ export const ProjectListScreen: React.FC = () => {
     } finally {
       setExportingId(null);
     }
+  };
+
+  const exportSelectedProjects = async () => {
+    const ids = Array.from(selectedProjectIds);
+    if (ids.length === 0 || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const path = await exportProjectsAsZip(ids);
+      Alert.alert('批量导出成功', path);
+    } catch (error: any) {
+      Alert.alert('批量导出失败', error?.message || '未生成导出文件。');
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const deleteSelectedProjects = () => {
+    const ids = Array.from(selectedProjectIds);
+    if (ids.length === 0 || batchBusy) return;
+    Alert.alert(
+      `删除 ${ids.length} 个项目？`,
+      '删除后将同时移除这些项目的章节和相关资料。\n删除后无法恢复，请先导出需要保留的项目。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            setBatchBusy(true);
+            try {
+              await deleteProjects(ids);
+              setSelectedProjectIds(new Set());
+              setBatchMode(false);
+            } catch (error: any) {
+              Alert.alert(
+                '批量删除失败',
+                error?.message || '没有项目被确认删除。',
+              );
+            } finally {
+              setBatchBusy(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const showExportOptions = (project: Project) => {
@@ -442,7 +539,9 @@ export const ProjectListScreen: React.FC = () => {
     const active = currentProject?.id === item.id;
     return (
       <TouchableOpacity
-        onPress={() => setCurrentProject(item)}
+        onPress={() =>
+          batchMode ? toggleProjectSelection(item.id) : setCurrentProject(item)
+        }
         activeOpacity={0.75}
       >
         <Card
@@ -468,8 +567,35 @@ export const ProjectListScreen: React.FC = () => {
                 {PROJECT_MODE_LABELS[item.mode] ?? item.mode} · 更新于{' '}
                 {new Date(item.updated_at).toLocaleDateString('zh-CN')}
               </Text>
+              <Text
+                style={[styles.stats, { color: theme.colors.textPrimary }]}
+                accessibilityLabel="项目章节和正文字数"
+              >
+                {formatProjectWritingStats({
+                  chapterCount: item.chapter_count ?? 0,
+                  bodyCharCount: item.body_char_count ?? 0,
+                })}
+              </Text>
             </View>
-            {item.mode === 'continuation' ? (
+            {batchMode ? (
+              <View
+                accessibilityRole="checkbox"
+                accessibilityState={{
+                  checked: selectedProjectIds.has(item.id),
+                }}
+                accessibilityLabel={`选择项目 ${item.name}`}
+                style={styles.batchCheckbox}
+              >
+                <Text
+                  style={[
+                    styles.batchCheckboxText,
+                    { color: theme.colors.accent },
+                  ]}
+                >
+                  {selectedProjectIds.has(item.id) ? '✓' : '○'}
+                </Text>
+              </View>
+            ) : item.mode === 'continuation' ? (
               <TouchableOpacity
                 accessibilityLabel="找回旧章节到新项目"
                 onPress={() => handleRecoverChapters(item)}
@@ -537,6 +663,15 @@ export const ProjectListScreen: React.FC = () => {
               onPress={() => openNewProjectModal(modeFilter)}
               compact
               testID="new-project-button"
+            />
+            <Button
+              label={batchMode ? '退出批量' : '批量管理'}
+              icon={ListChecks}
+              variant="ghost"
+              onPress={batchMode ? closeBatchManagement : openBatchManagement}
+              disabled={batchBusy}
+              compact
+              testID="batch-management-button"
             />
           </View>
         }
@@ -623,6 +758,44 @@ export const ProjectListScreen: React.FC = () => {
               )}
             </View>
           </View>
+          {batchMode ? (
+            <View
+              style={[
+                styles.batchToolbar,
+                { borderColor: theme.colors.border },
+              ]}
+            >
+              <Text
+                style={[styles.batchCount, { color: theme.colors.textPrimary }]}
+              >
+                已选择 {selectedCount} 个
+              </Text>
+              <Button
+                label={allVisibleSelected ? '取消全选' : '全选'}
+                variant="ghost"
+                onPress={toggleSelectAllVisible}
+                disabled={batchBusy || filteredProjects.length === 0}
+                compact
+                testID="batch-select-all-button"
+              />
+              <Button
+                label={batchBusy ? '处理中...' : '导出'}
+                variant="ghost"
+                onPress={exportSelectedProjects}
+                disabled={batchBusy || selectedCount === 0}
+                compact
+                testID="batch-export-button"
+              />
+              <Button
+                label="删除"
+                variant="ghost"
+                onPress={deleteSelectedProjects}
+                disabled={batchBusy || selectedCount === 0}
+                compact
+                testID="batch-delete-button"
+              />
+            </View>
+          ) : null}
           {filteredProjects.length === 0 ? (
             <EmptyState
               title="无匹配项目"
@@ -694,10 +867,7 @@ export const ProjectListScreen: React.FC = () => {
         animationType="fade"
         onRequestClose={() => setRenaming(null)}
       >
-        <Pressable
-          style={styles.overlay}
-          onPress={() => setRenaming(null)}
-        >
+        <Pressable style={styles.overlay} onPress={() => setRenaming(null)}>
           <Pressable
             style={[styles.modal, { backgroundColor: theme.colors.surface }]}
             onPress={event => event.stopPropagation()}
@@ -753,7 +923,10 @@ export const ProjectListScreen: React.FC = () => {
               导入项目
             </Text>
             <Text
-              style={[styles.modalSubtitle, { color: theme.colors.textSecondary }]}
+              style={[
+                styles.modalSubtitle,
+                { color: theme.colors.textSecondary },
+              ]}
             >
               把已有作品带进可编辑项目，两种方式任选：
             </Text>
@@ -774,12 +947,18 @@ export const ProjectListScreen: React.FC = () => {
               </View>
               <View style={styles.importCardText}>
                 <Text
-                  style={[styles.importCardTitle, { color: theme.colors.textPrimary }]}
+                  style={[
+                    styles.importCardTitle,
+                    { color: theme.colors.textPrimary },
+                  ]}
                 >
                   导入小说
                 </Text>
                 <Text
-                  style={[styles.importCardDesc, { color: theme.colors.textSecondary }]}
+                  style={[
+                    styles.importCardDesc,
+                    { color: theme.colors.textSecondary },
+                  ]}
                 >
                   TXT 小说 → 自动识别章节 → 创建可编辑项目
                 </Text>
@@ -802,12 +981,18 @@ export const ProjectListScreen: React.FC = () => {
               </View>
               <View style={styles.importCardText}>
                 <Text
-                  style={[styles.importCardTitle, { color: theme.colors.textPrimary }]}
+                  style={[
+                    styles.importCardTitle,
+                    { color: theme.colors.textPrimary },
+                  ]}
                 >
                   恢复项目
                 </Text>
                 <Text
-                  style={[styles.importCardDesc, { color: theme.colors.textSecondary }]}
+                  style={[
+                    styles.importCardDesc,
+                    { color: theme.colors.textSecondary },
+                  ]}
                 >
                   TAVO / ShineWriter JSON 项目包 → 恢复完整项目
                 </Text>
@@ -852,42 +1037,137 @@ export const ProjectListScreen: React.FC = () => {
             {txtConfirm && (
               <View style={styles.previewRows}>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>项目名</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.name}</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    项目名
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {txtConfirm.preview.name}
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>编码</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.encoding}</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    编码
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {txtConfirm.preview.encoding}
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>识别章节</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.chapterCount} 章</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    识别章节
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {txtConfirm.preview.chapterCount} 章
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>总字数</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{txtConfirm.preview.charCount.toLocaleString('zh-CN')} 字</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    总字数
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {txtConfirm.preview.charCount.toLocaleString('zh-CN')} 字
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>分章</Text>
-                  <Text style={[styles.previewValue, { color: txtConfirm.preview.needsSmartSplit ? theme.colors.warning ?? '#B7791F' : theme.colors.accent }]}>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    分章
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      {
+                        color: txtConfirm.preview.needsSmartSplit
+                          ? theme.colors.warning ?? '#B7791F'
+                          : theme.colors.accent,
+                      },
+                    ]}
+                  >
                     {txtConfirm.preview.needsSmartSplit ? '⚠ ' : '✓ '}
                     {txtConfirm.preview.splitModeLabel}
                   </Text>
                 </View>
                 {txtConfirm.preview.sampleTitles.length > 0 && (
                   <View style={styles.previewRow}>
-                    <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>预览</Text>
-                    <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]} numberOfLines={2}>
+                    <Text
+                      style={[
+                        styles.previewKey,
+                        { color: theme.colors.textSecondary },
+                      ]}
+                    >
+                      预览
+                    </Text>
+                    <Text
+                      style={[
+                        styles.previewValue,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                      numberOfLines={2}
+                    >
                       {txtConfirm.preview.sampleTitles.join('、')}
                     </Text>
                   </View>
                 )}
                 {txtConfirm.preview.warnings.length > 0 && (
-                  <Text style={[styles.previewWarning, { color: theme.colors.warning ?? '#B7791F' }]}>
+                  <Text
+                    style={[
+                      styles.previewWarning,
+                      { color: theme.colors.warning ?? '#B7791F' },
+                    ]}
+                  >
                     {txtConfirm.preview.warnings.join('\n')}
                   </Text>
                 )}
-                <Text style={[styles.previewHint, { color: theme.colors.textMuted }]}>
+                <Text
+                  style={[
+                    styles.previewHint,
+                    { color: theme.colors.textMuted },
+                  ]}
+                >
                   将导入为「大纲创作」项目，章节可直接编辑并运行 AI 流水线。
                 </Text>
               </View>
@@ -947,39 +1227,114 @@ export const ProjectListScreen: React.FC = () => {
             {jsonConfirm && (
               <View style={styles.previewRows}>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>项目名</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.name}</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    项目名
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {jsonConfirm.preview.name}
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>模式</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    模式
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
                     {isValidProjectMode(jsonConfirm.preview.mode)
                       ? PROJECT_MODE_LABELS[jsonConfirm.preview.mode]
                       : jsonConfirm.preview.mode}
                   </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>章节</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.chapterCount} 章</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    章节
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {jsonConfirm.preview.chapterCount} 章
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>资料</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>{jsonConfirm.preview.resourceCount} 项</Text>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    资料
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
+                    {jsonConfirm.preview.resourceCount} 项
+                  </Text>
                 </View>
                 <View style={styles.previewRow}>
-                  <Text style={[styles.previewKey, { color: theme.colors.textSecondary }]}>包含</Text>
-                  <Text style={[styles.previewValue, { color: theme.colors.textPrimary }]}>
+                  <Text
+                    style={[
+                      styles.previewKey,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
+                    包含
+                  </Text>
+                  <Text
+                    style={[
+                      styles.previewValue,
+                      { color: theme.colors.textPrimary },
+                    ]}
+                  >
                     {[
                       jsonConfirm.preview.hasOutlines ? '大纲' : null,
                       jsonConfirm.preview.hasCharacters ? '人物' : null,
                       jsonConfirm.preview.hasWorldbook ? '世界书' : null,
                       jsonConfirm.preview.hasNotes ? '笔记' : null,
                       jsonConfirm.preview.hasWriterStyle ? '作家风格' : null,
-                      jsonConfirm.preview.hasContinuation ? 'Continuation 数据' : null,
-                    ].filter(Boolean).join('、') || '无'}
+                      jsonConfirm.preview.hasContinuation
+                        ? 'Continuation 数据'
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join('、') || '无'}
                   </Text>
                 </View>
-                <Text style={[styles.previewHint, { color: theme.colors.textMuted }]}>
+                <Text
+                  style={[
+                    styles.previewHint,
+                    { color: theme.colors.textMuted },
+                  ]}
+                >
                   导入完成后将直接进入该项目。
                 </Text>
               </View>
@@ -1031,6 +1386,12 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   meta: { fontSize: 12, lineHeight: 18 },
+  stats: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+    marginTop: 3,
+  },
   activeText: {
     marginTop: spacing.sm,
     fontSize: 12,
@@ -1065,6 +1426,24 @@ const styles = StyleSheet.create({
   },
   activeCard: { borderLeftWidth: 4 },
   headerActions: { flexDirection: 'row', gap: spacing.xs },
+  batchToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  batchCount: { flex: 1, fontSize: 13, fontWeight: '600' },
+  batchCheckbox: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  batchCheckboxText: { fontSize: 26, lineHeight: 30 },
   emptyActions: {
     flexDirection: 'row',
     gap: spacing.md,

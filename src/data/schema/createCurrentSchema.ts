@@ -24,6 +24,7 @@ import { buildSchema53CreateSqls } from '../../services/migrations/v52-to-v53';
 import { buildSchema54CreateSqls } from '../../services/migrations/v53-to-v54';
 import { buildSchema55CreateSqls } from '../../services/migrations/v54-to-v55';
 import { buildV55ToV56Statements } from '../../services/migrations/v55-to-v56';
+import { buildProjectWritingStatsCreateSql } from '../../services/migrations/v58-to-v59';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -62,6 +63,10 @@ export function createCurrentSchemaStatements(): string[] {
         FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
       )
     `,
+    // Schema 59: materialized, derived project writing stats. Chapter bodies
+    // remain the source of truth; the migration/rebuild service repairs this
+    // projection deterministically.
+    buildProjectWritingStatsCreateSql(),
     `
       CREATE TABLE IF NOT EXISTS fragments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -657,8 +662,9 @@ export function createCurrentSchemaStatements(): string[] {
       .map(item => item.sql)
       .filter(
         sql =>
-          !sql.includes('CREATE TABLE IF NOT EXISTS continuation_analysis_batches') &&
-          !sql.includes('idx_continuation_analysis_batches_state'),
+          !sql.includes(
+            'CREATE TABLE IF NOT EXISTS continuation_analysis_batches',
+          ) && !sql.includes('idx_continuation_analysis_batches_state'),
       ),
     buildAnalysisBatchesCreateSqlV35(),
     // Schema 21 Phase 3 generation / state tables. The legacy single-row
@@ -666,7 +672,8 @@ export function createCurrentSchemaStatements(): string[] {
     // 26 rebuilds it as a versioned table; the v20→v21 migration still creates
     // the legacy shape so the v25→v26 RENAME has something to upgrade.
     ...buildSchema21CreateSqls().filter(
-      sql => !sql.includes('CREATE TABLE IF NOT EXISTS continuation_style_profiles'),
+      sql =>
+        !sql.includes('CREATE TABLE IF NOT EXISTS continuation_style_profiles'),
     ),
     // Schema 23 Canon request-group work items. This supersedes the Schema 22
     // five-family table on fresh installs.

@@ -35,6 +35,11 @@ import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 import { MultiChapterBatchError } from './errors';
 import type { BatchItemCompletionQuality } from '../../types/multiChapterBatch';
 import { enqueueStoryMemoryMaintenance } from '../storyMemory/storyMemoryService';
+import {
+  buildEnsureProjectWritingStatsStatement,
+  buildProjectWritingStatsDeltaStatement,
+  countProjectBodyChars,
+} from '../projectWritingStats';
 
 function enqueueDirtyStoryMemoryMaintenance(
   projectId: number,
@@ -317,6 +322,7 @@ export async function adoptPipelineTaskResultAtomic(
     chapter.finalized_at != null;
 
   const oldContent = String(chapter.content || '');
+  const statsTimestamp = new Date().toISOString();
   const previousAlreadyRecorded =
     latestRevision?.source_ref === input.taskId &&
     latestRevision?.source === 'adoption_previous';
@@ -341,8 +347,21 @@ export async function adoptPipelineTaskResultAtomic(
   }
   statements.push({
     sql: `UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?`,
-    params: [finalText, new Date().toISOString(), chapter.id],
+    params: [finalText, statsTimestamp, chapter.id],
   });
+  statements.push(
+    buildEnsureProjectWritingStatsStatement(chapter.project_id, statsTimestamp),
+    buildProjectWritingStatsDeltaStatement(
+      chapter.project_id,
+      0,
+      countProjectBodyChars(finalText) - countProjectBodyChars(oldContent),
+      statsTimestamp,
+    ),
+    {
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [statsTimestamp, chapter.project_id],
+    },
+  );
   statements.push({
     sql: `INSERT INTO content_revisions (
             project_id, target_type, target_id, title, content, source, source_ref, created_at
@@ -445,10 +464,7 @@ export async function adoptPipelineTaskResultAtomic(
     } catch {
       // non-fatal
     }
-    enqueueDirtyStoryMemoryMaintenance(
-      chapter.project_id,
-      backstopOutcome,
-    );
+    enqueueDirtyStoryMemoryMaintenance(chapter.project_id, backstopOutcome);
   }
 
   return {

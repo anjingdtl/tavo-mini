@@ -12,7 +12,10 @@
  *   - smart/3 → smart/10；smart/5 保持 5；fixed/7 保持 7
  *   - schema_version 最终 = 43
  */
-import { createCanonInMemoryDb, type InMemorySqliteDb } from './helpers/canonInMemoryDb';
+import {
+  createCanonInMemoryDb,
+  type InMemorySqliteDb,
+} from './helpers/canonInMemoryDb';
 import { setupInMemoryFs } from './schema40-fixture-helpers';
 import {
   __resetForTest,
@@ -171,7 +174,7 @@ describe('U3: Schema40 (V2.11.24) → current full chain (real sql.js)', () => {
     // Schema 53 added continuation-batch columns, Schema 54 the one-shot
     // execution_profile batch column, Schema 55 the pipeline-topology freeze
     // columns — all with safe defaults; the version pin guards drift.
-    expect(String(SCHEMA_VERSION)).toBe('58');
+    expect(String(SCHEMA_VERSION)).toBe('59');
 
     const fullAfter = await snapshotTables();
     for (const table of Object.keys(before)) {
@@ -198,4 +201,3 @@ describe('U3: Schema40 (V2.11.24) → current full chain (real sql.js)', () => {
     expect(Number(p3.rows.item(0).interval_chapters)).toBe(7);
   });
 });
-

@@ -149,7 +149,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
 
     const stmts = txStatements();
-    expect(stmts).toHaveLength(4);
+    expect(stmts).toHaveLength(6); // chapter + stats projection + touch + memory effects
 
     const chapterUpdate = findTx(
       sql =>
@@ -203,7 +203,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
 
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
-    // All four statements were prepared for the single transaction — no
+    // All six statements were prepared for the single transaction — no
     // sequential fallback path that could leave chapter committed alone.
     const stmts = txStatements();
     expect(stmts.map(s => s.sql).join('\n')).toEqual(
@@ -233,7 +233,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
     const stmts = txStatements();
-    expect(stmts).toHaveLength(4);
+    expect(stmts).toHaveLength(6);
     expect(
       stmts.some(
         s =>
@@ -256,7 +256,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
 
     const stmts = txStatements();
-    expect(stmts).toHaveLength(4);
+    expect(stmts).toHaveLength(6);
 
     const deleteSql = findTx(sql =>
       sql.includes('DELETE FROM chapters WHERE id = ?'),
@@ -333,8 +333,8 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
 
     const stmts = txStatements();
-    // chapter update + project touch + pending invalidate
-    expect(stmts).toHaveLength(3);
+    // chapter update + stats projection + project touch + pending invalidate
+    expect(stmts).toHaveLength(5);
 
     expect(
       findTx(sql => sql.includes('dirty_from_position = CASE')),
@@ -371,7 +371,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
     let stmts = txStatements();
-    expect(stmts).toHaveLength(2); // chapter + project touch
+    expect(stmts).toHaveLength(4); // chapter + stats projection + project touch
     expect(stmts.some(s => s.sql.includes('dirty_from_position'))).toBe(false);
     expect(stmts.some(s => s.sql.includes('story_memory_batches'))).toBe(false);
 

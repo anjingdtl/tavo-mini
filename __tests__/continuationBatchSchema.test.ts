@@ -14,7 +14,10 @@ import {
   createCanonInMemoryDb,
   createEmptyInMemoryDb,
 } from './helpers/canonInMemoryDb';
-import { __setDatabaseForTest, __resetForTest } from '../src/data/connection/openDatabase';
+import {
+  __setDatabaseForTest,
+  __resetForTest,
+} from '../src/data/connection/openDatabase';
 import { buildSchema42CreateSqls } from '../src/services/migrations/v41-to-v42';
 import { migrateV52ToV53 } from '../src/services/migrations/v52-to-v53';
 import { SCHEMA_VERSION } from '../src/services/migrations';
@@ -56,7 +59,7 @@ describe('continuation batch schema 53/54', () => {
   });
 
   it('SCHEMA_VERSION includes the Final-body artifact hash migration', () => {
-    expect(SCHEMA_VERSION).toBe(58);
+    expect(SCHEMA_VERSION).toBe(59);
   });
 
   describe('fresh install', () => {
@@ -293,18 +296,18 @@ describe('continuation batch schema 53/54', () => {
       expect(itemColumns.has('active_continuation_run_id')).toBe(true);
 
       // Old rows are readable with their historical semantics intact.
-      const [rows] = await db.executeSql(
+      const [rows] = (await db.executeSql(
         'SELECT status, writing_mode FROM multi_chapter_batches WHERE id = ?',
         ['batch_old'],
-      ) as any;
+      )) as any;
       expect(rows.rows.length).toBe(1);
       expect(rows.rows.item(0).writing_mode).toBe('outline');
       expect(rows.rows.item(0).status).toBe('completed');
 
-      const [itemRows] = await db.executeSql(
+      const [itemRows] = (await db.executeSql(
         'SELECT status, active_continuation_run_id FROM multi_chapter_batch_items WHERE batch_id = ?',
         ['batch_old'],
-      ) as any;
+      )) as any;
       expect(itemRows.rows.item(0).active_continuation_run_id).toBeNull();
       expect(itemRows.rows.item(0).status).toBe('succeeded');
 

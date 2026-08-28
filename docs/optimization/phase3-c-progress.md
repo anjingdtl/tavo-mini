@@ -22,7 +22,7 @@
 
 ### C0-A — Model Capability Single Source of Truth
 
-状态：C0-A 能力门禁 GO；独立提交待完成。完整 1M 真实写作请求另有超时观察，未计入成功证据。
+状态：C0-A 能力门禁 GO；独立提交 `6a1c4d69`。完整 1M 真实写作请求另有超时观察，未计入成功证据。
 
 Plan：让 `llm_config.context_window` / `llm_config.max_output_tokens` 成为唯一模型能力真相；自动上下文入口与当前模型双向同步；`max_output_tokens=0` 保持 AUTO；新 Freeze 读取最新已保存能力，旧 Frozen 任务不漂移。
 
@@ -59,8 +59,47 @@ APK / install-r：
 
 当前已知限制：模拟器只有 1 个已保存的真实 LLM 配置，model-switch 的多配置行为由 targeted/unit contract 覆盖；未复制或输出 API key 来制造第二配置。
 
-Act：完成独立 commit 后，才允许进入 C0-B；若后续阶段真实 LLM Check=NO-GO，立即停止，不以“基本完成”替代门禁。
+Act：已完成独立 commit `6a1c4d69`，允许进入 C0-B；若后续阶段真实 LLM Check=NO-GO，立即停止，不以“基本完成”替代门禁。
 
-### C0-B → C10
+### C0-B — 项目卡片统计与批量项目管理
 
-尚未开始。严格等待前序阶段真实 Check=GO 后进入。
+状态：C0-B 真实 Check GO；提交前已完成一次回归修复，独立 commit 待完成。C0-C 尚未开始。
+
+Plan：项目卡片只显示轻量投影的章节数与统一口径正文字数；正文统计不在列表页扫描；在同一作品库页提供批量导出与批量删除，不新增一级导航或工程术语。统计口径为所有已保存可编辑章节正文的非空白 Unicode code point；大纲、Canon、原著来源、人物、世界书、笔记、Story Memory、prompt、revision、context 和 metadata 均排除。
+
+Red Test：
+
+- 初始 C0-B 新增测试在实现前按预期失败：3 个新 suite 因模块不存在失败（2 suites failed、9 tests failed、7 passed）。
+- 真实 UI Check 进一步发现列表回退后仍显示 `0 字`，而 DB 已为正文 20 字；新增 `__tests__/projectListStatsRefresh.test.ts` 固化“列表重新获得焦点必须 reload 共享统计”的 Red Test。
+
+最小实现：
+
+- `src/services/projectWritingStats.ts`：唯一统计与显示格式服务；Unicode code point 计数、章节/正文 delta SQL builder。
+- `src/data/schema/createCurrentSchema.ts`、`src/services/migrations/v58-to-v59.ts`、`src/services/migrations/index.ts`、`src/services/database/schemaManifest.ts`：Schema 59 新增 `project_writing_stats`，迁移按 64 章窄投影批量、确定性清空重建，并兼容最小历史迁移夹具。
+- `src/data/repositories/projectRepository.ts`、`src/data/repositories/multiChapterBatchRepository.ts`、`src/services/multiChapterBatch/batchAdoption.ts`、`src/services/writing/persist/continuationAdoption.ts`：创建、保存、定稿、删除、批量写章等边界与正文写入同事务维护统计；列表只读取 `p.* + project_writing_stats`，导出采用 position/id keyset 窄投影。
+- `src/services/projectBatchService.ts`、`src/services/exportService.ts`：生成 UTF-8 store ZIP，批量导出任一项目失败则不保存半包；现有完整 ShineWriter JSON 包作为每个 entry，导入仍走既有恢复流程，不写入密钥。
+- `src/screens/ProjectListScreen.tsx`、`src/store/projectStore.ts`：同页批量模式、全选/选择、导出/确认删除；焦点恢复时 reload 项目投影。`__tests__/projectListStatsRefresh.test.ts` 发现的回归由 `useFocusEffect + loadProjects` 最小修复。
+
+Targeted verify：
+
+- C0-B targeted：6 suites / 21 tests PASS（统计服务、真实 sql.js 仓储、迁移、ZIP、既有 story-memory statement 回归、焦点刷新 contract）。
+- `npm run typecheck` PASS；`npm run verify:elastic` PASS。
+- 修复后的 `npm run verify` 明确 PASS：509 suites passed（4 skipped），3,644 tests passed（9 skipped），总计 513 suites / 3,653 tests；lint 0 errors（保留仓库既有 warnings）。
+
+APK / install-r：
+
+- 修复后 `npm run apk:debug` PASS；`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `5E0FDD7079A3CFA4E8519AFD3C47D314083DFCBC89793BBAC953C93145B0D73B`。
+- `adb -s emulator-5554 install -r` PASS；`versionName=V2.21.1`、`versionCode=2210100`；`firstInstallTime=2026-08-10 09:49:20` 保持不变。无卸载、`pm clear` 或应用数据重置。
+
+真实 Android / DB / Receipt / UI / Final Artifact：
+
+- 模拟器现有真实 `GLM-5.3-Flash` 配置通过“保存并测试”，UI 显示“测试通过 / 模型已连通 / 回复：连接成功”：`test-logs/phase3-c-c0-b-android/ui-real-llm-test-result.xml` 与 `screen-real-llm-test-result.png`。未使用 mock/fake provider；过滤应用错误日志为空：`logcat-fixed-app-errors.txt`。
+- 通过真实 UI 创建 3 个临时项目，批量模式明确显示“已选择 3 个”，原有 `Phase3C_C0A_QA` 未选中。系统保存界面实际生成 `ShineWriter-Projects-20260828.zip`，应用 UI 显示“批量导出成功”；设备实际文件已拉取到 `test-logs/phase3-c-c0-b-android/ShineWriter-Projects-20260828.zip`，3 个 entry 均为合法 JSON、项目名匹配、无 API key/Authorization/Bearer 字段。导出截图/XML 与 ZIP 解包结果均保留在同一目录。
+- 通过应用“恢复项目”真实流程导入其中一个 entry，UI 显示“项目「Phase3C_C0B_1」已恢复”；随后批量确认删除 3 个原选项目，最后单独删除导入副本。`after-import-copy-delete.sqlite`：`integrity_check=ok`、仅保留原有 `Phase3C_C0A_QA`，`orphanStats=0`、`orphanChapters=0`。
+- 修复复测：真实编辑器保存 `Phase3C_C0B_body_123` 后，重建 APK、install-r、重启并回到项目列表，UI 从 `0 字` 正确显示 `1 章 · 20 字`：`ui-project-list-after-fixed-install.xml`、`screen-fixed-install-card-20-chars.png`；`after-fixed-install-card-refresh.sqlite` 中 `content_length=20`、`body_char_count=20`，1M/AUTO 仍为 `context_window=1000000` / `max_output_tokens=0`，Story Memory 与 pipeline task 保留。
+
+Act：C0-B 的实现、真实 Android Check 与全量门禁均 PASS；完成独立 commit 后才进入 C0-C。C0-C 及后续阶段仍未开始，未宣布任何 Phase III/C 最终 GO。
+
+### C0-C → C10
+
+尚未开始。严格等待 C0-B 独立 commit 完成后进入。

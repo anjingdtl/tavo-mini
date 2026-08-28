@@ -10,7 +10,10 @@
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
-import { executeTransaction, type SqlStatement } from '../../services/database/transaction';
+import {
+  executeTransaction,
+  type SqlStatement,
+} from '../../services/database/transaction';
 import {
   CURRENT_CONTEXT_BUDGET_VERSION,
   CURRENT_OUTLINE_WORKFLOW_VERSION,
@@ -33,6 +36,10 @@ import {
   isContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from '../../services/contextAutomationPolicy';
+import {
+  buildEnsureProjectWritingStatsStatement,
+  buildProjectWritingStatsDeltaStatement,
+} from '../../services/projectWritingStats';
 
 // ---------------------------------------------------------------------------
 // Row shapes
@@ -257,39 +264,44 @@ async function readBatchPayload(input: {
 }
 
 async function materializeBatchRow(row: Row): Promise<MultiChapterBatchRow> {
-  const [sourcePrompt, plannerOutputJson, plannerRequestJson, anchorJson, policyJson] =
-    await Promise.all([
-      readBatchPayload({
-        table: 'multi_chapter_batches',
-        column: 'source_prompt',
-        whereSql: 'id = ?',
-        params: [row.id],
-      }),
-      readBatchPayload({
-        table: 'multi_chapter_batches',
-        column: 'planner_output_json',
-        whereSql: 'id = ?',
-        params: [row.id],
-      }),
-      readBatchPayload({
-        table: 'multi_chapter_batches',
-        column: 'planner_request_json',
-        whereSql: 'id = ?',
-        params: [row.id],
-      }),
-      readBatchPayload({
-        table: 'multi_chapter_batches',
-        column: 'continuation_anchor_json',
-        whereSql: 'id = ?',
-        params: [row.id],
-      }),
-      readBatchPayload({
-        table: 'multi_chapter_batches',
-        column: 'continuation_execution_policy_json',
-        whereSql: 'id = ?',
-        params: [row.id],
-      }),
-    ]);
+  const [
+    sourcePrompt,
+    plannerOutputJson,
+    plannerRequestJson,
+    anchorJson,
+    policyJson,
+  ] = await Promise.all([
+    readBatchPayload({
+      table: 'multi_chapter_batches',
+      column: 'source_prompt',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batches',
+      column: 'planner_output_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batches',
+      column: 'planner_request_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batches',
+      column: 'continuation_anchor_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+    readBatchPayload({
+      table: 'multi_chapter_batches',
+      column: 'continuation_execution_policy_json',
+      whereSql: 'id = ?',
+      params: [row.id],
+    }),
+  ]);
   return mapBatchRow({
     ...row,
     source_prompt: sourcePrompt ?? '',
@@ -389,7 +401,9 @@ function encodeFrozenBatchPlannerRequest(
   requestJson: string | null | undefined,
   policy: ContextAutomationPolicyV3,
 ): string {
-  const snapshot = JSON.parse(JSON.stringify(policy)) as ContextAutomationPolicyV3;
+  const snapshot = JSON.parse(
+    JSON.stringify(policy),
+  ) as ContextAutomationPolicyV3;
   const envelope: FrozenBatchPlannerEnvelope = {
     schemaVersion: 1,
     requestJson: requestJson ?? null,
@@ -456,16 +470,21 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     contextAutomationPolicySnapshot:
       frozenPolicy?.contextAutomationPolicySnapshot ?? null,
     plannerRequestFingerprint: row.planner_request_fingerprint ?? null,
-    startPosition: row.start_position != null ? Number(row.start_position) : null,
+    startPosition:
+      row.start_position != null ? Number(row.start_position) : null,
     expectedTailChapterId:
-      row.expected_tail_chapter_id != null ? Number(row.expected_tail_chapter_id) : null,
+      row.expected_tail_chapter_id != null
+        ? Number(row.expected_tail_chapter_id)
+        : null,
     currentOrdinal: Number(row.current_ordinal ?? 1),
     completedCount: Number(row.completed_count ?? 0),
     activeItemOrdinal:
       row.active_item_ordinal != null ? Number(row.active_item_ordinal) : null,
     maxLlmCalls: row.max_llm_calls != null ? Number(row.max_llm_calls) : null,
-    maxInputTokens: row.max_input_tokens != null ? Number(row.max_input_tokens) : null,
-    maxOutputTokens: row.max_output_tokens != null ? Number(row.max_output_tokens) : null,
+    maxInputTokens:
+      row.max_input_tokens != null ? Number(row.max_input_tokens) : null,
+    maxOutputTokens:
+      row.max_output_tokens != null ? Number(row.max_output_tokens) : null,
     usedLlmCalls: Number(row.used_llm_calls ?? 0),
     usedInputTokens: Number(row.used_input_tokens ?? 0),
     usedOutputTokens: Number(row.used_output_tokens ?? 0),
@@ -483,7 +502,8 @@ function mapBatchRow(row: Row): MultiChapterBatchRow {
     errorCode: row.error_code ?? null,
     errorMessage: row.error_message ?? null,
     leaseOwner: row.lease_owner ?? null,
-    leaseExpiresAt: row.lease_expires_at != null ? Number(row.lease_expires_at) : null,
+    leaseExpiresAt:
+      row.lease_expires_at != null ? Number(row.lease_expires_at) : null,
     rowVersion: Number(row.row_version ?? 0),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
@@ -508,9 +528,11 @@ function mapBatchItemRow(row: Row): MultiChapterBatchItemRow {
     activePipelineTaskId: row.active_pipeline_task_id ?? null,
     activeContinuationRunId: row.active_continuation_run_id ?? null,
     activeRunNo: Number(row.active_run_no ?? 0),
-    completionQuality: row.completion_quality as BatchItemCompletionQuality | null,
+    completionQuality:
+      row.completion_quality as BatchItemCompletionQuality | null,
     adoptionFingerprint: row.adoption_fingerprint ?? null,
-    adoptedRevisionId: row.adopted_revision_id != null ? Number(row.adopted_revision_id) : null,
+    adoptedRevisionId:
+      row.adopted_revision_id != null ? Number(row.adopted_revision_id) : null,
     retryCount: Number(row.retry_count ?? 0),
     nextRetryAt: row.next_retry_at != null ? Number(row.next_retry_at) : null,
     errorCode: row.error_code ?? null,
@@ -615,10 +637,10 @@ export async function createBatch(input: CreateBatchInput): Promise<void> {
       input.pipelineTopologyVersion ?? CURRENT_PIPELINE_TOPOLOGY_VERSION,
       input.writingMode ?? 'outline',
       input.writingMode === 'continuation'
-        ? (input.continuationAnchorJson ?? null)
+        ? input.continuationAnchorJson ?? null
         : null,
       input.writingMode === 'continuation'
-        ? (input.continuationExecutionPolicyJson ?? null)
+        ? input.continuationExecutionPolicyJson ?? null
         : null,
       input.executionProfile === 'one_shot' ? 'one_shot' : 'standard',
       frozenPolicy ? encodeFrozenBatchPlannerRequest(null, frozenPolicy) : null,
@@ -706,10 +728,7 @@ export async function updateBatchStatus(
       ['startPosition', 'start_position'],
       ['expectedTailChapterId', 'expected_tail_chapter_id'],
       ['continuationAnchorJson', 'continuation_anchor_json'],
-      [
-        'continuationExecutionPolicyJson',
-        'continuation_execution_policy_json',
-      ],
+      ['continuationExecutionPolicyJson', 'continuation_execution_policy_json'],
     ];
     for (const [key, column] of map) {
       if (fields[key] !== undefined) {
@@ -923,7 +942,9 @@ export interface CreateBatchItemInput {
   createdAt?: number;
 }
 
-export async function createBatchItem(input: CreateBatchItemInput): Promise<void> {
+export async function createBatchItem(
+  input: CreateBatchItemInput,
+): Promise<void> {
   const now = input.createdAt ?? Date.now();
   await execute(
     await openDatabase(),
@@ -1026,7 +1047,9 @@ export async function updateBatchItem(
   params.push(batchId, ordinal);
   await execute(
     await openDatabase(),
-    `UPDATE multi_chapter_batch_items SET ${sets.join(', ')} WHERE batch_id = ? AND ordinal = ?`,
+    `UPDATE multi_chapter_batch_items SET ${sets.join(
+      ', ',
+    )} WHERE batch_id = ? AND ordinal = ?`,
     params,
   );
 }
@@ -1109,9 +1132,11 @@ interface AttemptUsageLike {
  * Centralised so the cross-task aggregator and the per-task counter return
  * the same shape. Defensive against undefined / null tokens.
  */
-export function summarizeAttemptsUsage(
-  attempts: AttemptUsageLike[],
-): { llmCalls: number; inputTokens: number; outputTokens: number } {
+export function summarizeAttemptsUsage(attempts: AttemptUsageLike[]): {
+  llmCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+} {
   let llmCalls = 0;
   let inputTokens = 0;
   let outputTokens = 0;
@@ -1177,7 +1202,13 @@ export async function setBatchUsageFromRuns(batchId: string): Promise<{
     `UPDATE multi_chapter_batches
      SET used_llm_calls = ?, used_input_tokens = ?, used_output_tokens = ?, updated_at = ?
      WHERE id = ?`,
-    [usage.llmCalls, usage.inputTokens, usage.outputTokens, Date.now(), batchId],
+    [
+      usage.llmCalls,
+      usage.inputTokens,
+      usage.outputTokens,
+      Date.now(),
+      batchId,
+    ],
   );
   return usage;
 }
@@ -1228,6 +1259,12 @@ export async function createBatchChapterForItem(
                 status = 'chapter_ready', updated_at = ?
             WHERE batch_id = ? AND ordinal = ? AND chapter_id IS NULL`,
       params: [now, batchId, ordinal],
+    },
+    buildEnsureProjectWritingStatsStatement(input.projectId, timestamp),
+    buildProjectWritingStatsDeltaStatement(input.projectId, 1, 0, timestamp),
+    {
+      sql: 'UPDATE projects SET updated_at = ? WHERE id = ?',
+      params: [timestamp, input.projectId],
     },
   ];
   await executeTransaction(await openDatabase(), statements, {
@@ -1442,8 +1479,8 @@ export async function buildCommitBatchItemAdoptionStatements(
     params.completionQuality === 'full_pipeline'
       ? 'succeeded'
       : params.completionQuality === 'draft_only'
-        ? 'succeeded_with_draft'
-        : 'succeeded_with_user_text';
+      ? 'succeeded_with_draft'
+      : 'succeeded_with_user_text';
   const enforceFingerprintMatch = options?.enforceFingerprintMatch ?? false;
   const useLastInsertRowId = options?.useLastInsertRowId ?? false;
   const revisionColumn = useLastInsertRowId
@@ -1458,7 +1495,9 @@ export async function buildCommitBatchItemAdoptionStatements(
             SET status = ?, completion_quality = ?, adoption_fingerprint = ?,
                 error_code = NULL, error_message = NULL, next_retry_at = NULL,
                 ${revisionColumn}, completed_at = ?, updated_at = ?
-            WHERE batch_id = ? AND ordinal = ?${enforceFingerprintMatch ? ' AND adoption_fingerprint = ?' : ''}`,
+            WHERE batch_id = ? AND ordinal = ?${
+              enforceFingerprintMatch ? ' AND adoption_fingerprint = ?' : ''
+            }`,
       params: useLastInsertRowId
         ? [
             itemStatus,
@@ -1470,27 +1509,27 @@ export async function buildCommitBatchItemAdoptionStatements(
             params.ordinal,
           ]
         : enforceFingerprintMatch
-          ? [
-              itemStatus,
-              params.completionQuality,
-              params.adoptionFingerprint,
-              params.adoptedRevisionId,
-              now,
-              now,
-              params.batchId,
-              params.ordinal,
-              params.adoptionFingerprint,
-            ]
-          : [
-              itemStatus,
-              params.completionQuality,
-              params.adoptionFingerprint,
-              params.adoptedRevisionId,
-              now,
-              now,
-              params.batchId,
-              params.ordinal,
-            ],
+        ? [
+            itemStatus,
+            params.completionQuality,
+            params.adoptionFingerprint,
+            params.adoptedRevisionId,
+            now,
+            now,
+            params.batchId,
+            params.ordinal,
+            params.adoptionFingerprint,
+          ]
+        : [
+            itemStatus,
+            params.completionQuality,
+            params.adoptionFingerprint,
+            params.adoptedRevisionId,
+            now,
+            now,
+            params.batchId,
+            params.ordinal,
+          ],
     },
     {
       sql: `UPDATE multi_chapter_batches

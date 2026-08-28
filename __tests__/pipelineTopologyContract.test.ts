@@ -20,7 +20,10 @@ import {
   createCanonInMemoryDb,
   createEmptyInMemoryDb,
 } from './helpers/canonInMemoryDb';
-import { __resetForTest, __setDatabaseForTest } from '../src/data/connection/openDatabase';
+import {
+  __resetForTest,
+  __setDatabaseForTest,
+} from '../src/data/connection/openDatabase';
 import { initializeDatabase } from '../src/services/database';
 import { SCHEMA_VERSION } from '../src/services/migrations';
 import {
@@ -328,7 +331,7 @@ describe('Case 4 — Schema 54 → 55 migration (real sql.js)', () => {
   });
 
   test('SCHEMA_VERSION advanced to current', () => {
-    expect(SCHEMA_VERSION).toBe(58);
+    expect(SCHEMA_VERSION).toBe(59);
   });
 
   test('fresh-install DDL already carries pipeline_topology_version (both tables)', () => {
