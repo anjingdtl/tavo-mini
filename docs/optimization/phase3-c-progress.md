@@ -175,6 +175,10 @@ APK / install-r：
 - 中途无效轮：项目 `phase3c-c1-smoke3` 的 Planner 正在真实运行时，误用默认 `pull-db-evidence.js`，其默认行为会先 `am force-stop`；该轮仅保留为采证流程教训，不计入任何真实 PASS。后续运行只用 UI/进程存活轮询，阶段结束后才 clean pull。
 - 第四次真实复测：新项目 `phase3c-c1-smoke4`（project id 60），批次 `batch_mtcp3rpv_rqcv59`，使用现有真实 `GLM-5.3-Flash`、5 章、每章 3000 字。第 1 章真实完成并通过 Draft/QA/Revision，UI 进度 `1/5`；第 2 章 Draft 在新的 570,000ms watchdog 处 `total_timeout / outcome_unknown`，未产生第 2 章正文，未重试未知请求。证据：`test-logs/phase3-c-c1-android/ui-c1-fourth-paused-result-unknown.png`、`ui-c1-fourth-current-24m.xml`、`c1-fourth-paused-clean.sqlite`、`logcat-c1-fourth-filtered.txt`。clean DB `integrity_check=ok`；第 1 章正文长度 3,205，但批次未完成，C1 真实矩阵仍 NO-GO。
 - 用户随后要求长测超过 3 章改用虚拟 LLM。执行边界：虚拟 LLM 只作为补充的配置切换/冻结隔离/流程回归，不作为任何 C1 真实 GO 证据；若未完成真实 5/20/50/100，最终报告必须保持 NO-GO。
+- 补充多 LLM 配置回归（非 GO 证据）：通过已安装 App 的既有“LLM 设置”页新建并保存 `Phase3C-Virtual-LLM`，端点为 `https://virtual.invalid/v1`、模型名为 `virtual-test-model`、上下文 `128000`、`max_output_tokens=0`（AUTO）。API key 仅使用设备端临时占位值，未读取、输出或提交；未点击“保存并测试”，未发起虚拟写作请求，也未将其伪装成真实 provider 成功。
+- 配置应用与切换 UI：虚拟配置保存成功并通过“设为当前”切换成功，证据为 `test-logs/phase3-c-c1-android/screen-c1-virtual-config-saved.png`、`screen-c1-virtual-config-active.png`；随后通过独立的“选中配置”与“设为当前”动作恢复真实 `默认配置`，证据为 `screen-c1-real-config-restored2.png`。在不清理数据的 App 重启后，LLM 页面仍显示 `OpenAI 兼容 API · 当前：默认配置`，同时保留两个配置卡片；证据为 `screen-c1-multi-llm-reload.png`、`phase3c-llm-reload.xml`。
+- 配置 DB Check：`test-logs/phase3-c-c1-android/c1-multi-llm-switch-final.sqlite` 的窄投影显示 `默认配置`（`is_active=1`、真实模型、`context_window=1000000`、`max_output_tokens=0`）与 `Phase3C-Virtual-LLM`（`is_active=0`、`context_window=128000`、`max_output_tokens=0`）共存，`settings.context_auto_input=1000000`；没有读取或输出密钥。该快照只证明配置保存、切换、恢复和重启持久化，不证明虚拟 provider 或长篇正文链路。
+- 因第四次真实轮次在第 2 章 Draft 已进入结果未知，尚未达到“真实完成 3 章后”的切换点；本轮没有用虚拟配置替代真实 5/20/50/100，也没有生成虚拟长测 Final Artifact。虚拟配置回归仅作为用户要求的耗时控制补充，C1 真实长程门禁仍为 NO-GO。
 
 Act：当前真实长程基线仍未满足“真实 5/20/50/100 基线完成”门禁，已按真实证据标记 NO-GO；C2 继续阻断，不进入下一阶段。新增 watchdog 修复由独立 commit `aa7acc6c` 封存。后续只可在 C1 内继续真实证据与非 GO 的虚拟配置回归，不以虚拟结果、Known Issue、后续优化或基本完成替代门禁。
 
