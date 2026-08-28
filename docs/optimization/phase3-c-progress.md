@@ -135,27 +135,33 @@ APK / install-r：
 
 Act：四项 UI Complexity Gate 均 PASS，已由独立 commit `279e1257` 封存；现在允许进入 C1。尚未建立任何长程基线，未宣布 Phase III-C/Phase III 最终 GO。
 
-### C1 — Long-Horizon baseline（NO-GO，已停止在 C1）
+### C1 — Long-Horizon baseline（真实长程证据 NO-GO；补充回归进行中）
 
-Plan：当前 Exact HEAD 为 `1d42a827`。严格先采集当前实现的真实基线，目标矩阵为 5/20/50/100 章；在 C1 基线完成前不实现 Memory Delta、Memoization 或 Prefetch。采集范围限定为本次新增项目/批次，不读取旧项目的 mock/fake provider 行作为证据。
+Plan：C1 基线起始 Exact HEAD 为 `e10d16aa`。严格先采集当前实现的真实基线，目标矩阵为 5/20/50/100 章；在 C1 基线完成前不实现 Memory Delta、Memoization 或 Prefetch。采集范围限定为本次新增项目/批次，不读取旧项目的 mock/fake provider 行作为证据。
 
 Red Test：
 
 - 新增 `__tests__/phase3CLongHorizonBaseline.test.ts`，先运行 `npx jest __tests__/phase3CLongHorizonBaseline.test.ts --runInBand`；采集器文件尚不存在时 2/2 tests 按预期失败，锁定 5/20/50/100 矩阵、逐章字段和缺失证据不得转成 0 的 fail-closed 契约。
+- 真实复测暴露 `pipeline_qa` 落入 60 秒普通 watchdog；新增 `__tests__/llmRequestPolicy.test.ts` Red Test，先验证期望的长请求策略为 570,000ms，旧实现按预期失败。
 
 最小实现：
 
 - 新增 `scripts/qa/collect-phase3-c-baseline.js`，使用 `DatabaseSync(..., { readOnly: true })` 对指定项目/批次做窄投影采集；读取章节、Pipeline task/checkpoint/attempt、Writing Observability/Request Receipt、usage、batch ledger、Story Memory、Canon boundary、state proposal 和 Final Artifact 指纹，不读取或输出 API key/完整 prompt/正文。
 - 采集器按章节全局 position 生成 `chapterIndex`，planner 调用在每批首项做确定性归属；Writer Physical Calls、Total Paid LLM Calls、planner/observer/Story Memory 调用、阶段 tokens、重试/fallback、上下文输入、Final char/fingerprint、Story Memory/DB payload 等分别记录。缺失证据保留 `null` 或 `not_applicable` 并进入 `evidence.missing`，矩阵自动 NO-GO。
 - 连续性检查字段仅记录证据可见性和 `manual_review_required`，不把没有自动判定的 Canon、边界、future leakage、人物状态、世界规则、Timeline 或 seam 宣称为 PASS。
+- `src/services/llm/requestPolicy.ts` 将 `pipeline_qa` 纳入长请求策略，并将章节/管线长请求最后 watchdog 从 300,000ms 调整为 570,000ms；没有改变请求重试或结果未知的 fail-closed 语义。
 
 Targeted verify：
 
 - `npx jest __tests__/phase3CLongHorizonBaseline.test.ts --runInBand`：2/2 PASS。
 - `npm run typecheck`：PASS；`npm run verify:elastic`：PASS；`npm run lint`：PASS（仓库既有 warnings，无 errors；新增采集器无 errors）。
+- watchdog 修复 targeted：`npx jest __tests__/llmRequestPolicy.test.ts __tests__/phase3CLongHorizonBaseline.test.ts --runInBand` 4/4 PASS；`npm run typecheck`、`npm run verify:elastic`、`npm run lint -- --quiet` 均 PASS。
 - 对现有 C0-C 快照执行采集器得到 5/20/50/100 全部 `NO-GO`，因为该快照没有 C1 批次；该负向结果仅验证 fail-closed，不计入真实基线。
 
-APK / install-r 与真实基线尚未完成；下一步先构建当前 HEAD APK、`adb install -r`，再使用模拟器现有真实 LLM 执行 5/20/50/100 矩阵。若任一必需真实运行失败，C1 标记 NO-GO，停止进入 C2。
+APK / install-r：
+
+- watchdog 修复后 `npm run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `70B995625B86155B522BA39C9AB8F28B742ABF4863BDB75FEE99E07A5C93426F`。
+- `adb -s emulator-5554 install -r` PASS；`versionCode=2210100`、`versionName=V2.21.1`、`firstInstallTime=2026-08-10 09:49:20` 保持；没有卸载、`pm clear` 或重置数据。
 
 实际执行与 Check：
 
@@ -165,7 +171,12 @@ APK / install-r 与真实基线尚未完成；下一步先构建当前 HEAD APK�
 - 一致性 DB 快照 `test-logs/phase3-c-c1-android/batch-paused-clean.sqlite`：`integrity_check=ok`；批次 `paused_timeout_unknown` / `BATCH_LLM_OUTCOME_UNKNOWN`，第 1 项 `outcome_unknown`，Pipeline task `failed`；QA attempt `outcome_unknown`，无 Final Body/Final Artifact，章节正文长度为 0。真实 usage ledger 同时记录 `pipeline_planner=success`、`pipeline_draft=success`、`pipeline_qa=error`，未隐藏失败请求或辅助付费请求。
 - 只读基线采集器报告 `test-logs/phase3-c-c1-android/c1-baseline-real-no-go.json` 明确为 `decision=NO-GO`：5 章完成数 `0/5`，20/50/100 目标均未完成；第 1 章缺 `finalCharCount`/`finalFingerprint`，其余章节保持 pending 和 null，不把缺失证据转换为 0 或 PASS。真实证明模式为 `android-existing-config` / `GLM-5.3-Flash`。
 
-Act：真实长程基线的最小 Smoke 已因真实 QA `total_timeout` 进入结果未知并 fail-closed，C1 不满足“真实 5/20/50/100 基线完成”门禁。已生成 NO-GO 证据并停止，不进入 C2；不以 Known Issue、后续优化或基本完成替代门禁。后续阶段必须等待 C1 在新的 PDCA 修复/复测回合中重新达到 GO。
+- 第二次真实复测：修复 `pipeline_qa` 后，新项目 `phase3c-c1-timeout-fix`（project id 58）批次 `batch_mtco7ach_3zzkcd` 的 Draft 在 300,000ms 处 `total_timeout / outcome_unknown`；`retry4-paused-clean.sqlite` 显示正文长度 0、usage 记录了该失败请求，UI 为“结果未知”。该轮证明原 Draft watchdog 仍过短，未重试未知请求。
+- 中途无效轮：项目 `phase3c-c1-smoke3` 的 Planner 正在真实运行时，误用默认 `pull-db-evidence.js`，其默认行为会先 `am force-stop`；该轮仅保留为采证流程教训，不计入任何真实 PASS。后续运行只用 UI/进程存活轮询，阶段结束后才 clean pull。
+- 第四次真实复测：新项目 `phase3c-c1-smoke4`（project id 60），批次 `batch_mtcp3rpv_rqcv59`，使用现有真实 `GLM-5.3-Flash`、5 章、每章 3000 字。第 1 章真实完成并通过 Draft/QA/Revision，UI 进度 `1/5`；第 2 章 Draft 在新的 570,000ms watchdog 处 `total_timeout / outcome_unknown`，未产生第 2 章正文，未重试未知请求。证据：`test-logs/phase3-c-c1-android/ui-c1-fourth-paused-result-unknown.png`、`ui-c1-fourth-current-24m.xml`、`c1-fourth-paused-clean.sqlite`、`logcat-c1-fourth-filtered.txt`。clean DB `integrity_check=ok`；第 1 章正文长度 3,205，但批次未完成，C1 真实矩阵仍 NO-GO。
+- 用户随后要求长测超过 3 章改用虚拟 LLM。执行边界：虚拟 LLM 只作为补充的配置切换/冻结隔离/流程回归，不作为任何 C1 真实 GO 证据；若未完成真实 5/20/50/100，最终报告必须保持 NO-GO。
+
+Act：当前真实长程基线仍未满足“真实 5/20/50/100 基线完成”门禁，已按真实证据标记 NO-GO；C2 继续阻断，不进入下一阶段。新增 watchdog 修复由独立 commit `aa7acc6c` 封存。后续只可在 C1 内继续真实证据与非 GO 的虚拟配置回归，不以虚拟结果、Known Issue、后续优化或基本完成替代门禁。
 
 ### C2 → C10
 
