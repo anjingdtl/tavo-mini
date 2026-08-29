@@ -1,7 +1,28 @@
 import type {
+  LLMCompletionUsageSemantics,
   LLMOutputBudgetTrace,
+  LLMProviderCapabilitySupport,
   LLMProviderType,
+  ReasoningEffort,
 } from './types';
+
+export type LLMReasoningEffortMapping = Readonly<
+  Record<ReasoningEffort, ReasoningEffort>
+>;
+
+export interface LLMProviderReasoningCapability {
+  supportsThinking: LLMProviderCapabilitySupport;
+  supportsReasoningEffort: LLMProviderCapabilitySupport;
+  reasoningEffortMapping: LLMReasoningEffortMapping | null;
+  reportsReasoningTokens: LLMProviderCapabilitySupport;
+  completionUsageSemantics: LLMCompletionUsageSemantics;
+}
+
+export interface LLMProviderCapability
+  extends LLMProviderReasoningCapability {
+  adapterId: string;
+  providerWireMaxOutput: number | null;
+}
 
 /**
  * Provider capability adapters sit between the product budget and the wire
@@ -19,6 +40,10 @@ export interface LLMProviderCapabilityAdapter {
    * preserved.
    */
   resolveMaxOutputTokens(config: ProviderCapabilityConfig): number | null;
+  /** Resolve explicit reasoning/usage protocol capability for this adapter. */
+  resolveReasoningCapability(
+    config: ProviderCapabilityConfig,
+  ): LLMProviderReasoningCapability;
 }
 
 export type ProviderCapabilityConfig = {
@@ -69,6 +94,75 @@ export const ELASTIC_OUTPUT_RESERVE_RATIO = 0.2;
  */
 const BIGMODEL_V4_MAX_OUTPUT_TOKENS = 131_072;
 
+const UNKNOWN_REASONING_CAPABILITY: LLMProviderReasoningCapability = {
+  supportsThinking: 'unknown',
+  supportsReasoningEffort: 'unknown',
+  reasoningEffortMapping: null,
+  reportsReasoningTokens: 'unknown',
+  completionUsageSemantics: 'unknown',
+};
+
+const BIGMODEL_REASONING_EFFORT_MAPPING: LLMReasoningEffortMapping = {
+  low: 'low',
+  // BigModel's current GLM-5.3 contract exposes low/high/max. Keep the
+  // product's historical medium tier explicit by mapping it to high; do not
+  // claim that the provider accepts a fourth wire enum.
+  medium: 'high',
+  high: 'high',
+  max: 'max',
+};
+
+const BIGMODEL_REASONING_CAPABILITY: LLMProviderReasoningCapability = {
+  supportsThinking: 'supported',
+  supportsReasoningEffort: 'supported',
+  reasoningEffortMapping: BIGMODEL_REASONING_EFFORT_MAPPING,
+  reportsReasoningTokens: 'supported',
+  completionUsageSemantics: 'completion_tokens_includes_reasoning',
+};
+
+const DEEPSEEK_REASONING_CAPABILITY: LLMProviderReasoningCapability = {
+  supportsThinking: 'supported',
+  supportsReasoningEffort: 'supported',
+  reasoningEffortMapping: {
+    low: 'low',
+    medium: 'medium',
+    high: 'high',
+    max: 'max',
+  },
+  reportsReasoningTokens: 'supported',
+  completionUsageSemantics: 'completion_tokens_includes_reasoning',
+};
+
+/** Exact model registrations; model-name substrings never grant capability. */
+const BIGMODEL_REASONING_MODELS = new Set([
+  'glm-5.2',
+  'glm-5.2-flash',
+  'glm-5.3',
+  'glm-5.3-flash',
+]);
+
+const DEEPSEEK_REASONING_MODELS = new Set(['deepseek-v4-flash']);
+
+function normalizeModelName(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function isHost(urlValue: unknown, expectedHost: string): boolean {
+  try {
+    return new URL(String(urlValue ?? '')).hostname.toLowerCase() === expectedHost;
+  } catch {
+    return false;
+  }
+}
+
+function resolveBigModelReasoningCapability(
+  config: ProviderCapabilityConfig,
+): LLMProviderReasoningCapability {
+  return BIGMODEL_REASONING_MODELS.has(normalizeModelName(config.model_name))
+    ? BIGMODEL_REASONING_CAPABILITY
+    : UNKNOWN_REASONING_CAPABILITY;
+}
+
 const BIGMODEL_V4_ADAPTER: LLMProviderCapabilityAdapter = {
   id: 'open.bigmodel.cn-v4',
   matches: config => {
@@ -84,12 +178,14 @@ const BIGMODEL_V4_ADAPTER: LLMProviderCapabilityAdapter = {
     }
   },
   resolveMaxOutputTokens: () => BIGMODEL_V4_MAX_OUTPUT_TOKENS,
+  resolveReasoningCapability: resolveBigModelReasoningCapability,
 };
 
 const GENERIC_OPENAI_COMPATIBLE_ADAPTER: LLMProviderCapabilityAdapter = {
   id: 'openai-compatible-generic',
   matches: config => config.provider_type === 'openai_compatible',
   resolveMaxOutputTokens: () => null,
+  resolveReasoningCapability: () => UNKNOWN_REASONING_CAPABILITY,
 };
 
 const ADAPTERS: readonly LLMProviderCapabilityAdapter[] = [
@@ -178,6 +274,56 @@ function resolveAdapter(
   return (
     ADAPTERS.find(adapter => adapter.matches(config)) ??
     GENERIC_OPENAI_COMPATIBLE_ADAPTER
+  );
+}
+
+/**
+ * Resolve every provider capability used by one logical request. Capability
+ * is explicit and exact: an unknown gateway/model remains unknown, while the
+ * official DeepSeek endpoint is registered separately from generic gateways.
+ */
+export function resolveProviderCapability(
+  config: ProviderCapabilityConfig,
+): LLMProviderCapability {
+  const adapter = resolveAdapter(config);
+  const explicitAdapterId = String(config.provider_adapter_id ?? '').trim();
+  const reasoningCapability =
+    !explicitAdapterId &&
+    config.provider_type === 'openai_compatible' &&
+    DEEPSEEK_REASONING_MODELS.has(normalizeModelName(config.model_name)) &&
+    isHost(config.url, 'api.deepseek.com')
+      ? DEEPSEEK_REASONING_CAPABILITY
+      : adapter.resolveReasoningCapability(config);
+  return {
+    adapterId: adapter.id,
+    providerWireMaxOutput: positiveInteger(
+      adapter.resolveMaxOutputTokens(config),
+    ),
+    ...reasoningCapability,
+  };
+}
+
+export function resolveProviderReasoningEffort(input: {
+  capability: Pick<
+    LLMProviderCapability,
+    'supportsReasoningEffort' | 'reasoningEffortMapping'
+  >;
+  thinking?: { type: 'enabled' | 'disabled' } | null;
+  requestedEffort?: unknown;
+}): ReasoningEffort | null {
+  if (
+    input.thinking?.type !== 'enabled' ||
+    input.capability.supportsReasoningEffort !== 'supported' ||
+    !isReasoningEffort(input.requestedEffort)
+  ) {
+    return null;
+  }
+  return input.capability.reasoningEffortMapping?.[input.requestedEffort] ?? null;
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    value === 'low' || value === 'medium' || value === 'high' || value === 'max'
   );
 }
 

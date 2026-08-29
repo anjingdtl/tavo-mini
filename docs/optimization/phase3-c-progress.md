@@ -614,3 +614,66 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - Revision 证据维度闭环：Draft length 仍沿用 C3 的真实 `length` censored lower-bound 失败且不污染 exact sample；QA findings 由真实 blocking finding 触发 Revision；Repair/Full Revision 两次均为单次 `full_revision`、两处 ChangeSet，保留 Anchored Segment Repair 与 deterministic assembly；reasoning 与 visible output 在 Receipt 分栏计账；QA/Revision 均为完整 `json_object`、`finishReason=stop`；State Proposal 两次均为空，未发生 Canon/Memory 状态污染，fingerprint 与 final artifact 一致。
 - P0 复核：Thinking Always On；不改变单 Writing Pipeline、单共享 Context/Memory/Writer 与 Mandatory Truth；无固定业务 `maxTokens`；`finishReason=length` fail-closed；`outcome_unknown` 永不自动重试；Governor 不增加 LLM 调用；所有 physical paid calls 在 Receipt/DB 真实计账；Generic Prior 未直接接管 Production；Android 只用 `adb install -r`。
 - C5 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → install-r → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部通过。故 C5 正式 `GO`，下一阶段为 `C6 — Provider-aware Reasoning Policy Seal`；本节不写 `PHASE III-C FINAL SEALED / GO`。
+
+### C6 — Provider-aware Reasoning Policy Seal（2026-08-30，PLAN）
+
+状态：`C6 PLAN / Red pending`。C5 已证明 Revision 在真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash` 上能以 Thinking enabled、真实 `high/max` effort、分栏 reasoning/visible usage 和单次 physical call 完成；C3/C4 也已有 Fast/Standard/Quality 的真实 Draft/QA receipt。C6 需要把 UI 选择、Frozen execution contract、Provider capability、真实 request wire 和 Receipt/usage 的语义再逐层对齐，尚未宣布 GO。
+
+#### 当前证据与根因假设
+
+- 当前 `reasoningEffort` 已从 PipelineConfig/冻结批次传到 Writer stage 和 OpenAI-compatible transport，Receipt 也能记录 `thinking`、effort、reasoning/visible usage；但 Provider capability 的支持/映射必须由显式 capability 声明决定，不能由 model name 子串猜测，也不能在 Provider 不支持 effort 时伪装“已支持”。
+- 需要验证的风险边界是：UI/Frozen 选定的 `low/high/max` 是否在 Fast/Standard/Quality 三档真实 run 中保持一致；Provider adapter 是否分别证明 `thinkingEnabled=true`、effort 的真实映射和 usage 记录；不支持 effort 的 adapter 是否保持 Thinking 意图、明确记录 unsupported，而不是关闭 Thinking 或把未经发送的 effort 写成成功。
+- C6 不改变 Writing Pipeline 拓扑，不新增 Agent、第二 Context、Memory、Writer、Formatter 或调用；不调整 timeout、Retry、业务 `maxTokens`、Mandatory Truth、Governor 公式或 `finishReason=length`/`outcome_unknown` 语义。
+
+#### 只改什么 / 明确不改什么
+
+- 只允许补齐 Provider Capability 的显式类型/映射、Frozen/UI 到 transport 的一致性断言、Receipt 对真实发送与 usage 语义的安全记录，以及最小测试和安全投影；若现有链路已满足某项，则只增加 contract test，不重复重构。
+- Fast/Standard/Quality 真实 Android gate 至少各包含一个已配置真实 LLM run；每个 run 记录 UI 选择、frozen effort、真实 stage Receipt 的 Thinking/effort、provider wire、input/output/reasoning/visible usage、physical call 与 retry 计数。Provider 不支持 effort 时必须可审计地 `unsupported/omitted`，不能伪装支持，也不能关闭 Thinking。
+- Generic Prior、Governor production readiness、Provider timeout、network handling、persist contract 保持现状；C6 不以提高预算或关闭 Thinking 作为修复。
+
+#### C6 Red Test / Real Android Check / GO Gate
+
+- Red 必须先锁定：显式 capability 才能决定 effort mapping；UI/Frozen/transport/Receipt effort 不漂移；Thinking Always On；unsupported effort 不伪装、不关闭 Thinking；真实 usage 的 reasoning/visible 分栏不互换；Provider 请求仍是原有单一 stage physical call。
+- CHECK-A 继续执行 targeted Jest、`typecheck`、`verify:elastic`、`lint -- --quiet` 和完整 `verify`；CHECK-B 执行 APK build、SHA-256、`adb devices`、仅 `adb install -r`。任何失败保留原证据并在本节追加 NO-GO/纠偏，不覆盖旧记录。
+- GO 必须同时有 Fast、Standard、Quality 的真实 Android 已配置 LLM 证据、DB integrity、Receipt/usage、UI/Frozen 选择、产品 logcat 过滤证据，并证明没有额外 LLM 调用、没有自动 retry、没有关闭 Thinking。通过后才进入 C7；本节不提前写 GO 或 Final Seal。
+
+### C6 — Provider-aware Reasoning Policy Seal（2026-08-30，ACT / GO）
+
+状态：`C6 GO`。C6 已将 UI 选择、Frozen execution contract、Provider capability、真实 request wire 和 Receipt/usage 语义逐层对齐，并在已安装 APK 上用真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash` 完成 Fast、Standard、Quality 三档验证。本节保留前面的 C6 PLAN/Red，不改写 C3/C4/C5 的旧 GO、NO-GO 或真实失败证据；本节不宣布 Phase III-C Final Sealed。
+
+#### PLAN → Red → 最小实现
+
+- PLAN 已先固化 C6 风险边界：effort mapping 只能由显式 Provider capability 决定；Thinking 必须持续 enabled；不支持 effort 时只能明确 `unsupported/unknown` 并省略未经证明的 wire 字段；reasoning/visible usage 不得互换；不改变 Writing Pipeline 拓扑、Governor 预算公式、timeout、Retry、Mandatory Truth 或 fail-closed 语义。
+- Red-first 已真实执行：`__tests__/phase3C6ProviderReasoningPolicy.test.ts` 在实现前以预期失败证明了 capability registry 缺失、BigModel `reasoning_effort` 未落到 transport，以及 unsupported/provider-variant 边界尚未被锁定。证据保存在 `test-logs/phase3-c6-provider-reasoning-20260830-000001/c6-red-before-implementation.txt`，未删除。
+- 最小实现仅补齐显式 capability registry、provider-specific effort mapping、transport wire 与 Receipt 字段；BigModel 当前 exact model 映射为 `low→low`、`medium→high`、`high→high`、`max→max`，未知 model variant 与 generic gateway 不继承猜测值。`LLMResult`、Writing Receipt 和安全 projection 新增真实发送的 `reasoningEffortWire`、support 状态、capability 与 usage semantics；没有增加任何 LLM stage/call。
+- 保留 `supportsReasoningEffort` 兼容 facade，但其结果来自 capability，不再由 model-name 子串猜测；显式 generic adapter 不会被自动替换成 DeepSeek/BigModel capability。Thinking 字段仍按既有协议发送，effort 只有在 capability 明确 supported 且有映射时才发送。
+
+#### Targeted / Full Verify
+
+- Red 修复后 targeted 先通过 `7 suites / 92 tests`；补入未注册 `GLM-5.3-Flash-preview` unknown-capability 边界后，最终 targeted 为 `4 suites / 54 tests PASS`，覆盖 capability、UI/Frozen、BigModel transport、generic unsupported/unknown 和 receipt contract。
+- Full Jest：`521 suites PASS`（总 `524`，既有 `3 suites / 8 tests skipped`），`3705 tests PASS`（总 `3713`，含既有 `8 tests skipped`）；最终 `typecheck`、`lint --quiet`、`verify:elastic`、`verify:version` 全部 PASS。中间一次 test mock 类型推导失败保留在 `c6-typecheck.txt`，修复后的结果保留在 `c6-typecheck-after-test-fix.txt` 与 `c6-typecheck-final.txt`，未覆盖失败证据。
+
+#### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256：`B204BFB9552BA0DA5471ECC423FFD1ED1777968BE8A97EF580EDEDB8752CF2E4`。
+- `adb devices` 核验为 `emulator-5554 device`；仅执行 `adb -s emulator-5554 install -r` 并成功。包 `com.shinewriter` 的 `versionCode=2210100`、`versionName=V2.21.1`、`firstInstallTime=2026-08-23 04:59:45` 保持；没有 uninstall、`pm clear`、清库或重置已配置 LLM。
+
+#### Real Android / DB / Receipt / UI / logcat
+
+- 三个 cell 均使用 App 已配置的真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash`，没有 mock/virtual provider。UI 选择、Frozen effort、Receipt `reasoningEffortWire`、provider capability、reasoning/visible usage、physical call 和 retry 计数均由 UI 与稳定只读 SQLite projection 交叉核验。
+
+| cell | run / UI | 真实 Receipt 与调用证据 |
+| --- | --- | --- |
+| Fast | `ct_2e55d9c471624a6eba635758820b9b49`；UI 结果“与初稿一致”、`1,767 字 / 7 段`；详情为 `共享 Writing Kernel · One-Shot`，逻辑 `1`、physical `1`、Fallback `0`、Retry `0`、`42927 tokens` | Frozen/UI=`low`；Draft `reasoningEffort=low`、wire=`low`、support=`supported`；wire max `28631`，provider ceiling `131072`；usage `input/output/reasoning/visible=41293/1634/64/1570`，`finishReason=stop`、`outcome=succeeded`、physical `1`。Projection：`c6-fast-projection-v1.json` |
+| Standard | `ct_09bb0c44ed5a4d9cb7fc40be706ccd7e`；UI 结果“与初稿一致”、`1,981 字 / 9 段`；详情为 `Standard`，逻辑 `2`、physical `2`、Fallback `0`、Retry `0`、`84961 tokens` | Frozen/UI=`high`；Draft wire=`high`、wire max `24771`，usage `41198/13876/11692/2184`；QA wire=`high`、wire max `22930`，usage `23895/5992/5812/180`；两 stage 均 `Thinking enabled`、support=`supported`、`stop/succeeded`、physical `1`。Projection：`c6-standard-projection-v1.json` |
+| Quality | `ct_133e3bdb78e74eb385a98076d9a93592`；UI 结果“与初稿一致”、`1,863 字 / 9 段`；详情为 `Standard` 共享拓扑标签，逻辑 `2`、physical `2`、Fallback `0`、Retry `0`、`84054 tokens`；DB Receipt 明确 `qualityProfile=quality` | Frozen/UI=`max`；Draft wire=`max`、wire max `31071`，usage `41199/14393/12262/2131`；QA wire=`max`、wire max `26848`，usage `23781/4681/4615/66`；两 stage 均 `Thinking enabled`、support=`supported`、`stop/succeeded`、physical `1`。Projection：`c6-quality-projection-v1.json` |
+
+- 三份稳定 projection 的 `dbIntegrity=ok`，`api_key=0 / authorization=0 / bearer=0`，`rawPromptOrBodyStoredInProjection=false`。Standard/Quality 的实际流程都是单 Draft + 单 QA，Fast 是单 Draft；没有额外 Governor LLM call、没有自动 retry，所有真实 paid call 均在 stage Receipt、usage、UI 详情和 DB 计账。`latestBatch` 中早期 cancelled 数据保持原样，stage Receipt/target run 是本 C6 结论的权威证据。
+- logcat：使用 `adb -s emulator-5554 logcat -d -v threadtime --pid 16972` 对 `com.shinewriter` 进程过滤，捕获 `307` 行，`fatal_or_anr=0`；摘要为 `test-logs/phase3-c6-provider-reasoning-20260830-000001/c6-logcat-summary.txt`，原始 PID 过滤证据为 `c6-quality-logcat-pid16972.txt`。本版本不向 logcat 输出 Governor/Receipt payload，因此没有从 logcat 猜测业务字段；脱敏 SQLite projection 是 Receipt/usage 的权威来源。
+
+#### ACT / P0 / Required Gate
+
+- Thinking Always On 已由 UI、Frozen contract、transport 与三档真实 Receipt 同时证明；Writing Pipeline 仍是单 Freeze、单共享 Context、单 Writer/QA/Final Candidate/PostWriting/ONE Memory 拓扑，没有新增 Agent、第二 Context、Memory、Writer 或 Formatter，Mandatory Truth 未裁掉。
+- 没有固定业务 `maxTokens`；实际 `wireMaxTokens` 仍由动态 demand/reasoning/JSON/protocol/context/provider ceiling 决定。`finishReason=length` 继续 fail-closed；`outcome_unknown` 永不自动 retry；Governor 不增加 LLM 调用；所有 Physical Paid Calls 如实计账；Generic Prior 未接管 Production。
+- `providerCapabilities.ts` 将支持/映射显式化，unknown model variant 和 generic adapter 不伪装 supported；BigModel 真实 run 的 Frozen effort 与 request wire 一致，reasoning/visible usage 分栏一致。没有用提高预算或关闭 Thinking 掩盖问题。
+- C6 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → install-r → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部 PASS，故 C6 正式 `GO`。下一阶段为 `C7`；本节不写 `PHASE III-C FINAL SEALED / GO`。

@@ -27,6 +27,8 @@ export type {
   LLMRequestMetrics,
   LLMPhysicalRequestHooks,
   LLMOutputBudgetTrace,
+  LLMProviderCapabilitySupport,
+  LLMCompletionUsageSemantics,
   ReasoningEffort,
 } from './llm/types';
 
@@ -38,6 +40,12 @@ export {
   supportsReasoningEffort,
   parseReasoningTokens,
 } from './llm/openAICompatibleProvider';
+export type {
+  LLMProviderCapability,
+  LLMProviderReasoningCapability,
+  LLMReasoningEffortMapping,
+  ProviderCapabilityConfig,
+} from './llm/providerCapabilities';
 export {
   ELASTIC_OUTPUT_RESERVE_RATIO,
   deriveElasticOutputReservation,
@@ -46,7 +54,9 @@ export {
   requireModelMaxOutputTokens,
   resolveEffectiveMaxOutputTokens,
   resolveModelOutputCapability,
+  resolveProviderCapability,
   resolveProviderOutputBudget,
+  resolveProviderReasoningEffort,
 } from './llm/providerCapabilities';
 
 import { resolveModelOutputCapability } from './llm/providerCapabilities';

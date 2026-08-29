@@ -87,6 +87,10 @@ export interface LLMResult {
   };
   /** Provider adapter trace for the logical → wire output budget translation. */
   outputBudget?: LLMOutputBudgetTrace;
+  /** The provider-specific reasoning_effort value actually placed on the wire. */
+  reasoningEffortWire?: ReasoningEffort | null;
+  /** Capability state used to decide whether reasoning_effort could be sent. */
+  reasoningEffortSupport?: LLMProviderCapabilitySupport;
 }
 
 export interface LLMOutputBudgetTrace {
@@ -99,6 +103,18 @@ export interface LLMOutputBudgetTrace {
 
 /** DeepSeek-style reasoning intensity. Thinking remains enabled separately. */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
+/** Explicit provider capability state; unknown is never treated as supported. */
+export type LLMProviderCapabilitySupport =
+  | 'supported'
+  | 'unsupported'
+  | 'unknown';
+
+/** Semantics of completion_tokens when hidden reasoning is reported. */
+export type LLMCompletionUsageSemantics =
+  | 'completion_tokens_includes_reasoning'
+  | 'completion_tokens_visible_only'
+  | 'unknown';
 
 export interface LLMGenerateOptions {
   temperature?: number;

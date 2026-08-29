@@ -6,9 +6,21 @@
  * + stage + artifacts, then compared to messagesFingerprint.
  */
 import { sha256Hex } from '../../continuation/hashUtils';
-import type { ChatMessage, LLMOutputBudgetTrace, LLMRequestMetrics } from '../../llm/types';
+import type {
+  ChatMessage,
+  LLMOutputBudgetTrace,
+  LLMProviderCapabilitySupport,
+  LLMRequestMetrics,
+  ReasoningEffort,
+} from '../../llm/types';
 import type { LLMFailureClass } from '../../llm/requestPolicy';
-import { resolveProviderOutputBudget } from '../../llm/providerCapabilities';
+import {
+  resolveProviderCapability,
+  resolveProviderOutputBudget,
+  resolveProviderReasoningEffort,
+  type LLMProviderReasoningCapability,
+  type ProviderCapabilityConfig,
+} from '../../llm/providerCapabilities';
 import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { SHARED_PROMPT_COMPILER_VERSION } from '../prompt/sharedPromptCompiler';
 import { resolveQualityProfileFromValues } from './generationQualityProfile';
@@ -63,7 +75,15 @@ export interface WritingRequestReceipt {
   llmConfigId: number | null;
   model: string;
   thinking: { type: 'enabled' | 'disabled' };
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  reasoningEffort?: ReasoningEffort;
+  /** Exact provider-specific effort value represented by this physical call. */
+  reasoningEffortWire: ReasoningEffort | null;
+  /** Capability state used to decide whether the effort could be sent. */
+  reasoningEffortSupport: LLMProviderCapabilitySupport;
+  /** Provider-reported reasoning/usage contract, never a guessed default. */
+  providerReasoningCapability: LLMProviderReasoningCapability;
+  /** External provider output ceiling, separate from product maxTokens. */
+  providerWireMaxOutput: number | null;
   promptCompilerVersion: string;
   freezeFingerprint: string;
   truthProjectionFingerprint: string;
@@ -140,7 +160,7 @@ export function buildWritingRequestReceipt(input: {
     responseFormat: 'json_object' | 'text';
   };
   thinking: { type: 'enabled' | 'disabled' };
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  reasoningEffort?: ReasoningEffort;
   kind?: 'logical_stage' | 'formatter';
   scenario?: WritingScenario;
   governorShadow?: WritingGovernorShadow;
@@ -168,6 +188,13 @@ export function buildWritingRequestReceipt(input: {
   const completionCapability = readNonNegativeNumber(
     input.frozenContext.model?.maxOutputTokens,
   );
+  const providerConfig = resolveReceiptProviderConfig(input.frozenContext);
+  const providerCapability = resolveProviderCapability(providerConfig);
+  const reasoningEffortWire = resolveProviderReasoningEffort({
+    capability: providerCapability,
+    thinking: input.thinking,
+    requestedEffort: input.reasoningEffort,
+  });
   const outputBoundary = resolveReceiptOutputBoundary(
     input.frozenContext,
     input.compiled.maxTokens,
@@ -199,10 +226,20 @@ export function buildWritingRequestReceipt(input: {
     ...identity,
     providerAdapterId:
       outputBoundary?.adapterId ||
-      input.frozenContext.model?.providerAdapterId ||
+      providerCapability.adapterId ||
       null,
     llmConfigId: input.frozenContext.model?.configId ?? null,
     requestFingerprint: computeWritingRequestFingerprint(identity),
+    reasoningEffortWire,
+    reasoningEffortSupport: providerCapability.supportsReasoningEffort,
+    providerReasoningCapability: {
+      supportsThinking: providerCapability.supportsThinking,
+      supportsReasoningEffort: providerCapability.supportsReasoningEffort,
+      reasoningEffortMapping: providerCapability.reasoningEffortMapping,
+      reportsReasoningTokens: providerCapability.reportsReasoningTokens,
+      completionUsageSemantics: providerCapability.completionUsageSemantics,
+    },
+    providerWireMaxOutput: providerCapability.providerWireMaxOutput,
     completionCapability,
     wireMaxTokens: outputBoundary?.wireMaxTokens ?? input.compiled.maxTokens,
     providerCompletionLimit: outputBoundary?.providerLimit ?? null,
@@ -309,20 +346,26 @@ function readNonNegativeNumber(value: unknown): number | null {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
+function resolveReceiptProviderConfig(
+  frozenContext: FrozenWritingContext,
+): ProviderCapabilityConfig {
+  return {
+    provider_type: frozenContext.model.provider as 'openai_compatible',
+    model_name: frozenContext.model.modelName,
+    url: frozenContext.model.url || '',
+    context_window: frozenContext.model.contextWindow,
+    max_output_tokens: frozenContext.model.maxOutputTokens,
+    provider_adapter_id: frozenContext.model.providerAdapterId,
+  };
+}
+
 function resolveReceiptOutputBoundary(
   frozenContext: FrozenWritingContext,
   requestedMaxTokens: number,
 ): LLMOutputBudgetTrace | null {
   try {
     return resolveProviderOutputBudget({
-      config: {
-        provider_type: frozenContext.model.provider as 'openai_compatible',
-        model_name: frozenContext.model.modelName,
-        url: frozenContext.model.url || '',
-        context_window: frozenContext.model.contextWindow,
-        max_output_tokens: frozenContext.model.maxOutputTokens,
-        provider_adapter_id: frozenContext.model.providerAdapterId,
-      },
+      config: resolveReceiptProviderConfig(frozenContext),
       requestedMaxTokens,
     }).trace;
   } catch {

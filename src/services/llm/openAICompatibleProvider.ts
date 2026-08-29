@@ -12,7 +12,6 @@ import type {
   LLMRequestMetrics,
   LLMResult,
   LLMQueueClass,
-  ReasoningEffort,
 } from './types';
 import {
   scheduleLLMRequest,
@@ -24,7 +23,11 @@ import {
   toLLMRequestError,
 } from './requestPolicy';
 import { assertAllowedLLMEndpoint } from './networkPolicy';
-import { resolveProviderOutputBudget } from './providerCapabilities';
+import {
+  resolveProviderCapability,
+  resolveProviderOutputBudget,
+  resolveProviderReasoningEffort,
+} from './providerCapabilities';
 
 export function normalizeChatCompletionUrl(baseUrl: string): string {
   let url = baseUrl.trim();
@@ -45,36 +48,20 @@ export function createLLMConfigError(): Error {
 }
 
 /**
- * Resolve the deliberately narrow first-wave capability set.  A model name
- * alone is insufficient: compatible gateways may reject vendor extensions,
- * so only the official DeepSeek host is allowed to receive the field.
+ * Backward-compatible boolean facade over the explicit provider capability
+ * registry. A model name or compatible gateway alone never grants support.
  */
 export function supportsReasoningEffort(params: {
   providerType?: string | null;
   modelName?: string | null;
   baseUrl?: string | null;
 }): boolean {
-  if (params.providerType !== 'openai_compatible') return false;
-  if (
-    String(params.modelName ?? '')
-      .trim()
-      .toLowerCase() !== 'deepseek-v4-flash'
-  ) {
-    return false;
-  }
-  try {
-    return (
-      new URL(String(params.baseUrl ?? '')).hostname.toLowerCase() ===
-      'api.deepseek.com'
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isValidReasoningEffort(value: unknown): value is ReasoningEffort {
   return (
-    value === 'low' || value === 'medium' || value === 'high' || value === 'max'
+    resolveProviderCapability({
+      provider_type: params.providerType as 'openai_compatible',
+      model_name: String(params.modelName ?? ''),
+      url: String(params.baseUrl ?? ''),
+    }).supportsReasoningEffort === 'supported'
   );
 }
 
@@ -404,6 +391,12 @@ export const openAICompatibleProvider: LLMProvider = {
             // misplacement) is honored as a fallback so the caller's intent
             // still reaches the wire instead of being silently dropped.
             const effectiveThinking = options.thinking ?? config.thinking;
+            const providerCapability = resolveProviderCapability(config);
+            const reasoningEffortWire = resolveProviderReasoningEffort({
+              capability: providerCapability,
+              thinking: effectiveThinking,
+              requestedEffort: options.reasoningEffort,
+            });
             const outputBudget = resolveProviderOutputBudget({
               config,
               requestedMaxTokens: options.max_tokens,
@@ -423,16 +416,8 @@ export const openAICompatibleProvider: LLMProvider = {
             if (effectiveThinking) {
               requestBody.thinking = effectiveThinking;
             }
-            if (
-              effectiveThinking?.type === 'enabled' &&
-              isValidReasoningEffort(options.reasoningEffort) &&
-              supportsReasoningEffort({
-                providerType: config.provider_type,
-                modelName: config.model_name,
-                baseUrl: config.url,
-              })
-            ) {
-              requestBody.reasoning_effort = options.reasoningEffort;
+            if (reasoningEffortWire) {
+              requestBody.reasoning_effort = reasoningEffortWire;
             }
             const sendRequest = async (kind: string) => {
               await options.physicalRequestHooks?.beforeRequest?.({ kind });
@@ -613,6 +598,9 @@ export const openAICompatibleProvider: LLMProvider = {
               metrics,
               rawUsage: data.usage,
               outputBudget: outputBudget.trace,
+              reasoningEffortWire,
+              reasoningEffortSupport:
+                providerCapability.supportsReasoningEffort,
             };
           } catch (error: any) {
             if (responseReceivedAt !== undefined && parseCompletedAt === undefined) {
