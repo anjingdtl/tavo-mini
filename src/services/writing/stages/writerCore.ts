@@ -50,7 +50,9 @@ import { extractAuditJsonPayload } from '../../pipelineAuditValidator';
 import { normalizeStructuredWriterPayload } from './writerRecovery';
 import {
   completeWritingGovernorShadow,
+  decideWritingGovernorWire,
   getWritingGovernorProfileStore,
+  isWritingGovernorProfileStoreHydrated,
   resolveWritingGovernorShadow,
   type WritingGovernorShadow,
 } from '../governor/writingGovernor';
@@ -391,7 +393,7 @@ export async function executeSharedWriterStage(input: {
     stagePolicy: stageInput.stagePolicy,
     qaEvidence,
   });
-  const maxTokens = Math.min(
+  const legacyMaxTokens = Math.min(
     compiled.maxTokens,
     Math.max(256, stageInput.modelConfig.maxOutputTokens || compiled.maxTokens),
   );
@@ -399,25 +401,31 @@ export async function executeSharedWriterStage(input: {
   if (stageInput.callStage) {
     const injectedStartedAt = Date.now();
     const injectedReasoning = { thinking: { type: 'enabled' as const } };
+    const governorShadow = buildWritingGovernorShadow({
+      stage,
+      stageInput,
+      messages: compiled.messages,
+      maxTokens: legacyMaxTokens,
+      responseFormat: compiled.responseFormat,
+      reasoning: injectedReasoning,
+    });
+    const wireMaxTokens = resolveStageWireMax(
+      stage,
+      legacyMaxTokens,
+      governorShadow,
+    );
     const injected = await invokePhysicalWriterCall({
       stage,
       stageInput,
       compiled,
       reasoning: injectedReasoning,
-      governorShadow: buildWritingGovernorShadow({
-        stage,
-        stageInput,
-        messages: compiled.messages,
-        maxTokens,
-        responseFormat: compiled.responseFormat,
-        reasoning: injectedReasoning,
-      }),
+      governorShadow,
       receipts,
       call: () =>
         stageInput.callStage!({
           stage,
           messages: compiled.messages,
-          maxTokens,
+          maxTokens: wireMaxTokens,
           configId: stageInput.modelConfig.configId,
           responseFormat: compiled.responseFormat,
         }),
@@ -483,6 +491,23 @@ export async function executeSharedWriterStage(input: {
     stage === 'review' ||
     stage === 'audit' ||
     stage === 'factCheck';
+  const primaryResponseFormat =
+    compiled.responseFormat === 'json_object' || isReport
+      ? 'json_object'
+      : compiled.responseFormat;
+  const governorShadow = buildWritingGovernorShadow({
+    stage,
+    stageInput,
+    messages: compiled.messages,
+    maxTokens: legacyMaxTokens,
+    responseFormat: primaryResponseFormat,
+    reasoning: stageReasoning,
+  });
+  const maxTokens = resolveStageWireMax(
+    stage,
+    legacyMaxTokens,
+    governorShadow,
+  );
   const primaryStartedAt = Date.now();
   const primary = await invokePhysicalWriterCall({
     stage,
@@ -490,23 +515,10 @@ export async function executeSharedWriterStage(input: {
     compiled: {
       messages: compiled.messages,
       maxTokens,
-      responseFormat:
-        compiled.responseFormat === 'json_object' || isReport
-          ? 'json_object'
-          : compiled.responseFormat,
+      responseFormat: primaryResponseFormat,
     },
     reasoning: stageReasoning,
-    governorShadow: buildWritingGovernorShadow({
-      stage,
-      stageInput,
-      messages: compiled.messages,
-      maxTokens,
-      responseFormat:
-        compiled.responseFormat === 'json_object' || isReport
-          ? 'json_object'
-          : compiled.responseFormat,
-      reasoning: stageReasoning,
-    }),
+    governorShadow,
     receipts,
     call: () =>
       callWritingStageLLM(
@@ -604,7 +616,7 @@ export async function executeSharedWriterStage(input: {
       stageInput,
       compiled: {
         messages: formatter.messages,
-        maxTokens,
+        maxTokens: legacyMaxTokens,
         responseFormat:
           compiled.outputContract === 'json_envelope'
             ? 'json_object'
@@ -615,7 +627,7 @@ export async function executeSharedWriterStage(input: {
         stage,
         stageInput,
         messages: formatter.messages,
-        maxTokens,
+        maxTokens: legacyMaxTokens,
         responseFormat:
           compiled.outputContract === 'json_envelope'
             ? 'json_object'
@@ -624,10 +636,10 @@ export async function executeSharedWriterStage(input: {
       }),
       kind: 'formatter',
       receipts,
-      call: () =>
-        callWritingStageLLM(
-          formatter.messages,
-          maxTokens,
+        call: () =>
+          callWritingStageLLM(
+            formatter.messages,
+            legacyMaxTokens,
           {
             queueClass: 'pipeline',
             queuePriority: 'normal',
@@ -759,6 +771,32 @@ export async function executeSharedWriterStage(input: {
       receipts,
     );
   }
+}
+
+function resolveStageWireMax(
+  stage: SharedWritingStageName,
+  legacyWireMax: number,
+  shadow: WritingGovernorShadow,
+): number {
+  const decision = decideWritingGovernorWire(
+    shadow,
+    stage === 'draft' && isWritingGovernorProfileStoreHydrated(),
+  );
+  if (decision.blocked) {
+    const error = new Error(
+      `写作预算预检失败：${decision.reason || 'demand_exceeds_hard_ceiling'}`,
+    );
+    Object.assign(error, {
+      code: 'WRITING_GOVERNOR_PREFLIGHT_BLOCKED',
+      governorShadow: shadow,
+      requestMayHaveExecuted: false,
+      physicalRequestCount: 0,
+    });
+    throw error;
+  }
+  return decision.enabled && decision.wireMax != null
+    ? Math.max(1, Math.floor(decision.wireMax))
+    : legacyWireMax;
 }
 
 function resolveProviderCapabilityBoundary(

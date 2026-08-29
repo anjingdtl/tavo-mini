@@ -61,6 +61,10 @@ export interface WritingGovernorProfileStore {
   profiles: Record<string, WritingGovernorProfile>;
 }
 
+export type WritingGovernorProfilePersistenceSink = (
+  profile: WritingGovernorProfile,
+) => void | Promise<void>;
+
 export interface ResolveWritingGovernorShadowInput {
   stage: string;
   messages: ChatMessage[];
@@ -125,6 +129,13 @@ export interface WritingGovernorShadow {
   reasoningUsage: number | null;
   finishReason: string | null;
   latencyMs: number | null;
+}
+
+export interface WritingGovernorWireDecision {
+  enabled: boolean;
+  blocked: boolean;
+  wireMax: number | null;
+  reason: 'demand_exceeds_hard_ceiling' | 'recommendation_below_demand_floor' | null;
 }
 
 export interface WritingGovernorObservation {
@@ -308,6 +319,9 @@ export function resetWritingGovernorProfileStore(
 ): void {
   const target = store || runtimeProfileStore;
   target.profiles = {};
+  if (!store || store === runtimeProfileStore) {
+    runtimeProfileStoreHydrated = false;
+  }
 }
 
 function resolvedProfile(
@@ -691,6 +705,9 @@ export function observeWritingGovernorResult(
       : null,
     updatedAt: Date.now(),
   };
+  if (store === runtimeProfileStore) {
+    notifyWritingGovernorProfilePersistence(store.profiles[shadow.profileKey]);
+  }
 }
 
 export function completeWritingGovernorShadow(
@@ -725,6 +742,47 @@ export function completeWritingGovernorShadow(
       observation.latencyMs == null || !Number.isFinite(observation.latencyMs)
         ? null
         : Math.max(0, Number(observation.latencyMs)),
+  };
+}
+
+/**
+ * Resolve the production wire value for a stage that has explicitly opted in.
+ * The shadow has already separated demand from capability, so this function
+ * never raises a hard ceiling or silently lowers the Demand Floor.
+ */
+export function decideWritingGovernorWire(
+  shadow: WritingGovernorShadow,
+  enabled: boolean,
+): WritingGovernorWireDecision {
+  if (!enabled) {
+    return {
+      enabled: false,
+      blocked: false,
+      wireMax: null,
+      reason: null,
+    };
+  }
+  if (shadow.preflightBlocked || shadow.hardCeiling < shadow.demandFloor) {
+    return {
+      enabled: true,
+      blocked: true,
+      wireMax: null,
+      reason: 'demand_exceeds_hard_ceiling',
+    };
+  }
+  if (shadow.recommendedWireMax < shadow.demandFloor) {
+    return {
+      enabled: true,
+      blocked: true,
+      wireMax: null,
+      reason: 'recommendation_below_demand_floor',
+    };
+  }
+  return {
+    enabled: true,
+    blocked: false,
+    wireMax: Math.min(shadow.recommendedSoftBudget, shadow.hardCeiling),
+    reason: null,
   };
 }
 
@@ -764,6 +822,41 @@ export function parseWritingGovernorProfiles(
 }
 
 const runtimeProfileStore = createWritingGovernorProfileStore();
+let runtimeProfileStoreHydrated = false;
+let runtimeProfilePersistenceSink: WritingGovernorProfilePersistenceSink | null =
+  null;
+
+function notifyWritingGovernorProfilePersistence(
+  profile: WritingGovernorProfile,
+): void {
+  if (!runtimeProfilePersistenceSink) return;
+  try {
+    const pending = runtimeProfilePersistenceSink(cloneProfile(profile));
+    if (pending && typeof (pending as Promise<void>).then === 'function') {
+      void Promise.resolve(pending).catch(error => {
+        console.warn('[writing-governor] durable aggregate write failed', error);
+      });
+    }
+  } catch (error) {
+    console.warn('[writing-governor] durable aggregate write failed', error);
+  }
+}
+
+export function setWritingGovernorProfilePersistenceSink(
+  sink: WritingGovernorProfilePersistenceSink | null,
+): void {
+  runtimeProfilePersistenceSink = sink;
+}
+
+export function markWritingGovernorProfileStoreHydrated(
+  hydrated: boolean,
+): void {
+  runtimeProfileStoreHydrated = hydrated;
+}
+
+export function isWritingGovernorProfileStoreHydrated(): boolean {
+  return runtimeProfileStoreHydrated;
+}
 
 export function getWritingGovernorProfileStore(): WritingGovernorProfileStore {
   return runtimeProfileStore;

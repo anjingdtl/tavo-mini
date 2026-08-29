@@ -57,8 +57,9 @@ import { migrateV55ToV56 } from './v55-to-v56';
 import { migrateV56ToV57 } from './v56-to-v57';
 import { migrateV57ToV58 } from './v57-to-v58';
 import { migrateV58ToV59 } from './v58-to-v59';
+import { migrateV59ToV60 } from './v59-to-v60';
 
-export const SCHEMA_VERSION = 59;
+export const SCHEMA_VERSION = 60;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -435,6 +436,14 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV58ToV59,
   },
+  {
+    from: 59,
+    to: 60,
+    breaking: false,
+    // C3: durable Governor aggregate, deliberately no content-shaped fields.
+    buildStatements: noSchemaStatements,
+    migrate: migrateV59ToV60,
+  },
 ];
 
 export async function runMigrations(
@@ -500,6 +509,8 @@ export async function runMigrations(
       await migrateV56ToV57(db);
     } else if (migration.from === 57 && migration.to === 58) {
       await migrateV57ToV58(db);
+    } else if (migration.from === 59 && migration.to === 60) {
+      await migrateV59ToV60(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

@@ -53,6 +53,31 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 25,
   },
   {
+    // Runtime learning telemetry is durable across process restarts but is
+    // recomputable and intentionally excluded from portable user backups.
+    name: 'writing_governor_profiles',
+    columns: [
+      'profile_key',
+      'policy_version',
+      'sample_count',
+      'known_result_count',
+      'low_utilization_count',
+      'length_signal_count',
+      'recommended_scale',
+      'average_completion_ratio',
+      'average_latency_ms',
+      'reasoning_sample_count',
+      'reasoning_ratio_ewma',
+      'reasoning_ratio_high_water',
+      'reasoning_prompt_ratio_ewma',
+      'reasoning_prompt_ratio_high_water',
+      'last_finish_reason',
+      'updated_at',
+    ],
+    backup: false,
+    restoreOrder: 27,
+  },
+  {
     name: 'fragments',
     columns: ['id', 'project_id', 'position', 'type', 'content', 'created_at'],
     backup: true,

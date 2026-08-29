@@ -398,4 +398,40 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 
 ### C3 → C10
 
-尚未开始；C3 必须先以 Red Test 锁定 durable aggregate，再按阶段独立推进。旧 C1 长程基线 NO-GO 仍保留。
+### C3 Durable Aggregate / Draft Governor Probe（2026-08-29，待远端审核）
+
+状态：`C3 implementation / automated gates PASS；real Draft probe NO-GO，暂不进入 C4`。本节记录本次任务截至提交前的真实测试情况；2,899-token 冷启动 Draft 预算导致新的 `finishReason=length` 回归，已按 fail-closed 结束批次，未把失败冒充成功。C2-CORRECTION 的 `GO` 结论不回滚，但 C3 不宣布 GO。
+
+#### PLAN / Red
+
+- C3 目标是把 Governor 从 shadow-only 收敛为仅 Draft 阶段可接管 wire budget；QA/Revision 仍保持原有预算行为。Profile 只保存 provider/model/stage/profile/contract/policy 隔离后的窄聚合，不保存 prompt、messages、正文、Canon、Memory、request/response body 或 Key。
+- 首次 Red 已真实执行：`npx.cmd jest __tests__/phase3C3GovernorDurableAggregate.test.ts --runInBand` 在生产模块尚未存在时因 `Cannot find module '../src/services/migrations/v59-to-v60'` 失败，0 tests executed；随后按该失败点补最小实现，没有跳过 Red。
+
+#### Minimal Implementation / automated check
+
+- 新增 schema 59→60 的 `writing_governor_profiles` 聚合表、幂等 migration、fresh schema/manifest；只含 16 个标量聚合列，`backup=false`，不进入用户可迁移备份。
+- 启动流程在 Writer 可用前先 hydrate Profile，再安装串行 durable persistence queue；运行期 Governor 结果异步 upsert 到窄表，失败只记录 warning，不改变已经完成的 LLM 业务结果。
+- Draft 才调用 `decideWritingGovernorWire`，生产 wire 值遵守 `min(recommendedSoftBudget, hardCeiling)`；Demand Floor 不满足时 fail-closed，Receipt 同时保留 legacy max、推荐值和实际 wire 值。QA/Revision 未接管推荐值。
+- `npx.cmd jest __tests__/phase3C3GovernorDurableAggregate.test.ts __tests__/phase3C2GovernorShadow.test.ts __tests__/continuationBatchAdapter.test.ts --runInBand`：4 suites / 48 tests PASS（其中 C3 durable aggregate、restart hydrate、bounded wire、Draft takeover 均 PASS）。
+- `npm.cmd run typecheck` PASS；`npm.cmd run verify:elastic` PASS；`npm.cmd run lint -- --quiet` PASS（0 errors，仓库 warnings 由 258 增至 259，其中新增 warning 为 runtime persistence 的 `no-void` 风格提示）。
+- 全量 `npm.cmd run verify` PASS：`516 passed / 3 skipped` suites，共 `519` suites；`3677 passed / 8 skipped` tests，共 `3685` tests；version consistency PASS。构建和检查未修改用户未跟踪文件。
+
+#### APK / install-r / restart hydrate
+
+- `npm.cmd run apk:debug` PASS；Windows/JDK loopback 仅使用进程级临时目录 workaround，未清理 Gradle cache。产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小约 `59.8 MB`，SHA-256 `B900C6BC24610BF8D20195B1BAF9F656E3CA5EBE63240A2B942A0E18D2941323`。
+- Test Android Apps skill 要求的设备核验通过：`emulator-5554 device`；解析 Activity 为 `com.shinewriter/.MainActivity`；只执行 `adb -s emulator-5554 install -r`，包 `com.shinewriter` 的 `versionName=V2.21.1` / `versionCode=2210100` 保持，未卸载、未 `pm clear`、未清空数据库，既有真实 LLM 配置和项目数据保留。
+- 安装后启动/重启截图和 DB 快照显示 App 正常恢复既有项目列表；安全查询确认 `schemaVersion=60`、`writing_governor_profiles` 存在且列数为 16、敏感 `apiKey=0 / authorization=0`。本次重启前 Profile 行为 `0` 是在新安装 schema 尚未产生首个 C3 运行样本，不是读取失败；后续 Draft 结果已产生一行窄聚合。
+
+#### Real Android Draft / DB / Receipt / UI / logcat
+
+- 按 UI tree 定位并点击“续写”→“一键续写 1 章”，目标 `500` 字、质量档；目标与批次配置来自 App 既有 UI，没有 fake/virtual provider。过程截图、UI XML、DB 和 filtered logcat 均在 `test-logs/phase3-c-c3-android/`，安全只读投影脚本为 `scripts/qa/phase3-c3-production-projection.mjs`。
+- 首个真实 C3 Draft 批次 `after-end.sqlite` 的安全投影：batch `cancelled`（先因业务失败暂停，后通过 UI “结束批次”收尾），run `failed / awaiting_user`，`targetPosition=55`，`usedLlmCalls=1`，`input/output=37331/2899`，错误 `SHARED_WRITER_TRUNCATED_OUTPUT`；未持久化正文。
+- Provider Receipt：单一 physical request，`protocolFallbackCount=0`，Thinking 开启、`reasoningEffort=max`，adapter `open.bigmodel.cn-v4`、model `GLM-5.3-Flash`；`finishReason=length`，`visible/reasoning=21/2878`，`queue/provider/parse/persist/total=0/52259/0/0/52259ms`。该结果是 Provider 已返回但业务 contract 拒绝，不是 `outcome_unknown`，没有自动 retry。
+- Governor 对照：`legacyWireMax=131072`，实际 `wireMax=2899`，`recommendedSoftBudget=2899`，`demandFloor=2359`，`profileSampleCount=1`，`coldStart=true`；生产确实发送了 Governor recommendation，且实际 completion usage 正好打满 `2899`。这证明 C3 takeover、Thinking、Receipt legacy/wire 对照和单物理调用成立，但也证明冷启动 headroom 不足。
+- 运行期 Profile 已产生窄聚合行：`sample_count=1`、`known_result_count=1`、`length_signal_count=1`、`reasoning_sample_count=1`、`last_finish_reason=length`、`average_latency_ms=52259`；safe projection 的敏感字段计数 `api_key=0 / authorization=0 / bearer=0`，DB `integrity_check=ok`。
+
+#### ACT / 当前结论
+
+- `test-logs/phase3-c3-android/draft-length-fail.png`、`draft-length-fail-window.xml`、`draft-length-fail-logcat.txt`、`after-end.sqlite`、`after-end-safe-projection.json` 保留了本次真实失败的完整可审计链路；点击的是“结束批次”，没有点击“确认后继续”，避免在不确定正文状态下二次调用。
+- 与 C2 真实 Quality 500 Draft 的 `legacy/recommended=131072/22283`、`output=8011`、`visible/reasoning=660/7351`、`finishReason=stop` 对照，本次 C3 冷启动 `wire=2899` 明确制造了新的 Draft length regression。因此 C3 当前固定为 `NO-GO / HOLD`：不进入 C4；下一步需在同一架构边界内修正冷启动 reasoning headroom，并重新通过 targeted/full verify 与真实 Android Draft，再决定是否进入 C4。
+- 本次提交包含 C3 生产实现、窄聚合 migration/repository、自动化测试和安全投影脚本，以及本节进度记录；现有 `-`、`.gradle-user-home/`、`emulator-5554`、`qa_import_preset.json` 和两份用户未跟踪优化文档未纳入提交。

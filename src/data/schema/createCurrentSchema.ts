@@ -25,6 +25,7 @@ import { buildSchema54CreateSqls } from '../../services/migrations/v53-to-v54';
 import { buildSchema55CreateSqls } from '../../services/migrations/v54-to-v55';
 import { buildV55ToV56Statements } from '../../services/migrations/v55-to-v56';
 import { buildProjectWritingStatsCreateSql } from '../../services/migrations/v58-to-v59';
+import { buildWritingGovernorProfilesCreateSql } from '../../services/migrations/v59-to-v60';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -67,6 +68,9 @@ export function createCurrentSchemaStatements(): string[] {
     // remain the source of truth; the migration/rebuild service repairs this
     // projection deterministically.
     buildProjectWritingStatsCreateSql(),
+    // Schema 60: C3 durable Governor aggregate. This table contains only
+    // bounded scalar learning state; prompts and content remain out of it.
+    buildWritingGovernorProfilesCreateSql(),
     `
       CREATE TABLE IF NOT EXISTS fragments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -38,6 +38,10 @@ import {
   type SchemaRecoveryError,
 } from './schemaRecoveryError';
 import type { StartupPhase } from '../../services/startupProgress';
+import {
+  attachWritingGovernorProfilePersistence,
+  hydrateWritingGovernorProfiles,
+} from '../../services/writing/governor/writingGovernorProfileRepository';
 
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
@@ -487,6 +491,13 @@ export async function initializeDatabase(
 
   // 8. Final strict validation.
   assertValidSchema(await validateSchema(database));
+
+  // C3 P0: hydrate the bounded Governor aggregate before any writing entry
+  // can use production recommendations, then bind future known-result writes
+  // to this already-open database. The repository never reads or writes
+  // prompts, messages, manuscript text, Canon, Memory, or credentials.
+  await hydrateWritingGovernorProfiles(database);
+  attachWritingGovernorProfilePersistence(database);
 
   // 9. After-repair recall snapshot + comparison. When we captured a before
   //    snapshot, assert no user data was lost. A mismatch blocks startup.
