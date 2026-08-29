@@ -358,4 +358,44 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 
 ## C3 → C10
 
-尚未开始；必须等待 C2 Shadow Mode 完整 GO 后按阶段独立推进。旧 C1 长程基线 NO-GO 仍保留。
+### C2-CORRECTION Android Matrix Closure（2026-08-29）
+
+状态：`C2-CORRECTION Android Matrix GO`；C3 门禁已解除。旧 C1 Long-Horizon NO-GO、C2 初始矩阵 HOLD 和修正前 superseded 证据均保留，不删除、不粉饰。当前远端基线为 `78b1b09f`（`origin/main`）。
+
+#### Android / install-r / 数据安全
+
+- 使用 Test Android Apps skill 的真实设备流程核验 `adb devices`、UI tree 定位、截图、DB 快照和 filtered logcat；设备为 `emulator-5554`，包为 `com.shinewriter`。
+- `dist/apk/debug/ShineWriter-V2.21.1-debug.apk` 构建通过，SHA-256 为 `85F04E25FBC348D9CFDA1A677C1299E1D98B50FF1D268C055F1E6F9F9A1B9B72`；只执行 `adb -s emulator-5554 install -r`，未卸载、未 `pm clear`、未重置数据库，既有真实 GLM-5.3-Flash/OpenAI-compatible 配置保留。
+- 最终稳定快照为 `test-logs/phase3-c-c2-android/matrix-3000-quality/report.sqlite`，`PRAGMA integrity_check=ok`。安全只读投影由 `scripts/qa/phase3-c2-matrix-projection.mjs` 生成：`test-logs/phase3-c-c2-android/c2-corrected-matrix-safe-projection.json`；投影不输出 prompt、正文、request/response body、API key 或 authorization。
+- 投影覆盖 `9/9` 单章组合；全部 Governor shadow version 为 `writing-governor-shadow-v2`，敏感字段计数 `apiKey=0 / authorization=0 / bearer=0`；所有已记录 Receipt 均 `wireUnchanged=true`、`recommendationNotSent=true`。
+
+#### 9-cell real matrix
+
+| target / quality | batch status | LLM calls | input / output | observed outcome |
+| --- | --- | ---: | ---: | --- |
+| 500 / Fast | `completed` | 1 | `35386 / 5760` | Draft `stop`，完整流水线成功 |
+| 500 / Standard | `cancelled`（UI：批次已结束） | 2 | `57649 / 8512` | Draft `stop`；QA `length`，fail-closed |
+| 500 / Quality | `cancelled`（UI：批次已结束） | 2 | `60947 / 5275` | Draft `stop`；QA `length`，fail-closed；采用同进程 feedback 最新样本 |
+| 1000 / Fast | `completed` | 1 | `33592 / 8331` | Draft `stop`，完整流水线成功 |
+| 1000 / Standard | `cancelled`（UI：批次已结束） | 2 | `58716 / 7555` | Draft `stop`；QA `length`，fail-closed |
+| 1000 / Quality | `cancelled`（UI：批次已结束） | 2 | `63214 / 14112` | Draft `stop`；QA `length`，fail-closed |
+| 3000 / Fast | `completed` | 1 | `34389 / 22960` | Draft `stop`，完整流水线成功 |
+| 3000 / Standard | `cancelled`（UI：批次已结束） | 2 | `65175 / 26769` | Draft `stop`；QA `length`，fail-closed |
+| 3000 / Quality | `cancelled`（UI：批次已结束） | 1 | `7127 / 0` | 本地等待 LLM 超过 `570s`，`total_timeout` / `outcome_unknown`，fail-closed |
+
+这里的 `cancelled` 是在 QA/未知结果安全失败后通过 UI “结束批次”收尾形成的 durable header 状态；不代表失败内容被当成成功。Standard/Quality 的 QA `finishReason=length` 未持久化正文，也未自动重试；3000 Quality 的未知结果没有重复执行。Fast 三个成功单元均为单一 physical call，并完成完整流水线。
+
+#### Governor / reasoning feedback Check
+
+- 三个 target 的 Draft shadow profile key 保持同一 provider/model/stage/contract/compiler/reasoning-policy 隔离键；target 只作为当前 demand 输入，不污染 profile identity。
+- 真实 Quality 同进程 feedback pair 显示已知结果才更新聚合：500 字 Draft 的 `profileSampleCount` 从 `1` 到 `2`，`demandFloor` 从 `2359` 到 `5283`，`reasoningEnvelope` 从 `1264` 到 `4188`，`recommendedSoftBudget` 从 `2899` 到 `6039`；`coldStart/learned` 仍按 `MIN_PROFILE_SAMPLES=3` 保持未 learned。未把 unknown/network/5xx 样本纳入学习。
+- 1M context 的 ContextSafetyReserve 仅影响 available completion；本矩阵中 `legacyWireMax` 仍为 provider ceiling `131072`，推荐值始终为 shadow 字段，未进入真实 wire，也没有新增 physical request。
+
+#### C2 decision
+
+- C2-CORRECTION targeted tests：`phase3C2GovernorShadow`、`phase3C2BatchTargetDemand`、`continuationBatchAdapter` 共 `44/44 PASS`；`typecheck`、`verify:elastic`、完整 `verify` 均 PASS，完整校验为 `515` suites / `3672` tests passed（另有既有 skipped/warnings）。
+- Android 9-cell、DB integrity、Receipt/usage、UI 状态和 filtered logcat 证据齐全；预期的 `length` 与 `outcome_unknown` 均按 fail-closed 处理。因此 C2 正式 `GO`，允许进入 C3。
+
+### C3 → C10
+
+尚未开始；C3 必须先以 Red Test 锁定 durable aggregate，再按阶段独立推进。旧 C1 长程基线 NO-GO 仍保留。
