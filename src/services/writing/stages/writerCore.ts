@@ -6,6 +6,7 @@ import type {
   LLMRequestMetrics,
   LLMResult,
 } from '../../llm/types';
+import { resolveProviderOutputBudget } from '../../llm/providerCapabilities';
 import {
   selectStructuredCandidate,
   type StructuredCandidateChannel,
@@ -47,6 +48,14 @@ import { aggregateStageFindings } from '../context/findingsAggregator';
 import { resolveAnchoredRevisionOutput } from '../revision/anchoredSegmentRepair';
 import { extractAuditJsonPayload } from '../../pipelineAuditValidator';
 import { normalizeStructuredWriterPayload } from './writerRecovery';
+import {
+  completeWritingGovernorShadow,
+  getWritingGovernorProfileStore,
+  resolveWritingGovernorShadow,
+  type WritingGovernorShadow,
+} from '../governor/writingGovernor';
+import { deriveGenerationQualityProfile } from '../contracts/generationQualityProfile';
+import { resolveExecutionProfileFromValues } from '../contracts/executionProfile';
 
 /**
  * B6/B7 failure telemetry carried from the Shared Writer to the durable
@@ -389,11 +398,20 @@ export async function executeSharedWriterStage(input: {
   const receipts: WritingRequestReceipt[] = [];
   if (stageInput.callStage) {
     const injectedStartedAt = Date.now();
+    const injectedReasoning = { thinking: { type: 'enabled' as const } };
     const injected = await invokePhysicalWriterCall({
       stage,
       stageInput,
       compiled,
-      reasoning: { thinking: { type: 'enabled' } },
+      reasoning: injectedReasoning,
+      governorShadow: buildWritingGovernorShadow({
+        stage,
+        stageInput,
+        messages: compiled.messages,
+        maxTokens,
+        responseFormat: compiled.responseFormat,
+        reasoning: injectedReasoning,
+      }),
       receipts,
       call: () =>
         stageInput.callStage!({
@@ -433,6 +451,7 @@ export async function executeSharedWriterStage(input: {
         injectedAdopted.text,
         injected as Partial<LLMResult>,
       );
+      promoteSuccessfulGovernorReceipt(receipts, stageInput.trace);
       attachUsage(artifact, injected, {
         kind: classifyWritingLlmCall({}),
         physicalRequestCount: injected.physicalRequestCount,
@@ -477,6 +496,17 @@ export async function executeSharedWriterStage(input: {
           : compiled.responseFormat,
     },
     reasoning: stageReasoning,
+    governorShadow: buildWritingGovernorShadow({
+      stage,
+      stageInput,
+      messages: compiled.messages,
+      maxTokens,
+      responseFormat:
+        compiled.responseFormat === 'json_object' || isReport
+          ? 'json_object'
+          : compiled.responseFormat,
+      reasoning: stageReasoning,
+    }),
     receipts,
     call: () =>
       callWritingStageLLM(
@@ -581,6 +611,17 @@ export async function executeSharedWriterStage(input: {
             : 'text',
       },
       reasoning: { thinking: { type: 'disabled' } },
+      governorShadow: buildWritingGovernorShadow({
+        stage,
+        stageInput,
+        messages: formatter.messages,
+        maxTokens,
+        responseFormat:
+          compiled.outputContract === 'json_envelope'
+            ? 'json_object'
+            : 'text',
+        reasoning: { thinking: { type: 'disabled' } },
+      }),
       kind: 'formatter',
       receipts,
       call: () =>
@@ -656,6 +697,7 @@ export async function executeSharedWriterStage(input: {
         adopted.text,
         formatted as Partial<LLMResult>,
       );
+      promoteSuccessfulGovernorReceipt(receipts, stageInput.trace);
       artifact.formatterUsed = true;
       artifact.adoptedFrom = adopted.adoptedFrom;
       attachUsage(artifact, primary, {
@@ -696,6 +738,7 @@ export async function executeSharedWriterStage(input: {
       adopted.text,
       primary as Partial<LLMResult>,
     );
+    promoteSuccessfulGovernorReceipt(receipts, stageInput.trace);
     artifact.adoptedFrom = adopted.adoptedFrom;
     attachUsage(artifact, primary, {
       kind: classifyWritingLlmCall({}),
@@ -718,6 +761,100 @@ export async function executeSharedWriterStage(input: {
   }
 }
 
+function resolveProviderCapabilityBoundary(
+  stageInput: SharedWritingStageInput,
+): ReturnType<typeof resolveProviderOutputBudget> | null {
+  try {
+    return resolveProviderOutputBudget({
+      config: {
+        provider_type: stageInput.modelConfig.providerType as 'openai_compatible',
+        model_name: stageInput.modelConfig.modelName,
+        url: stageInput.modelConfig.url,
+        context_window: stageInput.modelConfig.contextWindow,
+        max_output_tokens: stageInput.modelConfig.maxOutputTokens,
+        provider_adapter_id: stageInput.modelConfig.providerAdapterId,
+      },
+      requestedMaxTokens: stageInput.modelConfig.maxOutputTokens,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function buildWritingGovernorShadow(input: {
+  stage: SharedWritingStageName;
+  stageInput: SharedWritingStageInput;
+  messages: Parameters<typeof buildWritingRequestReceipt>[0]['compiled']['messages'];
+  maxTokens: number;
+  responseFormat: 'json_object' | 'text';
+  reasoning: {
+    thinking: { type: 'enabled' | 'disabled' };
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  };
+}): WritingGovernorShadow {
+  const values = input.stageInput.stagePolicy.values || {};
+  const providerBoundary = resolveProviderCapabilityBoundary(
+    input.stageInput,
+  );
+  return resolveWritingGovernorShadow(
+    {
+      stage: input.stage,
+      messages: input.messages,
+      legacyWireMax: input.maxTokens,
+      contextWindow: input.stageInput.modelConfig.contextWindow,
+      completionCapability: input.stageInput.modelConfig.maxOutputTokens,
+      providerWireCeiling: providerBoundary?.providerLimit ?? null,
+      providerAdapterId:
+        providerBoundary?.adapterId ??
+        input.stageInput.modelConfig.providerAdapterId,
+      modelName: input.stageInput.modelConfig.modelName,
+      targetChars:
+        input.stageInput.frozenContext.targetChars ??
+        (values.targetChapterChars as number | null | undefined),
+      outputContract: input.responseFormat === 'json_object' ? 'json_envelope' : 'prose',
+      qualityProfile: deriveGenerationQualityProfile({
+        qualityProfile: values.qualityProfile,
+        executionProfile: values.executionProfile,
+        reasoningEffort: input.reasoning.reasoningEffort,
+      }),
+      executionProfile: resolveExecutionProfileFromValues(values),
+      thinking: input.reasoning.thinking,
+      reasoningEffort: input.reasoning.reasoningEffort ?? null,
+    },
+    getWritingGovernorProfileStore(),
+  );
+}
+
+function promoteSuccessfulGovernorReceipt(
+  receipts: WritingRequestReceipt[],
+  trace: SharedWritingStageInput['trace'],
+): void {
+  const index = receipts.length - 1;
+  if (index < 0) return;
+  const current = receipts[index];
+  if (current.outcome !== 'succeeded' || !current.governorShadow) return;
+  const shadow = current.governorShadow;
+  const updatedShadow = completeWritingGovernorShadow(
+    shadow,
+    {
+      actualCompletionUsage: shadow.actualCompletionUsage,
+      visibleOutput: shadow.visibleOutput,
+      reasoningUsage: shadow.reasoningUsage,
+      finishReason: shadow.finishReason,
+      latencyMs: shadow.latencyMs,
+      businessResultValid: true,
+      failureClass: null,
+    },
+    getWritingGovernorProfileStore(),
+  );
+  const updated = completeWritingRequestReceipt(current, {
+    outcome: current.outcome,
+    governorShadow: updatedShadow,
+  });
+  receipts[index] = updated;
+  recordWritingRequestReceipt(trace, updated);
+}
+
 function startRequestReceipt(
   stage: SharedWritingStageName,
   stageInput: SharedWritingStageInput,
@@ -730,6 +867,7 @@ function startRequestReceipt(
     thinking: { type: 'enabled' | 'disabled' };
     reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
   },
+  governorShadow?: WritingGovernorShadow,
   kind: 'logical_stage' | 'formatter' = 'logical_stage',
 ): WritingRequestReceipt {
   const receipt = buildWritingRequestReceipt({
@@ -741,6 +879,7 @@ function startRequestReceipt(
     thinking: reasoning.thinking,
     reasoningEffort: reasoning.reasoningEffort,
     kind,
+    governorShadow,
   });
   recordWritingRequestReceipt(stageInput.trace, receipt);
   return receipt;
@@ -758,6 +897,7 @@ async function invokePhysicalWriterCall<T>(input: {
     thinking: { type: 'enabled' | 'disabled' };
     reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
   };
+  governorShadow?: WritingGovernorShadow;
   kind?: 'logical_stage' | 'formatter';
   receipts: WritingRequestReceipt[];
   call: () => Promise<T>;
@@ -767,6 +907,7 @@ async function invokePhysicalWriterCall<T>(input: {
     input.stageInput,
     input.compiled,
     input.reasoning,
+    input.governorShadow,
     input.kind || 'logical_stage',
   );
   input.receipts.push(started);
@@ -867,6 +1008,21 @@ function finishRequestReceipt(
     actualPromptTokens: usage.inputTokens,
     outputBudget: result.outputBudget ?? null,
     metrics: result.metrics ?? null,
+    governorShadow: receipt.governorShadow
+      ? completeWritingGovernorShadow(
+          receipt.governorShadow,
+          {
+            actualCompletionUsage: usage.outputTokens,
+            visibleOutput: usage.visibleOutputTokens ?? null,
+            reasoningUsage: usage.reasoningTokens ?? null,
+            finishReason: result.finishReason ?? null,
+            latencyMs: result.metrics?.totalMs ?? null,
+            businessResultValid: false,
+            failureClass,
+          },
+          getWritingGovernorProfileStore(),
+        )
+      : undefined,
     timings: {
       persistMs: stageInput.persistAdapter ? null : 0,
     },

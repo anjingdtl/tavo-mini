@@ -619,6 +619,7 @@ describe('continuation batch adapter', () => {
         );
         expect(mockWorld.startCalls[i].chapterOrdinal).toBe(i + 1);
         expect(mockWorld.startCalls[i].chapterCount).toBe(3);
+        expect(mockWorld.startCalls[i].targetChapterChars).toBe(3000);
       }
     });
 

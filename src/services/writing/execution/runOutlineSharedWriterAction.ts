@@ -66,6 +66,7 @@ function receiptRuntimeProjection(item: any): Record<string, unknown> {
     failureClass: item?.failureClass ?? null,
     requestMayHaveExecuted: item?.requestMayHaveExecuted ?? null,
     providerRequestId: item?.providerRequestId ?? null,
+    governorShadow: item?.governorShadow || null,
     physicalRequestCount: item?.physicalRequestCount ?? 0,
     protocolFallbackCount: item?.protocolFallbackCount ?? 0,
     outcome: item?.outcome || null,

@@ -496,6 +496,7 @@ async function executeContinuationItemStep(params: {
         projectId: batch.projectId,
         chapterId: currentItem.chapterId,
         targetPosition: Number(chapter.position),
+        targetChapterChars: currentItem.targetWords,
         userInstruction,
         currentChapterContent: '',
         callStage: options.callStage,

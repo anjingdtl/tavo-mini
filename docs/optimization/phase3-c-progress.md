@@ -247,6 +247,65 @@ APK / install-r：
 
 Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install-r 和 500/1000/3000 真实 Android Request Boundary Check 均完成。新 C-v2 C1 按“慢/失败可解释”标准 GO；3000 Standard 的 `finishReason=length` 是当前真实 Provider 输出上限导致的可解释 fail-closed，不冒充内容成功，也不改动 C1 之外的预算/timeout/拓扑行为。停止在 C1，不进入 C2；C2 仅记录为下一阶段建议，旧 C1 长程基线 NO-GO 仍有效。
 
-### C2 → C10
+## C2 — Governor Shadow Mode
 
-尚未开始；本轮按要求在 C1 Runtime Observability First 完成后停止。旧 C1 长程基线仍为 NO-GO，因此不启动 C2。
+状态：C2 PLAN 已启动；遵循“Shadow 先行”，本阶段不改变生产 wire `max_tokens`、提示词、Stage 拓扑、Thinking 开关或 physical call 数。
+
+### Plan
+
+- 假设：C1 已能观测最终 messages、Provider capability、usage、finishReason 和生命周期；当前缺少同一 Request Boundary 上的确定性 Demand Floor / Soft Budget / Hard Ceiling 对照，因此无法判断现有 wire 预算是否过宽、过窄或被 Provider 能力错误限制。
+- 根因：现有 `compiled.maxTokens` 只表达 legacy 请求预算，尚未把 target、output contract、reasoning envelope、protocol reserve、safety reserve、实际 prompt occupancy 与 profile learning 形成安全旁路记录；也没有 profile isolation 和异常样本污染保护。
+- 本阶段只改：新增纯函数 Governor Shadow 计算器、轻量 profile 聚合器、Receipt/阶段证据中的安全 shadow projection；把它接到共享 Writer 的最终 messages boundary，并验证 recommendation 不改变当前 wire request。
+- 明确不改：不启用 recommendation；不改已有 `maxTokens`；不改 Prompt Compiler、Context 裁剪、Thinking policy、timeout、Retry、Pipeline 拓扑、Stage 数量、业务 `llm_config`；不新增 LLM 调用；不保存 prompt/body/正文/Key。
+- Red Test：覆盖 Demand Floor ≤ 推荐值（硬能力足够时）、recommendation 不等同模型最大能力、quality/reasoning envelope 单调提升、profile key 隔离、Known Result 低利用率慢收紧、`outcome_unknown`/network/5xx/persist 不学习，以及 Shared Writer 仍发送原 legacy maxTokens 且 Receipt 有 shadow 字段。
+- Android 真实 LLM Check：500 / 1000 / 3000 字 × Fast / Standard / Quality，优先用既有真实配置；每个请求收集 APK SHA、install-r、UI、DB、Receipt、usage、finishReason、timing 与 filtered logcat，确认 shadow physical call=0 且未改变真实调用数。
+- GO 指标：Red Test 闭环；推荐值可解释且不越过硬能力；profile 只保存聚合统计并隔离 provider/model/stage/profile/contract/compiler/reasoning policy；异常样本不污染；targeted/full verify、APK/install-r、真实 Android Matrix、DB/Receipt 证据完整；独立 commit。
+
+### Red Test
+
+首轮 `npx.cmd jest __tests__/phase3C2GovernorShadow.test.ts --runInBand` 已真实失败：suite 在加载阶段报 `Cannot find module '../src/services/writing/governor/writingGovernor'`，0 tests executed。失败点明确为 Governor Shadow / profile 模块尚不存在；未提前修改生产实现。
+
+### Minimal Implementation
+
+- 新增 `src/services/writing/governor/writingGovernor.ts`，只在最终 compiled messages boundary 计算 C2 shadow：实际 prompt token、target demand、visible floor、reasoning envelope、protocol/safety reserve、soft recommendation、context/provider hard ceiling、legacy wire 对照和 preflight 结果；不发起 LLM 请求、不选择预算、不改变已有请求。
+- Governor profile key 按 provider adapter/model/stage/quality/execution/output contract/compiler/reasoning policy 隔离；只聚合 sample count、利用率、延迟和 finish reason。仅 `stop + businessResultValid` 或已知 `length` 样本学习；`outcome_unknown`、network/provider/fatal/cancelled、safe retry 和未知 usage 均不学习。
+- `WritingRequestReceipt` 及 durable runtime projection 增加安全 `governorShadow`；Shared Writer 的 primary/injected/formatter boundary 均记录 shadow，physical request 仍保持原有一次调用语义，成功业务结果才 promote profile。
+- 批量续写把每个 item 的 `targetWords` 冻结为 `targetChapterChars` 后再编译 prompt，修复了“批次目标与项目默认 target 不一致”导致的 shadow 观测失真；Provider capability 使用同一 `resolveProviderOutputBudget` boundary，真实设备能够记录 `open.bigmodel.cn-v4`。
+- 未启用 recommendation；当前 legacy `maxTokens`、Prompt、Thinking、timeout、Retry、Pipeline topology、Provider wire payload 均保持不变。C2 仍是 shadow-only。
+
+### Targeted Red Test / Verify
+
+- Red Test 首轮保持真实失败：`npx.cmd jest __tests__/phase3C2GovernorShadow.test.ts --runInBand` 在加载阶段报 `Cannot find module .../writingGovernor`，0 tests executed；随后按失败点补最小实现，未用测试替代生产验证。
+- 定向闭环：`npx.cmd jest __tests__/phase3C2GovernorShadow.test.ts __tests__/continuationBatchAdapter.test.ts --runInBand`，2 suites / 33 tests PASS。覆盖 demand/soft/hard/legacy wire 分离、reasoning envelope 单调性、profile isolation/learning、异常样本不污染、batch target 冻结、Shared Writer 单物理调用和 legacy maxTokens 不变。
+- 最终代码门禁：`npm.cmd run verify` PASS；lint `0 errors / 258 warnings`（均为仓库既有 warning），typecheck、`verify:elastic`、`verify:version` PASS；Jest `3 skipped, 514 passed` suites（517 total），`8 skipped, 3661 passed` tests（3669 total）。
+- `git diff --check` 在提交前执行；仅将 C2 源码、测试与本进度文档纳入提交，用户/环境未跟踪文件、APK 和 test logs 不进入 Git。
+
+### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `4A7D63E766AAC342092633C21311FC4B48DB7EE9963D817DB017DE95A15D695E`。
+- 通过 `adb -s emulator-5554 install -r` 安装，包 `com.shinewriter`，`versionName=V2.21.1` / `versionCode=2210100`；未使用 `uninstall`、`pm clear` 或数据库清理，保留既有数据和 LLM 配置。
+
+### Android / DB / Receipt / UI / logcat
+
+- 使用 QA skill 要求的真实设备 `emulator-5554`、App 既有在线配置 `OpenAI 兼容 API / GLM-5.3-Flash`，API key 未读取或写入报告；通过真实 UI 创建单章批次，未使用 fake/virtual provider。设备在中断后掉线，重连时发现的旧 `V2.11.51` AVD 仅用于确认环境，不计入 C2 结果，也未清数据。
+- 修正 target/provider boundary 后，当前已完成 `Quality × 500/1000/3000` 三个真实样本；每个样本均为 1 章、2 次 physical request（Draft + QA），没有自动重试，DB 均 `integrity_check=ok`、3 projects、0 API keys。三次 QA 均因真实 Provider 返回 `finishReason=length` 被业务 fail-closed 为 `SHARED_WRITER_TRUNCATED_OUTPUT`，UI 显示“批次已暂停 / 续写运行失败”，这是可解释的安全失败，不冒充内容成功。
+
+| target / batch | Draft（Receipt shadow） | QA（Receipt shadow） | persisted result |
+| --- | --- | --- | --- |
+| 500 / `batch_mtdmj2w0_lukan6` | input/output `56676/8011`，visible/reasoning `660/7351`，`stop`；target `500`，adapter `open.bigmodel.cn-v4`，legacy/recommended `131072/22283` | input/output `24961/1200`，visible/reasoning `4/1196`，`length`；target `500`，legacy/recommended `1200/20835` | `paused_user`，used `2`，error `BATCH_CONTINUATION_RUN_FAILED` |
+| 1000 / `batch_mtdms14e_vp64du` | input/output `51641/15011`，visible/reasoning `1021/13990`，`stop`；target `1000`，adapter `open.bigmodel.cn-v4`，legacy/recommended `131072/24547` | input/output `25790/1250`，visible/reasoning `7/1243`，`length`；target `1000`，legacy/recommended `1250/21626` | `paused_user`，used `2`，error `BATCH_CONTINUATION_RUN_FAILED` |
+| 3000 / `batch_mtdn2ck7_dlmigx` | input/output `41853/28846`，visible/reasoning `2181/26665`，`stop`；target `3000`，adapter `open.bigmodel.cn-v4`，legacy/recommended `131072/33602` | input/output `27035/3350`，visible/reasoning `35/3315`，`length`；target `3000`，legacy/recommended `3350/24791` | `paused_user`，used `2`，error `BATCH_CONTINUATION_RUN_FAILED` |
+
+- 上表的三份冷快照为 `test-logs/phase3-c-v2/c2-governor-shadow/db-final-500-quality-fixed.sqlite`、`db-final-1000-quality-fixed.sqlite`、`db-final-3000-quality-fixed.sqlite`；对应 UI 过程/终态 XML、filtered logcat 和安全字段解析均保存在同一 evidence directory。Receipt 只保留 metadata/fingerprint/usage/finish/timing/shadow，不含 prompt、body、正文或 Key；三样本 `physicalRequestCount=1`/stage、`protocolFallbackCount=0`。
+- Draft profile key 在三种 target 间保持一致（target 不参与 profile identity），QA profile key 独立于 Draft；三种 target 的 shadow `recommendationMeetsDemandFloor=true`、`preflightBlocked=false`。这证明 capability 与 request budget 已分开观测，但 recommendation 尚未接管 wire。
+- 修正前的旧 500/1000/3000 × Fast/Standard/Quality 观测曾出现 `targetChars=3000` 和 `providerAdapterId=null`，均标记为 superseded，仅作为发现问题的过程证据，不作为 C2 GO 矩阵结论。
+
+### Act / Commit / Remaining Risks
+
+- 本轮 C2 源码、定向测试、全量门禁、APK 构建/install-r 和 Quality 三档真实 Android 证据已完成并写入本节；本次提交将把上述测试过程与结果同步到远端 `main`。
+- C2 Android GO 矩阵尚未封板：修正后 `500/1000/3000 × Fast/Standard` 六个组合仍需真实 LLM 复测；因此本节明确记为 `C2 implementation PASS / Android matrix HOLD`，不进入 C3，不宣布 Phase III-C GO。C2 profile 当前仅为进程内聚合，持久化与完整矩阵留待后续阶段。
+- C3 → C10 仍未开始；原 C1 长程基线 NO-GO、C2 修正前 superseded 证据和本轮真实 QA length fail-closed 结论均保留，不删除、不粉饰。
+
+## C3 → C10
+
+尚未开始；必须等待 C2 Shadow Mode 完整 GO 后按阶段独立推进。旧 C1 长程基线 NO-GO 仍保留。

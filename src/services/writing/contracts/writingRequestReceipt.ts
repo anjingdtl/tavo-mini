@@ -14,6 +14,7 @@ import { SHARED_PROMPT_COMPILER_VERSION } from '../prompt/sharedPromptCompiler';
 import { resolveQualityProfileFromValues } from './generationQualityProfile';
 import { resolveExecutionProfileFromValues } from './executionProfile';
 import { stableWritingJson } from './writingFingerprint';
+import type { WritingGovernorShadow } from '../governor/writingGovernor';
 import type { FrozenWritingContext } from './frozenWritingContext';
 import type { SharedWritingStageName } from './writingPolicy';
 import type { WritingScenario } from './writingSource';
@@ -87,6 +88,8 @@ export interface WritingRequestReceipt {
   requestMayHaveExecuted: boolean | null;
   providerRequestId: string | null;
   timings: WritingRequestReceiptTimings;
+  /** C2 shadow-only recommendation; never controls the current request. */
+  governorShadow?: WritingGovernorShadow;
   /** Number of provider HTTP dispatches represented by this logical receipt. */
   physicalRequestCount: number;
   /** Physical dispatches caused by an adapter protocol fallback. */
@@ -140,6 +143,7 @@ export function buildWritingRequestReceipt(input: {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
   kind?: 'logical_stage' | 'formatter';
   scenario?: WritingScenario;
+  governorShadow?: WritingGovernorShadow;
 }): WritingRequestReceipt {
   receiptSeq += 1;
   const values = input.frozenContext.stagePolicy?.values;
@@ -211,6 +215,9 @@ export function buildWritingRequestReceipt(input: {
     requestMayHaveExecuted: false,
     providerRequestId: null,
     timings: emptyWritingRequestReceiptTimings(),
+    ...(input.governorShadow
+      ? { governorShadow: input.governorShadow }
+      : {}),
     physicalRequestCount: 0,
     protocolFallbackCount: 0,
     outcome: 'started',
@@ -240,6 +247,7 @@ export function completeWritingRequestReceipt(
     actualPromptTokens?: number | null;
     outputBudget?: LLMOutputBudgetTrace | null;
     metrics?: LLMRequestMetrics | null;
+    governorShadow?: WritingGovernorShadow;
     timings?: Partial<WritingRequestReceiptTimings>;
     resultArtifactRef?: string;
     physicalRequestCount?: number;
@@ -264,6 +272,9 @@ export function completeWritingRequestReceipt(
       : {}),
     ...(input.providerRequestId !== undefined
       ? { providerRequestId: input.providerRequestId }
+      : {}),
+    ...(input.governorShadow !== undefined
+      ? { governorShadow: input.governorShadow }
       : {}),
     ...(input.actualPromptTokens !== undefined
       ? { actualPromptTokens: input.actualPromptTokens }

@@ -52,6 +52,13 @@ export interface StartContinuationRunInput {
   projectId: number;
   chapterId: number;
   targetPosition: number;
+  /**
+   * Optional immutable per-run target supplied by a batch item.  A batch may
+   * plan different chapter sizes than the project-wide continuation setting;
+   * the value is frozen before prompt compilation and is observability input,
+   * never a post-Freeze override.
+   */
+  targetChapterChars?: number;
   userInstruction: string;
   currentChapterContent: string;
   modelContextLimit?: number;

@@ -114,6 +114,10 @@ export async function prepareContinuationRun(
     currentChapterContent: input.currentChapterContent,
     userInstruction: input.userInstruction,
     activeLlmConfigId: resolved.activeConfigId,
+    settingsOverride:
+      input.targetChapterChars == null
+        ? undefined
+        : { targetChapterChars: input.targetChapterChars },
     policy,
     stageModels: resolved.stageModels,
     frozenModelConfigs: resolved.frozenModelConfigs,
