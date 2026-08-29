@@ -329,7 +329,7 @@ describe('Phase III-C correction: Safe Warm Start / Production Readiness', () =>
       finishReason: 'stop',
     }));
     expect(callStage).toHaveBeenCalledTimes(0);
-    expect(shouldEnableWritingGovernorProduction('draft')).toBe(true);
+    expect(shouldEnableWritingGovernorProduction('draft', shadow)).toBe(false);
     expect(shouldEnableWritingGovernorProduction('qa')).toBe(false);
     expect(shouldEnableWritingGovernorProduction('revision')).toBe(false);
   });

@@ -465,3 +465,52 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - 按 TAVO-MINI Emulator QA skill 新建证据目录 `test-logs/emulator-qa-20260829-232722/` 并执行 fresh `adb devices`；结果只有 `List of devices attached` 表头。指定 `emulator-5554` 的 `get-state` 返回 `error: device 'emulator-5554' not found`，因此没有执行 `install -r`、启动 App、DB 读取、UI 操作或任何真实 LLM 请求；没有卸载、`pm clear`、清库或修改用户数据。脱敏状态记录在该目录的 `preflight-status.txt`。
 - 这是环境阻塞，不把它误报成产品 Probe PASS；本轮没有新的 `finishReason`、Receipt、DB、UI 或 logcat 结论，不能满足 C3 GO 的 `install-r + Real Draft Probe + Continuous Feedback Probe + Draft Matrix` 条件。
 - 当前决策固定为 `C3 NO-GO / HOLD`，不进入 C4。设备在线后依次执行：保留式 `adb install -r` → schema/profile hydrate 与 DB integrity → `500 Quality Draft` 小 Probe → 同类连续 feedback（任一 length 立即停测并重新 PDCA）→ 通过后才跑 C3 Draft matrix。
+
+### C3-CORRECTION-2 — Cross-Profile Bootstrap Production Gate（2026-08-30）
+
+状态：`C3 continuous Quality Draft PASS；C3 matrix 首个 Fast cell NO-GO；待最小纠偏`。本节新增的真实失败不覆盖或删除前述 `2899` length、C3 环境 HOLD、QA length 和历史 NO-GO；它证明了当前 production readiness 还需要按 stage/quality/execution/reasoning policy 做资格隔离。
+
+#### PLAN / Root Cause
+
+- C3 correction 的 500 Quality 连续 Draft feedback 已完成 3 个 `finishReason=stop`，同一 Draft profile 已达到 `ACTIVE / productionReady=true`；但切换到 `500 × Fast` 时，当前 profile 没有同一档位的完整 stop/counterfactual 安全样本。
+- 真实 Fast Run `ct_337fd95bfe6a4fb3aba025f77096b73d` 只有 1 次 Draft physical call，`finishReason=length`，`wire=19911`、`output=19911`、`reasoning=19851`、`visible=60`，`demandFloor=18128`、`reasoningEnvelope=17033`；Provider 已返回但本地 contract fail-closed，未产生正文、未进入 QA、未 retry。
+- 根因假设：实现虽然隔离了 runtime profile key，但 Exact Provider+Model bootstrap prior 仍可跨 `quality/execution/reasoning policy` 直接接管 production wire；Fast/low 的真实 reasoning 形状明显高于跨档位 prior，故 `hydrated/exact prior` 不等于该 profile 的 production-ready。
+
+#### 本轮只改 / 明确不改
+
+- 只改 bootstrap production-readiness gate、同档位/同策略样本资格判定及其 deterministic projection/test；没有同一 stage、quality、execution profile、reasoning policy 的完整 stop + counterfactual-safe 证据时，recommendation 只能 shadow/旁路学习，生产 wire 继续使用成熟 legacy budget。
+- 不改 Writing Pipeline 拓扑、Thinking、Mandatory Truth、Provider 请求协议、timeout、Retry/outcome_unknown 语义、QA/Revision 接管范围、SQLite 窄 Profile schema 或 UI 结构；不新增 Agent、Context、Memory、Writer，也不读取/保存 prompt/body/key。
+- 真实复测接受条件：Fast/low 首次无同档位安全样本不得再因 19911 recommendation 触发 Draft length；它必须保留 legacy wire 或 fail closed，且 Governor physical call=0；获得真实 stop/counterfactual-safe 后才允许 Slow Tightening。
+
+#### 新 Red Test（待执行）
+
+- 新增 cross-profile bootstrap readiness contract，先在实现前真实失败；覆盖“Quality/max 的 exact prior 不能直接授权 Fast/low production”、“同档位成功样本才可使 readiness 变为 true”、“generic/provider-family prior 仍不可直接接管”和“legacy fallback 不改变 Thinking/physical call”。
+
+#### Real Android Check / GO Gate
+
+- 先重建并 `adb install -r` 当前纠偏 APK，保留现有 `Medium_Phone` 数据与 GLM 配置；重新跑 500×Fast，之后补回被中断的 C3 matrix，并记录每个档位的 Draft receipt、Governor state、wire、usage、DB/Receipt/UI/logcat。
+- C3 只有在新的 bootstrap gate targeted/full verify、APK SHA/install-r、restart hydrate、500 Quality 三个 stop、Fast/Standard/Quality matrix 和所有 Draft length/unknown 分支均可审计后才 GO；任一 Governor-managed Draft `length` 继续 NO-GO 并留在本节 PDCA。
+
+#### Current evidence
+
+- C3 real recovery evidence directory：`test-logs/phase3-c3-correction-real-20260830-000001/`。
+- Fast failure evidence：`fast500-screen-final.png`、`fast500-ui-final.xml`、`fast500-db-summary.txt`、`db-fast500-final.sqlite`、`c3-fast500-safe-projection.json`、`fast500-logcat-filtered.txt`。
+- 纠偏前真实失败对应 source HEAD `367bb73b`；本轮 source correction 在本节 GO 记录完成前保持未提交，未覆盖该历史状态。
+
+#### ACT / GO（2026-08-30）
+
+- PLAN 根因假设成立：Quality/max 的 exact provider+model prior 不能跨 `quality/execution/reasoning policy` 直接授权 Fast/low。Production readiness 现在绑定当前 exact profile 的 `stage + quality + execution + reasoning policy`，generic/provider-family prior 只能用于 shadow/旁路学习；没有同档位完整 stop 与 counterfactual-safe 证据时，Draft wire 保持 legacy。
+- Red-first 已闭环：新增 `__tests__/phase3C3BootstrapProductionReadiness.test.ts`。实现前该测试按预期失败（冷 Fast profile 被错误放行，expected `false` / received `true`）；最小实现后该测试与 C3 correction/aggregate targeted 集合通过。实现只收紧 readiness 与 wire defense-in-depth，并让 Writer 传入当前 shadow；没有改变 Writing Pipeline 拓扑、Thinking、Mandatory Truth、Provider 协议、timeout、Retry、`outcome_unknown`、QA/Revision 接管范围、schema 或 UI。
+- 自动验证证据：`c3-correction2-targeted-final.txt` 为 `3 suites / 21 tests PASS`；`c3-correction2-full-final.txt` 为 `518 passed / 3 skipped` suites、`3693 passed / 8 skipped` tests；`c3-correction2-typecheck-final.txt`、`c3-correction2-lint-final.txt`、`c3-correction2-elastic-final.txt`、`c3-correction2-version-final.txt` 全部 PASS。`git diff --check` PASS。仓库既有 warnings/测试 console 输出未被误判为失败。
+- APK/安装门通过：`npm.cmd run apk:debug` PASS，APK `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `A485DF599164B23BCF46D252C56475C271EFE8C3DD4A7BFA7975E9C19D77018D`；设备为 `emulator-5554`，只执行 `adb install -r`。`versionName=V2.21.1`、`versionCode=2210100`，`firstInstallTime` 保持 `2026-08-23 04:59:45`；没有 uninstall、`pm clear`、清库或重置真实用户数据。运行使用 App 已配置的真实 `GLM-5.3-Flash / open.bigmodel.cn-v4`，未使用 mock provider，密钥未进入证据。
+- Restart hydrate 门通过：`c3-restart-hydrate-safe-projection.json` 与 `c3-restart-hydrate-db-summary.txt` 显示 schema 60、SQLite `integrity_check=ok`、`writing_governor_profiles=6`，敏感字段计数 `api_key=0 / authorization=0`；强制停止后重新启动仍可读取既有项目与 Governor 窄聚合，未改变数据拓扑。
+- 同档位 Fast recovery 已连续收集真实 stop/counterfactual-safe 样本：`c3-fast500-correction-final-safe-projection.json`、`c3-fast500-recovery2-final-safe-projection.json` 至 `c3-fast500-recovery6-final-safe-projection.json`。每个请求均为 1 次 physical call、无自动 retry；recovery6 完成后 profile 为 `ACTIVE / productionReady=true`，随后 `c3-fast500-production-ready-final-safe-projection.json` 证明下一次 Fast/low Draft 才切到 Governor wire `28945`，而不是跨档位提前接管。
+- C3 Draft matrix 已完整执行。为使“large”可审计，按方案同一系列的合法目标范围选择 `8000` 作为 large（大于 3000，且不改生产业务上限）。每格均有 `c3-<cell>-final-safe-projection.json`、对应 `<cell>-product-logcat-filtered.txt` 和 UI 截图；可执行 provider cell 均为真实 Android 已配置 LLM 的单次 physical call，receipt、stage、wire、usage、profile state 可回读。
+  - Fast：`500` PASS（production-ready 后 wire `28945`）、`1000` PASS（wire `35612`）、`3000` PASS（wire `91167`）；`8000` 在 Governor preflight 以 `demand_exceeds_hard_ceiling` 安全拒绝，receipt `0`、Governor physical call `0`、无 retry，证据为 `c3-fast8000-final-safe-projection.json` 与 `fast8000-preflight-blocked.png`。
+  - Standard：`500`、`1000`、`3000` 均真实 Draft provider stop、1 physical call、legacy wire、无 Governor production takeover；`8000` 真实 Draft 使用 legacy hard cap `131072` 后 provider 返回 `length`，本地 fail-closed，无正文、无 retry。证据分别为 `c3-standard500-final-safe-projection.json`、`c3-standard1000-final-safe-projection.json`、`c3-standard3000-final-safe-projection.json`、`c3-standard8000-final-safe-projection.json`。
+  - Quality：`500`、`1000`、`3000` 均真实 Draft provider stop、1 physical call、profile active、Governor wire 分别为 `34759`、`36307`、`72603`；`8000` 同样在 preflight 以 `demand_exceeds_hard_ceiling` 安全拒绝，receipt `0`、physical call `0`，证据为 `c3-quality8000-final-safe-projection.json` 与 `quality8000-preflight-blocked.png`。
+- 以上 Standard/Quality 的 QA length 是后续 C4 Compact QA Governor 的已知 legacy QA 分支：C3 未让 QA/Revision 接管 wire，也未自动重试；它们在 receipt/DB/UI/logcat 中保持 fail-closed 证据，不被伪装成 C3 Draft success。C3 Draft-managed length 只在历史冷启动 Fast 纠偏前失败与本轮可审计矩阵分支中处理；本轮 active Fast/Quality Draft 没有 Governor-managed length。
+- UI/Receipt/DB/logcat 均已核对：成功 cell 显示生成详情的 Freeze/生成/检查/校验/保存闭环并可“采纳/已保存”；失败/拒绝 cell 显示明确的 length 或 `demand_exceeds_hard_ceiling`，没有正文采纳。UIAutomator 偶发的 `UiAutomationService already registered` 仅被记录为 QA 工具噪声，产品 logcat 过滤证据已排除该噪声，未误报为 App crash。
+- P0/Required Gate 复核：Thinking Always On；单 Writing Pipeline、单 Context/Memory/Writer、Mandatory Truth 保持；没有固定业务 `maxTokens`；`finishReason=length` fail-closed；`outcome_unknown` 不自动 retry；Governor 不增加 LLM 调用；所有 provider physical calls 在 Receipt/DB 计数一致；Android 仅 `install -r`。Generic Prior 没有直接接管 Production，历史 fixture/序列化/重启 hydrate、连续 stop、矩阵及拒绝分支均有证据。
+
+结论：`C3 GO`。本轮 cross-profile correction 已通过自动化、APK、install-r、真实 Android 配置 LLM、DB/Receipt/UI/logcat、restart hydrate、连续 feedback 与完整 Draft matrix Required Gate；允许解锁 `C4 Compact QA Governor`。本节历史 `C3-CORRECTION-2` 首格 Fast NO-GO 仍作为真实失败证据保留。

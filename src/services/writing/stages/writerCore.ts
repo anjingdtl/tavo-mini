@@ -780,7 +780,7 @@ function resolveStageWireMax(
 ): number {
   const decision = decideWritingGovernorWire(
     shadow,
-    shouldEnableWritingGovernorProduction(stage),
+    shouldEnableWritingGovernorProduction(stage, shadow),
   );
   if (decision.blocked) {
     const error = new Error(

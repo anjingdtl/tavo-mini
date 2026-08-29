@@ -135,6 +135,7 @@ export interface WritingGovernorShadow {
   hydrated: boolean;
   productionState: WritingGovernorProductionState;
   productionReady: boolean;
+  /** True only when this exact shadow profile is ready for wire takeover. */
   productionEnabled: boolean;
   profileSampleCount: number;
   completeStopCount: number;
@@ -578,11 +579,10 @@ export function getWritingGovernorProductionStatus(
   const status = profileStatus(profile);
   return {
     hydrated: runtimeProfileStoreHydrated,
-    // Every state has a safe decision path once the durable store has been
-    // hydrated: bootstrap, probation, active, and tripped all have explicit
-    // envelopes. This is intentionally not an alias for productionReady.
+    // Hydration makes the durable aggregate usable, but only the selected
+    // profile's evidence may authorize production wire takeover.
     productionEnabled:
-      runtimeProfileStoreHydrated && Boolean(status.productionState),
+      runtimeProfileStoreHydrated && status.productionReady,
     state: status.productionState,
     productionReady: status.productionReady,
     profileSampleCount: profile?.sampleCount ?? 0,
@@ -593,10 +593,13 @@ export function getWritingGovernorProductionStatus(
   };
 }
 
-/** C3 only opts Draft into production; QA/Revision wait for C4/C5 policies. */
-export function shouldEnableWritingGovernorProduction(stage: string): boolean {
-  if (stage !== 'draft') return false;
-  return getWritingGovernorProductionStatus().productionEnabled;
+/** C3 only opts a ready Draft profile into production; QA/Revision wait for C4/C5 policies. */
+export function shouldEnableWritingGovernorProduction(
+  stage: string,
+  shadow?: Pick<WritingGovernorShadow, 'productionEnabled' | 'productionReady'>,
+): boolean {
+  if (stage !== 'draft' || !shadow) return false;
+  return shadow.productionEnabled && shadow.productionReady;
 }
 
 export function resolveWritingGovernorShadow(
@@ -812,7 +815,7 @@ export function resolveWritingGovernorShadow(
     productionState: status.productionState,
     productionReady: status.productionReady,
     productionEnabled:
-      runtimeProfileStoreHydrated && Boolean(status.productionState),
+      runtimeProfileStoreHydrated && status.productionReady,
     profileSampleCount: profile?.sampleCount ?? 0,
     completeStopCount,
     reasoningExactSampleCount: status.reasoningExactSampleCount,
@@ -1193,6 +1196,8 @@ export function completeWritingGovernorShadow(
     counterfactualUnsafeCount: status.counterfactualUnsafeCount,
     productionState: status.productionState,
     productionReady: status.productionReady,
+    productionEnabled:
+      runtimeProfileStoreHydrated && status.productionReady,
     actualCompletionUsage: usage,
     visibleOutput:
       observation.visibleOutput == null
@@ -1223,7 +1228,7 @@ export function decideWritingGovernorWire(
   shadow: WritingGovernorShadow,
   enabled: boolean,
 ): WritingGovernorWireDecision {
-  if (!enabled) {
+  if (!enabled || !shadow.productionEnabled || !shadow.productionReady) {
     return { enabled: false, blocked: false, wireMax: null, reason: null };
   }
   if (shadow.preflightBlocked || shadow.hardCeiling < shadow.demandFloor) {

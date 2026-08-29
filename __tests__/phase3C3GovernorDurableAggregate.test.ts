@@ -151,7 +151,28 @@ describe('Phase III-C C3 durable Governor aggregate', () => {
   });
 
   it('uses the bounded recommendation only when it still satisfies Demand Floor', () => {
-    const shadow = resolveWritingGovernorShadow(SHADOW_INPUT);
+    markWritingGovernorProfileStoreHydrated(true);
+    const store = getWritingGovernorProfileStore();
+    let shadow = resolveWritingGovernorShadow(SHADOW_INPUT);
+    for (let index = 0; index < 3; index += 1) {
+      completeWritingGovernorShadow(
+        shadow,
+        {
+          actualCompletionUsage: Math.max(
+            1,
+            Math.floor(shadow.recommendedWireMax * 0.2),
+          ),
+          visibleOutput: 100,
+          reasoningUsage: 100,
+          finishReason: 'stop',
+          latencyMs: 100,
+          businessResultValid: true,
+          failureClass: null,
+        },
+        store,
+      );
+      shadow = resolveWritingGovernorShadow(SHADOW_INPUT);
+    }
     const enabled = decideWritingGovernorWire(shadow, true);
     expect(enabled.enabled).toBe(true);
     expect(enabled.blocked).toBe(false);
@@ -171,7 +192,7 @@ describe('Phase III-C C3 durable Governor aggregate', () => {
     expect(blocked.reason).toBe('demand_exceeds_hard_ceiling');
   });
 
-  it('takes over Draft wire budget after hydration while retaining legacy shadow metadata', async () => {
+  it('keeps Draft on legacy wire until the exact profile is production-ready', async () => {
     const { frozenContext, trace } = buildWritingKernelFreezeTrace({
       request: outlineRequest({
         pipelineTopologyVersion: 'compact_standard',
@@ -224,8 +245,8 @@ describe('Phase III-C C3 durable Governor aggregate', () => {
     const receipt = artifact.requestReceipts?.[0] as any;
     const wire = stageInput.callStage.mock.calls[0][0].maxTokens;
 
-    expect(wire).toBeLessThan(legacy);
-    expect(wire).toBe(receipt.governorShadow.recommendedWireMax);
+    expect(wire).toBe(legacy);
+    expect(receipt.governorShadow.productionReady).toBe(false);
     expect(receipt.governorShadow.legacyWireMax).toBe(legacy);
     expect(receipt.governorShadow.thinkingEnabled).toBe(true);
   });
