@@ -52,8 +52,8 @@ import {
   completeWritingGovernorShadow,
   decideWritingGovernorWire,
   getWritingGovernorProfileStore,
-  isWritingGovernorProfileStoreHydrated,
   resolveWritingGovernorShadow,
+  shouldEnableWritingGovernorProduction,
   type WritingGovernorShadow,
 } from '../governor/writingGovernor';
 import { deriveGenerationQualityProfile } from '../contracts/generationQualityProfile';
@@ -780,7 +780,7 @@ function resolveStageWireMax(
 ): number {
   const decision = decideWritingGovernorWire(
     shadow,
-    stage === 'draft' && isWritingGovernorProfileStoreHydrated(),
+    shouldEnableWritingGovernorProduction(stage),
   );
   if (decision.blocked) {
     const error = new Error(

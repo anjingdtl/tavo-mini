@@ -35,8 +35,8 @@ function profileFromRow(row: GovernorProfileRow): WritingGovernorProfile | null 
   if (!profileKey || String(row.policy_version ?? '') !== WRITING_GOVERNOR_VERSION) {
     return null;
   }
-  return {
-    version: 1,
+  const profile = {
+    version: 2,
     profileKey,
     sampleCount: nonNegativeInteger(row.sample_count),
     knownResultCount: nonNegativeInteger(row.known_result_count),
@@ -55,7 +55,12 @@ function profileFromRow(row: GovernorProfileRow): WritingGovernorProfile | null 
     lastFinishReason:
       row.last_finish_reason == null ? null : String(row.last_finish_reason),
     updatedAt: nonNegativeInteger(row.updated_at),
-  };
+  } as WritingGovernorProfile;
+  // Recompute the semantic counters/status from the durable scalar aggregate;
+  // those fields are intentionally not duplicated as Schema 60 columns.
+  return createWritingGovernorProfileStore({ [profileKey]: profile }).profiles[
+    profileKey
+  ] || null;
 }
 
 function profileParams(profile: WritingGovernorProfile): unknown[] {

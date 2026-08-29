@@ -435,3 +435,33 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - `test-logs/phase3-c3-android/draft-length-fail.png`、`draft-length-fail-window.xml`、`draft-length-fail-logcat.txt`、`after-end.sqlite`、`after-end-safe-projection.json` 保留了本次真实失败的完整可审计链路；点击的是“结束批次”，没有点击“确认后继续”，避免在不确定正文状态下二次调用。
 - 与 C2 真实 Quality 500 Draft 的 `legacy/recommended=131072/22283`、`output=8011`、`visible/reasoning=660/7351`、`finishReason=stop` 对照，本次 C3 冷启动 `wire=2899` 明确制造了新的 Draft length regression。因此 C3 当前固定为 `NO-GO / HOLD`：不进入 C4；下一步需在同一架构边界内修正冷启动 reasoning headroom，并重新通过 targeted/full verify 与真实 Android Draft，再决定是否进入 C4。
 - 本次提交包含 C3 生产实现、窄聚合 migration/repository、自动化测试和安全投影脚本，以及本节进度记录；现有 `-`、`.gradle-user-home/`、`emulator-5554`、`qa_import_preset.json` 和两份用户未跟踪优化文档未纳入提交。
+
+### C3-CORRECTION — Safe Warm Start / Production Readiness（2026-08-29）
+
+状态：`C3-CORRECTION automated PASS / Android fresh probe ENVIRONMENT-HOLD / C3 NO-GO`。本轮没有进入 C4，也没有 commit/push；设备恢复后必须从同一修正版重新执行真实 Probe。
+
+#### PLAN / Root Cause / Red
+
+- 上一轮真实 `500 Quality Draft` 的根因仍是生产冷启动 envelope 过窄：`legacyWireMax=131072`，Governor 实际 `wire=2899`、`demandFloor=2359`，Provider `finishReason=length`，`output=2899`、`reasoning=2878`、`visible=21`；该 `length` 是需求超过 wire 的 censored lower bound，不是 `reasoning≈2878` 的 exact sample。
+- 旧语义把 `hydrated` 近似成了 production enable，并把单个 `length` 结果写进普通 reasoning sample。这样既缺少 `counterfactual safety gate`，也缺少 `length → TRIPPED → fast recovery` 的生产断路器，会让真实用户承担连续失败训练成本。
+- Red-first 已真实执行：初版 `phase3C3CorrectionGovernor.test.ts` 共 12 个用例，其中 9 个在新状态 API/语义尚未实现时失败；实现后补至 15 个边界用例，当前 `15/15 PASS`。覆盖 hydrated≠ready、动态 prior、1M context 不线性放大、真实 reasoning 反馈、无 usage 的 censored length、TRIPPED recovery、counterfactual gate、slow tightening、未知/网络/5xx 不学习、Thinking/physical-call 边界、旧 policy 隔离和序列化恢复。
+
+#### Minimal Correction
+
+- Governor decision/policy 已 bump 为 `writing-governor-production-v3`；新增可审计 `writing-governor-bootstrap-v1`。Bootstrap 不是 `500/1000/3000 → 固定 tokens` 表，而是从 C1/C2 real stop receipts 与 `phase3-c-progress.md` 的 GLM-5.3-Flash Draft 数据提取并归一化的 `reasoning / visibleDemand`、`reasoning / actualPromptTokens` 安全高水位，再按当前 target/prompt 动态投影。
+- Prior 分层按明确的 exact provider+model、显式 provider adapter family、generic reasoning model 回退；不根据 model name 子串猜 family，运行时不扫描 test logs，也不保存 prompt、正文、memory、request/response body 或 key。
+- Schema 60 保持不升版：`writing_governor_profiles` 继续只有 16 个窄标量聚合列；`completeStopCount`、`reasoningExactSampleCount`、`counterfactualSafeCount`、`productionState` 等由版本化核心字段推导，旧 `writing-governor-shadow-v2` profile 不会无条件进入新算法。
+- 状态机明确为 `BOOTSTRAP_SAFE → PROBATION → ACTIVE`，以及遇到 Governor-managed `length` 后的 `TRIPPED`。`length` 可增加 lower-bound 计数并立即提高 recovery envelope，但不进入 exact reasoning EWMA；只有完整 `stop + valid` 才能学习；unknown/network/5xx 不学习、不 retry。
+- Counterfactual 以 `actualCompletionUsage / recommendedWire` 做安全门；连续完整且明显低利用率达到版本化 streak 后才按小步 decay，TRIPPED 后先恢复宽 envelope，再收集恢复样本。C3 只让 Draft 使用该 wire decision，QA/Revision 仍未接管；Pipeline topology、Mandatory Truth、Thinking、timeout、streaming、retry、Agent architecture 均未改动。
+
+#### Automated / APK
+
+- `npm.cmd run verify`：`517/520 suites PASS`，`3692 passed / 8 skipped` tests；`typecheck`、`verify:elastic`、`verify:version` 均 PASS；lint 为 `0 errors / 259 existing warnings`。
+- `npm.cmd run apk:debug` 首次只遇到 Windows/JDK loopback 环境异常；使用进程级 `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=...\test-logs` workaround 后构建成功，未改 Gradle 配置、未清 Gradle cache。APK：`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，`59,857,962` bytes，SHA-256 `8CA7907DF920DB7701F4B66CEAC3658E27F11D97D6A4929BE1045FFC55835494`。
+- 安全只读投影脚本 `scripts/qa/phase3-c3-production-projection.mjs` 已切换到 `writing-governor-production-v3`，并加入 state/readiness/prior/安全计数等非敏感观测字段。
+
+#### Android Fresh Probe / ACT
+
+- 按 TAVO-MINI Emulator QA skill 新建证据目录 `test-logs/emulator-qa-20260829-232722/` 并执行 fresh `adb devices`；结果只有 `List of devices attached` 表头。指定 `emulator-5554` 的 `get-state` 返回 `error: device 'emulator-5554' not found`，因此没有执行 `install -r`、启动 App、DB 读取、UI 操作或任何真实 LLM 请求；没有卸载、`pm clear`、清库或修改用户数据。脱敏状态记录在该目录的 `preflight-status.txt`。
+- 这是环境阻塞，不把它误报成产品 Probe PASS；本轮没有新的 `finishReason`、Receipt、DB、UI 或 logcat 结论，不能满足 C3 GO 的 `install-r + Real Draft Probe + Continuous Feedback Probe + Draft Matrix` 条件。
+- 当前决策固定为 `C3 NO-GO / HOLD`，不进入 C4。设备在线后依次执行：保留式 `adb install -r` → schema/profile hydrate 与 DB integrity → `500 Quality Draft` 小 Probe → 同类连续 feedback（任一 length 立即停测并重新 PDCA）→ 通过后才跑 C3 Draft matrix。

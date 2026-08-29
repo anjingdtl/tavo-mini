@@ -1,60 +1,99 @@
 /**
- * Phase III-C v2 adaptive Governor.
+ * Phase III-C production Governor.
  *
- * C2 is deliberately shadow-only: this module measures the final compiled
- * messages and calculates a recommendation, but it never selects or sends a
- * request. The current legacy wire value remains authoritative until a later
- * phase explicitly enables one stage at a time.
+ * The Governor is still a deterministic calculation at the final compiled
+ * message boundary. It does not create an LLM request. C3 changes only the
+ * Draft wire decision: QA and Revision remain legacy-budget stages until
+ * their own policy/profile rollout.
  */
 import { sha256Hex } from '../../continuation/hashUtils';
 import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
 import { estimateTargetChapterTokens } from '../scenario/continuationStageCapacity';
 import type { ChatMessage } from '../../llm/types';
+import {
+  resolveWritingGovernorBootstrapPrior,
+  type BootstrapPriorMatch,
+} from './writingGovernorBootstrapPrior';
 
-export const WRITING_GOVERNOR_VERSION = 'writing-governor-shadow-v2' as const;
+/** Bump this whenever cold start, readiness, or learning semantics change. */
+export const WRITING_GOVERNOR_VERSION =
+  'writing-governor-production-v3' as const;
+export const WRITING_GOVERNOR_POLICY_VERSION = WRITING_GOVERNOR_VERSION;
 export const WRITING_GOVERNOR_PROMPT_COMPILER_VERSION =
   'shared-prompt-compiler-v1' as const;
 export const WRITING_GOVERNOR_REASONING_POLICY_VERSION =
   'kernel-reasoning-policy-v2' as const;
 export const WRITING_GOVERNOR_REASONING_SEED_VERSION =
-  'cold-start-reasoning-seed-v2' as const;
+  'safe-warm-start-prior-v1' as const;
 
-const MIN_PROFILE_SAMPLES = 3;
-const MIN_RECOMMENDED_SCALE = 0.75;
-const MAX_RECOMMENDED_SCALE = 1.25;
-const LOW_UTILIZATION_RATIO = 0.45;
-const HIGH_UTILIZATION_RATIO = 0.9;
-const CONTEXT_SAFETY_RESERVE_RATIO = 0.02;
-const MIN_OUTPUT_SAFETY_RESERVE = 32;
-const OUTPUT_SAFETY_RESERVE_RATIO = 0.08;
-const REASONING_EWMA_ALPHA = 0.2;
-const REASONING_HIGH_WATER_DECAY = 0.98;
-const MAX_REASONING_DEMAND_RATIO = 8;
-const MAX_REASONING_PROMPT_RATIO = 1.5;
-const REASONING_HISTORY_MIN_WEIGHT = 0.7;
-const REASONING_HISTORY_MAX_WEIGHT = 0.9;
+export const WRITING_GOVERNOR_POLICY = {
+  /** Policy parameters are versioned above instead of hidden business caps. */
+  minCompleteStopSamples: 3,
+  minReasoningExactSamples: 3,
+  minCounterfactualSafeSamples: 3,
+  minHealthySuccessStreak: 3,
+  recoverySuccessSamplesPerTrip: 3,
+  counterfactualMaxUtilization: 0.9,
+  localProfilePseudoCount: 3,
+  localProfileMaxWeight: 0.85,
+  localSafetyFloorRatio: 0.82,
+  trippedRecoveryRatio: 1.25,
+  recoveryScaleFloor: 1.25,
+  recoveryScaleRise: 1.35,
+  unsafeScaleRise: 1.12,
+  slowTighteningDecay: 0.97,
+  highUtilizationRise: 1.02,
+  minRecommendedScale: 0.75,
+  maxRecommendedScale: 2.5,
+  lowUtilizationRatio: 0.45,
+  highUtilizationRatio: 0.9,
+  contextSafetyReserveRatio: 0.02,
+  minOutputSafetyReserve: 32,
+  outputSafetyReserveRatio: 0.08,
+  reasoningEwmaAlpha: 0.2,
+  reasoningHighWaterDecay: 0.98,
+  maxReasoningDemandRatio: 8,
+  maxReasoningPromptRatio: 1.5,
+} as const;
 
-type GovernorReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+export type WritingGovernorProductionState =
+  | 'BOOTSTRAP_SAFE'
+  | 'PROBATION'
+  | 'ACTIVE'
+  | 'TRIPPED';
+
+export type GovernorReasoningEffort = 'low' | 'medium' | 'high' | 'max';
 
 export interface WritingGovernorProfile {
-  version: 1;
+  version: 2;
   profileKey: string;
+  /** All learnable results, including censored length signals. */
   sampleCount: number;
   knownResultCount: number;
+  /** Consecutive low-utilization complete-stop streak. */
   lowUtilizationCount: number;
+  /** Censored lower-bound signals; never exact reasoning samples. */
   lengthSignalCount: number;
   recommendedScale: number;
+  /** Complete-stop-only aggregate. */
   averageCompletionRatio: number | null;
   averageLatencyMs: number | null;
-  /** Bounded real reasoning/visible-demand feedback. */
+  /** Exact complete-stop reasoning feedback only. */
   reasoningSampleCount: number;
   reasoningRatioEwma: number | null;
   reasoningRatioHighWater: number | null;
-  /** Bounded real reasoning/input feedback for long-context adaptation. */
   reasoningPromptRatioEwma: number | null;
   reasoningPromptRatioHighWater: number | null;
+  /** Provider finish reason, optionally carrying a bounded CF safety debt. */
   lastFinishReason: string | null;
   updatedAt: number;
+  /** Derived semantic counters/status; not extra database columns. */
+  completeStopCount: number;
+  reasoningExactSampleCount: number;
+  counterfactualSafeCount: number;
+  counterfactualUnsafeCount: number;
+  productionState: WritingGovernorProductionState;
+  productionReady: boolean;
 }
 
 export interface WritingGovernorProfileStore {
@@ -68,7 +107,7 @@ export type WritingGovernorProfilePersistenceSink = (
 export interface ResolveWritingGovernorShadowInput {
   stage: string;
   messages: ChatMessage[];
-  /** The value the mature Writer would send before C3+ enables the Governor. */
+  /** The value the mature Writer would send before the C3 takeover. */
   legacyWireMax: number;
   contextWindow: number;
   completionCapability: number;
@@ -90,9 +129,18 @@ export interface WritingGovernorShadow {
   mode: 'shadow';
   stage: string;
   profileKey: string;
+  policyVersion: typeof WRITING_GOVERNOR_POLICY_VERSION;
   coldStart: boolean;
   learned: boolean;
+  hydrated: boolean;
+  productionState: WritingGovernorProductionState;
+  productionReady: boolean;
+  productionEnabled: boolean;
   profileSampleCount: number;
+  completeStopCount: number;
+  reasoningExactSampleCount: number;
+  counterfactualSafeCount: number;
+  counterfactualUnsafeCount: number;
   providerAdapterId: string | null;
   modelName: string;
   qualityProfile: string | null;
@@ -101,6 +149,13 @@ export interface WritingGovernorShadow {
   thinkingEnabled: boolean;
   reasoningEffort: GovernorReasoningEffort | null;
   reasoningSeedVersion: typeof WRITING_GOVERNOR_REASONING_SEED_VERSION;
+  bootstrapPriorVersion: string;
+  bootstrapPriorSource: string;
+  bootstrapPriorMatch: BootstrapPriorMatch;
+  bootstrapReasoningDemandRatio: number;
+  bootstrapReasoningPromptRatio: number;
+  bootstrapWeight: number;
+  localProfileWeight: number;
   contextCapability: number;
   completionCapability: number;
   providerWireCeiling: number | null;
@@ -115,7 +170,7 @@ export interface WritingGovernorShadow {
   contextSafetyReserve: number;
   /** Output-only reserve; it is demand-relative, never context-relative. */
   outputSafetyReserve: number;
-  /** @deprecated Kept as a read-only compatibility alias for old receipts. */
+  /** @deprecated Compatibility alias for old receipts. */
   safetyReserve: number;
   recommendedSoftBudget: number;
   hardCeiling: number;
@@ -129,13 +184,19 @@ export interface WritingGovernorShadow {
   reasoningUsage: number | null;
   finishReason: string | null;
   latencyMs: number | null;
+  /** Populated only when an observed complete stop is evaluated. */
+  counterfactualUtilization: number | null;
+  counterfactualSafe: boolean | null;
 }
 
 export interface WritingGovernorWireDecision {
   enabled: boolean;
   blocked: boolean;
   wireMax: number | null;
-  reason: 'demand_exceeds_hard_ceiling' | 'recommendation_below_demand_floor' | null;
+  reason:
+    | 'demand_exceeds_hard_ceiling'
+    | 'recommendation_below_demand_floor'
+    | null;
 }
 
 export interface WritingGovernorObservation {
@@ -170,13 +231,22 @@ function normalizeEffort(value: unknown): GovernorReasoningEffort {
 }
 
 function reasoningRatio(effort: GovernorReasoningEffort): number {
-  // Versioned cold-start seeds only. Once real reasoning usage exists, the
-  // bounded profile feedback below becomes the primary signal.
+  // A small policy seed remains a fallback below the evidence-based prior;
+  // it is not an absolute output cap.
   return {
     low: 0.2,
     medium: 0.28,
     high: 0.38,
     max: 0.5,
+  }[effort];
+}
+
+function effortMultiplier(effort: GovernorReasoningEffort): number {
+  return {
+    low: 0.9,
+    medium: 0.95,
+    high: 1,
+    max: 1.08,
   }[effort];
 }
 
@@ -192,6 +262,7 @@ function isStructuredReportStage(stage: string): boolean {
 function profileKeyFor(input: ResolveWritingGovernorShadowInput): string {
   return sha256Hex(
     JSON.stringify({
+      policyVersion: WRITING_GOVERNOR_POLICY_VERSION,
       providerAdapterId: String(input.providerAdapterId ?? ''),
       modelName: String(input.modelName ?? ''),
       stage: input.stage,
@@ -207,19 +278,45 @@ function profileKeyFor(input: ResolveWritingGovernorShadowInput): string {
   );
 }
 
-function boundedRatio(
-  value: unknown,
-  maximum: number,
-): number | null {
+function boundedRatio(value: unknown, maximum: number): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0
     ? clamp(parsed, 0, maximum)
     : null;
 }
 
+const COUNTERFACTUAL_MARKER = 'cf-unsafe:';
+
+function parseCounterfactualDebt(value: unknown): {
+  debt: number;
+  finishReason: string | null;
+} {
+  const raw = String(value ?? '');
+  if (!raw.startsWith(COUNTERFACTUAL_MARKER)) {
+    return { debt: 0, finishReason: raw || null };
+  }
+  const match = raw.match(/^cf-unsafe:(\d+):(.*)$/);
+  if (!match) return { debt: 1, finishReason: null };
+  return {
+    debt: clamp(nonNegative(match[1]), 0, 999),
+    finishReason: match[2] || null,
+  };
+}
+
+/** Keep the safety latch in one bounded scalar already owned by Schema 60. */
+function encodeCounterfactualDebt(
+  finishReason: string | null,
+  debt: number,
+): string | null {
+  if (debt <= 0) return finishReason || null;
+  return `${COUNTERFACTUAL_MARKER}${clamp(Math.floor(debt), 1, 999)}:${
+    finishReason || ''
+  }`;
+}
+
 function emptyProfile(profileKey: string): WritingGovernorProfile {
   return {
-    version: 1,
+    version: 2,
     profileKey,
     sampleCount: 0,
     knownResultCount: 0,
@@ -235,6 +332,81 @@ function emptyProfile(profileKey: string): WritingGovernorProfile {
     reasoningPromptRatioHighWater: null,
     lastFinishReason: null,
     updatedAt: 0,
+    completeStopCount: 0,
+    reasoningExactSampleCount: 0,
+    counterfactualSafeCount: 0,
+    counterfactualUnsafeCount: 0,
+    productionState: 'BOOTSTRAP_SAFE',
+    productionReady: false,
+  };
+}
+
+function deriveProfileState(
+  profile: Omit<
+    WritingGovernorProfile,
+    | 'completeStopCount'
+    | 'reasoningExactSampleCount'
+    | 'counterfactualSafeCount'
+    | 'counterfactualUnsafeCount'
+    | 'productionState'
+    | 'productionReady'
+  >,
+): Pick<
+  WritingGovernorProfile,
+  | 'completeStopCount'
+  | 'reasoningExactSampleCount'
+  | 'counterfactualSafeCount'
+  | 'counterfactualUnsafeCount'
+  | 'productionState'
+  | 'productionReady'
+> {
+  const completeStopCount = Math.max(
+    0,
+    profile.knownResultCount - profile.lengthSignalCount,
+  );
+  const reasoningExactSampleCount = Math.min(
+    completeStopCount,
+    profile.reasoningSampleCount,
+  );
+  const counterfactualUnsafeCount = parseCounterfactualDebt(
+    profile.lastFinishReason,
+  ).debt;
+  const counterfactualSafeCount = Math.max(
+    0,
+    completeStopCount - counterfactualUnsafeCount,
+  );
+  const lastFinishReason = parseCounterfactualDebt(
+    profile.lastFinishReason,
+  ).finishReason;
+  const hasEnoughRecoveryEvidence =
+    completeStopCount >=
+    WRITING_GOVERNOR_POLICY.minCompleteStopSamples +
+      profile.lengthSignalCount *
+        WRITING_GOVERNOR_POLICY.recoverySuccessSamplesPerTrip;
+  const productionReady =
+    lastFinishReason !== 'length' &&
+    counterfactualUnsafeCount === 0 &&
+    completeStopCount >= WRITING_GOVERNOR_POLICY.minCompleteStopSamples &&
+    reasoningExactSampleCount >=
+      WRITING_GOVERNOR_POLICY.minReasoningExactSamples &&
+    counterfactualSafeCount >=
+      WRITING_GOVERNOR_POLICY.minCounterfactualSafeSamples &&
+    hasEnoughRecoveryEvidence;
+  const productionState: WritingGovernorProductionState =
+    lastFinishReason === 'length'
+      ? 'TRIPPED'
+      : productionReady
+      ? 'ACTIVE'
+      : completeStopCount === 0
+      ? 'BOOTSTRAP_SAFE'
+      : 'PROBATION';
+  return {
+    completeStopCount,
+    reasoningExactSampleCount,
+    counterfactualSafeCount,
+    counterfactualUnsafeCount,
+    productionState,
+    productionReady,
   };
 }
 
@@ -242,11 +414,14 @@ function normalizeProfile(
   profileKey: string,
   value: Partial<WritingGovernorProfile> | null | undefined,
 ): WritingGovernorProfile | null {
-  if (!value || value.version !== 1) return null;
+  // v1 profiles are deliberately rejected even when their DB policy column
+  // was copied incorrectly. A changed policy must start from safe bootstrap.
+  if (!value || value.version !== 2) return null;
   const base = emptyProfile(profileKey);
-  return {
+  const normalized = {
     ...base,
     ...value,
+    version: 2 as const,
     profileKey,
     sampleCount: nonNegative(value.sampleCount),
     knownResultCount: nonNegative(value.knownResultCount),
@@ -256,8 +431,8 @@ function normalizeProfile(
       Number.isFinite(Number(value.recommendedScale))
         ? Number(value.recommendedScale)
         : 1,
-      MIN_RECOMMENDED_SCALE,
-      MAX_RECOMMENDED_SCALE,
+      WRITING_GOVERNOR_POLICY.minRecommendedScale,
+      WRITING_GOVERNOR_POLICY.maxRecommendedScale,
     ),
     averageCompletionRatio: boundedRatio(value.averageCompletionRatio, 4),
     averageLatencyMs:
@@ -267,23 +442,27 @@ function normalizeProfile(
     reasoningSampleCount: nonNegative(value.reasoningSampleCount),
     reasoningRatioEwma: boundedRatio(
       value.reasoningRatioEwma,
-      MAX_REASONING_DEMAND_RATIO,
+      WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio,
     ),
     reasoningRatioHighWater: boundedRatio(
       value.reasoningRatioHighWater,
-      MAX_REASONING_DEMAND_RATIO,
+      WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio,
     ),
     reasoningPromptRatioEwma: boundedRatio(
       value.reasoningPromptRatioEwma,
-      MAX_REASONING_PROMPT_RATIO,
+      WRITING_GOVERNOR_POLICY.maxReasoningPromptRatio,
     ),
     reasoningPromptRatioHighWater: boundedRatio(
       value.reasoningPromptRatioHighWater,
-      MAX_REASONING_PROMPT_RATIO,
+      WRITING_GOVERNOR_POLICY.maxReasoningPromptRatio,
     ),
     lastFinishReason:
       value.lastFinishReason == null ? null : String(value.lastFinishReason),
     updatedAt: nonNegative(value.updatedAt),
+  };
+  return {
+    ...normalized,
+    ...deriveProfileState(normalized),
   };
 }
 
@@ -331,6 +510,95 @@ function resolvedProfile(
   return normalizeProfile(profileKey, store.profiles[profileKey]);
 }
 
+function profileStatus(
+  profile: WritingGovernorProfile | null,
+): Pick<
+  WritingGovernorProfile,
+  | 'completeStopCount'
+  | 'reasoningExactSampleCount'
+  | 'counterfactualSafeCount'
+  | 'counterfactualUnsafeCount'
+  | 'productionState'
+  | 'productionReady'
+> {
+  if (profile) return deriveProfileState(profile);
+  return {
+    completeStopCount: 0,
+    reasoningExactSampleCount: 0,
+    counterfactualSafeCount: 0,
+    counterfactualUnsafeCount: 0,
+    productionState: 'BOOTSTRAP_SAFE',
+    productionReady: false,
+  };
+}
+
+export interface WritingGovernorProductionStatus {
+  hydrated: boolean;
+  productionEnabled: boolean;
+  state: WritingGovernorProductionState;
+  productionReady: boolean;
+  profileSampleCount: number;
+  completeStopCount: number;
+  reasoningExactSampleCount: number;
+  counterfactualSafeCount: number;
+  counterfactualUnsafeCount: number;
+}
+
+export function getWritingGovernorProfileState(
+  profile: WritingGovernorProfile | null | undefined,
+): WritingGovernorProductionState {
+  return profileStatus(profile || null).productionState;
+}
+
+/** Readiness is deliberately distinct from hydration and bootstrap enablement. */
+export function isWritingGovernorProductionReady(
+  store: WritingGovernorProfileStore = runtimeProfileStore,
+  profileKey?: string,
+): boolean {
+  if (profileKey) {
+    return profileStatus(resolvedProfile(store, profileKey)).productionReady;
+  }
+  return getWritingGovernorProductionStatus(store).productionReady;
+}
+
+export function getWritingGovernorProductionStatus(
+  store: WritingGovernorProfileStore = runtimeProfileStore,
+  profileKey?: string,
+): WritingGovernorProductionStatus {
+  let profile: WritingGovernorProfile | null = null;
+  if (profileKey) {
+    profile = resolvedProfile(store, profileKey);
+  } else {
+    profile =
+      Object.values(store.profiles)
+        .map(value => normalizeProfile(value.profileKey, value))
+        .filter((value): value is WritingGovernorProfile => Boolean(value))
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0] || null;
+  }
+  const status = profileStatus(profile);
+  return {
+    hydrated: runtimeProfileStoreHydrated,
+    // Every state has a safe decision path once the durable store has been
+    // hydrated: bootstrap, probation, active, and tripped all have explicit
+    // envelopes. This is intentionally not an alias for productionReady.
+    productionEnabled:
+      runtimeProfileStoreHydrated && Boolean(status.productionState),
+    state: status.productionState,
+    productionReady: status.productionReady,
+    profileSampleCount: profile?.sampleCount ?? 0,
+    completeStopCount: status.completeStopCount,
+    reasoningExactSampleCount: status.reasoningExactSampleCount,
+    counterfactualSafeCount: status.counterfactualSafeCount,
+    counterfactualUnsafeCount: status.counterfactualUnsafeCount,
+  };
+}
+
+/** C3 only opts Draft into production; QA/Revision wait for C4/C5 policies. */
+export function shouldEnableWritingGovernorProduction(stage: string): boolean {
+  if (stage !== 'draft') return false;
+  return getWritingGovernorProductionStatus().productionEnabled;
+}
+
 export function resolveWritingGovernorShadow(
   input: ResolveWritingGovernorShadowInput,
   store: WritingGovernorProfileStore = runtimeProfileStore,
@@ -348,8 +616,6 @@ export function resolveWritingGovernorShadow(
     input.outputContract === 'json_envelope' &&
     isStructuredReportStage(input.stage);
   const chapterDemand = estimateTargetChapterTokens(targetChars);
-  // Structured reports scale with the measured task demand, but retain their
-  // own compact envelope. This is a demand signal, not a transport ceiling.
   const visibleDemand = structured
     ? Math.max(
         estimateTokens(
@@ -364,14 +630,16 @@ export function resolveWritingGovernorShadow(
   );
   const profileKey = profileKeyFor(input);
   const profile = resolvedProfile(store, profileKey);
-  const learned = Boolean(profile && profile.sampleCount >= MIN_PROFILE_SAMPLES);
+  const status = profileStatus(profile);
+  const completeStopCount = status.completeStopCount;
+  const learned =
+    completeStopCount >= WRITING_GOVERNOR_POLICY.minCompleteStopSamples;
   const contextSafetyReserve = Math.max(
     1,
-    Math.ceil(contextCapability * CONTEXT_SAFETY_RESERVE_RATIO),
+    Math.ceil(
+      contextCapability * WRITING_GOVERNOR_POLICY.contextSafetyReserveRatio,
+    ),
   );
-  // Demand pressure is input-vs-target shape, not context-window capacity.
-  // The context-only reserve must enter only availableCompletion. In
-  // particular, a 1M context window must not manufacture a 20K output budget.
   const pressure = clamp(
     (actualPromptTokens + visibleOutputFloor) /
       Math.max(1, actualPromptTokens + visibleDemand),
@@ -390,17 +658,35 @@ export function resolveWritingGovernorShadow(
   );
   const currentInputDemandRatio =
     actualPromptTokens / Math.max(1, visibleDemand);
-  const coldStartEstimate = Math.max(
+  const seedEnvelope = Math.max(
     1,
     Math.ceil(
       visibleDemand *
         reasoningRatio(effort) *
-        // Input/target shape is a bounded cold-start adjustment only. It is
-        // deliberately sublinear so long prompts do not dominate demand.
         clamp(1 + Math.log1p(currentInputDemandRatio) * 0.15, 1, 1.35) *
         (1 + pressure * 0.25),
     ),
   );
+  const prior = resolveWritingGovernorBootstrapPrior({
+    providerAdapterId: input.providerAdapterId,
+    modelName: input.modelName,
+    stage: input.stage,
+    qualityProfile: input.qualityProfile,
+  });
+  const effortFactor = effortMultiplier(effort);
+  const bootstrapDemandEstimate = Math.ceil(
+    visibleDemand * prior.reasoningDemandRatioP95 * effortFactor,
+  );
+  const bootstrapPromptEstimate = Math.ceil(
+    actualPromptTokens * prior.reasoningPromptRatioP95 * effortFactor,
+  );
+  const bootstrapReasoningEnvelope = Math.max(
+    1,
+    seedEnvelope,
+    bootstrapDemandEstimate,
+    bootstrapPromptEstimate,
+  );
+
   const historicalDemandRatio = Math.max(
     profile?.reasoningRatioEwma ?? 0,
     (profile?.reasoningRatioHighWater ?? 0) * 0.9,
@@ -421,29 +707,44 @@ export function resolveWritingGovernorShadow(
     historicalDemandEstimate,
     historicalPromptEstimate,
   );
-  const historyWeight = profile?.reasoningSampleCount
+  const localProfileWeight = profile
     ? clamp(
-        REASONING_HISTORY_MIN_WEIGHT +
-          Math.min(profile.reasoningSampleCount, 4) * 0.04,
-        REASONING_HISTORY_MIN_WEIGHT,
-        REASONING_HISTORY_MAX_WEIGHT,
+        completeStopCount /
+          (completeStopCount + WRITING_GOVERNOR_POLICY.localProfilePseudoCount),
+        0,
+        WRITING_GOVERNOR_POLICY.localProfileMaxWeight,
       )
     : 0;
-  // For a cold profile this is the seed. After a known sample, real behavior
-  // wins while the current target and actual prompt are re-applied on every
-  // request through the two normalized historical estimates above.
-  const reasoningEnvelope = Math.max(
-    1,
-    Math.ceil(
-      historicalEstimate > 0
-        ? Math.max(
-            coldStartEstimate,
-            coldStartEstimate * (1 - historyWeight) +
-              historicalEstimate * historyWeight,
-          )
-        : coldStartEstimate,
-    ),
+  const bootstrapWeight = 1 - localProfileWeight;
+  const blendedReasoningEnvelope =
+    historicalEstimate > 0
+      ? Math.ceil(
+          bootstrapReasoningEnvelope * bootstrapWeight +
+            historicalEstimate * localProfileWeight,
+        )
+      : bootstrapReasoningEnvelope;
+  const localSafetyFloor = Math.ceil(
+    bootstrapReasoningEnvelope * WRITING_GOVERNOR_POLICY.localSafetyFloorRatio,
   );
+  let reasoningEnvelope = Math.max(
+    1,
+    blendedReasoningEnvelope,
+    // Local evidence may tighten only within the versioned Bootstrap safety
+    // floor. This prevents a short low-utilization run from recreating a cold
+    // failure zone.
+    localSafetyFloor,
+  );
+  if (status.productionState === 'TRIPPED') {
+    // Fast Recovery: a length signal immediately restores a wider envelope;
+    // no retry is initiated here.
+    reasoningEnvelope = Math.max(
+      reasoningEnvelope,
+      Math.ceil(
+        Math.max(bootstrapReasoningEnvelope, blendedReasoningEnvelope) *
+          WRITING_GOVERNOR_POLICY.trippedRecoveryRatio,
+      ),
+    );
+  }
   const knownFluctuationReserve =
     profile?.reasoningRatioHighWater != null &&
     profile.reasoningRatioEwma != null
@@ -460,21 +761,24 @@ export function resolveWritingGovernorShadow(
         )
       : 0;
   const outputSafetyReserve = Math.max(
-    MIN_OUTPUT_SAFETY_RESERVE,
+    WRITING_GOVERNOR_POLICY.minOutputSafetyReserve,
     Math.ceil(
       Math.max(
-        visibleDemand * OUTPUT_SAFETY_RESERVE_RATIO,
-        reasoningEnvelope * OUTPUT_SAFETY_RESERVE_RATIO,
+        visibleDemand * WRITING_GOVERNOR_POLICY.outputSafetyReserveRatio,
+        reasoningEnvelope * WRITING_GOVERNOR_POLICY.outputSafetyReserveRatio,
         protocolReserve * 1.5,
       ) + knownFluctuationReserve,
     ),
   );
-  const demandFloor =
-    visibleOutputFloor + reasoningEnvelope + protocolReserve;
+  const demandFloor = visibleOutputFloor + reasoningEnvelope + protocolReserve;
   const baseSoftBudget =
     visibleDemand + reasoningEnvelope + protocolReserve + outputSafetyReserve;
-  const learnedScale = learned
-    ? clamp(profile!.recommendedScale, MIN_RECOMMENDED_SCALE, MAX_RECOMMENDED_SCALE)
+  const learnedScale = profile
+    ? clamp(
+        profile.recommendedScale,
+        WRITING_GOVERNOR_POLICY.minRecommendedScale,
+        WRITING_GOVERNOR_POLICY.maxRecommendedScale,
+      )
     : 1;
   const recommendedSoftBudget = Math.max(
     demandFloor,
@@ -501,9 +805,19 @@ export function resolveWritingGovernorShadow(
     mode: 'shadow',
     stage: input.stage,
     profileKey,
-    coldStart: !learned,
+    policyVersion: WRITING_GOVERNOR_POLICY_VERSION,
+    coldStart: profile == null && status.productionState !== 'TRIPPED',
     learned,
+    hydrated: runtimeProfileStoreHydrated,
+    productionState: status.productionState,
+    productionReady: status.productionReady,
+    productionEnabled:
+      runtimeProfileStoreHydrated && Boolean(status.productionState),
     profileSampleCount: profile?.sampleCount ?? 0,
+    completeStopCount,
+    reasoningExactSampleCount: status.reasoningExactSampleCount,
+    counterfactualSafeCount: status.counterfactualSafeCount,
+    counterfactualUnsafeCount: status.counterfactualUnsafeCount,
     providerAdapterId: input.providerAdapterId
       ? String(input.providerAdapterId)
       : null,
@@ -516,6 +830,13 @@ export function resolveWritingGovernorShadow(
     thinkingEnabled: input.thinking?.type !== 'disabled',
     reasoningEffort: input.reasoningEffort ? effort : null,
     reasoningSeedVersion: WRITING_GOVERNOR_REASONING_SEED_VERSION,
+    bootstrapPriorVersion: prior.version,
+    bootstrapPriorSource: prior.source,
+    bootstrapPriorMatch: prior.match,
+    bootstrapReasoningDemandRatio: prior.reasoningDemandRatioP95,
+    bootstrapReasoningPromptRatio: prior.reasoningPromptRatioP95,
+    bootstrapWeight,
+    localProfileWeight,
     contextCapability,
     completionCapability,
     providerWireCeiling,
@@ -528,8 +849,6 @@ export function resolveWritingGovernorShadow(
     protocolReserve,
     contextSafetyReserve,
     outputSafetyReserve,
-    // Preserve the old receipt field as an output-only alias. New logic must
-    // use the explicitly named fields above; this alias is never context-wide.
     safetyReserve: outputSafetyReserve,
     recommendedSoftBudget,
     hardCeiling,
@@ -543,35 +862,59 @@ export function resolveWritingGovernorShadow(
     reasoningUsage: null,
     finishReason: null,
     latencyMs: null,
+    counterfactualUtilization: null,
+    counterfactualSafe: null,
   };
 }
 
-function isKnownResult(
-  observation: WritingGovernorObservation,
-): boolean {
+function normalizedFailureClass(value: unknown): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isNonLearnableFailure(failureClass: string): boolean {
+  return (
+    failureClass === 'outcome_unknown' ||
+    failureClass === 'safe_retry' ||
+    failureClass === 'rate_limit' ||
+    failureClass === 'network_error' ||
+    failureClass === 'provider_error' ||
+    failureClass === 'fatal' ||
+    failureClass === 'cancelled' ||
+    failureClass.includes('network') ||
+    failureClass.includes('5xx') ||
+    failureClass.includes('server_error')
+  );
+}
+
+function finishReasonOf(observation: WritingGovernorObservation): string {
+  return String(observation.finishReason || '').trim().toLowerCase();
+}
+
+function isKnownResult(observation: WritingGovernorObservation): boolean {
+  if (isNonLearnableFailure(normalizedFailureClass(observation.failureClass))) {
+    return false;
+  }
+  const finishReason = finishReasonOf(observation);
+  // A length result is a usable lower bound even when a provider omits usage;
+  // it is never an exact reasoning sample.
+  if (finishReason === 'length') return true;
   const completion = observation.actualCompletionUsage;
   if (completion == null || !Number.isFinite(completion) || completion < 0) {
     return false;
   }
-  const failureClass = String(observation.failureClass || '');
-  const normalizedFailure = failureClass.toLowerCase();
-  if (
-    normalizedFailure === 'outcome_unknown' ||
-    normalizedFailure === 'safe_retry' ||
-    normalizedFailure === 'rate_limit' ||
-    normalizedFailure === 'network_error' ||
-    normalizedFailure === 'provider_error' ||
-    normalizedFailure === 'fatal' ||
-    normalizedFailure === 'cancelled' ||
-    normalizedFailure.includes('network') ||
-    normalizedFailure.includes('5xx') ||
-    normalizedFailure.includes('server_error')
-  ) {
-    return false;
-  }
-  const finishReason = String(observation.finishReason || '').toLowerCase();
-  if (finishReason === 'length') return true;
   return finishReason === 'stop' && observation.businessResultValid === true;
+}
+
+function completeStopObservation(
+  observation: WritingGovernorObservation,
+): boolean {
+  return (
+    finishReasonOf(observation) === 'stop' &&
+    observation.businessResultValid === true &&
+    observation.actualCompletionUsage != null &&
+    Number.isFinite(observation.actualCompletionUsage) &&
+    Number(observation.actualCompletionUsage) >= 0
+  );
 }
 
 export function observeWritingGovernorResult(
@@ -581,36 +924,109 @@ export function observeWritingGovernorResult(
 ): void {
   if (!isKnownResult(observation)) return;
   const existing = resolvedProfile(store, shadow.profileKey);
-  const previous: WritingGovernorProfile = existing || emptyProfile(shadow.profileKey);
-  const completion = Math.max(0, Number(observation.actualCompletionUsage));
-  const ratio = clamp(
-    completion / Math.max(1, shadow.recommendedSoftBudget),
-    0,
-    4,
+  const previous: WritingGovernorProfile =
+    existing || emptyProfile(shadow.profileKey);
+  const finishReason = finishReasonOf(observation);
+  const isLength = finishReason === 'length';
+  const isCompleteStop = completeStopObservation(observation);
+  const completion =
+    observation.actualCompletionUsage == null
+      ? null
+      : Math.max(0, Number(observation.actualCompletionUsage));
+  const ratio =
+    completion == null
+      ? null
+      : clamp(
+          completion / Math.max(1, shadow.recommendedSoftBudget),
+          0,
+          4,
+        );
+  const recommendation = Math.max(
+    1,
+    shadow.recommendedWireMax || shadow.recommendedSoftBudget,
   );
-  const isLength = String(observation.finishReason || '').toLowerCase() === 'length';
-  const isLow = !isLength && ratio < LOW_UTILIZATION_RATIO;
-  const isHigh = !isLength && ratio > HIGH_UTILIZATION_RATIO;
+  const counterfactualUtilization =
+    isCompleteStop && completion != null ? completion / recommendation : null;
+  const counterfactualSafe =
+    counterfactualUtilization != null &&
+    counterfactualUtilization <
+      WRITING_GOVERNOR_POLICY.counterfactualMaxUtilization;
+  const previousDebt = parseCounterfactualDebt(
+    previous.lastFinishReason,
+  ).debt;
+  const counterfactualDebt = isCompleteStop
+    ? counterfactualSafe
+      ? Math.max(0, previousDebt - 1)
+      : previousDebt + 1
+    : previousDebt;
   const sampleCount = previous.sampleCount + 1;
+  const knownResultCount = previous.knownResultCount + 1;
+  const lengthSignalCount = previous.lengthSignalCount + (isLength ? 1 : 0);
+  const completeStopCount = knownResultCount - lengthSignalCount;
+  const lowUtilization =
+    isCompleteStop &&
+    ratio != null &&
+    ratio < WRITING_GOVERNOR_POLICY.lowUtilizationRatio;
+  // Reuse the existing scalar as a consecutive healthy streak. It is reset by
+  // a high-pressure result or a censored length signal, so one lucky sample
+  // cannot authorize tightening.
+  const lowUtilizationCount = lowUtilization
+    ? previous.lowUtilizationCount + 1
+    : 0;
+  const highUtilization =
+    isCompleteStop &&
+    ratio != null &&
+    ratio > WRITING_GOVERNOR_POLICY.highUtilizationRatio;
   let recommendedScale = previous.recommendedScale;
-  if (sampleCount >= MIN_PROFILE_SAMPLES) {
-    if (isLength) {
-      // A known length stop is evidence that the next new request needs more
-      // room; this is intentionally bounded and does not retry this request.
-      recommendedScale = Math.min(MAX_RECOMMENDED_SCALE, recommendedScale * 1.1);
-    } else if (isLow) {
-      // Slow decay: one healthy low-utilization result cannot collapse a
-      // profile, and each update remains bounded by the versioned policy.
-      recommendedScale = Math.max(MIN_RECOMMENDED_SCALE, recommendedScale * 0.95);
-    } else if (isHigh) {
-      recommendedScale = Math.min(MAX_RECOMMENDED_SCALE, recommendedScale * 1.03);
-    }
+  if (isLength) {
+    // Fast rise is immediate and independent of the old minimum-sample gate.
+    recommendedScale = clamp(
+      Math.max(
+        WRITING_GOVERNOR_POLICY.recoveryScaleFloor,
+        previous.recommendedScale * WRITING_GOVERNOR_POLICY.recoveryScaleRise,
+      ),
+      WRITING_GOVERNOR_POLICY.minRecommendedScale,
+      WRITING_GOVERNOR_POLICY.maxRecommendedScale,
+    );
+  } else if (isCompleteStop && !counterfactualSafe) {
+    recommendedScale = clamp(
+      Math.max(
+        WRITING_GOVERNOR_POLICY.recoveryScaleFloor,
+        previous.recommendedScale * WRITING_GOVERNOR_POLICY.unsafeScaleRise,
+      ),
+      WRITING_GOVERNOR_POLICY.minRecommendedScale,
+      WRITING_GOVERNOR_POLICY.maxRecommendedScale,
+    );
+  } else if (
+    isCompleteStop &&
+    lowUtilizationCount >= WRITING_GOVERNOR_POLICY.minHealthySuccessStreak &&
+    completeStopCount >= WRITING_GOVERNOR_POLICY.minCompleteStopSamples &&
+    counterfactualDebt === 0
+  ) {
+    recommendedScale = clamp(
+      previous.recommendedScale * WRITING_GOVERNOR_POLICY.slowTighteningDecay,
+      WRITING_GOVERNOR_POLICY.minRecommendedScale,
+      WRITING_GOVERNOR_POLICY.maxRecommendedScale,
+    );
+  } else if (highUtilization) {
+    recommendedScale = clamp(
+      Math.max(
+        previous.recommendedScale,
+        previous.recommendedScale * WRITING_GOVERNOR_POLICY.highUtilizationRise,
+      ),
+      WRITING_GOVERNOR_POLICY.minRecommendedScale,
+      WRITING_GOVERNOR_POLICY.maxRecommendedScale,
+    );
   }
+
+  const previousCompleteCount = previous.completeStopCount;
   const averageCompletionRatio =
-    previous.averageCompletionRatio == null
+    !isCompleteStop || ratio == null
+      ? previous.averageCompletionRatio
+      : previous.averageCompletionRatio == null
       ? ratio
-      : (previous.averageCompletionRatio * previous.sampleCount + ratio) /
-        sampleCount;
+      : (previous.averageCompletionRatio * previousCompleteCount + ratio) /
+        Math.max(1, completeStopCount);
   const latency =
     observation.latencyMs == null || !Number.isFinite(observation.latencyMs)
       ? null
@@ -623,23 +1039,27 @@ export function observeWritingGovernorResult(
       : (previous.averageLatencyMs * previous.sampleCount + latency) /
         sampleCount;
 
-  const reasoning = boundedRatio(
+  const rawReasoning = boundedRatio(
     observation.reasoningUsage,
-    completion > 0 ? completion : MAX_REASONING_DEMAND_RATIO,
+    completion == null
+      ? WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio
+      : completion,
   );
-  const hasReasoningSample = reasoning != null;
+  // Only a complete stop can teach exact reasoning behavior. A length sample
+  // is explicitly censored: reasoning≈wire is not the model's true demand.
+  const hasReasoningSample = isCompleteStop && rawReasoning != null;
   const reasoningRatioSample = hasReasoningSample
     ? clamp(
-        reasoning / Math.max(1, shadow.visibleDemand),
+        rawReasoning! / Math.max(1, shadow.visibleDemand),
         0,
-        MAX_REASONING_DEMAND_RATIO,
+        WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio,
       )
     : null;
   const reasoningPromptRatioSample = hasReasoningSample
     ? clamp(
-        reasoning / Math.max(1, shadow.actualPromptTokens),
+        rawReasoning! / Math.max(1, shadow.actualPromptTokens),
         0,
-        MAX_REASONING_PROMPT_RATIO,
+        WRITING_GOVERNOR_POLICY.maxReasoningPromptRatio,
       )
     : null;
   const reasoningSampleCount =
@@ -649,13 +1069,15 @@ export function observeWritingGovernorResult(
       ? previous.reasoningRatioEwma
       : previous.reasoningRatioEwma == null
       ? reasoningRatioSample
-      : previous.reasoningRatioEwma * (1 - REASONING_EWMA_ALPHA) +
-        reasoningRatioSample * REASONING_EWMA_ALPHA;
+      : previous.reasoningRatioEwma *
+          (1 - WRITING_GOVERNOR_POLICY.reasoningEwmaAlpha) +
+        reasoningRatioSample * WRITING_GOVERNOR_POLICY.reasoningEwmaAlpha;
   const reasoningRatioHighWater =
     reasoningRatioSample == null
       ? previous.reasoningRatioHighWater
       : Math.max(
-          (previous.reasoningRatioHighWater ?? 0) * REASONING_HIGH_WATER_DECAY,
+          (previous.reasoningRatioHighWater ?? 0) *
+            WRITING_GOVERNOR_POLICY.reasoningHighWaterDecay,
           reasoningRatioSample,
         );
   const reasoningPromptRatioEwma =
@@ -663,23 +1085,28 @@ export function observeWritingGovernorResult(
       ? previous.reasoningPromptRatioEwma
       : previous.reasoningPromptRatioEwma == null
       ? reasoningPromptRatioSample
-      : previous.reasoningPromptRatioEwma * (1 - REASONING_EWMA_ALPHA) +
-        reasoningPromptRatioSample * REASONING_EWMA_ALPHA;
+      : previous.reasoningPromptRatioEwma *
+          (1 - WRITING_GOVERNOR_POLICY.reasoningEwmaAlpha) +
+        reasoningPromptRatioSample * WRITING_GOVERNOR_POLICY.reasoningEwmaAlpha;
   const reasoningPromptRatioHighWater =
     reasoningPromptRatioSample == null
       ? previous.reasoningPromptRatioHighWater
       : Math.max(
           (previous.reasoningPromptRatioHighWater ?? 0) *
-            REASONING_HIGH_WATER_DECAY,
+            WRITING_GOVERNOR_POLICY.reasoningHighWaterDecay,
           reasoningPromptRatioSample,
         );
-  store.profiles[shadow.profileKey] = {
-    version: 1,
+  const rawLastFinishReason = encodeCounterfactualDebt(
+    finishReason,
+    counterfactualDebt,
+  );
+  const nextCore = {
+    version: 2 as const,
     profileKey: shadow.profileKey,
     sampleCount,
-    knownResultCount: previous.knownResultCount + 1,
-    lowUtilizationCount: previous.lowUtilizationCount + (isLow ? 1 : 0),
-    lengthSignalCount: previous.lengthSignalCount + (isLength ? 1 : 0),
+    knownResultCount,
+    lowUtilizationCount,
+    lengthSignalCount,
     recommendedScale,
     averageCompletionRatio,
     averageLatencyMs,
@@ -687,23 +1114,41 @@ export function observeWritingGovernorResult(
     reasoningRatioEwma:
       reasoningRatioEwma == null
         ? null
-        : clamp(reasoningRatioEwma, 0, MAX_REASONING_DEMAND_RATIO),
+        : clamp(
+            reasoningRatioEwma,
+            0,
+            WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio,
+          ),
     reasoningRatioHighWater:
       reasoningRatioHighWater == null
         ? null
-        : clamp(reasoningRatioHighWater, 0, MAX_REASONING_DEMAND_RATIO),
+        : clamp(
+            reasoningRatioHighWater,
+            0,
+            WRITING_GOVERNOR_POLICY.maxReasoningDemandRatio,
+          ),
     reasoningPromptRatioEwma:
       reasoningPromptRatioEwma == null
         ? null
-        : clamp(reasoningPromptRatioEwma, 0, MAX_REASONING_PROMPT_RATIO),
+        : clamp(
+            reasoningPromptRatioEwma,
+            0,
+            WRITING_GOVERNOR_POLICY.maxReasoningPromptRatio,
+          ),
     reasoningPromptRatioHighWater:
       reasoningPromptRatioHighWater == null
         ? null
-        : clamp(reasoningPromptRatioHighWater, 0, MAX_REASONING_PROMPT_RATIO),
-    lastFinishReason: observation.finishReason
-      ? String(observation.finishReason)
-      : null,
+        : clamp(
+            reasoningPromptRatioHighWater,
+            0,
+            WRITING_GOVERNOR_POLICY.maxReasoningPromptRatio,
+          ),
+    lastFinishReason: rawLastFinishReason,
     updatedAt: Date.now(),
+  };
+  store.profiles[shadow.profileKey] = {
+    ...nextCore,
+    ...deriveProfileState(nextCore),
   };
   if (store === runtimeProfileStore) {
     notifyWritingGovernorProfilePersistence(store.profiles[shadow.profileKey]);
@@ -715,22 +1160,44 @@ export function completeWritingGovernorShadow(
   observation: WritingGovernorObservation,
   store: WritingGovernorProfileStore = runtimeProfileStore,
 ): WritingGovernorShadow {
+  const recommendation = Math.max(
+    1,
+    shadow.recommendedWireMax || shadow.recommendedSoftBudget,
+  );
+  const isCompleteStop = completeStopObservation(observation);
+  const usage =
+    observation.actualCompletionUsage == null
+      ? null
+      : nonNegative(observation.actualCompletionUsage);
+  const counterfactualUtilization =
+    isCompleteStop && usage != null ? usage / recommendation : null;
+  const counterfactualSafe =
+    counterfactualUtilization != null
+      ? counterfactualUtilization <
+        WRITING_GOVERNOR_POLICY.counterfactualMaxUtilization
+      : null;
   observeWritingGovernorResult(store, shadow, observation);
   const learnedProfile = resolvedProfile(store, shadow.profileKey);
-  const learned = Boolean(
-    learnedProfile && learnedProfile.sampleCount >= MIN_PROFILE_SAMPLES,
-  );
+  const status = profileStatus(learnedProfile);
   return {
     ...shadow,
-    coldStart: !learned,
-    learned,
+    coldStart:
+      learnedProfile == null && status.productionState !== 'TRIPPED',
+    learned:
+      status.completeStopCount >=
+      WRITING_GOVERNOR_POLICY.minCompleteStopSamples,
     profileSampleCount: learnedProfile?.sampleCount ?? 0,
-    actualCompletionUsage:
-      observation.actualCompletionUsage == null
-        ? null
-        : nonNegative(observation.actualCompletionUsage),
+    completeStopCount: status.completeStopCount,
+    reasoningExactSampleCount: status.reasoningExactSampleCount,
+    counterfactualSafeCount: status.counterfactualSafeCount,
+    counterfactualUnsafeCount: status.counterfactualUnsafeCount,
+    productionState: status.productionState,
+    productionReady: status.productionReady,
+    actualCompletionUsage: usage,
     visibleOutput:
-      observation.visibleOutput == null ? null : nonNegative(observation.visibleOutput),
+      observation.visibleOutput == null
+        ? null
+        : nonNegative(observation.visibleOutput),
     reasoningUsage:
       observation.reasoningUsage == null
         ? null
@@ -742,25 +1209,22 @@ export function completeWritingGovernorShadow(
       observation.latencyMs == null || !Number.isFinite(observation.latencyMs)
         ? null
         : Math.max(0, Number(observation.latencyMs)),
+    counterfactualUtilization,
+    counterfactualSafe,
   };
 }
 
 /**
- * Resolve the production wire value for a stage that has explicitly opted in.
- * The shadow has already separated demand from capability, so this function
- * never raises a hard ceiling or silently lowers the Demand Floor.
+ * Resolve the production wire value for an explicitly opted-in stage. Every
+ * state has already selected a safe envelope; this function only enforces the
+ * hard capability and Demand Floor boundaries.
  */
 export function decideWritingGovernorWire(
   shadow: WritingGovernorShadow,
   enabled: boolean,
 ): WritingGovernorWireDecision {
   if (!enabled) {
-    return {
-      enabled: false,
-      blocked: false,
-      wireMax: null,
-      reason: null,
-    };
+    return { enabled: false, blocked: false, wireMax: null, reason: null };
   }
   if (shadow.preflightBlocked || shadow.hardCeiling < shadow.demandFloor) {
     return {
@@ -795,7 +1259,7 @@ export function serializeWritingGovernorProfiles(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => [key, cloneProfile(value)]),
   );
-  return JSON.stringify({ version: 1, profiles });
+  return JSON.stringify({ version: 2, profiles });
 }
 
 export function parseWritingGovernorProfiles(
@@ -807,7 +1271,11 @@ export function parseWritingGovernorProfiles(
       version?: unknown;
       profiles?: Record<string, WritingGovernorProfile>;
     };
-    if (parsed.version !== 1 || !parsed.profiles || typeof parsed.profiles !== 'object') {
+    if (
+      parsed.version !== 2 ||
+      !parsed.profiles ||
+      typeof parsed.profiles !== 'object'
+    ) {
       return createWritingGovernorProfileStore();
     }
     const safe: Record<string, WritingGovernorProfile> = {};
