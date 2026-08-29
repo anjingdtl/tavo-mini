@@ -569,3 +569,48 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - 没有固定业务 `maxTokens`；QA wire 由当前动态 demand/reasoning/JSON/protocol/context/provider capability 决定。`finishReason=length` 继续 fail-closed；`outcome_unknown` 永不自动 retry；Governor 不增加 LLM 调用；所有 Draft/QA/Revision physical calls 在 Receipt、stage ledger、UI 详情和 DB 中一致计账。
 - Generic Prior 未进入 Production；Standard/Quality 的 QA 接管均有 exact provider/model prior 和独立 QA profile，3000 Standard 另有自身 `ACTIVE/ready` 证据。Android 只使用 `adb install -r`，没有卸载或清数据；旧 C1/C2/C3 NO-GO 和真实失败证据均保留。
 - C4 Required Gate：Red→最小实现→targeted/full verify→APK→install-r→Android 真实配置 LLM→DB/Receipt/UI/logcat→ACT 全部通过。C4 正式 `GO`，下一阶段为 `C5 — Revision Governor`；本节不宣布 Phase III-C Final Sealed。
+
+### C5 — Revision Governor（2026-08-30）
+
+状态：`C5 GO`。Revision 已建立独立的 stage/quality/execution/reasoning-policy profile 与 Prior；Standard Issue、Quality Issue 均在真实 Android 配置 LLM 上完成 `QA needs_revision → Revision full_revision → UI 采纳` 闭环。Revision 仍遵守 Safe Warm Start，当前两个真实 profile 为 `PROBATION / productionReady=false`，没有让 Generic Prior 直接接管 Production；本节不宣布 Phase III-C Final Sealed。
+
+#### PLAN / Red
+
+- C5 目标是让最后接管的 Revision 拥有独立、可审计、按 profile 隔离的 Governor，同时保持既有 Anchored Segment Repair、deterministic assembly、same-response full revision fallback、Revision ChangeSet、Final State Proposal binding、fingerprint 与 fail-closed 语义。禁止通过第四次 LLM 修 JSON；不新增 Agent、Context、Memory、Writer、Formatter 或隐藏调用。
+- Revision Prior 分别记录 Draft length、QA findings、Repair/Full Revision、reasoning、JSON envelope、State Proposal 这些证据维度；`finishReason=length` 不进入 exact reasoning 学习，`outcome_unknown`/network/5xx/persist failure 不学习且永不自动 retry。Governor 只做本地窄聚合和当前请求 wire 决策，不改变 Writing Pipeline 拓扑。
+- Red-first 已真实执行：新增 `__tests__/phase3C5RevisionGovernor.test.ts`。最小实现前，`2` 个断言按预期失败（Revision 错用 Generic Prior、有效样本未达到 Revision readiness），length/unknown fail-closed 断言保持通过；Red 证据为 `test-logs/phase3-c5-revision-governor-20260830-000001/c5-red-before-implementation.txt`。既有 C3/C4 NO-GO 与真实失败证据均保留。
+
+#### 最小实现
+
+- `writingGovernorBootstrapPrior.ts` 增加 Revision 的 exact GLM-5.3-Flash、显式 provider-family、Generic shadow Prior，并将 Revision profile identity 与 Draft/QA policy key 隔离；exact Prior 证据来源明确为 `C4-real-stop-receipts:c4-quality500-revision-receipt+phase3-c-progress`。这些都是根据 reasoning/visible demand、reasoning/prompt 等动态比率计算的 Prior，不是固定 `target → maxTokens` 表。
+- `writingGovernor.ts` 增加 `revision-governor-v1` profile identity、Revision 专属 Safe Warm Start 判定和 stage-aware production decision。只有当前 Revision、JSON envelope、Thinking enabled、exact provider/model、非 `TRIPPED`、无 counterfactual debt 才能进入 exact safe warm start；provider-family/Generic 只允许 shadow 学习。Draft/QA 已有 gate、Mandatory Truth、Thinking、Provider protocol、timeout、Retry、schema 60 与流水线拓扑未改动。
+- `scripts/qa/phase3-c3-production-projection.mjs` 补齐 Revision 生产阶段投影，能区分 `draft`、`qa`、`revision` 及各自 `exact-safe-warm-start`，仍不输出 prompt、正文、response body 或 key。`node --check` 与 `git diff --check` 均通过。
+
+#### Targeted / Full Verify
+
+- 实现后、真实 Android 前 targeted：`8 suites / 44 tests PASS`；真实 Android 两个 Issue 完成后再次执行相同 targeted，`8 suites / 44 tests PASS`，证据为 `c5-targeted-post-real.txt`。
+- Full Jest（APK/真实 Android 前）：`520 suites PASS`、`3699 tests PASS`，另有仓库既有 `3 suites / 8 tests skipped`；总计 `3707` tests（含 skipped）。真实 Android 后 `typecheck`、`lint --quiet`、`verify:elastic`、`verify:version` 全部 PASS；对应 `c5-*-post-real.txt` 已保存。
+
+#### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小 `59,869,090` bytes，SHA-256：`FFBF9BFAAF7D3FCBB1D64E570A22B03C9BDCB6A6C96730B1FDF4374AFD76F1B0`。
+- 设备核验为 `emulator-5554 device`，包为 `com.shinewriter`；只执行 `adb -s emulator-5554 install -r`，`versionName=V2.21.1`、`versionCode=2210100`、`firstInstallTime=2026-08-23 04:59:45` 保持。没有 uninstall、`pm clear`、清库或重置既有项目/LLM 配置。
+
+#### Real Android / DB / Receipt / UI / logcat
+
+- 两个 Issue 均使用 App 已配置的真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash`，没有 mock/virtual provider；每个 stage 的 physical call、usage、finishReason、Thinking、Governor decision 都由稳定只读 SQLite projection 回读。两份最终 projection 的 `dbIntegrity=ok`，`api_key=0 / authorization=0 / bearer=0`，且 `rawPromptOrBodyStoredInProjection=false`。
+
+| cell | run | Receipt / Governor | UI / final artifact |
+| --- | --- | --- | --- |
+| Standard / Issue | `ct_f3f26ab5e2454c00936a6a670ac6dbbf` | Draft `stop`，wire `23838`，usage `input/output/reasoning/visible=39653/15463/14072/1391`；QA `stop`，wire `23103`，usage `24125/3060/2915/145`；QA exact profile `ACTIVE/ready`；Revision `stop`，wire `15856` 对 legacy `131072`，usage `34693/11841/10165/1676`，Thinking `enabled/high`，`full_revision`、`2` actions、`finalStateProposals=[]`，Revision `PROBATION` exact safe warm start | QA blocking finding 指向末段余料记录；Revision 修正 `余板存半` 为与正文一致的近全余板，UI 显示“已修订（+8 字）/AI 本次修改：2 处”，最终采纳。投影：`c5-standard-issue7-adopted-projection-v3.json`，artifact contentHash `d86a7e43d642f2e901c33325af5b162317344a814b752d5de0781763f5eb5e1a` |
+| Quality / Issue | `ct_a02d8610f8fa42b5a015c577baad3238` | Draft `stop`，wire `31210`，usage `40166/6734/5422/1312`；QA `stop`，wire `26548`，usage `23490/5522/5391/131`，`needs_revision`；Revision `stop`，wire `17255` 对 legacy `131072`，usage `35219/10441/8694/1747`，Thinking `enabled/max`，`full_revision`、`2` actions、`finalStateProposals=[]`，Revision `PROBATION` exact safe warm start | QA blocking finding 指向标题/末段“余板半块”；Revision 对齐标题与工册记录，UI 显示“已修订/AI 本次修改：2 处”，最终采纳。投影：`c5-quality-issue-adopted-projection-v3.json`，artifact contentHash `8b9f19365d80a604dc53c58e5d9bc881f3fef89bd3533386faf5ea10f643e4a2` |
+
+- Standard projection 的 `governorContract.productionStage` 为 `draft+qa+revision-exact-safe-warm-start`；Quality projection 为 `draft+qa-exact-safe-warm-start+revision-exact-safe-warm-start`。两次 Issue 各为 Draft/QA/Revision `3` 个 physical calls，总逻辑调用 `3`，retry `0`，没有额外 Governor LLM 调用；Revision wire 已在真实 installed APK 中生效。
+- C5 保留了早期 Standard 多次自然/受控 Issue 尝试中 QA 判定 `pass`、用户随后“放弃”的证据，没有把未触发 Revision 的样本伪装成 Revision 成功；最终只把明确 `needs_revision` 且用户真实采纳的两次 run 作为 C5 Issue gate。
+- logcat 证据为 `test-logs/phase3-c5-revision-governor-20260830-000001/c5-logcat-filtered.txt`：包进程过滤行 `119`，`FATAL EXCEPTION / ANR / process death=0`。本版本不把 Governor/Receipt payload 打到 logcat，因此 run ID、stage receipt、usage、finishReason 与 wire 以相邻的 stable SQLite projection 为准，UI XML/PNG 记录了“已修订/采纳”状态；没有从 logcat 中猜测或补造业务结论。
+
+#### ACT / P0 / Required Gate
+
+- Revision 证据维度闭环：Draft length 仍沿用 C3 的真实 `length` censored lower-bound 失败且不污染 exact sample；QA findings 由真实 blocking finding 触发 Revision；Repair/Full Revision 两次均为单次 `full_revision`、两处 ChangeSet，保留 Anchored Segment Repair 与 deterministic assembly；reasoning 与 visible output 在 Receipt 分栏计账；QA/Revision 均为完整 `json_object`、`finishReason=stop`；State Proposal 两次均为空，未发生 Canon/Memory 状态污染，fingerprint 与 final artifact 一致。
+- P0 复核：Thinking Always On；不改变单 Writing Pipeline、单共享 Context/Memory/Writer 与 Mandatory Truth；无固定业务 `maxTokens`；`finishReason=length` fail-closed；`outcome_unknown` 永不自动重试；Governor 不增加 LLM 调用；所有 physical paid calls 在 Receipt/DB 真实计账；Generic Prior 未直接接管 Production；Android 只用 `adb install -r`。
+- C5 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → install-r → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部通过。故 C5 正式 `GO`，下一阶段为 `C6 — Provider-aware Reasoning Policy Seal`；本节不写 `PHASE III-C FINAL SEALED / GO`。

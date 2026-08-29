@@ -3,8 +3,8 @@
  *
  * The Governor is still a deterministic calculation at the final compiled
  * message boundary. It does not create an LLM request. C3 changes only the
- * Draft wire decision: QA and Revision remain legacy-budget stages until
- * their own policy/profile rollout.
+ * Draft, QA, and Revision each have independent profile/policy gates. The
+ * Governor never creates a request or changes the existing stage topology.
  */
 import { sha256Hex } from '../../continuation/hashUtils';
 import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
@@ -28,6 +28,9 @@ export const WRITING_GOVERNOR_REASONING_SEED_VERSION =
 /** QA has a separate profile identity so old C3 QA failures cannot authorize it. */
 export const WRITING_GOVERNOR_QA_POLICY_VERSION =
   'compact-qa-governor-v1' as const;
+/** Revision has a separate contract/prior and cannot inherit QA evidence. */
+export const WRITING_GOVERNOR_REVISION_POLICY_VERSION =
+  'revision-governor-v1' as const;
 
 export const WRITING_GOVERNOR_POLICY = {
   /** Policy parameters are versioned above instead of hidden business caps. */
@@ -280,6 +283,8 @@ function profileKeyFor(input: ResolveWritingGovernorShadowInput): string {
       reasoningSeedVersion: WRITING_GOVERNOR_REASONING_SEED_VERSION,
       ...(input.stage === 'qa'
         ? { qaPolicyVersion: WRITING_GOVERNOR_QA_POLICY_VERSION }
+        : input.stage === 'revision'
+        ? { revisionPolicyVersion: WRITING_GOVERNOR_REVISION_POLICY_VERSION }
         : {}),
     }),
   );
@@ -300,6 +305,38 @@ function isQaSafeWarmStartCandidate(input: {
     input.bootstrapPriorMatch === 'exact_provider_model' &&
     input.productionState !== 'TRIPPED' &&
     input.counterfactualUnsafeCount === 0
+  );
+}
+
+function isRevisionSafeWarmStartCandidate(input: {
+  stage: string;
+  outputContract: 'prose' | 'json_envelope';
+  thinkingEnabled: boolean;
+  bootstrapPriorMatch: BootstrapPriorMatch;
+  productionState: WritingGovernorProductionState;
+  counterfactualUnsafeCount: number;
+}): boolean {
+  return (
+    input.stage === 'revision' &&
+    input.outputContract === 'json_envelope' &&
+    input.thinkingEnabled &&
+    input.bootstrapPriorMatch === 'exact_provider_model' &&
+    input.productionState !== 'TRIPPED' &&
+    input.counterfactualUnsafeCount === 0
+  );
+}
+
+function isStageSafeWarmStartCandidate(input: {
+  stage: string;
+  outputContract: 'prose' | 'json_envelope';
+  thinkingEnabled: boolean;
+  bootstrapPriorMatch: BootstrapPriorMatch;
+  productionState: WritingGovernorProductionState;
+  counterfactualUnsafeCount: number;
+}): boolean {
+  return (
+    isQaSafeWarmStartCandidate(input) ||
+    isRevisionSafeWarmStartCandidate(input)
   );
 }
 
@@ -650,6 +687,12 @@ export function shouldEnableWritingGovernorProduction(
       (shadow.productionReady || isQaSafeWarmStartCandidate(shadow))
     );
   }
+  if (stage === 'revision') {
+    return (
+      shadow.productionEnabled &&
+      (shadow.productionReady || isRevisionSafeWarmStartCandidate(shadow))
+    );
+  }
   return false;
 }
 
@@ -854,7 +897,7 @@ export function resolveWritingGovernorShadow(
     0,
     Math.min(recommendedSoftBudget, hardCeiling),
   );
-  const qaSafeWarmStart = isQaSafeWarmStartCandidate({
+  const stageSafeWarmStart = isStageSafeWarmStartCandidate({
     stage: input.stage,
     outputContract: input.outputContract,
     thinkingEnabled: input.thinking?.type !== 'disabled',
@@ -875,7 +918,7 @@ export function resolveWritingGovernorShadow(
     productionReady: status.productionReady,
     productionEnabled:
       runtimeProfileStoreHydrated &&
-      (status.productionReady || qaSafeWarmStart),
+      (status.productionReady || stageSafeWarmStart),
     profileSampleCount: profile?.sampleCount ?? 0,
     completeStopCount,
     reasoningExactSampleCount: status.reasoningExactSampleCount,
@@ -1242,7 +1285,7 @@ export function completeWritingGovernorShadow(
   observeWritingGovernorResult(store, shadow, observation);
   const learnedProfile = resolvedProfile(store, shadow.profileKey);
   const status = profileStatus(learnedProfile);
-  const qaSafeWarmStart = isQaSafeWarmStartCandidate({
+  const stageSafeWarmStart = isStageSafeWarmStartCandidate({
     stage: shadow.stage,
     outputContract: shadow.outputContract,
     thinkingEnabled: shadow.thinkingEnabled,
@@ -1266,7 +1309,7 @@ export function completeWritingGovernorShadow(
     productionReady: status.productionReady,
     productionEnabled:
       runtimeProfileStoreHydrated &&
-      (status.productionReady || qaSafeWarmStart),
+      (status.productionReady || stageSafeWarmStart),
     actualCompletionUsage: usage,
     visibleOutput:
       observation.visibleOutput == null
@@ -1297,11 +1340,11 @@ export function decideWritingGovernorWire(
   shadow: WritingGovernorShadow,
   enabled: boolean,
 ): WritingGovernorWireDecision {
-  const qaSafeWarmStart = isQaSafeWarmStartCandidate(shadow);
+  const stageSafeWarmStart = isStageSafeWarmStartCandidate(shadow);
   if (
     !enabled ||
     !shadow.productionEnabled ||
-    (!shadow.productionReady && !qaSafeWarmStart)
+    (!shadow.productionReady && !stageSafeWarmStart)
   ) {
     return { enabled: false, blocked: false, wireMax: null, reason: null };
   }

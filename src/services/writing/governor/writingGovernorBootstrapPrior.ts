@@ -39,10 +39,14 @@ export interface WritingGovernorBootstrapPrior {
 type PriorSpec = Omit<
   WritingGovernorBootstrapPrior,
   'version' | 'source' | 'match'
->;
+> & {
+  source?: string;
+};
 
 const EVIDENCE_SOURCE =
   'C2-real-stop-receipts:c2-corrected-matrix-safe-projection+phase3-c-progress';
+const REVISION_EVIDENCE_SOURCE =
+  'C4-real-stop-receipts:c4-quality500-revision-receipt+phase3-c-progress';
 
 const EXACT_PRIORS: readonly PriorSpec[] = [
   // The conservative ratios are normalized high-water projections of the
@@ -103,6 +107,29 @@ const EXACT_PRIORS: readonly PriorSpec[] = [
     reasoningDemandRatioP95: 8,
     reasoningPromptRatioP95: 0.95,
   },
+  // C5 Revision is a different contract from both Draft and compact QA:
+  // the model must carry findings, repair/full-revision instructions, the
+  // JSON envelope, and optional state-proposal metadata while preserving the
+  // whole final body.  The reviewed stop receipt is deliberately projected
+  // as a conservative ratio prior, never as a fixed business-token cap.
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: 'GLM-5.3-Flash',
+    stage: 'revision',
+    qualityProfile: 'standard',
+    source: REVISION_EVIDENCE_SOURCE,
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.32,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: 'GLM-5.3-Flash',
+    stage: 'revision',
+    qualityProfile: 'quality',
+    source: REVISION_EVIDENCE_SOURCE,
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.32,
+  },
 ] as const;
 
 const PROVIDER_FAMILY_PRIORS: readonly PriorSpec[] = [
@@ -153,6 +180,22 @@ const PROVIDER_FAMILY_PRIORS: readonly PriorSpec[] = [
     qualityProfile: 'quality',
     reasoningDemandRatioP95: 8,
     reasoningPromptRatioP95: 0.85,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: null,
+    stage: 'revision',
+    qualityProfile: 'standard',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.28,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: null,
+    stage: 'revision',
+    qualityProfile: 'quality',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.28,
   },
 ] as const;
 
@@ -214,9 +257,25 @@ const GENERIC_PRIORS: readonly PriorSpec[] = [
     providerAdapterId: null,
     modelName: null,
     stage: 'revision',
+    qualityProfile: 'fast',
+    reasoningDemandRatioP95: 6,
+    reasoningPromptRatioP95: 0.2,
+  },
+  {
+    providerAdapterId: null,
+    modelName: null,
+    stage: 'revision',
     qualityProfile: 'standard',
-    reasoningDemandRatioP95: 3.0,
-    reasoningPromptRatioP95: 0.5,
+    reasoningDemandRatioP95: 6,
+    reasoningPromptRatioP95: 0.2,
+  },
+  {
+    providerAdapterId: null,
+    modelName: null,
+    stage: 'revision',
+    qualityProfile: 'quality',
+    reasoningDemandRatioP95: 6,
+    reasoningPromptRatioP95: 0.2,
   },
 ] as const;
 
@@ -232,10 +291,10 @@ function buildPrior(
   match: BootstrapPriorMatch,
 ): WritingGovernorBootstrapPrior {
   return {
-    version: WRITING_GOVERNOR_BOOTSTRAP_PRIOR_VERSION,
-    source: EVIDENCE_SOURCE,
-    match,
     ...spec,
+    version: WRITING_GOVERNOR_BOOTSTRAP_PRIOR_VERSION,
+    source: spec.source || EVIDENCE_SOURCE,
+    match,
   };
 }
 

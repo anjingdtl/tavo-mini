@@ -297,13 +297,29 @@ const hasQaProduction = qaProductionReceipts.length > 0;
 const hasQaReadyProfile = qaProductionReceipts.some(
   ({ shadow }) => shadow?.productionReady === true,
 );
-const productionStage = hasQaProduction
-  ? `${hasDraftProduction ? 'draft+' : ''}qa${
-      hasQaReadyProfile ? '' : '-exact-safe-warm-start'
-    }`
-  : hasDraftProduction
+const revisionProductionReceipts = productionReceipts.filter(
+  ({ receipt }) => receipt.stage === 'revision',
+);
+const hasRevisionProduction = revisionProductionReceipts.length > 0;
+const hasRevisionReadyProfile = revisionProductionReceipts.some(
+  ({ shadow }) => shadow?.productionReady === true,
+);
+const productionStageParts = [];
+if (hasDraftProduction) productionStageParts.push('draft');
+if (hasQaProduction) {
+  productionStageParts.push(
+    `qa${hasQaReadyProfile ? '' : '-exact-safe-warm-start'}`,
+  );
+}
+if (hasRevisionProduction) {
+  productionStageParts.push(
+    `revision${hasRevisionReadyProfile ? '' : '-exact-safe-warm-start'}`,
+  );
+}
+const productionStage =
+  productionStageParts.length === 1 && hasDraftProduction
     ? 'draft-only'
-    : 'none';
+    : productionStageParts.join('+') || 'none';
 const projection = {
   schemaVersion: schemaVersion == null ? null : Number(schemaVersion),
   generatedAt: new Date().toISOString(),
