@@ -25,6 +25,9 @@ export const WRITING_GOVERNOR_REASONING_POLICY_VERSION =
   'kernel-reasoning-policy-v2' as const;
 export const WRITING_GOVERNOR_REASONING_SEED_VERSION =
   'safe-warm-start-prior-v1' as const;
+/** QA has a separate profile identity so old C3 QA failures cannot authorize it. */
+export const WRITING_GOVERNOR_QA_POLICY_VERSION =
+  'compact-qa-governor-v1' as const;
 
 export const WRITING_GOVERNOR_POLICY = {
   /** Policy parameters are versioned above instead of hidden business caps. */
@@ -275,7 +278,28 @@ function profileKeyFor(input: ResolveWritingGovernorShadowInput): string {
       reasoningPolicyVersion:
         input.reasoningPolicyVersion || WRITING_GOVERNOR_REASONING_POLICY_VERSION,
       reasoningSeedVersion: WRITING_GOVERNOR_REASONING_SEED_VERSION,
+      ...(input.stage === 'qa'
+        ? { qaPolicyVersion: WRITING_GOVERNOR_QA_POLICY_VERSION }
+        : {}),
     }),
+  );
+}
+
+function isQaSafeWarmStartCandidate(input: {
+  stage: string;
+  outputContract: 'prose' | 'json_envelope';
+  thinkingEnabled: boolean;
+  bootstrapPriorMatch: BootstrapPriorMatch;
+  productionState: WritingGovernorProductionState;
+  counterfactualUnsafeCount: number;
+}): boolean {
+  return (
+    input.stage === 'qa' &&
+    input.outputContract === 'json_envelope' &&
+    input.thinkingEnabled &&
+    input.bootstrapPriorMatch === 'exact_provider_model' &&
+    input.productionState !== 'TRIPPED' &&
+    input.counterfactualUnsafeCount === 0
   );
 }
 
@@ -593,13 +617,40 @@ export function getWritingGovernorProductionStatus(
   };
 }
 
-/** C3 only opts a ready Draft profile into production; QA/Revision wait for C4/C5 policies. */
+/**
+ * C3 opts a ready Draft profile into production; C4 additionally permits an
+ * exact provider/model QA safe warm start (or a QA-ready profile). Revision
+ * remains shadow-only until the separate C5 policy.
+ */
 export function shouldEnableWritingGovernorProduction(
   stage: string,
-  shadow?: Pick<WritingGovernorShadow, 'productionEnabled' | 'productionReady'>,
+  shadow?: Pick<
+    WritingGovernorShadow,
+    | 'productionEnabled'
+    | 'productionReady'
+    | 'stage'
+    | 'outputContract'
+    | 'thinkingEnabled'
+    | 'bootstrapPriorMatch'
+    | 'productionState'
+    | 'counterfactualUnsafeCount'
+  >,
 ): boolean {
-  if (stage !== 'draft' || !shadow) return false;
-  return shadow.productionEnabled && shadow.productionReady;
+  if (!shadow) return false;
+  if (shadow.stage !== stage) return false;
+  if (stage === 'draft') {
+    return shadow.productionEnabled && shadow.productionReady;
+  }
+  // C4 QA may use only its exact provider/model safe warm-start prior or its
+  // own ready profile. Generic/provider-family priors remain legacy-wire
+  // shadow mode until QA evidence proves them safe.
+  if (stage === 'qa') {
+    return (
+      shadow.productionEnabled &&
+      (shadow.productionReady || isQaSafeWarmStartCandidate(shadow))
+    );
+  }
+  return false;
 }
 
 export function resolveWritingGovernorShadow(
@@ -803,6 +854,14 @@ export function resolveWritingGovernorShadow(
     0,
     Math.min(recommendedSoftBudget, hardCeiling),
   );
+  const qaSafeWarmStart = isQaSafeWarmStartCandidate({
+    stage: input.stage,
+    outputContract: input.outputContract,
+    thinkingEnabled: input.thinking?.type !== 'disabled',
+    bootstrapPriorMatch: prior.match,
+    productionState: status.productionState,
+    counterfactualUnsafeCount: status.counterfactualUnsafeCount,
+  });
   return {
     version: WRITING_GOVERNOR_VERSION,
     mode: 'shadow',
@@ -815,7 +874,8 @@ export function resolveWritingGovernorShadow(
     productionState: status.productionState,
     productionReady: status.productionReady,
     productionEnabled:
-      runtimeProfileStoreHydrated && status.productionReady,
+      runtimeProfileStoreHydrated &&
+      (status.productionReady || qaSafeWarmStart),
     profileSampleCount: profile?.sampleCount ?? 0,
     completeStopCount,
     reasoningExactSampleCount: status.reasoningExactSampleCount,
@@ -1182,6 +1242,14 @@ export function completeWritingGovernorShadow(
   observeWritingGovernorResult(store, shadow, observation);
   const learnedProfile = resolvedProfile(store, shadow.profileKey);
   const status = profileStatus(learnedProfile);
+  const qaSafeWarmStart = isQaSafeWarmStartCandidate({
+    stage: shadow.stage,
+    outputContract: shadow.outputContract,
+    thinkingEnabled: shadow.thinkingEnabled,
+    bootstrapPriorMatch: shadow.bootstrapPriorMatch,
+    productionState: status.productionState,
+    counterfactualUnsafeCount: status.counterfactualUnsafeCount,
+  });
   return {
     ...shadow,
     coldStart:
@@ -1197,7 +1265,8 @@ export function completeWritingGovernorShadow(
     productionState: status.productionState,
     productionReady: status.productionReady,
     productionEnabled:
-      runtimeProfileStoreHydrated && status.productionReady,
+      runtimeProfileStoreHydrated &&
+      (status.productionReady || qaSafeWarmStart),
     actualCompletionUsage: usage,
     visibleOutput:
       observation.visibleOutput == null
@@ -1228,7 +1297,12 @@ export function decideWritingGovernorWire(
   shadow: WritingGovernorShadow,
   enabled: boolean,
 ): WritingGovernorWireDecision {
-  if (!enabled || !shadow.productionEnabled || !shadow.productionReady) {
+  const qaSafeWarmStart = isQaSafeWarmStartCandidate(shadow);
+  if (
+    !enabled ||
+    !shadow.productionEnabled ||
+    (!shadow.productionReady && !qaSafeWarmStart)
+  ) {
     return { enabled: false, blocked: false, wireMax: null, reason: null };
   }
   if (shadow.preflightBlocked || shadow.hardCeiling < shadow.demandFloor) {

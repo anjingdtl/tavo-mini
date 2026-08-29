@@ -514,3 +514,58 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - P0/Required Gate 复核：Thinking Always On；单 Writing Pipeline、单 Context/Memory/Writer、Mandatory Truth 保持；没有固定业务 `maxTokens`；`finishReason=length` fail-closed；`outcome_unknown` 不自动 retry；Governor 不增加 LLM 调用；所有 provider physical calls 在 Receipt/DB 计数一致；Android 仅 `install -r`。Generic Prior 没有直接接管 Production，历史 fixture/序列化/重启 hydrate、连续 stop、矩阵及拒绝分支均有证据。
 
 结论：`C3 GO`。本轮 cross-profile correction 已通过自动化、APK、install-r、真实 Android 配置 LLM、DB/Receipt/UI/logcat、restart hydrate、连续 feedback 与完整 Draft matrix Required Gate；允许解锁 `C4 Compact QA Governor`。本节历史 `C3-CORRECTION-2` 首格 Fast NO-GO 仍作为真实失败证据保留。
+
+### C4 — Compact QA Governor（2026-08-30）
+
+状态：`C4 GO`。QA 已建立独立的 exact provider/model Safe Warm Start 与 profile readiness；Standard/Quality 真实 Android 矩阵通过，允许进入 C5。C3 的 2899-token Draft length、环境 HOLD、跨档位 Fast length、C4 本轮 1000 字 `outcome_unknown/network_error` 等真实失败证据全部保留，没有删除、覆盖或粉饰。
+
+#### PLAN
+
+- QA 继续使用既有 Shared Writing Kernel 的同一个 QA stage；本阶段只让 QA 在自己的 profile、自己的 Bootstrap Prior 和自己的安全门下接管 wire，不新增 Agent、Context、Memory、Writer、Formatter 或隐藏 LLM 调用。
+- QA 的 visible JSON 可能很小而 reasoning 很大，因此采用归一化的 reasoning/visibleDemand 与 reasoning/actualPromptTokens prior。Exact provider+model 可进入 Safe Warm Start；provider-family / Generic Prior 只允许 shadow/旁路学习，不能直接接管 Production。
+- 目标是覆盖 Clean QA、Issue QA、reasoning-heavy、length、truncated/invalid JSON、unknown、Generic Prior、TRIPPED，并在真实 Android 上验证 `500 Standard Clean`、`1000 Standard Clean`、`3000 Standard Clean/Issue`、`Quality QA`；成功条件是 JSON 完整、length rate 降低、physical call 不增加。
+
+#### Red Test
+
+- 新增 `__tests__/phase3C4CompactQaGovernor.test.ts`。实现前首轮 Red 真实执行并失败：`2` 个断言分别锁定 QA 错用 Generic/Draft prior、QA 未能在 exact safe warm start 下启用；invalid/unknown/length fail-closed 断言保持通过。
+- Red 覆盖 QA profile key 与 Draft 隔离、exact QA prior、Generic Prior 不得生产接管、三次有效 stop/counterfactual-safe 后才进入 QA `productionReady`、malformed/unknown 不学习、length 不伪造 exact reasoning。
+
+#### 最小实现
+
+- `writingGovernorBootstrapPrior.ts` 新增 GLM-5.3-Flash QA 的 fast/standard/quality exact prior、显式 provider-family QA prior 和 Generic QA shadow prior；这些都是归一化行为比率，不是 `500/1000/3000 → 固定 tokens` 表，也没有固定业务 `maxTokens`。
+- `writingGovernor.ts` 增加 `compact-qa-governor-v1` profile identity。QA key 与 C3 Draft key 隔离，旧 QA profile 不会无条件授权新算法；exact provider/model + JSON envelope + Thinking enabled + 非 TRIPPED + 无 counterfactual debt 才允许 Safe Warm Start。三次完整 stop/counterfactual-safe 后才进入 QA Production Ready；Generic/provider-family 仍不能直接生产接管。
+- `shouldEnableWritingGovernorProduction` 与 `decideWritingGovernorWire` 增加 QA 专属安全门；QA 首次 exact warm start 可以动态使用推荐 wire，但仍受当前 prompt、visible demand、reasoning envelope、provider completion capability、hard ceiling 和 preflight 约束。Draft 的 C3 readiness、Thinking、Mandatory Truth、Provider protocol、timeout、retry、Pipeline topology 和 schema 60 均未改变。
+- `scripts/qa/phase3-c3-production-projection.mjs` 的 `productionStage` 改为依据 Receipt shadow 动态投影，能如实显示 `draft+qa-exact-safe-warm-start`，不再把已通过 Receipt 的 QA 接管误报成 `draft-only`；projection 仍不输出 prompt、正文、response body 或 key。
+
+#### Targeted / Full Verify
+
+- 实现后 C4+C3 初始 targeted：`4 suites / 24 tests PASS`；扩大到 Shared Writer contract、Receipt、physical ledger 后：`7 suites / 34 tests PASS`。真实 Android 完成后再次执行 `7 suites / 34 tests PASS`，证据为 `test-logs/phase3-c4-qa-governor-20260830-000001/c4-targeted-post-real.txt`。
+- Full Jest：`519 suites PASS`、`3696 tests PASS`，另有仓库既有 `3 suites / 8 tests skipped`；`typecheck`、`lint --quiet`、`verify:elastic`、`verify:version` 均 PASS。projection 脚本 `node --check`、`git diff --check` 均 PASS。
+
+#### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256：`42D8366687DBA06B9C2B2EE2005252872B66C447421E7051F0C2DA767B599EA4`。只执行 `adb -s emulator-5554 install -r`，`versionName=V2.21.1`、`versionCode=2210100`，`firstInstallTime=2026-08-23 04:59:45` 保持不变。
+- 真实 Android 使用既有 `com.shinewriter` 数据、`elasticcontqa` 续写项目和 App 内已配置的 `open.bigmodel.cn-v4 / GLM-5.3-Flash`；API key 未读取、未输出。没有 `uninstall`、`pm clear`、清库或重置数据；APK/build/install 证据在 `test-logs/phase3-c4-qa-governor-20260830-000001/c4-apk-build.txt`、`c4-install-r.txt`。
+
+#### Real Android / DB / Receipt / UI / logcat
+
+- 设备始终为 `emulator-5554 device`，所有请求均来自真实配置 LLM，未使用 mock/virtual provider。每个 run 均有 UI tree、截图、稳定只读 SQLite、安全 projection、DB integrity 与产品进程 logcat；所有安全 projection 的敏感 key 计数为 `api_key=0 / authorization=0 / bearer=0`。
+
+| cell | run | 真实 Receipt / Governor 结果 | UI / ledger 结果 |
+| --- | --- | --- | --- |
+| Standard / 500 Clean | `ct_a7d50bb109e94271a1c4e5aac1f4fc9a` | Draft `stop`，wire `26808`，usage `input/output/reasoning/visible=42536/8815/7084/1731`；QA `stop`，wire `30215`，usage `23757/4498/4325/173`，exact QA `PROBATION`、safe warm start | FinalValidate/保存成功，UI 可采纳；逻辑 `2`、physical `2`、Fallback `0`、Retry `0`；`c4-standard500-final-safe-projection.json` |
+| Standard / 1000 初次 Recovery 前 | `ct_6e887a2b39c64e089d844f4a65b3032e` | Draft physical `1`，wire `28376`，请求已发出，127739ms 后 `network_error/outcome_unknown`；未进入 QA、未自动 retry、未产生正文 | UI 显示 Network request failed；产品进程日志记录 IPv6 `ConnectException` 与 HTTP/2 stream reset；DB `integrity_check=ok`；`c4-standard1000-live5-projection.json`、`c4-standard1000-logcat-raw.txt` |
+| Standard / 1000 Clean（Fast Recovery） | `ct_b0418b93a3ab4470a04cfb53ff26b9f6` | Draft `stop`，wire `26626`，usage `40383/11435/9819/1616`；QA `stop`，wire `25501`，usage `23577/5793/5582/211`，QA exact `PROBATION`、profile samples `2` | UI FinalValidate/保存成功并采纳；逻辑 `2`、physical `2`、Fallback `0`、Retry `0`；`c4-standard1000-recovery-adopted-projection.json` |
+| Standard / 3000 Clean | `ct_0d7413c0b1bd4e5e99c9b01e61e80437` | Draft `stop`，wire `55381`，usage `40818/9569/7723/1846`；QA `stop`，wire `31285`，usage `23718/4738/4703/35`，QA exact profile 达到 `ACTIVE / productionReady=true`、samples `3` | UI FinalValidate/保存成功并采纳；逻辑 `2`、physical `2`、Fallback `0`、Retry `0`；`c4-standard3000-final-projection.json` |
+| Quality / 500 Issue → Revision | `ct_cfeffdc706304e6f8fc1f4ad0dedefd3` | Draft `stop`，wire `32778`，usage `40807/13487/11503/1984`；QA `stop`，wire `32886`，usage `23901/5089/4917/172`，exact QA safe warm start；Issue 触发既有单次 Revision，Revision `stop`、physical `1`，未由 Generic Prior 接管 | UI 显示修订成功并采纳；逻辑 `3`、physical `3`、Formatter `0`、Fallback `0`、Retry `0`；`c4-quality500-final-projection.json` |
+
+- C4 的 QA response 均为完整 `json_object`、`finishReason=stop`，没有新的 Governor-managed `length`；初次 1000 的 transport `outcome_unknown` 被单独记录并永久保留，Recovery 是网络路径修复后的新 run，不是系统对未知请求的自动重试。Recovery 前后均无应用 crash、SQLite corruption 或额外隐藏调用。
+- 1000 recovery 的 UI 详情为 `Freeze → 生成 → 检查 → 修订（正式跳过）→ 校验 → 保存`，逻辑 `2 / physical 2 / Retry 0 / target 1000`；3000 同样是 Clean。Quality Issue 的 UI 详情为 `逻辑 3 / physical 3`，修订分支真实执行一次，符合既有 Standard Issue 上限。
+- 设备网络分析仅用于 Fast Recovery：失败时 Android 进程日志含 IPv6 连接失败，随后在 emulator 内可逆地切换 Wi-Fi 路径并确认 IPv4 探测恢复；没有改 App 网络协议、没有改超时、没有用 provider mock。设备回到 Wi-Fi 已验证状态后，Recovery run 成功。
+
+#### ACT / P0 / Required Gate
+
+- Thinking Always On；Writing Pipeline 拓扑保持单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；没有新增 Agent、第二 Context、Memory、Writer 或 Formatter；Mandatory Truth 未裁掉。
+- 没有固定业务 `maxTokens`；QA wire 由当前动态 demand/reasoning/JSON/protocol/context/provider capability 决定。`finishReason=length` 继续 fail-closed；`outcome_unknown` 永不自动 retry；Governor 不增加 LLM 调用；所有 Draft/QA/Revision physical calls 在 Receipt、stage ledger、UI 详情和 DB 中一致计账。
+- Generic Prior 未进入 Production；Standard/Quality 的 QA 接管均有 exact provider/model prior 和独立 QA profile，3000 Standard 另有自身 `ACTIVE/ready` 证据。Android 只使用 `adb install -r`，没有卸载或清数据；旧 C1/C2/C3 NO-GO 和真实失败证据均保留。
+- C4 Required Gate：Red→最小实现→targeted/full verify→APK→install-r→Android 真实配置 LLM→DB/Receipt/UI/logcat→ACT 全部通过。C4 正式 `GO`，下一阶段为 `C5 — Revision Governor`；本节不宣布 Phase III-C Final Sealed。

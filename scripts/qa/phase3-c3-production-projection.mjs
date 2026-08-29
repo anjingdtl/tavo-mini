@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Produce a safe read-only projection for a real Phase III-C C3 run.
+ * Produce a safe read-only projection for a real Phase III-C Governor run.
  *
  * The source database contains prompts, plans, and generated artifacts. This
  * projection intentionally exposes only bounded batch/stage/receipt/shadow
@@ -284,6 +284,26 @@ const allReceipts = stages.flatMap(stage =>
     shadow: receipt.governorShadow,
   })),
 );
+const productionReceipts = allReceipts.filter(
+  ({ shadow }) => shadow?.productionEnabled === true,
+);
+const hasDraftProduction = productionReceipts.some(
+  ({ receipt }) => receipt.stage === 'draft',
+);
+const qaProductionReceipts = productionReceipts.filter(
+  ({ receipt }) => receipt.stage === 'qa',
+);
+const hasQaProduction = qaProductionReceipts.length > 0;
+const hasQaReadyProfile = qaProductionReceipts.some(
+  ({ shadow }) => shadow?.productionReady === true,
+);
+const productionStage = hasQaProduction
+  ? `${hasDraftProduction ? 'draft+' : ''}qa${
+      hasQaReadyProfile ? '' : '-exact-safe-warm-start'
+    }`
+  : hasDraftProduction
+    ? 'draft-only'
+    : 'none';
 const projection = {
   schemaVersion: schemaVersion == null ? null : Number(schemaVersion),
   generatedAt: new Date().toISOString(),
@@ -291,7 +311,7 @@ const projection = {
   dbIntegrity: db.prepare('PRAGMA integrity_check').get().integrity_check,
   governorContract: {
     version: 'writing-governor-production-v3',
-    productionStage: 'draft-only',
+    productionStage,
     rawPromptOrBodyStoredInProjection: false,
   },
   latestBatch: latestBatch

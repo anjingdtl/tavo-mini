@@ -73,6 +73,36 @@ const EXACT_PRIORS: readonly PriorSpec[] = [
     reasoningDemandRatioP95: 5.25,
     reasoningPromptRatioP95: 0.7,
   },
+  // C4 QA is deliberately independent from Draft.  Its visible JSON is
+  // small, but the same configured reasoning model has historically spent
+  // most of the completion envelope before closing the report.  This is a
+  // conservative ratio seed, not a fixed token budget; the current prompt,
+  // visible demand, provider ceiling and local QA profile still determine
+  // the final wire value.
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: 'GLM-5.3-Flash',
+    stage: 'qa',
+    qualityProfile: 'fast',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.9,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: 'GLM-5.3-Flash',
+    stage: 'qa',
+    qualityProfile: 'standard',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.95,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: 'GLM-5.3-Flash',
+    stage: 'qa',
+    qualityProfile: 'quality',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.95,
+  },
 ] as const;
 
 const PROVIDER_FAMILY_PRIORS: readonly PriorSpec[] = [
@@ -99,6 +129,30 @@ const PROVIDER_FAMILY_PRIORS: readonly PriorSpec[] = [
     qualityProfile: 'quality',
     reasoningDemandRatioP95: 5.5,
     reasoningPromptRatioP95: 0.75,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: null,
+    stage: 'qa',
+    qualityProfile: 'fast',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.8,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: null,
+    stage: 'qa',
+    qualityProfile: 'standard',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.85,
+  },
+  {
+    providerAdapterId: 'open.bigmodel.cn-v4',
+    modelName: null,
+    stage: 'qa',
+    qualityProfile: 'quality',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.85,
   },
 ] as const;
 
@@ -130,15 +184,31 @@ const GENERIC_PRIORS: readonly PriorSpec[] = [
     reasoningDemandRatioP95: 3.5,
     reasoningPromptRatioP95: 0.6,
   },
-  // C4/C5 keep their own production opt-in, but their shadow still benefits
-  // from a reasoning-heavy generic prior for observability and later rollout.
+  // Generic QA priors are for shadow/estimate only.  They intentionally do
+  // not qualify for production wire takeover.
+  {
+    providerAdapterId: null,
+    modelName: null,
+    stage: 'qa',
+    qualityProfile: 'fast',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.7,
+  },
   {
     providerAdapterId: null,
     modelName: null,
     stage: 'qa',
     qualityProfile: 'standard',
-    reasoningDemandRatioP95: 3.5,
-    reasoningPromptRatioP95: 0.55,
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.7,
+  },
+  {
+    providerAdapterId: null,
+    modelName: null,
+    stage: 'qa',
+    qualityProfile: 'quality',
+    reasoningDemandRatioP95: 8,
+    reasoningPromptRatioP95: 0.7,
   },
   {
     providerAdapterId: null,
