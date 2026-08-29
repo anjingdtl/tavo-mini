@@ -489,7 +489,10 @@ const ANCHOR = {
 
 let batchCounter = 0;
 
-async function seedBatch(chapterCount: number): Promise<string> {
+async function seedBatch(
+  chapterCount: number,
+  targetWordsPerChapter = 3000,
+): Promise<string> {
   batchCounter += 1;
   const batchId = `batch_ct_${batchCounter}`;
   // Anchor tail follows the CURRENT project tail (tests share one DB, so
@@ -504,7 +507,7 @@ async function seedBatch(chapterCount: number): Promise<string> {
     projectId: 1,
     sourcePrompt: '本批目标：找出真凶',
     chapterCount,
-    targetWordsPerChapter: 3000,
+    targetWordsPerChapter,
     pipelineMode: 'full',
     writingMode: 'continuation',
     continuationAnchorJson: encodeContinuationBatchAnchor({
@@ -528,7 +531,7 @@ async function seedBatch(chapterCount: number): Promise<string> {
       keyBeatsJson: JSON.stringify([`节拍-${i}-A`, `节拍-${i}-B`]),
       carryIn: i === 1 ? '承接原著边界' : `承接第 ${i - 1} 章结尾`,
       carryOut: `交给第 ${i + 1} 章的悬念`,
-      targetWords: 3000,
+      targetWords: targetWordsPerChapter,
     });
   }
   await updateBatchStatus(batchId, 'ready', {});
@@ -1275,5 +1278,19 @@ describe('continuation batch adapter', () => {
       expect(mockWorld.startCalls[0].chapterOrdinal).toBe(1);
       expect(mockWorld.startCalls[0].chapterCount).toBe(1);
     });
+
+    it.each([500, 1_000, 3_000])(
+      'freezes batch target %s as the continuation target demand',
+      async targetWords => {
+        const batchId = await seedBatch(1, targetWords);
+        await drive(batchId);
+
+        expect(mockWorld.startCalls).toHaveLength(1);
+        expect(mockWorld.startCalls[0].targetChapterChars).toBe(targetWords);
+        if (targetWords !== 3_000) {
+          expect(mockWorld.startCalls[0].targetChapterChars).not.toBe(3_000);
+        }
+      },
+    );
   });
 });

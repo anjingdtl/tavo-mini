@@ -110,6 +110,148 @@ describe('Phase III-C v2 C2 Governor Shadow Red Tests', () => {
     );
   });
 
+  test('context safety reserve cannot inflate output demand when the context window grows', () => {
+    const narrow = resolveWritingGovernorShadow(
+      shadowInput({
+        contextWindow: 128_000,
+        completionCapability: 1_000_000,
+        providerWireCeiling: null,
+      }),
+    );
+    const wide = resolveWritingGovernorShadow(
+      shadowInput({
+        contextWindow: 1_000_000,
+        completionCapability: 1_000_000,
+        providerWireCeiling: null,
+      }),
+    );
+
+    // Neither recommendation is hard-ceiling bound, so this compares the
+    // request demand itself rather than context capacity.
+    expect(narrow.hardCeiling).toBeGreaterThan(narrow.recommendedSoftBudget);
+    expect(wide.hardCeiling).toBeGreaterThan(wide.recommendedSoftBudget);
+    expect(wide.recommendedSoftBudget).toBeLessThan(
+      narrow.recommendedSoftBudget * 2,
+    );
+    expect((wide as any).contextSafetyReserve).toBeGreaterThan(
+      (narrow as any).contextSafetyReserve,
+    );
+    expect((wide as any).outputSafetyReserve).toBeGreaterThan(0);
+  });
+
+  test('known high-reasoning results raise the next envelope for the same profile', () => {
+    const store = createWritingGovernorProfileStore();
+    const cold = resolveWritingGovernorShadow(shadowInput(), store);
+
+    observeWritingGovernorResult(store, cold, {
+      actualCompletionUsage: 8_011,
+      visibleOutput: 660,
+      reasoningUsage: 7_351,
+      finishReason: 'stop',
+      latencyMs: 100,
+      businessResultValid: true,
+    });
+
+    const next = resolveWritingGovernorShadow(shadowInput(), store);
+    const profile = readWritingGovernorProfile(store, cold.profileKey) as any;
+    expect(next.reasoningEnvelope).toBeGreaterThan(cold.reasoningEnvelope);
+    expect(profile.reasoningSampleCount).toBe(1);
+    expect(profile.reasoningRatioEwma).toBeGreaterThan(1);
+    expect(profile.reasoningRatioHighWater).toBeGreaterThan(
+      profile.reasoningRatioEwma * 0.9,
+    );
+  });
+
+  test('low-reasoning samples decay learned room slowly and target demand remains adaptive', () => {
+    const store = createWritingGovernorProfileStore();
+    const cold = resolveWritingGovernorShadow(shadowInput({ targetChars: 500 }), store);
+    observeWritingGovernorResult(store, cold, {
+      actualCompletionUsage: 8_011,
+      visibleOutput: 660,
+      reasoningUsage: 7_351,
+      finishReason: 'stop',
+      latencyMs: 100,
+      businessResultValid: true,
+    });
+    const afterHigh = resolveWritingGovernorShadow(
+      shadowInput({ targetChars: 500 }),
+      store,
+    );
+
+    for (let i = 0; i < 5; i += 1) {
+      observeWritingGovernorResult(store, afterHigh, {
+        actualCompletionUsage: 700,
+        visibleOutput: 600,
+        reasoningUsage: 100,
+        finishReason: 'stop',
+        latencyMs: 100,
+        businessResultValid: true,
+      });
+    }
+
+    const afterLow = resolveWritingGovernorShadow(
+      shadowInput({ targetChars: 500 }),
+      store,
+    );
+    const largerTarget = resolveWritingGovernorShadow(
+      shadowInput({ targetChars: 3_000 }),
+      store,
+    );
+    expect(afterLow.reasoningEnvelope).toBeGreaterThan(cold.reasoningEnvelope);
+    expect(afterLow.reasoningEnvelope).toBeGreaterThanOrEqual(
+      Math.floor(afterHigh.reasoningEnvelope * 0.75),
+    );
+    expect(largerTarget.profileKey).toBe(afterLow.profileKey);
+    expect(largerTarget.visibleDemand).toBeGreaterThan(afterLow.visibleDemand);
+    expect(largerTarget.reasoningEnvelope).toBeGreaterThan(
+      afterLow.reasoningEnvelope,
+    );
+  });
+
+  test('unknown, network, and 5xx outcomes never change reasoning profile feedback', () => {
+    const store = createWritingGovernorProfileStore();
+    const cold = resolveWritingGovernorShadow(shadowInput(), store);
+    observeWritingGovernorResult(store, cold, {
+      actualCompletionUsage: 8_011,
+      visibleOutput: 660,
+      reasoningUsage: 7_351,
+      finishReason: 'stop',
+      latencyMs: 100,
+      businessResultValid: true,
+    });
+    const before = readWritingGovernorProfile(store, cold.profileKey);
+    const next = resolveWritingGovernorShadow(shadowInput(), store);
+
+    for (const failureClass of ['outcome_unknown', 'network_error', 'http_5xx']) {
+      observeWritingGovernorResult(store, next, {
+        actualCompletionUsage: 8_011,
+        visibleOutput: 660,
+        reasoningUsage: 7_351,
+        finishReason: 'stop',
+        latencyMs: 999_999,
+        businessResultValid: true,
+        failureClass,
+      });
+    }
+
+    expect(readWritingGovernorProfile(store, cold.profileKey)).toEqual(before);
+  });
+
+  test('500, 1000, and 3000 targets share a profile while demand follows the current target', () => {
+    const store = createWritingGovernorProfileStore();
+    const shadows = [500, 1_000, 3_000].map(targetChars =>
+      resolveWritingGovernorShadow(
+        shadowInput({ targetChars, thinking: { type: 'enabled' as const } }),
+        store,
+      ),
+    );
+
+    expect(new Set(shadows.map(shadow => shadow.profileKey)).size).toBe(1);
+    expect(shadows[0].visibleDemand).toBeLessThan(shadows[1].visibleDemand);
+    expect(shadows[1].visibleDemand).toBeLessThan(shadows[2].visibleDemand);
+    expect(shadows.every(shadow => shadow.thinkingEnabled)).toBe(true);
+  });
+
   test('only known complete results teach an isolated profile and unknown outcomes do not', () => {
     const store = createWritingGovernorProfileStore();
     const cold = resolveWritingGovernorShadow(shadowInput(), store);

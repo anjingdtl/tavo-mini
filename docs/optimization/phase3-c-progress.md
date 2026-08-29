@@ -1,6 +1,8 @@
 # Phase III-C 施工进度
 
-> 唯一施工基线：`E:\AiWorkSpace\tavo-mini`
+> 唯一施工基线：`F:\ClaudeWorkSpace\projects\TAVO-MINI`
+>
+> 历史证据中的 `E:\AiWorkSpace\tavo-mini` 仅表示旧环境，不是当前施工路径。
 >
 > 开工时间：2026-08-28（Asia/Shanghai）
 
@@ -247,9 +249,9 @@ APK / install-r：
 
 Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install-r 和 500/1000/3000 真实 Android Request Boundary Check 均完成。新 C-v2 C1 按“慢/失败可解释”标准 GO；3000 Standard 的 `finishReason=length` 是当前真实 Provider 输出上限导致的可解释 fail-closed，不冒充内容成功，也不改动 C1 之外的预算/timeout/拓扑行为。停止在 C1，不进入 C2；C2 仅记录为下一阶段建议，旧 C1 长程基线 NO-GO 仍有效。
 
-## C2 — Governor Shadow Mode
+## C2 — Governor Shadow Mode（初始实施记录；C2-CORRECTION 见下）
 
-状态：C2 PLAN 已启动；遵循“Shadow 先行”，本阶段不改变生产 wire `max_tokens`、提示词、Stage 拓扑、Thinking 开关或 physical call 数。
+状态：C2 implementation PASS / Android matrix HOLD；当前执行 C2-CORRECTION。远端 HEAD `39b91e58` 的 C1 GO 结论继续保持；C3 未开始且本轮禁止开始。
 
 ### Plan
 
@@ -270,8 +272,8 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - 新增 `src/services/writing/governor/writingGovernor.ts`，只在最终 compiled messages boundary 计算 C2 shadow：实际 prompt token、target demand、visible floor、reasoning envelope、protocol/safety reserve、soft recommendation、context/provider hard ceiling、legacy wire 对照和 preflight 结果；不发起 LLM 请求、不选择预算、不改变已有请求。
 - Governor profile key 按 provider adapter/model/stage/quality/execution/output contract/compiler/reasoning policy 隔离；只聚合 sample count、利用率、延迟和 finish reason。仅 `stop + businessResultValid` 或已知 `length` 样本学习；`outcome_unknown`、network/provider/fatal/cancelled、safe retry 和未知 usage 均不学习。
 - `WritingRequestReceipt` 及 durable runtime projection 增加安全 `governorShadow`；Shared Writer 的 primary/injected/formatter boundary 均记录 shadow，physical request 仍保持原有一次调用语义，成功业务结果才 promote profile。
-- 批量续写把每个 item 的 `targetWords` 冻结为 `targetChapterChars` 后再编译 prompt，修复了“批次目标与项目默认 target 不一致”导致的 shadow 观测失真；Provider capability 使用同一 `resolveProviderOutputBudget` boundary，真实设备能够记录 `open.bigmodel.cn-v4`。
-- 未启用 recommendation；当前 legacy `maxTokens`、Prompt、Thinking、timeout、Retry、Pipeline topology、Provider wire payload 均保持不变。C2 仍是 shadow-only。
+- `Batch Target Demand Plumbing Correction`（commit `39b91e58` 已带入，当前不回滚）：批量续写把每个 item 的 `targetWords` 冻结为 `targetChapterChars`，再经 `settingsOverride` 进入 `buildContinuationV5Context`；它确实参与 Context / Source / Stage Budget，不是纯 Shadow metadata。独立 target 回归测试在 C2-CORRECTION 小节登记。
+- 纠正旧表述：不能再笼统写“Prompt / legacy request behavior 均未改变”。本次 target plumbing 会改变 budget demand 输入；但实际 Prompt 编译文本、legacy wire `maxTokens`、Thinking 开关、timeout、Retry、Pipeline topology、Provider wire payload 和 physical call 数均保持不变。C2 recommendation 仍未接管真实 wire。
 
 ### Targeted Red Test / Verify
 
@@ -280,12 +282,12 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - 最终代码门禁：`npm.cmd run verify` PASS；lint `0 errors / 258 warnings`（均为仓库既有 warning），typecheck、`verify:elastic`、`verify:version` PASS；Jest `3 skipped, 514 passed` suites（517 total），`8 skipped, 3661 passed` tests（3669 total）。
 - `git diff --check` 在提交前执行；仅将 C2 源码、测试与本进度文档纳入提交，用户/环境未跟踪文件、APK 和 test logs 不进入 Git。
 
-### APK / install-r
+### APK / install-r（初始 C2 记录）
 
 - `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `4A7D63E766AAC342092633C21311FC4B48DB7EE9963D817DB017DE95A15D695E`。
 - 通过 `adb -s emulator-5554 install -r` 安装，包 `com.shinewriter`，`versionName=V2.21.1` / `versionCode=2210100`；未使用 `uninstall`、`pm clear` 或数据库清理，保留既有数据和 LLM 配置。
 
-### Android / DB / Receipt / UI / logcat
+### Android / DB / Receipt / UI / logcat（初始 C2 历史证据）
 
 - 使用 QA skill 要求的真实设备 `emulator-5554`、App 既有在线配置 `OpenAI 兼容 API / GLM-5.3-Flash`，API key 未读取或写入报告；通过真实 UI 创建单章批次，未使用 fake/virtual provider。设备在中断后掉线，重连时发现的旧 `V2.11.51` AVD 仅用于确认环境，不计入 C2 结果，也未清数据。
 - 修正 target/provider boundary 后，当前已完成 `Quality × 500/1000/3000` 三个真实样本；每个样本均为 1 章、2 次 physical request（Draft + QA），没有自动重试，DB 均 `integrity_check=ok`、3 projects、0 API keys。三次 QA 均因真实 Provider 返回 `finishReason=length` 被业务 fail-closed 为 `SHARED_WRITER_TRUNCATED_OUTPUT`，UI 显示“批次已暂停 / 续写运行失败”，这是可解释的安全失败，不冒充内容成功。
@@ -302,9 +304,57 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 
 ### Act / Commit / Remaining Risks
 
-- 本轮 C2 源码、定向测试、全量门禁、APK 构建/install-r 和 Quality 三档真实 Android 证据已完成并写入本节；本次提交将把上述测试过程与结果同步到远端 `main`。
+- 初始 C2 源码、定向测试、全量门禁、APK 构建/install-r 和 Quality 三档真实 Android 证据已完成并写入本节；这些记录保留为 `39b91e58` 的历史基线，C2-CORRECTION 的新门禁与设备状态见下节。
 - C2 Android GO 矩阵尚未封板：修正后 `500/1000/3000 × Fast/Standard` 六个组合仍需真实 LLM 复测；因此本节明确记为 `C2 implementation PASS / Android matrix HOLD`，不进入 C3，不宣布 Phase III-C GO。C2 profile 当前仅为进程内聚合，持久化与完整矩阵留待后续阶段。
 - C3 → C10 仍未开始；原 C1 长程基线 NO-GO、C2 修正前 superseded 证据和本轮真实 QA length fail-closed 结论均保留，不删除、不粉饰。
+
+### C2-CORRECTION — Shadow Governor 解耦、reasoning feedback 与 Batch Target Demand Plumbing Correction
+
+状态：C2-CORRECTION 的 implementation PASS；Android matrix HOLD。远端 HEAD `39b91e58` 的 C1 GO 继续有效；本轮没有开始 C3，也没有继续消耗剩余真实 LLM 矩阵。
+
+施工仓：`F:\ClaudeWorkSpace\projects\TAVO-MINI`。`E:\AiWorkSpace\tavo-mini` 只作为历史证据中的旧环境说明。
+
+#### PLAN
+
+- 暂停原 C2 真实矩阵，仅修 Shadow Governor 本身；先用 128K/1M context 对照、GLM reasoning 样本和 batch target plumbing 回归锁住边界，再决定是否恢复矩阵。
+- 接受条件：ContextSafetyReserve 只进入 availableCompletion；OutputSafetyReserve 只按 visible demand、reasoning envelope、protocol reserve 与已知波动计算；1M context 不再制造约 20K output soft budget。
+- 接受条件：已知成功/已知 `length` 结果才更新 reasoning profile；下一轮 envelope 同时使用 versioned cold-start seed、历史真实 reasoning aggregate 和当前 actualPromptTokens / target demand；unknown/network/5xx 不污染 profile。
+- 继续保持 shadow-only：不让 recommendation 接管 legacy wire `max_tokens`，不关闭 Thinking，不修改 timeout 常数，不启用 Streaming，不增加 physical call。
+
+#### 新 Red Tests 首次 FAIL
+
+- 新增 Governor Red Test 后首次运行 `npx.cmd jest __tests__/phase3C2GovernorShadow.test.ts --runInBand`：9 tests 中 5 PASS、4 FAIL。失败分别锁定了 1M context 导致 soft budget 暴涨、known high-reasoning 后 envelope 不提升、低 reasoning 样本后的高水位保护缺失，以及 `http_5xx` 错误错误地改写 profile。
+- 新增 `__tests__/phase3C2BatchTargetDemand.test.ts` 作为独立 plumbing contract；它验证 500/1000/3000 的 target 经 `settingsOverride` 到达 Freeze / kernel request，并证明非 3000 不会回落到 project default 3000。
+
+#### 最小修正
+
+- `src/services/writing/governor/writingGovernor.ts` 升为 `writing-governor-shadow-v2`：`contextSafetyReserve = contextWindow × 0.02` 仅用于 availableCompletion；baseSoftBudget 不再包含它。新增 demand-relative `outputSafetyReserve`，旧 `safetyReserve` 仅保留为 output-only 兼容别名。
+- Governor 以 versioned cold-start seed 保留原始 effort 比例，但真实反馈成为主要信号；profile 只保留 bounded reasoning/visibleDemand 与 reasoning/actualPromptTokens 的 EWMA/high-water、样本计数等聚合，不保存正文、prompt、memory 或 key。已知 high reasoning 会提高下一轮 envelope；连续低 reasoning 只按慢衰减修正；`outcome_unknown`、network、5xx、provider/fatal/cancelled 等不学习。
+- 当前 demand 与 input 在每轮重新归一化，profile key 不包含 target，因此 500/1000/3000 共享 profile 并按当前 demand/input 自适应；Thinking policy、timeout、wire payload 和 physical call 行为不变。
+- 单独登记 `Batch Target Demand Plumbing Correction`：`continuationBatchAdapter` 的 `targetWords` → `targetChapterChars` → `settingsOverride` → `buildContinuationV5Context`，会参与 Context / Source / Stage Budget。该 correction 不回滚 `39b91e58`，也不再宣称“Prompt / legacy request behavior 均未改变”；实际 Prompt 文本与 legacy wire 行为未改，但 target demand budget 输入确实改变。
+
+#### Targeted / Typecheck / Verify
+
+- `npx.cmd jest __tests__/phase3C2GovernorShadow.test.ts __tests__/phase3C2BatchTargetDemand.test.ts __tests__/continuationBatchAdapter.test.ts --runInBand`：3 suites / 44 tests PASS。
+- `npm.cmd run typecheck` PASS；`npm.cmd run verify:elastic` PASS。
+- `npm.cmd run verify` PASS：3 skipped、515 passed suites（518 total）；8 skipped、3672 passed tests（3680 total）；lint 0 errors，保留仓库既有 258 warnings；version consistency PASS。
+- `git diff --check` 通过（文档更新后将再次复核）。
+
+#### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；Windows/JDK loopback 使用进程级短路径 `C:\tavo-uds` workaround，产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小 `59,838,778` bytes，SHA-256 `85F04E25FBC348D9CFDA1A677C1299E1D98B50FF1D268C055F1E6F9F9A1B9B72`。
+- QA 前置 `adb devices` 为空；`emulator-5554` 的 `get-state`、包核验与 `adb install -r` 均因 `device not found` 被阻断。没有卸载、`pm clear`、数据库清理或任何真实 LLM 请求。证据目录已建立：`test-logs/phase3-c-correction-android`。
+
+#### Real GLM Probe / Android Check
+
+- 由于 `emulator-5554` 当前不在线，500 Quality Draft、1000 Quality Draft 和 1 个真实 QA 均未启动；不把环境阻塞误报为 Probe PASS，也不继续跑完整 `500/1000/3000 × Fast/Standard/Quality` 矩阵。
+- 单元/Shared Writer contract 已确认 Governor 不产生额外 physical call、legacy maxTokens 仍原样发送、recommendation 仍为 shadow-only；真实设备侧的 `Governor physical call=0`、reasoning feedback、QA reasoning room、UI/DB/Receipt/logcat 证据待设备恢复后补齐。
+
+#### ACT / Remaining Gate
+
+- 当前结论固定为 `C2 implementation PASS / Android matrix HOLD`；C1 GO 保持，C3 禁止开始。待设备在线后只补三条指定 Probe；只有 Probe PASS 才能讨论恢复剩余矩阵。
+- C2 profile 目前仍为内存态；C3 Production Governor 前必须增加轻量 durable aggregate，只保存上述聚合统计，不保存正文、prompt 或 memory。
+- 未修改 timeout 常数、Thinking 开关、Streaming 或真实 wire max_tokens；本轮改动按用户指令提交到 `main` 并推送 `origin/main`，工作区其余用户原有未跟踪文件保留。
 
 ## C3 → C10
 
