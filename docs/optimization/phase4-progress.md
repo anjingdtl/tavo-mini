@@ -99,6 +99,26 @@ DeepSeek V4 续写冻结 `thinking: disabled`（`freezeContinuationThinking`，c
 
 IV-9 时代"外部提供端停摆是唯一剩余 blocker"的表述已被 IV-10 根因隔离轮**取代**：停摆根因不是"外部提供端对边界首章的持续停摆"，而是"特定章节计划梗概触发的模型失控超长生成"（对 GLM 与 DeepSeek 同样成立，详见 IV-10 根因树）；IV-9 证据段中"边界首章 fresh 首章（in≈7k 小上下文）"的量化描述是估算器伪像，真实请求为 53–70k tokens（证据：`test-logs/phase4-deepseek-rca-20260830/`）。IV-9 的原始运行记录、42 次付费台账与 NO-GO 判定作为历史证据原样保留。
 
+## IV-10 收尾代码复查（2026-08-31，关机前）
+
+逐项复核生成流水线全部阻滞/阻断点，确认根因闭环且均有处理：
+
+| # | 阻滞/阻断点 | 根因 | 处理状态 |
+| --- | --- | --- | --- |
+| 1 | Draft 570s"停摆"（GLM/DeepSeek） | 计划梗概触发的模型失控超长生成（H7） | **关闭**：length 硬门拒绝持久化 ×2 验证；outcome_unknown+用户确认恢复；config `max_output_tokens=65536` 缓解（失控 ~6min 变为可分类失败） |
+| 2 | 570s 看门狗语义 | 刻意的会计安全边界（贴近 provider 10min 窗口） | 保持，不放宽；分类 `outcome_unknown` 正确 |
+| 3 | Hard Gate ×8（`phase4GatePolicy.ts` 逐条复读） | 全部为 P0 级安全/能力边界（冻结指纹/Mandatory Truth/能力边界/length/unknown/空正文/DB 事务/Canon） | 无未分类硬阻断；质量协议门零混入 |
+| 4 | 隐藏 retry | — | 无：`shouldAutoRetryFailure` 仅 requestPolicy 内部定义；所有停摆重试均 UI 用户确认 |
+| 5 | Governor | — | 旁路保持：全部 receipt `preflightBlocked=false`、scenario 记录 0 条 |
+| 6 | Context 投影 | — | IV-9 价值保留生效；receipt `silentContextLossCount=0`、Mandatory 6 项全在 |
+| 7 | QA 截断 | IV-9 修正 | Advisory 路径生产验证（10 批 item 1） |
+| 8 | `stage_results.input_tokens` 失败行写入预留期 `compiledPromptTokens` 估算（如 7,103），非最终请求大小 | 观测语义问题（预算冻结时快照），曾误导 IV-9 RCA | **已文档化**（IV-10 修正附言）；权威值在 receipt `actualPromptTokens`/usage 行；不改 schema（关机前不引入无设备回归的变更） |
+| 9 | 请求队列 | — | 全天 34+ 次付费调用 `queueWaitMs=0`，无排队饥饿 |
+| 10 | 模拟器网络（DNS 代理死亡 + 大 body 上传健康性） | emulator 进程内 slirp DNS 代理坏死（`adb reboot` 无效） | 环境问题：重启模拟器进程修复；传输路径 234,748 字节完整上传 2.3s 验证 |
+| 11 | DeepSeek thinking 契约 | 冻结 `disabled`（`f525e933`，reasoning_only 证据） | 文档化；与 P0-01 的语境差异已显式标注 |
+
+结论：**无未处理的生成流水线阻滞点**。工作区无未提交改动；本地 `HEAD == origin/main == 2d69416e`。
+
 ## 历史阶段结论（IV-0～IV-9 期间，原样保留）
 
 IV-0 不修改生产逻辑。基线与阻滞 Pareto 已封存到 `phase4-baseline-and-blocking-pareto.md`。本轮 CHECK-B 已完成同签名 release `adb install -r`、启动、UI capability 核验；真实 provider 连接返回 HTTP 401（credential 过期/无效），因此新 paid sample 保持 HOLD，历史 C9 真实样本继续作为基线。主要阻滞不是账务或 Governor physical call，而是主链把质量协议、上下文复制和当前请求决策耦合在一起：`length`、JSON/报告合同和 Context/Governor preflight 共同吞噬一次通过率。IV-1 从 Gate inventory 开始。
