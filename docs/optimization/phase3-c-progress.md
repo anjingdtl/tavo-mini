@@ -788,3 +788,34 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - C8 的真实 NO-GO 先被保留，再以 frozen compact topology 的 stage ledger 纠偏；没有把 `outcome_unknown` 变成可重放 pending，没有覆盖旧 run、旧 receipt 或真实失败证据。成功 Draft 不重跑，未知 QA reservation 不重发，相同 Final body 不重复写入。
 - Thinking Always On；仍为单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；无新增 Agent、第二 Context、Memory、Writer、Formatter 或 Governor LLM call；Mandatory Truth 未裁掉；没有固定业务 `maxTokens`；`finishReason=length` fail-closed；所有真实 paid calls 如实计账；Android 只使用 `adb install -r`；Generic Prior 未直接接管 Production。
 - C8 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → `install-r` → Android 真实配置 LLM → force-stop/relaunch → DB/Receipt/UI/logcat → ACT 全部 PASS。故 C8 正式 `GO`，下一阶段为 `C9`；本节不写 `PHASE III-C FINAL SEALED / GO`。
+
+### C9 — Cost / Latency / Stability Seal（2026-08-30，PLAN）
+
+状态：`C9 CHECK-A PASS / Android pending`。C8 已在修正版 APK 上完成真实 Compact Clean 与 force-stop/relaunch 保护；当前进入 C9，只封成本、时延、稳定性统计口径，不重复 C3-C8 的已 GO 工作，也不把统计模块接入生产 Governor 决策。
+
+#### 当前证据与根因假设
+
+- 真实 Receipt 已逐请求保存 `physicalRequestCount`、`protocolFallbackCount`、queue/provider/parse/persist/total timings、input/output/reasoning/visible usage、`finishReason`、`failureClass`/`failurePhase` 与动态 `wireMaxTokens`；C3-C8 的安全 projection 已禁止 prompt、正文、response body 与 credentials。
+- 当前这些指标分散在 Receipt、stage ledger、Observability 与各阶段 projection，尚无一个确定的 p50/p95、错误率、budget utilization、Writer/Total paid call 与 Governor=0 的聚合契约。若直接人工拼接，容易重复 poll snapshot、把 formatter/fallback/auxiliary 混成一个数字，或将缺失 usage 伪造为 0。
+- C9 的根因假设是观测聚合缺口，而非生产调用不够；统计必须按有物理请求的 logical/formatter Receipt 为 request 分母，null usage/timing 必须从该项百分位样本中排除但保留缺失计数，`outcome_unknown` 只作为已发生的未知失败记录，绝不变成 retry。
+
+#### 只改什么 / 明确不改什么
+
+- 只新增一个纯函数观测聚合契约：Writer Physical Calls = logical stage + formatter 的物理 dispatch 总数；Total Paid Calls = Writer Physical Calls + 明确传入的 post-writing auxiliary physical calls；Governor physical calls 单列并要求显式为 0 才能 PASS。
+- 统计 queue/provider、input/output/reasoning/visible 的 p50/p95 使用现有 `percentileTokens` 的线性插值规则；timeout、length、invalid-format 分别按明确的 failure/finish/parse contract 计数；budget utilization 只用真实 `outputTokens / wireMaxTokens`，无 usage 或无 wire ceiling 时不臆造。
+- 以 run/case 级 observed call count 检查 `Fast ≤ 1`、`Standard Clean ≤ 2`、`Standard Issue ≤ 3`；聚合是只读，不修改 Governor、profile、timeout、Retry、Provider wire、业务 `maxTokens`、Thinking、Mandatory Truth 或 Pipeline 拓扑。
+- 不新增 Agent、第二 Context、Memory、Writer、Formatter、Governor LLM call；不把 Generic Prior 接管 Production；不改变 `finishReason=length` fail closed、`outcome_unknown` 永不自动 retry、SQLite schema 或 Android install 规则。原有失败/NO-GO 证据继续追加保留。
+
+#### C9 Red / CHECK / Android GO Gate
+
+- Red 先锁定：多 Receipt/缺失 usage 的 p50/p95 与缺失计数、physical/fallback/auxiliary 账务、timeout/length/invalid-format rates、动态 budget utilization、case call ceiling、Governor=0 与 prompt/body 不进入输出。实现前必须有真实失败证据。
+- CHECK-A：C9 targeted → typecheck/lint/`verify:elastic`/`verify:version` → full `npm.cmd run verify`；任何失败追加证据，不覆盖既有 C3-C8 记录。统计模块不得产生 network、LLM 或写库副作用。
+- CHECK-B：重新构建 APK、记录 SHA-256、`adb devices`，只执行 `adb -s emulator-5554 install -r`，保护既有用户数据与 LLM 配置。
+- GO 必须在新 APK 的 Android `com.shinewriter` 上以 App 已配置的真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash` 完成至少一个新 run；通过稳定 SQLite projection、Receipt、UI 与 PID logcat 证明实际请求、真实 usage/finish、Writer/Total/Governor call 账务、无额外调用、无 crash/ANR。再用去重后的 C3-C8 + C9 真实 case 计算 p50/p95 与错误率，不能把 poll snapshot 当成新付费请求。通过后进入 C10；本节不提前宣布 Final Seal。
+
+#### C9 当前执行 checkpoint（2026-08-30）
+
+- Red 已真实执行并保留：`c9-red-before-implementation.txt`。模块未实现时 suite 在 module resolution 处 FAIL，未产生 network/LLM/DB 副作用。
+- 最小实现为 `phase3C9Metrics.ts` 观测侧纯函数，并由 observability index 导出；没有接入 Writer/Governor 决策、没有新增调用或持久化字段。C9 测试覆盖 physical/fallback/auxiliary 账务、缺失值、p50/p95、错误率、动态 output/wire 利用率、call ceiling、Governor=0 与 payload omission。
+- CHECK-A targeted：C9 `1 suite / 2 tests PASS`；全部 Phase3C `14 suites / 74 tests PASS`。完整 `npm.cmd run verify`：lint `0 errors / 259 existing warnings`、typecheck PASS、`verify:elastic` PASS、`verify:version` PASS（V2.21.1 / versionCode=2210100）；Jest `524 suites passed / 3 existing suites skipped / 527 total`，`3722 tests passed / 8 existing tests skipped / 3730 total`。完整证据：`test-logs/phase3-c9-cost-latency-20260830-000001/c9-full-verify.txt`。
+- 当前仍未宣告 C9 GO：APK rebuild/install-r、Android 新 run、稳定 DB/Receipt/UI/logcat 与去重后的真实 C3-C9 aggregate 尚待完成；本 checkpoint 不写 `PHASE III-C FINAL SEALED / GO`。

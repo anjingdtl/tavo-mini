@@ -27,6 +27,19 @@ export type {
 } from './writingChapterObservability';
 export { createWritingPhysicalRequestAccounting } from './writingPhysicalRequestAccounting';
 export {
+  buildPhase3C9Metrics,
+  PHASE3_C9_METRICS_VERSION,
+} from './phase3C9Metrics';
+export type {
+  Phase3C9CaseKind,
+  Phase3C9CaseObservation,
+  Phase3C9Distribution,
+  Phase3C9Metrics,
+  Phase3C9MetricsInput,
+  Phase3C9Rate,
+  Phase3C9ReceiptLike,
+} from './phase3C9Metrics';
+export {
   mergeWritingTokenLedger,
 } from './writingTokenLedger';
 export type {
