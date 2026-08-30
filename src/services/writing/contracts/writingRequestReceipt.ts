@@ -10,6 +10,7 @@ import type {
   ChatMessage,
   LLMOutputBudgetTrace,
   LLMProviderCapabilitySupport,
+  LLMFailurePhase,
   LLMRequestMetrics,
   ReasoningEffort,
 } from '../../llm/types';
@@ -105,6 +106,8 @@ export interface WritingRequestReceipt {
   finishReason?: string | null;
   emptyReason?: string | null;
   failureClass: LLMFailureClass | null;
+  /** Request-boundary phase, separate from retry/billing failureClass. */
+  failurePhase: LLMFailurePhase | null;
   requestMayHaveExecuted: boolean | null;
   providerRequestId: string | null;
   timings: WritingRequestReceiptTimings;
@@ -249,6 +252,7 @@ export function buildWritingRequestReceipt(input: {
     targetChars,
     actualPromptTokens: null,
     failureClass: null,
+    failurePhase: null,
     requestMayHaveExecuted: false,
     providerRequestId: null,
     timings: emptyWritingRequestReceiptTimings(),
@@ -279,6 +283,7 @@ export function completeWritingRequestReceipt(
     finishReason?: string | null;
     emptyReason?: string | null;
     failureClass?: LLMFailureClass | null;
+    failurePhase?: LLMFailurePhase | null;
     requestMayHaveExecuted?: boolean | null;
     providerRequestId?: string | null;
     actualPromptTokens?: number | null;
@@ -303,6 +308,9 @@ export function completeWritingRequestReceipt(
       : {}),
     ...(input.failureClass !== undefined
       ? { failureClass: input.failureClass }
+      : {}),
+    ...(input.failurePhase !== undefined
+      ? { failurePhase: input.failurePhase }
       : {}),
     ...(input.requestMayHaveExecuted !== undefined
       ? { requestMayHaveExecuted: input.requestMayHaveExecuted }

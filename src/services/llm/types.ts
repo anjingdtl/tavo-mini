@@ -91,6 +91,8 @@ export interface LLMResult {
   reasoningEffortWire?: ReasoningEffort | null;
   /** Capability state used to decide whether reasoning_effort could be sent. */
   reasoningEffortSupport?: LLMProviderCapabilitySupport;
+  /** Deterministic request-boundary phase for a failed/invalid result. */
+  failurePhase?: LLMFailurePhase | null;
 }
 
 export interface LLMOutputBudgetTrace {
@@ -103,6 +105,21 @@ export interface LLMOutputBudgetTrace {
 
 /** DeepSeek-style reasoning intensity. Thinking remains enabled separately. */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Request-boundary phase, kept separate from retry/billing `failureClass`.
+ * `outcome_unknown` means the client cannot prove that the request did not
+ * execute; it is never an automatic retry permission.
+ */
+export type LLMFailurePhase =
+  | 'queue'
+  | 'provider'
+  | 'network'
+  | 'http'
+  | 'generation'
+  | 'parse'
+  | 'persist'
+  | 'outcome_unknown';
 
 /** Explicit provider capability state; unknown is never treated as supported. */
 export type LLMProviderCapabilitySupport =

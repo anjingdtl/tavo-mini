@@ -30,6 +30,7 @@ export type {
   LLMProviderCapabilitySupport,
   LLMCompletionUsageSemantics,
   ReasoningEffort,
+  LLMFailurePhase,
 } from './llm/types';
 
 export {
@@ -40,6 +41,7 @@ export {
   supportsReasoningEffort,
   parseReasoningTokens,
 } from './llm/openAICompatibleProvider';
+export { classifyLLMFailurePhase } from './llm/requestPolicy';
 export type {
   LLMProviderCapability,
   LLMProviderReasoningCapability,

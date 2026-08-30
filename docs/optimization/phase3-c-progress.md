@@ -677,3 +677,57 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - 没有固定业务 `maxTokens`；实际 `wireMaxTokens` 仍由动态 demand/reasoning/JSON/protocol/context/provider ceiling 决定。`finishReason=length` 继续 fail-closed；`outcome_unknown` 永不自动 retry；Governor 不增加 LLM 调用；所有 Physical Paid Calls 如实计账；Generic Prior 未接管 Production。
 - `providerCapabilities.ts` 将支持/映射显式化，unknown model variant 和 generic adapter 不伪装 supported；BigModel 真实 run 的 Frozen effort 与 request wire 一致，reasoning/visible usage 分栏一致。没有用提高预算或关闭 Thinking 掩盖问题。
 - C6 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → install-r → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部 PASS，故 C6 正式 `GO`。下一阶段为 `C7`；本节不写 `PHASE III-C FINAL SEALED / GO`。
+
+### C7 — Timeout & Failure Policy Seal（2026-08-30，PLAN）
+
+状态：`C7 PLAN / Red pending`。C1–C6 已经证明 570 秒是当前真实长请求的最后 watchdog，而不是可随意继续拉长的业务预算：C1 的 Draft/QA 在 `total_timeout → outcome_unknown`，C3 又保留了真实 Draft `finishReason=length` 与 Safe Warm Start 纠偏证据，C4 的 `network_error/outcome_unknown` 也已明确不自动重试，C6 的三档单请求均在现有 watchdog 内成功。C7 不先改 570 秒；先封存“故障发生在哪一层、是否可能已执行、能否学习/重试”的确定性政策。
+
+#### PLAN / 当前根因假设
+
+- 当前已有 `failureClass`、`requestMayHaveExecuted` 和 queue/provider/parse/persist 的部分 timing，但错误边界仍不完整：pre-send 与 post-send network error 都可能落入同一 `outcome_unknown`；response 已收到后的 JSON parse error 可能被当作 network/fatal；queue cancellation 没有统一进入 Receipt；persist failure 发生在物理请求成功后也缺少独立阶段标记。Governor 学习只看 `failureClass`，若调用方漏传 failureClass，单靠 `finishReason=stop` 不能防止错误样本进入学习。
+- C7 允许的最小范围是显式 `failurePhase`（`queue/provider/network/http/generation/parse/persist/outcome_unknown`）、利用已存在的 boundary timestamps 修正 pre-send/post-send 分类、把 phase 写入 LLMResult/RequestError/Receipt/安全 projection，并让 Governor 对 network/provider/http/parse/persist/outcome_unknown 保持不学习。现有 failureClass 的 retry policy 保持：只有 `safe_retry/rate_limit` 可进入既有持久化 retry；`outcome_unknown` 永不自动 retry。
+- 明确不改：Writing Pipeline 拓扑、Thinking、Mandatory Truth、业务 `maxTokens`、Provider 协议、persist contract、自动 retry schedule、已有 570 秒常数；不持久化 partial body；不新增 Streaming Spike。只有未来真实证据证明非流式无法区分长 reasoning/长 generation/gateway hang，才另开独立可回滚 C7-S A/B。
+
+#### C7 Red / CHECK Gate
+
+- Red 必须先锁定：pre-send network 可归类为 `network + safe_retry + requestMayHaveExecuted=false`，post-send network 必须是 `outcome_unknown`；HTTP 与 provider-body error 分离；response 后 parse error 为 `parse/response_invalid`；queue cancellation 为 `queue`；generation `finishReason=length` 仍 fail-closed 且只可作为 censored lower bound；persist error 为 `persist`；所有上述非成功阶段不进入 Governor 学习；`shouldAutoRetryFailure(outcome_unknown)` 仍为 false。
+- CHECK-A：新增 C7 policy/transport/Governor contract tests，跑 targeted、`typecheck`、`verify:elastic`、`lint -- --quiet`、完整 `verify`；任何失败原样保存并追加 NO-GO/纠偏，不覆盖本 PLAN 或历史证据。
+- CHECK-B：APK build、SHA-256、`adb devices`、仅 `adb install -r`；先做真实已配置 LLM 的 Standard Clean，确认新 Receipt phase、usage、wire、physical call 与旧 C6 语义一致，再用最小可逆故障注入/既有历史证据验证 phase 分类。没有真实 provider 错误时不伪造 real failure；mock 只用于分类和 fail-closed contract。
+- GO 必须回答 queue/provider/network/HTTP/generation/parse/persist/outcome_unknown 的归属、requestMayHaveExecuted、retry 与 Governor 学习边界；有真实 Android 已配置 LLM 成功证据、DB/Receipt/UI/logcat，physical paid calls 无增加，且没有把 570→900→1200 作为“修复”。通过后进入 C8；本节不提前宣布 GO 或 Final Seal。
+
+### C7 — Timeout & Failure Policy Seal（2026-08-30，ACT / GO）
+
+状态：`C7 GO`。C7 在不改变现有 `570000ms` 长 watchdog、不引入 Streaming Spike 的前提下，完成了故障阶段、账务语义、重试边界和 Governor 学习边界的封板；并在已安装 APK 上用真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash` 完成 Standard Clean 的 Draft → QA → FinalValidate → Persist / UI 采纳闭环。本节保留前面的 C7 PLAN/Red，也保留本轮真实 Revision 合约失败证据；不宣布 Phase III-C Final Seal。
+
+#### PLAN → Red → 最小实现
+
+- Red-first 已真实执行：`__tests__/phase3C7TimeoutFailurePolicy.test.ts` 在实现前以预期失败锁定缺口：`classifyLLMFailurePhase` 不存在、pre-send network 没有 phase，以及 Governor 在缺少 `failureClass` 时仍可能学习 network 样本；既有 `570000ms` 断言通过。证据为 `test-logs/phase3-c7-timeout-failure-20260830-000001/c7-red-before-implementation.txt`，未覆盖。
+- 最小实现新增显式 `failurePhase`：`queue / provider / network / http / generation / parse / persist / outcome_unknown`。`requestPolicy` 使用 queue/dispatch/request-sent/response-received/parse-completed 的既有 boundary timestamps 进行确定性分类：pre-send network 为 `network + safe_retry + requestMayHaveExecuted=false`；跨过 request sent 后的 network 为 `outcome_unknown + requestMayHaveExecuted=true`；HTTP 与 provider-body 分离；response 后解析失败为 `parse / response_invalid`；取消为 `queue`；`finishReason=length` 为 generation censored lower-bound；持久化异常为 persist。
+- `LLMResult`、`LLMRequestError`、Writer Receipt、Writer failure annotation、safe projection 均记录 phase；Provider 在 HTTP/provider/parse/generation 边界如实标注，Writer 在 persist 失败时不吞错。Governor 对 queue/provider/network/http/parse/persist/outcome_unknown 一律不学习；只有已知有效 stop、已知 length 等既有安全语义可以进入相应学习路径。既有 retry policy 未扩大：`outcome_unknown` 永不自动重试。
+- 未修改：Writing Pipeline 拓扑、Thinking、Mandatory Truth、业务 `maxTokens`、Provider 协议、persist contract、自动 retry schedule 和 `570000ms` watchdog；未持久化 partial body；没有新增 Agent、第二 Context、Memory、Writer 或 LLM 调用。
+
+#### Targeted / Full Verify
+
+- C7 与 C1–C6 交叉 targeted：`12 suites passed / 80 tests passed`；真实 Android 后再次执行仍为 `12 suites passed / 80 tests passed`。最终 `typecheck`、`lint -- --quiet`、`verify:elastic`、`verify:version` 均 PASS。
+- 完整 `npm.cmd run verify`：`522 suites passed / 525 total`，仓库既有 `3 suites skipped`；`3712 tests passed / 3720 total`，仓库既有 `8 tests skipped`；lint `0 errors`，既有 `259 warnings` 保留。完整输出和 post-real 摘要保存在 `test-logs/phase3-c7-timeout-failure-20260830-000001/c7-static-verification-summary.txt`、`c7-post-real-verification-summary.txt`。
+
+#### APK / install-r
+
+- `npm.cmd run apk:debug` PASS；产物 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小 `59,865,178` bytes，SHA-256：`7498ED487C1D26629C59A583087E1B4B93873BF42F2076B26C25B1747B8D2031`。
+- `adb devices` 为 `emulator-5554 device`；只执行 `adb -s emulator-5554 install -r`，结果 `Success`。包 `com.shinewriter` 的 `versionCode=2210100`、`versionName=V2.21.1`、`firstInstallTime=2026-08-23 04:59:45` 保持；本阶段没有 uninstall、`pm clear`、清库或重置 LLM 配置。
+
+#### Real Android / DB / Receipt / UI / logcat
+
+- 本轮初始真实请求误在仍为 Quality 的 UI 档位下启动，run `ct_ba83689ba59341929c68c45f02b5bc9e` 形成真实失败证据：Draft 与 QA 均 `stop/succeeded`，Revision 发生一次真实 `physical=1` 请求，provider 返回 `stop` 但解析后的 Revision 合约无效（UI：`续写失败 / Revision 返回格式无效（ending）`）。稳定 projection `dbIntegrity=ok`，run `state=failed`、`errorCode=SHARED_WRITER_INVALID_REVISION_CONTRACT`；Revision Receipt 为 `failureClass=response_invalid`、`failurePhase=parse`、retry `0`，没有进入 Governor 学习。该失败没有被删除、重试或伪装成 timeout/unknown，证据为 `c7-standard-failure-projection-v1.json`、`c7-standard-failure.sqlite`、UI XML/PNG。
+- 按 C7 CHECK-B 切换并保存 Standard 后，真实 Clean run 为 `ct_027d56f219864c97bf3927b95ca20bc9`。UI 显示 `流水线结果 / 与初稿一致 / 1,828 字 / 9 段`；详情显示 `共享 Writing Kernel · Standard`、`Freeze → 生成 → 检查 → 修订 → 校验 → 保存 → PostWriting → ONE Memory`，逻辑 `2`、Formatter `0`、物理 `2`、Fallback `0`、Retry `0`、目标 `500`；最终 UI 已采纳为章节草稿。
+- Stable DB projection `c7-standard-adopted-projection-v1.json`：`dbIntegrity=ok`、`latestRun=completed`、`completionReason=adopted`、`targetPosition=93`、`stageCount=4`、`receiptCount=2`；`governorContract.productionStage=draft+qa`，`rawPromptOrBodyStoredInProjection=false`，敏感 key 计数 `api_key=0 / authorization=0 / bearer=0`。
+- Standard Draft Receipt：`open.bigmodel.cn-v4 / GLM-5.3-Flash`，Thinking `enabled`，Frozen/wire `reasoningEffort=high/high`、support `supported`，provider ceiling `131072`，`wireMaxTokens=24020`；usage `input/output/reasoning/visible=39843/14448/12452/1996`，`finishReason=stop`、`outcome=succeeded`、physical `1`、`failurePhase=null`；Governor `ACTIVE / productionReady=true`、`exact_provider_model`、profile samples `18`。
+- Standard QA Receipt：同一真实 provider/model，Thinking `enabled`，Frozen/wire `reasoningEffort=high/high`、support `supported`，provider ceiling `131072`，`wireMaxTokens=22807`；usage `23721/1466/1436/30`，`finishReason=stop`、`outcome=succeeded`、physical `1`、`failurePhase=null`；Governor `ACTIVE / productionReady=true`、`exact_provider_model`、profile samples `14`。Revision 在 Clean run 正式跳过，FinalValidate 成功。
+- 产品进程 `com.shinewriter` 的 PID 过滤 logcat 为 `328` 行，`FATAL EXCEPTION / ANR / process death=0`；本 build 不输出 Governor/Receipt payload，业务字段以同一 run 的脱敏 stable projection 为准。UI/XML/PNG、DB、Receipt、logcat 摘要集中在 `test-logs/phase3-c7-timeout-failure-20260830-000001/`。
+
+#### ACT / P0 / Required Gate
+
+- C7 分类结论已由 Red contract、真实失败 Receipt 和真实 Standard Clean 共同锁定：queue 是取消/未 dispatch 边界；provider 是已收到 provider-body error；network 仅用于未跨 request-sent 的连接失败；HTTP 是非 2xx；generation 是可见的 length/content-filter/空输出生成边界；parse 是收到响应但 JSON/业务响应未完成解析；persist 是物理调用成功后的本地落盘失败；无法证明是否执行的 post-send network/timeout 为 outcome_unknown。`requestMayHaveExecuted`、physical paid calls、failurePhase 与 Receipt 一起保存；unknown 永不自动重发，network/provider/http/parse/persist/unknown 不污染 Governor。
+- Thinking Always On；Pipeline 仍为单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；Mandatory Truth 未裁掉；没有固定业务 `maxTokens`；`finishReason=length` 继续 fail-closed；Governor 未增加 LLM 调用；所有真实 physical calls 均在 Receipt/DB/UI 计账；Generic Prior 未接管 Production。
+- C7 没有把 `570 → 900 → 1200` 当修复，也没有 Streaming Spike；C6 与本轮 Standard Clean 已证明现有非流式请求在 watchdog 内可完成，暂无区分长 reasoning/generation/gateway hang 的真实需求。
+- C7 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → `install-r` → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部 PASS。故 C7 正式 `GO`，下一阶段为 `C8 — Durable Resume`；本节不写 `PHASE III-C FINAL SEALED / GO`。

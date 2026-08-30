@@ -110,6 +110,7 @@ const safeReceiptFields = [
   'finishReason',
   'emptyReason',
   'failureClass',
+  'failurePhase',
   'requestMayHaveExecuted',
   'physicalRequestCount',
   'protocolFallbackCount',

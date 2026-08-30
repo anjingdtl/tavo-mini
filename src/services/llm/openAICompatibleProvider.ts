@@ -6,6 +6,7 @@ import {
 import type { LLMProvider } from '../../types/llmProvider';
 import type {
   ChatMessage,
+  LLMFailurePhase,
   LLMGenerateOptions,
   LLMOutputBudgetTrace,
   LLMRequestConfig,
@@ -16,9 +17,11 @@ import type {
 import {
   scheduleLLMRequest,
   getLLMTaskQueueDefaults,
+  LLMQueueError,
 } from './requestScheduler';
 import {
   createLLMTimeoutController,
+  LLMRequestError,
   resolveLLMTimeoutPolicy,
   toLLMRequestError,
 } from './requestPolicy';
@@ -170,6 +173,7 @@ export function formatLLMError(
   status?: number;
   retryAfterMs?: number;
   providerRequestId?: string;
+  failurePhase?: 'provider' | 'http';
 } {
   let code = `HTTP_${status}`;
   let message = responseText.slice(0, 300);
@@ -210,9 +214,11 @@ export function formatLLMError(
     status?: number;
     retryAfterMs?: number;
     providerRequestId?: string;
+    failurePhase?: 'provider' | 'http';
   };
   formatted.code = code;
   formatted.status = status;
+  formatted.failurePhase = status === 200 ? 'provider' : 'http';
   if (retryAfterMs !== undefined) formatted.retryAfterMs = retryAfterMs;
   if (providerRequestId) formatted.providerRequestId = providerRequestId;
   return formatted;
@@ -582,6 +588,12 @@ export const openAICompatibleProvider: LLMProvider = {
               responseReceivedAt,
               parseCompletedAt,
             });
+            const failurePhase: LLMFailurePhase | null =
+              finishReason === 'length' || finishReason === 'content_filter'
+                ? 'generation'
+                : !text
+                  ? 'parse'
+                  : null;
             return {
               text,
               reasoningText,
@@ -601,25 +613,33 @@ export const openAICompatibleProvider: LLMProvider = {
               reasoningEffortWire,
               reasoningEffortSupport:
                 providerCapability.supportsReasoningEffort,
+              failurePhase,
             };
           } catch (error: any) {
-            if (responseReceivedAt !== undefined && parseCompletedAt === undefined) {
+            const parseFailed =
+              responseReceivedAt !== undefined && parseCompletedAt === undefined;
+            if (parseFailed) {
               parseCompletedAt = Date.now();
             }
+            const failureMetrics = buildProviderRequestMetrics({
+              base: timeoutController.metrics,
+              queuedAt,
+              dispatchStartedAt,
+              requestSentAt,
+              responseReceivedAt,
+              parseCompletedAt,
+            });
             const normalized = toLLMRequestError(
               error,
               timeoutController,
               'API 请求失败，请检查网络或服务商状态。',
+              {
+                metrics: failureMetrics,
+                phaseHint: parseFailed ? 'parse' : undefined,
+              },
             );
             Object.assign(normalized, {
-              metrics: buildProviderRequestMetrics({
-                base: timeoutController.metrics,
-                queuedAt,
-                dispatchStartedAt,
-                requestSentAt,
-                responseReceivedAt,
-                parseCompletedAt,
-              }),
+              metrics: failureMetrics,
               outputBudget: outputBudgetTrace,
               providerRequestId:
                 normalized.providerRequestId || providerRequestId || undefined,
@@ -669,6 +689,13 @@ export const openAICompatibleProvider: LLMProvider = {
         llmConfigId,
         llmConfigName,
       });
+      if (error instanceof LLMQueueError) {
+        throw new LLMRequestError(error.message, error.code, error, {
+          failureClass: 'fatal',
+          failurePhase: 'queue',
+          requestMayHaveExecuted: false,
+        });
+      }
       throw error;
     }
   },

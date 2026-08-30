@@ -1,4 +1,5 @@
 import type {
+  LLMFailurePhase,
   LLMOutputBudgetTrace,
   LLMProviderType,
   LLMRequestMetrics,
@@ -39,6 +40,7 @@ export type LLMFailureClass =
 
 export interface LLMFailureMetadata {
   failureClass: LLMFailureClass;
+  failurePhase?: LLMFailurePhase;
   httpStatus?: number;
   providerCode?: string;
   retryAfterMs?: number;
@@ -46,6 +48,97 @@ export interface LLMFailureMetadata {
   requestMayHaveExecuted: boolean;
   metrics?: LLMRequestMetrics;
   outputBudget?: LLMOutputBudgetTrace;
+}
+
+function isFailurePhase(value: unknown): value is LLMFailurePhase {
+  return [
+    'queue',
+    'provider',
+    'network',
+    'http',
+    'generation',
+    'parse',
+    'persist',
+    'outcome_unknown',
+  ].includes(String(value));
+}
+
+/**
+ * Resolve the request-boundary phase independently from retry/billing class.
+ * This is deliberately evidence based: a request that crossed `requestSentAt`
+ * is never downgraded to a safe pre-send network failure.
+ */
+export function classifyLLMFailurePhase(params: {
+  code?: string | null;
+  httpStatus?: number | null;
+  message?: string | null;
+  failureClass?: LLMFailureClass | string | null;
+  metrics?:
+    | Pick<
+        LLMRequestMetrics,
+        | 'queuedAt'
+        | 'dispatchStartedAt'
+        | 'requestSentAt'
+        | 'responseReceivedAt'
+        | 'parseCompletedAt'
+      >
+    | null;
+  phaseHint?: LLMFailurePhase | null;
+}): LLMFailurePhase {
+  if (isFailurePhase(params.phaseHint)) return params.phaseHint;
+
+  const code = String(params.code || '').toLowerCase();
+  const message = String(params.message || '').toLowerCase();
+  const status = Number(params.httpStatus) || 0;
+  const metrics = params.metrics;
+
+  if (String(params.failureClass || '').toLowerCase() === 'outcome_unknown') {
+    return 'outcome_unknown';
+  }
+
+  if (
+    metrics?.dispatchStartedAt == null &&
+    (metrics?.queuedAt != null || code === 'cancelled')
+  ) {
+    return 'queue';
+  }
+
+  // A non-2xx response is an observed HTTP boundary. A 200 provider-body
+  // error is marked with phaseHint by formatLLMError and handled as provider.
+  if (status > 0 && status !== 200) return 'http';
+  if (status === 200 && code === 'provider_error') return 'provider';
+
+  // A response was received but parsing/normalisation did not complete.
+  if (
+    metrics?.responseReceivedAt != null &&
+    metrics.parseCompletedAt == null
+  ) {
+    return 'parse';
+  }
+
+  // Client watchdog expiry after dispatch is deliberately conservative. The
+  // provider may have accepted the request even if no response was observed.
+  if (code === 'total_timeout' || code === 'idle_timeout') {
+    return 'outcome_unknown';
+  }
+
+  if (
+    code === 'network_error' ||
+    code === 'connect_timeout' ||
+    message.includes('network') ||
+    message.includes('fetch failed')
+  ) {
+    return metrics?.requestSentAt != null ? 'outcome_unknown' : 'network';
+  }
+
+  if (
+    metrics?.dispatchStartedAt == null &&
+    (metrics?.queuedAt != null || code === 'cancelled')
+  ) {
+    return 'queue';
+  }
+
+  return 'provider';
 }
 
 export interface LLMTimeoutPolicy {
@@ -77,6 +170,7 @@ export class LLMRequestError extends Error {
   readonly code: LLMErrorCode | string;
   readonly cause?: unknown;
   readonly failureClass: LLMFailureClass;
+  readonly failurePhase: LLMFailurePhase;
   readonly httpStatus?: number;
   readonly providerCode?: string;
   readonly retryAfterMs?: number;
@@ -96,6 +190,13 @@ export class LLMRequestError extends Error {
     this.code = code;
     this.cause = cause;
     this.failureClass = metadata?.failureClass ?? 'fatal';
+    this.failurePhase =
+      metadata?.failurePhase ??
+      classifyLLMFailurePhase({
+        code,
+        failureClass: this.failureClass,
+        metrics: metadata?.metrics,
+      });
     this.httpStatus = metadata?.httpStatus;
     this.providerCode = metadata?.providerCode;
     this.retryAfterMs = metadata?.retryAfterMs;
@@ -330,7 +431,17 @@ export function toLLMRequestError(
   error: any,
   timeoutController: LLMTimeoutController,
   fallbackMessage: string,
+  context?: {
+    metrics?: LLMRequestMetrics | null;
+    phaseHint?: LLMFailurePhase | null;
+  },
 ): LLMRequestError {
+  if (error instanceof LLMRequestError) return error;
+  const metrics = context?.metrics ?? null;
+  const errorPhase = isFailurePhase(error?.failurePhase)
+    ? error.failurePhase
+    : undefined;
+  const phaseHint = context?.phaseHint ?? errorPhase;
   const timeoutCode = timeoutController.getAbortCode();
   if (timeoutCode) {
     const messages: Record<string, string> = {
@@ -346,25 +457,38 @@ export function toLLMRequestError(
     // Phase 3 classification: connect_timeout happens before the request is
     // sent (safe retry); total/idle timeout means the request MAY have
     // executed server-side (outcome_unknown — never auto-retry blindly).
-    const mayHaveExecuted = timeoutCode !== 'connect_timeout';
+    const failurePhase = classifyLLMFailurePhase({
+      code: timeoutCode,
+      metrics,
+      phaseHint,
+    });
+    const mayHaveExecuted =
+      failurePhase === 'outcome_unknown' || timeoutCode !== 'connect_timeout';
     return new LLMRequestError(
       messages[timeoutCode] || fallbackMessage,
       timeoutCode,
       undefined,
       {
-        failureClass:
-          timeoutCode === 'connect_timeout' ? 'safe_retry' : 'outcome_unknown',
+        failureClass: mayHaveExecuted ? 'outcome_unknown' : 'safe_retry',
+        failurePhase,
         requestMayHaveExecuted: mayHaveExecuted,
+        metrics: metrics ?? undefined,
       },
     );
   }
   if (error?.code === 'cancelled' || error?.name === 'AbortError') {
+    const failurePhase = classifyLLMFailurePhase({
+      code: 'cancelled',
+      metrics,
+      phaseHint,
+    });
     return new LLMRequestError('已取消', 'cancelled', error, {
       failureClass: 'fatal',
+      failurePhase,
       requestMayHaveExecuted: false,
+      metrics: metrics ?? undefined,
     });
   }
-  if (error?.code === 'provider_error') return error;
   if (error?.status || String(error?.code || '').startsWith('HTTP_')) {
     const httpStatus = Number(error?.status) || undefined;
     const metadata: Partial<LLMFailureMetadata> = {
@@ -380,6 +504,14 @@ export function toLLMRequestError(
         httpStatus,
         message: error?.message,
       }),
+      failurePhase: classifyLLMFailurePhase({
+        code: error?.code,
+        httpStatus,
+        message: error?.message,
+        metrics,
+        phaseHint,
+      }),
+      metrics: metrics ?? undefined,
     };
     return new LLMRequestError(
       error.message || fallbackMessage,
@@ -394,25 +526,61 @@ export function toLLMRequestError(
       .toLowerCase()
       .includes('network')
   ) {
+    const failurePhase =
+      metrics == null
+        ? 'outcome_unknown'
+        : classifyLLMFailurePhase({
+            code: 'network_error',
+            message: error?.message,
+            metrics,
+            phaseHint,
+          });
+    const mayHaveExecuted = failurePhase === 'outcome_unknown';
     return new LLMRequestError(
       error?.message || '网络请求失败，请检查网络连接。',
       'network_error',
       error,
       {
-        // After the request is sent, a network failure may still have
-        // executed server-side.
-        failureClass: 'outcome_unknown',
-        requestMayHaveExecuted: true,
+        // A network failure is retry-safe only when the request boundary
+        // proves that no HTTP request was sent.
+        failureClass: mayHaveExecuted ? 'outcome_unknown' : 'safe_retry',
+        failurePhase,
+        requestMayHaveExecuted: mayHaveExecuted,
+        metrics: metrics ?? undefined,
       },
     );
   }
+  if (
+    metrics?.responseReceivedAt != null &&
+    metrics.parseCompletedAt == null
+  ) {
+    return new LLMRequestError(
+      error?.message || fallbackMessage,
+      'provider_error',
+      error,
+      {
+        failureClass: 'response_invalid',
+        failurePhase: 'parse',
+        requestMayHaveExecuted: true,
+        metrics,
+      },
+    );
+  }
+  const failurePhase = classifyLLMFailurePhase({
+    code: error?.code,
+    message: error?.message,
+    metrics,
+    phaseHint,
+  });
   return new LLMRequestError(
     error?.message || fallbackMessage,
     'provider_error',
     error,
     {
       failureClass: 'fatal',
+      failurePhase,
       requestMayHaveExecuted: true,
+      metrics: metrics ?? undefined,
     },
   );
 }

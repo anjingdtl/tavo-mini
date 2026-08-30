@@ -9,7 +9,7 @@
 import { sha256Hex } from '../../continuation/hashUtils';
 import { estimateMessagesTokens, estimateTokens } from '../../../utils/tokenEstimator';
 import { estimateTargetChapterTokens } from '../scenario/continuationStageCapacity';
-import type { ChatMessage } from '../../llm/types';
+import type { ChatMessage, LLMFailurePhase } from '../../llm/types';
 import {
   resolveWritingGovernorBootstrapPrior,
   type BootstrapPriorMatch,
@@ -214,6 +214,7 @@ export interface WritingGovernorObservation {
   latencyMs: number | null;
   businessResultValid: boolean;
   failureClass?: string | null;
+  failurePhase?: LLMFailurePhase | null;
 }
 
 function nonNegative(value: unknown, fallback = 0): number {
@@ -992,12 +993,31 @@ function isNonLearnableFailure(failureClass: string): boolean {
   );
 }
 
+function isNonLearnableFailurePhase(failurePhase: unknown): boolean {
+  return [
+    'queue',
+    'provider',
+    'network',
+    'http',
+    'parse',
+    'persist',
+    'outcome_unknown',
+  ].includes(String(failurePhase || '').trim().toLowerCase());
+}
+
 function finishReasonOf(observation: WritingGovernorObservation): string {
   return String(observation.finishReason || '').trim().toLowerCase();
 }
 
 function isKnownResult(observation: WritingGovernorObservation): boolean {
   if (isNonLearnableFailure(normalizedFailureClass(observation.failureClass))) {
+    return false;
+  }
+  if (isNonLearnableFailurePhase(observation.failurePhase)) return false;
+  if (
+    observation.failurePhase === 'generation' &&
+    finishReasonOf(observation) !== 'length'
+  ) {
     return false;
   }
   const finishReason = finishReasonOf(observation);
@@ -1015,6 +1035,8 @@ function completeStopObservation(
   observation: WritingGovernorObservation,
 ): boolean {
   return (
+    !isNonLearnableFailurePhase(observation.failurePhase) &&
+    observation.failurePhase !== 'generation' &&
     finishReasonOf(observation) === 'stop' &&
     observation.businessResultValid === true &&
     observation.actualCompletionUsage != null &&

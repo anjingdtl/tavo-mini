@@ -2,10 +2,12 @@
  * THE one Shared Writer Core. Every post-Freeze prose stage goes through here.
  */
 import type {
+  LLMFailurePhase,
   LLMRequestConfig,
   LLMRequestMetrics,
   LLMResult,
 } from '../../llm/types';
+import type { LLMFailureClass } from '../../llm/requestPolicy';
 import { resolveProviderOutputBudget } from '../../llm/providerCapabilities';
 import {
   selectStructuredCandidate,
@@ -261,7 +263,7 @@ export function buildSharedWriterFailureDiagnostics(input: {
   stage: SharedWritingStageName;
   result?: Partial<Pick<LLMResult, 'text' | 'reasoningText' | 'inputTokens' |
     'outputTokens' | 'totalTokens' | 'reasoningTokens' | 'visibleOutputTokens' |
-    'finishReason' | 'emptyReason'>>;
+    'finishReason' | 'emptyReason' | 'failurePhase'>>;
   adoptedText?: string | null;
   parsed?: SharedWritingArtifact | null;
   error?: unknown;
@@ -350,6 +352,37 @@ function annotateWriterFailure(
 ): Error & { writerDiagnostics: SharedWriterFailureDiagnostics } {
   const next =
     error instanceof Error ? error : new Error(String(error || 'writer failed'));
+  const errorRecord = next as Error & {
+    code?: string;
+    failureClass?: string | null;
+    failurePhase?: LLMFailurePhase | null;
+    requestMayHaveExecuted?: boolean | null;
+  };
+  const errorCode = String(errorRecord.code || '').toUpperCase();
+  const inferredPhase =
+    errorRecord.failurePhase ||
+    input.result?.failurePhase ||
+    (errorCode.includes('TRUNCATED') ? 'generation' : undefined) ||
+    (errorCode.includes('INVALID') || errorCode.includes('EMPTY')
+      ? 'parse'
+      : undefined);
+  if (inferredPhase) {
+    const fallbackFailureClass =
+      inferredPhase === 'outcome_unknown'
+        ? 'outcome_unknown'
+        : inferredPhase === 'network'
+          ? 'safe_retry'
+          : inferredPhase === 'parse' || inferredPhase === 'generation'
+            ? 'response_invalid'
+            : 'fatal';
+    Object.assign(errorRecord, {
+      failurePhase: inferredPhase,
+      failureClass: errorRecord.failureClass || fallbackFailureClass,
+      requestMayHaveExecuted:
+        errorRecord.requestMayHaveExecuted ??
+        (inferredPhase !== 'queue' && inferredPhase !== 'network'),
+    });
+  }
   const existing = (next as Error & {
     writerDiagnostics?: SharedWriterFailureDiagnostics;
   }).writerDiagnostics;
@@ -963,8 +996,9 @@ async function invokePhysicalWriterCall<T>(input: {
         rawUsage?: LLMResult['rawUsage'];
         metrics?: LLMRequestMetrics;
         outputBudget?: LLMResult['outputBudget'];
-        providerRequestId?: string | null;
-      },
+         providerRequestId?: string | null;
+         failurePhase?: LLMFailurePhase | null;
+       },
       'succeeded',
       input.stageInput,
     );
@@ -981,8 +1015,9 @@ async function invokePhysicalWriterCall<T>(input: {
         requestMayHaveExecuted?: boolean | null;
         providerRequestId?: string | null;
         metrics?: LLMRequestMetrics;
-        outputBudget?: LLMResult['outputBudget'];
-      },
+         outputBudget?: LLMResult['outputBudget'];
+         failurePhase?: LLMFailurePhase | null;
+       },
       aborted ? 'cancelled' : 'failed',
       input.stageInput,
     );
@@ -997,6 +1032,28 @@ function annotateWriterReceipts(
 ): Error {
   const next =
     error instanceof Error ? error : new Error(String(error || 'writer failed'));
+  const record = next as Error & {
+    failureClass?: string | null;
+    failurePhase?: LLMFailurePhase | null;
+    requestMayHaveExecuted?: boolean | null;
+  };
+  if (record.failurePhase && receipts.length > 0) {
+    const current = receipts[receipts.length - 1];
+    const fallbackFailureClass: LLMFailureClass =
+      normalizeFailureClass(record.failureClass) ||
+      (record.failurePhase === 'outcome_unknown'
+        ? 'outcome_unknown'
+        : record.failurePhase === 'parse' || record.failurePhase === 'generation'
+          ? 'response_invalid'
+          : 'fatal');
+    receipts[receipts.length - 1] = completeWritingRequestReceipt(current, {
+      outcome: current.outcome,
+      failureClass: current.failureClass || fallbackFailureClass,
+      failurePhase: record.failurePhase,
+      requestMayHaveExecuted:
+        current.requestMayHaveExecuted ?? record.requestMayHaveExecuted ?? true,
+    });
+  }
   Object.assign(next, { requestReceipts: receipts });
   return next;
 }
@@ -1015,6 +1072,7 @@ function finishRequestReceipt(
     metrics?: LLMRequestMetrics;
     outputBudget?: LLMResult['outputBudget'];
     providerRequestId?: string | null;
+    failurePhase?: LLMFailurePhase | null;
     failureClass?: string | null;
     requestMayHaveExecuted?: boolean | null;
     emptyReason?: string | null;
@@ -1039,6 +1097,7 @@ function finishRequestReceipt(
     finishReason: result.finishReason ?? null,
     emptyReason: result.emptyReason ?? null,
     failureClass,
+    failurePhase: result.failurePhase ?? null,
     requestMayHaveExecuted:
       result.requestMayHaveExecuted ??
       (outcome === 'succeeded' ? false : true),
@@ -1057,6 +1116,7 @@ function finishRequestReceipt(
             latencyMs: result.metrics?.totalMs ?? null,
             businessResultValid: false,
             failureClass,
+            failurePhase: result.failurePhase ?? null,
           },
           getWritingGovernorProfileStore(),
         )
@@ -1182,6 +1242,30 @@ async function persistWriterArtifact(
   const startedAt = Date.now();
   try {
     await stageInput.persistAdapter?.persistStageArtifact(stage, artifact);
+  } catch (error) {
+    // The provider result is already known, but the durable artifact is not.
+    // Keep that distinction explicit so recovery cannot mistake a persist
+    // failure for a transport outcome_unknown or silently learn from it.
+    for (let index = 0; index < receipts.length; index += 1) {
+      const current = receipts[index];
+      const updated = completeWritingRequestReceipt(current, {
+        outcome: current.outcome,
+        failureClass: current.failureClass || 'fatal',
+        failurePhase: 'persist',
+        requestMayHaveExecuted: current.requestMayHaveExecuted,
+      });
+      receipts[index] = updated;
+      recordWritingRequestReceipt(stageInput.trace, updated);
+    }
+    const persistError =
+      error instanceof Error ? error : new Error(String(error || 'persist failed'));
+    Object.assign(persistError, {
+      failureClass: 'fatal',
+      failurePhase: 'persist',
+      requestMayHaveExecuted: false,
+      requestReceipts: receipts,
+    });
+    throw persistError;
   } finally {
     const completedAt = Date.now();
     const measuredPersistMs = stageInput.persistAdapter
@@ -1349,7 +1433,12 @@ function assertWriterFinishReason(
   if (String(result?.finishReason || '').toLowerCase() !== 'length') return;
   throw Object.assign(
     new Error(`${stage} 输出以 finishReason=length 截断，拒绝持久化`),
-    { code: 'SHARED_WRITER_TRUNCATED_OUTPUT' },
+    {
+      code: 'SHARED_WRITER_TRUNCATED_OUTPUT',
+      failureClass: 'response_invalid',
+      failurePhase: 'generation',
+      requestMayHaveExecuted: true,
+    },
   );
 }
 
@@ -1472,6 +1561,9 @@ function emptyWriterError(
     : `${stage} 未返回正文（${reason}）`;
   return Object.assign(new Error(message), {
     code: 'SHARED_WRITER_EMPTY_OUTPUT',
+    failureClass: 'response_invalid',
+    failurePhase: 'parse',
+    requestMayHaveExecuted: true,
   });
 }
 
