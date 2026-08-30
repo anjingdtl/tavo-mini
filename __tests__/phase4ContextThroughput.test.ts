@@ -13,6 +13,7 @@ function source(
   kind: WritingSource['kind'],
   content: string,
   requirement: WritingSource['requirement'],
+  activation: WritingSource['activation'] = 'explicit',
 ): WritingSource {
   return {
     candidateId,
@@ -22,7 +23,7 @@ function source(
     content,
     contentHash: sha256Hex(content),
     requirement,
-    activation: 'explicit',
+    activation,
   };
 }
 
@@ -95,7 +96,7 @@ describe('Phase IV-4 Context throughput contract', () => {
     const materials = [
       { source: source('canon-1', 'canon', 'Mandatory Canon 真相', 'mandatory'), sourceOrder: 0, demandTokens: 10 },
       { source: source('style-1', 'writer_style', 'Preferred style', 'preferred'), sourceOrder: 1, demandTokens: 10 },
-      { source: source('note-1', 'note', 'Unrelated optional note', 'optional'), sourceOrder: 2, demandTokens: 10 },
+      { source: source('note-1', 'note', 'Unrelated optional note', 'optional', 'automatic'), sourceOrder: 2, demandTokens: 10 },
     ];
     const projection = projectFrozenContextForStage({
       frozenContext: context(materials),
@@ -133,7 +134,7 @@ describe('Phase IV-4 Context throughput contract', () => {
       frozenContext: context([
         { source: source('canon-1', 'canon', 'Mandatory Canon', 'mandatory'), sourceOrder: 0, demandTokens: 10 },
         { source: source('style-1', 'writer_style', 'Preferred style', 'preferred'), sourceOrder: 1, demandTokens: 10 },
-        { source: source('note-1', 'note', 'Dropped note', 'optional'), sourceOrder: 2, demandTokens: 10 },
+        { source: source('note-1', 'note', 'Dropped note', 'optional', 'automatic'), sourceOrder: 2, demandTokens: 10 },
       ]),
       compiled: {
         messages: [{ role: 'user', content: 'qa' }],

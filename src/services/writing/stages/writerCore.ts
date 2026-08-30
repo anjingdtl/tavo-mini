@@ -598,7 +598,15 @@ export async function executeSharedWriterStage(input: {
     durationMs: Date.now() - primaryStartedAt,
   });
   try {
-    assertWriterFinishReason(stage, primary);
+    if (
+      !isPhase4QaLengthAdvisory({
+        stage,
+        stagePolicyValues: stageInput.stagePolicy.values,
+        finishReason: primary.finishReason,
+      })
+    ) {
+      assertWriterFinishReason(stage, primary);
+    }
   } catch (error) {
     throw annotateWriterReceipts(
       annotateWriterFailure(error, {
@@ -1325,9 +1333,11 @@ function finalizeWriterArtifact(
   result?: Partial<LLMResult>,
 ): SharedWritingArtifact {
   const phase4 = isPhase4GatePolicy(stageInput.stagePolicy.values);
-  const qaLengthAdvisory =
-    phase4 && stage === 'qa' &&
-    String(result?.finishReason || '').toLowerCase() === 'length';
+  const qaLengthAdvisory = isPhase4QaLengthAdvisory({
+    stage,
+    stagePolicyValues: stageInput.stagePolicy.values,
+    finishReason: result?.finishReason,
+  });
   if (!qaLengthAdvisory) assertWriterFinishReason(stage, result);
   const artifact = parseSharedWriterOutput(stage, text);
   if (qaLengthAdvisory) {
@@ -1471,6 +1481,25 @@ function finalizeWriterArtifact(
   }
   assertStructuredReport(stage, artifact);
   return artifact;
+}
+
+/**
+ * Phase IV pre-seal correction: a length-truncated ONE-QA stays Advisory on
+ * EVERY physical-call path (primary, formatter, finalize).  Only the QA
+ * stage under the Phase IV gate policy qualifies; Draft/Revision truncation
+ * still hard-fails.  Must be evaluated BEFORE assertWriterFinishReason so
+ * the advisory artifact (qa_truncated_advisory) is reachable at all.
+ */
+export function isPhase4QaLengthAdvisory(input: {
+  stage: SharedWritingStageName;
+  stagePolicyValues?: Record<string, unknown> | null | undefined;
+  finishReason?: string | null;
+}): boolean {
+  return (
+    input.stage === 'qa' &&
+    isPhase4GatePolicy(input.stagePolicyValues) &&
+    String(input.finishReason || '').toLowerCase() === 'length'
+  );
 }
 
 function assertWriterFinishReason(

@@ -247,8 +247,17 @@ function projectPhase4ElasticContext(input: {
     const block = item.included
       ? extractRenderedBlock(input.fullText, source.kind, item.candidateId)
       : '';
+    // Phase IV pre-seal correction: relevance/value decides retention, never
+    // kind alone.  Mandatory is always kept; a user-explicit or preferred
+    // source stays even when its kind is not stage-allowlisted; only
+    // low-relevance automatic Optional sources are trimmed first.  This is
+    // still the same single frozen-context subset (no second builder).
+    const valueEscapesKindFilter =
+      source.activation === 'explicit' || requirement === 'preferred';
     const shouldInclude = Boolean(block) &&
-      (requirement === 'mandatory' || allow.has(source.kind));
+      (requirement === 'mandatory' ||
+        allow.has(source.kind) ||
+        valueEscapesKindFilter);
 
     if (shouldInclude) {
       blocks.push(block);

@@ -94,3 +94,16 @@ Freeze → Draft → ONE QA → (optional Revision) → local Persistence Bounda
 4. 只有 First-Pass、A/B、Context/length/unknown、DB/Receipt、Resume、无 hidden retry、Governor=0 全部满足时，才允许把最终状态改成 GO。
 
 当前最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`
+
+## 2026-08-30 凭据恢复后真实运行补充（Pre-Seal Correction 轮）
+
+- 开工基线 `HEAD == origin/main == 945cd292`；`git fetch` 后无新远端提交；用户未跟踪文件全部保留。
+- UI `保存并测试` 通过（GLM-5.3-Flash），401 blocker 解除。同代码 debug 签名 `adb install -r`（release 签名与在装包不兼容且禁止 uninstall），firstInstallTime 不变、数据零丢失。
+- **Pre-Seal Correction（Red-first，`__tests__/phase4PreSealCorrection.test.ts`，9 tests）**：
+  1. QA `finishReason=length`/合同无效保持 Advisory；Revision skip 记显式 `policy.phase4.qa_incomplete_not_clean`——Mandatory/Canon/State Safety 未决时禁止静默当 Clean。真实运行复现并修复了 `writerCore` primary 调用路径上无条件 `assertWriterFinishReason` 的缺口（`isPhase4QaLengthAdvisory`），生产链路验证：QA 截断→skipped（非 Clean）→Revision 零额外调用→章节正常 adopted。
+  2. Context：Mandatory 全留；`explicit`/`preferred` 高价值 Optional 不再仅因 kind 被裁；低相关 automatic Optional 先裁。无第二 Context Builder。
+  3. Governor 旁路保持：`phase4GovernorBypass.test.ts` 原样通过，Governor physical call=0。
+- 验证链：targeted → typecheck → `lint --quiet`（0 errors）→ `verify:elastic` → full verify（532 suites passed / 3 skipped；3760 tests passed / 8 skipped）→ APK → `adb install -r`。
+- **5 章连续（真实）**：4/5 adopted（3 clean first-pass；First-Pass Adoptable 3/5）；第 5 章 Draft 提供端连续 5 次 570s 停摆。physical calls 2–3/章；无 crash/ANR；Receipt/DB/UI/logcat 齐全（`test-logs/phase4-preseal-20260830-1650/`）。
+- **10 章连续（真实）**：第 1 章 Draft 连续 4 次 570s 停摆（含冷重启 C8 Resume），0/10；停止重试避免无效 paid 调用。
+- **最终判定维持 `PHASE IV FINAL SEAL HOLD / NO-GO`**：401 已解除，新 blocker 是提供端对边界首章 Draft 的持续停摆（外部依赖）。全部 Required Gate 真实 PASS 之前，不得写 `PHASE IV FINAL SEALED / GO`。

@@ -3,7 +3,7 @@
 日期：2026-08-30（Asia/Shanghai）
 唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
 开工时 `HEAD == origin/main == 64b88580c134f67e3fb73d1951ef6bc972da5552`。
-最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`
+最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`（2026-08-30 凭据恢复后真实运行更新：401 blocker 已解除，新 blocker 为提供端对边界首章 Draft 的持续停摆）
 
 ## 结论
 
@@ -15,9 +15,9 @@ Phase IV 的主链减法、协议瘦身、Governor 旁路、Context 弹性化、
 
 | Required Gate | 结果 | 证据与边界 |
 | --- | --- | --- |
-| 当前版本真实 Android 5 章连续运行 | HOLD | `test-logs/phase4-iv7-20260830-155254/iv7-check-b.md`；UI 真实连接为 HTTP 401，未形成 paid 分母 |
-| 当前版本真实 Android 10 章连续运行 | HOLD | 同上；没有在 credential 失效时强行发起批量付费任务 |
-| E2E First-Pass Adoptable Rate 可与历史 A/B 比较 | HOLD | `docs/optimization/phase4-historical-ab.md`；比较器对缺失 current sample fail-closed |
+| 当前版本真实 Android 5 章连续运行 | **部分真实样本 / NO-GO（未满分母）** | `test-logs/phase4-preseal-20260830-1650/`：4/5 章 adopted（3 章 clean first-pass），第 5 章 Draft 提供端连续 5 次 570s 停摆；QA 截断→Advisory skipped 已在生产验证 |
+| 当前版本真实 Android 10 章连续运行 | **NO-GO（提供端 blocker）** | 同目录：第 1 章 Draft 连续 4 次 570s 停摆（含冷重启 resume），0/10，停止重试避免无效 paid 调用 |
+| E2E First-Pass Adoptable Rate 可与历史 A/B 比较 | **部分真实 / HOLD** | 5 章批次真实 First-Pass 3/5、Adopted 4/5；分母仍缺 1 章与 10 章完整批次，不可宣称整体提升 |
 | latency / input-output-reasoning / length / unknown / Context block 可比 | HOLD | C9 数值完整保留；当前没有同口径 paid sample |
 | 当前 Receipt / DB / UI / logcat 证据齐全 | HOLD | UI/XML/PNG/logcat 已有；release `run-as` 返回 `package not debuggable`，当前 DB 不能直接拉取 |
 | 其余代码、协议和安全边界 | PASS（确定性/静态/历史证据） | 本文 P0 表、全量 verify 和 IV-0～IV-7 evidence index |

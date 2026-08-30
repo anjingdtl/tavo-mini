@@ -72,6 +72,35 @@ export function hasExecutableRevisionFindings(
   return aggregateStageFindings(artifacts).some(isExecutableRevisionFinding);
 }
 
+/**
+ * Phase IV pre-seal correction.  An incomplete ONE-QA result
+ * (`finishReason=length` truncation or an invalid structured contract) is
+ * Advisory: it never hard-blocks the chapter and never spends an extra LLM
+ * call.  But the Mandatory / Canon / State Safety checks the unified QA was
+ * supposed to cover are then UNRESOLVED, so the revision skip must never be
+ * recorded under the ordinary "QA 无可执行问题" clean rule.
+ */
+export const QA_INCOMPLETE_NOT_CLEAN_RULE_ID =
+  'policy.phase4.qa_incomplete_not_clean' as const;
+
+const QA_INCOMPLETE_DIAGNOSTICS = [
+  'qa_truncated_advisory',
+  'qa_contract_advisory',
+] as const;
+
+export function qaIncompleteAdvisory(
+  artifacts: WritingStageArtifacts,
+): string | null {
+  const value = artifacts.qa;
+  if (!value || typeof value !== 'object') return null;
+  const diagnostics = (value as SharedWritingArtifact).diagnostics;
+  if (!Array.isArray(diagnostics)) return null;
+  for (const diagnostic of QA_INCOMPLETE_DIAGNOSTICS) {
+    if (diagnostics.includes(diagnostic)) return diagnostic;
+  }
+  return null;
+}
+
 function isExecutableRevisionFinding(finding: {
   issue: string;
   severity: string;
@@ -142,6 +171,16 @@ export function evaluateRuntimeStageSkip(input: {
       ? hasExecutableRevisionFindings(input.artifacts)
       : hasExecutableFindings(input.artifacts);
     if (executable) return { skip: false };
+    const incompleteQa = qaIncompleteAdvisory(input.artifacts);
+    if (incompleteQa) {
+      return {
+        skip: true,
+        skipReason:
+          `QA 未完成（${incompleteQa}）：Mandatory / Canon / State Safety 检查未决，` +
+          '结果不得记为 Clean；纯质量检查未完成仅 Advisory，不追加 LLM 调用',
+        policyRuleId: QA_INCOMPLETE_NOT_CLEAN_RULE_ID,
+      };
+    }
     return {
       skip: true,
       skipReason: isCompactPipelineTopology(input.pipelineTopologyVersion)
