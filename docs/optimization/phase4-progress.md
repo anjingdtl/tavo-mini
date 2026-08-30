@@ -119,4 +119,5 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
   - First-Pass Adoptable：3/5（第114/115/116 显示章一次通过；第100显示章第 3 次尝试 adopted，不计 first-pass）；physical calls 2–3/章；Governor physical call=0；无 crash/ANR（crash buffer 空）。
 - **10 章连续批次**（`batch_mtfrwv40_bhx4r5`）：第 1 章 Draft 连续 4 次 570s timeout（含一次完整 App 冷重启后 resume），0/10，未继续烧 paid 调用，结束留证。
 - **判定**：两个连续运行 Required Gate 均无法形成完整分母 → `PHASE IV FINAL SEAL HOLD / NO-GO` 维持；真实 4/5 章样本与生产级修正验证已入账（`test-logs/phase4-preseal-20260830-1650/`）。外部提供端停摆是唯一剩余 blocker；恢复后仅需补"边界首章 Draft"可通过的 provider 环境并重跑 5/10 章，不改架构。
+- **测试报告**：`docs/optimization/phase4-preseal-test-report-20260830.md`（验证链、Red-first 明细、5/10 章逐章运行表、42 次付费调用台账、NO-GO 归因与解封条件）。
 - C9 基线对比（真实样本）：input tokens per adopted chapter 83.5k–135.7k vs C9 p50 38.1k（本批含 3000 字目标与思考强度标准，口径不同，不作降幅宣称）；QA/Revision 合同、Resume、Receipt/DB 完整可审计。
