@@ -829,3 +829,28 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - Call ceiling 全部 PASS：Fast `≤1`、Standard Clean `≤2`、Standard Issue `≤3`；`allWriterBudgetsPass=true`、`governorPhysicalCallsAreZero=true`、`gatePass=true`。C9 统计函数仅做只读内存聚合，不访问 network/LLM、不写 DB、不参与 Governor 决策，未改变既有 Writing Pipeline 拓扑。
 - P0 / Governor ACT：Thinking Always On；仍为单 Writing Pipeline、单共享 Context/Memory 与既有 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；无新增 Agent、第二 Context、Memory、Writer、Formatter 或 Governor LLM 调用；Mandatory Truth 未裁掉；无固定业务 `maxTokens`；动态 `wireMaxTokens` 保持；`finishReason=length` fail-closed；`outcome_unknown` 永不自动重试；所有 Physical Paid Calls 如实计账；Android 仅 `install-r`；Generic Prior 未直接接管 Production。Governor 仍遵守 Safe Warm Start → Evidence-Based Tightening → Healthy Hold → Fast Recovery。
 - C9 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → `install-r` → Android 真实配置 LLM → SQLite/Receipt/UI/logcat → ACT 全部 PASS，故 C9 正式 `GO`，下一阶段为 `C10 — Final Runtime Stability Seal`。本节不写 `PHASE III-C FINAL SEALED / GO`。
+
+### C10 — Final Runtime Stability Seal（2026-08-30，PLAN）
+
+状态：`C10 PLAN / Red pending`。C9 已封存成本、时延、账务和安全观测口径；C10 只验证真实运行稳定性与 Required Gate 闭环，不重复已 GO 阶段，不删除任何旧 NO-GO、`finishReason=length`、`outcome_unknown`、provider/network/parse 失败或环境 HOLD 证据。
+
+#### PLAN / 门禁范围
+
+- 单章真实矩阵必须覆盖 `500 / 1000 / 3000 / 较大章节` × `Fast / Standard / Quality`，并在安全投影中逐格标注真实 Android、已配置真实 LLM、Draft Clean、QA Clean、QA Issue、Revision 的实际覆盖与 fail-closed 结果。历史真实失败只能作为明确的保护证据，不能改写为成功。
+- 连续运行必须有真实 Android、真实已配置 LLM 的 `5章` 与 `10章` 证据；分别核对 Runtime、Profile 稳定、Budget 无震荡、Resume、Physical Calls。C10 不验证 50/100 章长期 Memory。
+- 故障矩阵至少覆盖 Provider 慢、network failure、App kill、`outcome_unknown` 保护；真实 provider 故障不伪造，分类/保护可用最小可逆注入与已有真实证据交叉核验。未知请求必须保持 fail-closed，永不自动重试。
+- SQLite/Profile 只允许 `profileKey / policyVersion / sample counters / reasoning aggregates / counterfactual counters / latency aggregate / recommended scale / trip state / updatedAt` 等标量/聚合字段，禁止 Prompt、Body、BLOB、giant JSON；安全 projection 禁止 credentials 与 raw prompt/body。
+- C10 不新增 Agent、第二 Context、Memory、Writer、Formatter 或 Governor LLM call；不改 Writing Pipeline 拓扑、Thinking、Mandatory Truth、业务 `maxTokens`、Provider ceiling、timeout、Retry、`finishReason=length` fail-closed、`outcome_unknown` 语义或 Android install 规则。Governor 继续遵守 Safe Warm Start → Evidence-Based Tightening → Healthy Hold → Fast Recovery，Generic Prior 未经真实安全证据不得接管 Production。
+
+#### C10 Red / CHECK / GO Gate
+
+- Red 先锁定一份纯证据 manifest validator：12 个矩阵 cell、5/10 连续运行、四类 fault、Profile schema/privacy、真实 Android/LLM/Receipt/DB/UI/logcat 证据不得缺项；实现前必须保留真实失败输出。
+- CHECK-A：C10 validator targeted、Phase3 targeted、typecheck、lint、`verify:elastic`、`verify:version`、完整 `npm.cmd run verify`。CHECK-B：APK build、SHA-256、`adb devices`、仅 `adb install -r`；所有失败追加保存，不覆盖旧证据。
+- GO 必须同时证明：矩阵 12 cell 真实且可解释；5/10 真实连续运行完成或按既定故障策略安全收敛；Profile/预算稳定；故障保护和 Resume 可审计；Writer/Total/Governor 账务无隐藏调用；DB integrity、Receipt、UI、PID logcat 无 crash/ANR。未满足则 C10 NO-GO，保留原因并继续最小 PDCA；本节不提前写 Final Seal。
+
+#### C10 当前执行 checkpoint（2026-08-30，按用户指令暂停）
+
+- C10 PLAN 已写入本文件。Red-first 已执行并保留：`test-logs/phase3-c10-runtime-stability-20260830-000001/c10-red-before-implementation.txt`；实现前因 `phase3C10RuntimeGate` 尚不存在而按预期在 module resolution 处 FAIL，没有产生 network/LLM/DB 副作用。
+- 已完成最小的纯证据 validator：`src/services/writing/observability/phase3C10RuntimeGate.ts`，并由 `src/services/writing/observability/index.ts` 导出；只校验 12-cell 矩阵、5/10 连续证据、四类故障证据、Profile 标量字段与 privacy，不进入 Writer/Governor 决策，不增加任何 LLM 调用或 SQLite 字段。修复后 `__tests__/phase3C10RuntimeStabilityGate.test.ts` targeted 为 `2 tests PASS`。
+- 用户在启动 Android 检查前要求停止继续建设和测试；因此 C10 尚未执行 CHECK-A 全量回归、CHECK-B APK/install-r、新的 Android 真实 LLM run、5/10 真实连续运行、12-cell manifest 对实际证据的最终核验、fault matrix/ACT/GO。这里不把未执行项写成 PASS，也不把本次人工暂停伪装成产品 NO-GO。
+- C10 当前状态保持：`IN PROGRESS / user-directed stop / Android pending`。C9 已正式 GO，最近提交为 `9bd95e77806509e227acb727265b224ac7897953`；本文件不写 `PHASE III-C FINAL SEALED / GO`，Requirement Closure、Final Report 与 Final Seal 均未创建/未宣布。

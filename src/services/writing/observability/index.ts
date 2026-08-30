@@ -40,6 +40,25 @@ export type {
   Phase3C9ReceiptLike,
 } from './phase3C9Metrics';
 export {
+  PHASE3_C10_FAULTS,
+  PHASE3_C10_PROFILES,
+  PHASE3_C10_TARGET_BUCKETS,
+  validatePhase3C10EvidenceManifest,
+} from './phase3C10RuntimeGate';
+export type {
+  Phase3C10ContinuousEvidence,
+  Phase3C10EvidenceManifest,
+  Phase3C10Fault,
+  Phase3C10FaultEvidence,
+  Phase3C10GateResult,
+  Phase3C10MatrixCell,
+  Phase3C10MatrixCoverage,
+  Phase3C10MatrixEvidence,
+  Phase3C10Profile,
+  Phase3C10ProfileSafety,
+  Phase3C10TargetBucket,
+} from './phase3C10RuntimeGate';
+export {
   mergeWritingTokenLedger,
 } from './writingTokenLedger';
 export type {
