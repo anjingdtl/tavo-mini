@@ -138,3 +138,41 @@ export function resolveFinalWritingCandidate(
   }
   return { sourceStage: null, body: '', appliedRequirementIds: [] };
 }
+
+/**
+ * Persistence Boundary resolver. FinalValidate is a local, already-checked
+ * wrapper around the ONE writing candidate, so Persist must consume it when
+ * present and must not rebuild a second priority chain. A present non-skipped
+ * empty FinalValidate remains definitive and therefore fails closed.
+ */
+export function resolvePersistenceBoundaryCandidate(
+  artifacts: WritingStageArtifacts,
+  options?: { mode?: FinalCandidateMode },
+): FinalWritingCandidate {
+  const validated = artifacts.finalValidate;
+  if (validated != null && !isFormalSkip(validated)) {
+    const artifact = artifactOf('finalValidate', validated);
+    const sourceStage = isFinalCandidateSourceStage(artifact.sourceStage)
+      ? artifact.sourceStage
+      : null;
+    return {
+      sourceStage,
+      body: readBody(validated),
+      ...(artifact.structured ? { structured: artifact.structured } : {}),
+      appliedRequirementIds: asStringArray(artifact.appliedRequirementIds),
+      ...(artifact.validNoOpRequirementIds
+        ? { validNoOpRequirementIds: artifact.validNoOpRequirementIds }
+        : {}),
+      ...(artifact.validNoOpReasons
+        ? { validNoOpReasons: artifact.validNoOpReasons }
+        : {}),
+    };
+  }
+  return resolveFinalWritingCandidate(artifacts, options);
+}
+
+function isFinalCandidateSourceStage(
+  value: unknown,
+): value is FinalCandidateSourceStage {
+  return value === 'proof' || value === 'revision' || value === 'draft';
+}

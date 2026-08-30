@@ -19,6 +19,7 @@ export function normalizeWritingMaterials(
   input: CollectedWritingMaterials,
 ): NormalizedWritingMaterials {
   const seen = new Set<string>();
+  const seenContentHashes = new Set<string>();
   const rejectedCandidateIds: string[] = [];
   const candidates = input.candidates
     .map(candidate => {
@@ -49,6 +50,17 @@ export function normalizeWritingMaterials(
         rejectedCandidateIds.push(candidate.source.candidateId);
         return false;
       }
+      // Optional/Preferred material is elastic. Keep the first exact content
+      // once, but never discard Mandatory Truth merely because another source
+      // carries the same bytes.
+      if (
+        candidate.source.requirement !== 'mandatory' &&
+        seenContentHashes.has(candidate.source.contentHash)
+      ) {
+        rejectedCandidateIds.push(candidate.source.candidateId);
+        return false;
+      }
+      seenContentHashes.add(candidate.source.contentHash);
       return true;
     })
     .sort((left, right) => left.source.candidateId.localeCompare(right.source.candidateId));

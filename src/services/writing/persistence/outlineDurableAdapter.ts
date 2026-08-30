@@ -8,6 +8,10 @@ import type {
   WritingDurablePersistAdapter,
   WritingStageArtifacts,
 } from '../contracts/writingStage';
+import {
+  finalCandidateModeForPolicy,
+  resolvePersistenceBoundaryCandidate,
+} from '../stages/finalCandidate';
 
 function pipelineStageName(stage: SharedWritingStageName): string {
   if (stage === 'revision') return 'brief';
@@ -186,9 +190,18 @@ export function createOutlineDurableAdapter(input: {
       }
     },
     async persistFinal(artifacts: WritingStageArtifacts) {
-      const body = readFinalBody(artifacts);
       const store = usePipelineTaskStore.getState();
       const existing = store.tasks.find(item => item.id === input.taskId);
+      const body = resolvePersistenceBoundaryCandidate(artifacts, {
+        mode: finalCandidateModeForPolicy({
+          values: {
+            pipelineTopologyVersion:
+              existing?.pipelineTopologyVersion === 2
+                ? 'compact_standard'
+                : 'legacy_standard',
+          },
+        }),
+      }).body;
       if (!shouldPersistFinalBody(existing?.finalText, body)) return;
       if (store.persistTaskFinalText) {
         await store.persistTaskFinalText(input.taskId, body);
@@ -198,18 +211,6 @@ export function createOutlineDurableAdapter(input: {
       void input.chapter;
     },
   };
-}
-
-function readFinalBody(artifacts: WritingStageArtifacts): string {
-  for (const key of ['finalValidate', 'proof', 'revision', 'draft']) {
-    const value = artifacts[key] as SharedWritingArtifact | string | undefined;
-    if (!value) continue;
-    if (typeof value === 'string' && value.trim()) return value;
-    if (typeof value === 'object' && typeof value.body === 'string' && value.body.trim()) {
-      return value.body;
-    }
-  }
-  return '';
 }
 
 /**

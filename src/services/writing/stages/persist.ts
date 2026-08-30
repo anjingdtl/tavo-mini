@@ -8,18 +8,8 @@ import { preflightSharedStage } from './sharedStage';
 import { resolveStageSkipOrNull, skippedStageResult } from './writerCore';
 import {
   finalCandidateModeForPolicy,
-  resolveFinalWritingCandidate,
+  resolvePersistenceBoundaryCandidate,
 } from './finalCandidate';
-
-function readFinalValidateBody(value: unknown): string {
-  if (!value) return '';
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'object') {
-    const row = value as Record<string, unknown>;
-    if (typeof row.body === 'string' && row.body.trim()) return row.body.trim();
-  }
-  return '';
-}
 
 export async function runPersistStage(
   input: SharedWritingStageInput,
@@ -41,11 +31,9 @@ export async function runPersistStage(
   // The validated Final Candidate is the single source of truth. Persist does
   // NOT re-derive its own proof→revision→draft chain (no dual truth). Under
   // the compact contract this never reads a Proof artifact at all.
-  const candidateBody =
-    readFinalValidateBody(input.artifacts.finalValidate) ||
-    resolveFinalWritingCandidate(input.artifacts, {
-      mode: finalCandidateModeForPolicy(input.stagePolicy),
-    }).body;
+  const candidateBody = resolvePersistenceBoundaryCandidate(input.artifacts, {
+    mode: finalCandidateModeForPolicy(input.stagePolicy),
+  }).body;
   if (!candidateBody.trim()) {
     return {
       stage: 'persist',

@@ -20,6 +20,7 @@ import {
 } from './requirementProjection';
 import { projectFrozenContextForStage } from '../context/stageContextProjection';
 import { isOneShotStagePolicy } from '../contracts/executionProfile';
+import { isPhase4GatePolicy } from '../gates/phase4GatePolicy';
 import { resolveChapterTruthProjection } from '../contracts/chapterTruthProjection';
 import { resolveFrozenStageMaxOutputTokens } from '../../contextAutoAllocator';
 import type { QaEvidenceProjectionResult } from './evidenceQaProjection';
@@ -163,6 +164,21 @@ const QA_STRUCTURED_REPORT_CONTRACT = [
   '不得从普通 content、自然语言或正则猜测、自动补造 severity、target、requirementIds 或 instruction；无法完整表达时必须使用 pass 与 findings=[]。',
 ].join('\n');
 
+const PHASE4_QA_CONTRACT = [
+  '【Phase IV Compact QA 输出契约】只输出一个最小 JSON object。',
+  'clean 只输出 {"decision":"clean"}（可带空 findings=[]）。',
+  '需要修订时输出 {"decision":"revise","findings":[{"type":"...","target":"..."}]}。',
+  'findings 最多 3 条；type 与 target 必须短且可定位。',
+  '禁止 analysis、confidence、evidence、explanation、diagnostics、stateProposal、正文复述和 Markdown 围栏。',
+].join('\n');
+
+const PHASE4_REVISION_CONTRACT = [
+  '【Phase IV Revision 输出契约】只输出一个最小 JSON object。',
+  '必须包含 content，值为完整修订正文；不要输出 strategy、actions、preserve、ending、analysis、confidence 或正文 hash。',
+  '只有正文确实造成必须记录的长期状态变化时，才附带最小 finalStateProposals sidecar；hash/fingerprint/diff/changeset 由客户端本地计算。',
+  '禁止 Markdown 围栏、推理过程和第二次请求。',
+].join('\n');
+
 const PROSE_CONTRACT =
   '【输出契约】直接输出本章完整正文。不要输出标题、分析、JSON 或过程说明。';
 
@@ -187,6 +203,7 @@ export function compileSharedWritingPrompt(
     input.frozenContext,
     input.stage,
   );
+  const phase4 = isPhase4GatePolicy(input.stagePolicy.values);
   const outputContract = isStructuredReportStage(input.stage)
     ? 'json_envelope'
     : input.stage === 'revision'
@@ -229,9 +246,13 @@ export function compileSharedWritingPrompt(
   const truthProjectionBlock = formatChapterTruthProjection(truthProjection);
   const contract =
     input.stage === 'revision'
-      ? REVISION_BRIEF_CONTRACT
+      ? phase4
+        ? PHASE4_REVISION_CONTRACT
+        : REVISION_BRIEF_CONTRACT
       : input.stage === 'qa'
-      ? `${QA_STRUCTURED_REPORT_CONTRACT}\n\n${QA_STATE_PROPOSAL_CONTRACT}`
+      ? phase4
+        ? PHASE4_QA_CONTRACT
+        : `${QA_STRUCTURED_REPORT_CONTRACT}\n\n${QA_STATE_PROPOSAL_CONTRACT}`
       : isStructuredReportStage(input.stage)
       ? STRUCTURED_REPORT_CONTRACT
       : outputContract === 'json_envelope'
@@ -251,8 +272,16 @@ export function compileSharedWritingPrompt(
   ]
     .filter(Boolean)
     .join('\n\n');
+  const systemProtocol =
+    phase4 && input.stage === 'qa'
+      ? [
+          '你是唯一的 Shared QA Editor。',
+          '只判断当前正文是否需要可定位的修订；不要输出文学长评或状态提案。',
+          'clean 使用 decision=clean；需要修订使用 decision=revise。',
+        ].join('\n')
+      : STAGE_PROTOCOL[input.stage];
   const messages: ChatMessage[] = [
-    { role: 'system', content: STAGE_PROTOCOL[input.stage] },
+    { role: 'system', content: systemProtocol },
     { role: 'user', content: user },
   ];
   return {

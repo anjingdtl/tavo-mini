@@ -1354,6 +1354,40 @@ export function completeWritingGovernorShadow(
 }
 
 /**
+ * Phase IV request-boundary decision.  It deliberately ignores learned
+ * Governor recommendations and only clamps the safe runtime baseline to the
+ * provider's mathematical hard ceiling.  A block returned here is a genuine
+ * capability failure, never a Governor readiness/preflight veto.
+ */
+export function resolveWritingGovernorCurrentRequestWire(
+  shadow: Pick<
+    WritingGovernorShadow,
+    'hardCeiling' | 'demandFloor'
+  >,
+  legacyWireMax: number,
+): WritingGovernorWireDecision {
+  const hardCeiling = Math.max(0, Math.floor(Number(shadow.hardCeiling) || 0));
+  const demandFloor = Math.max(1, Math.floor(Number(shadow.demandFloor) || 1));
+  if (hardCeiling < demandFloor) {
+    return {
+      enabled: false,
+      blocked: true,
+      wireMax: null,
+      reason: 'demand_exceeds_hard_ceiling',
+    };
+  }
+  return {
+    enabled: false,
+    blocked: false,
+    wireMax: Math.max(
+      1,
+      Math.min(Math.max(1, Math.floor(Number(legacyWireMax) || 1)), hardCeiling),
+    ),
+    reason: null,
+  };
+}
+
+/**
  * Resolve the production wire value for an explicitly opted-in stage. Every
  * state has already selected a safe envelope; this function only enforces the
  * hard capability and Demand Floor boundaries.

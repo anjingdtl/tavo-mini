@@ -54,6 +54,7 @@ import { buildWritingKernelFreezeTrace } from '../unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../contracts/freezeModelConfig';
 import { buildSharedStageMaxOutputTokens } from '../../contextAutoAllocator';
 import type { WritingRequest } from '../contracts/writingSource';
+import { PHASE4_GATE_POLICY_VERSION } from '../gates/phase4GatePolicy';
 import {
   BatchBudgetExceededError,
   acquireReconcileLock,
@@ -279,6 +280,10 @@ async function backfillKernelFreezeFromEnvelope(input: {
         pipelineTopologyVersion: pipelineTopologyLabel(
           task?.pipelineTopologyVersion,
         ),
+        ...(pipelineTopologyLabel(task?.pipelineTopologyVersion) ===
+        'compact_standard'
+          ? { phase4GatePolicyVersion: PHASE4_GATE_POLICY_VERSION }
+          : {}),
         sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
           contextWindow: execution.model.contextWindow,
           modelMaxOutputTokens: execution.model.maxOutputTokens,

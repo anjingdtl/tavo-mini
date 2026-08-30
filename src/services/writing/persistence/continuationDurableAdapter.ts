@@ -19,6 +19,10 @@ import type {
   WritingStageArtifacts,
 } from '../contracts/writingStage';
 import {
+  finalCandidateModeForPolicy,
+  resolvePersistenceBoundaryCandidate,
+} from '../stages/finalCandidate';
+import {
   compactWritingRequestReceipt,
   completeWritingRequestReceipt,
   type WritingRequestReceipt,
@@ -323,7 +327,11 @@ export function createContinuationDurableAdapter(input: {
       });
     },
     async persistFinal(artifacts: WritingStageArtifacts) {
-      const body = readFinalBody(artifacts);
+      const body = resolvePersistenceBoundaryCandidate(artifacts, {
+        mode: finalCandidateModeForPolicy(
+          input.snapshot.frozenWritingContext?.stagePolicy || { values: {} },
+        ),
+      }).body;
       if (body.trim()) {
         const existing = await getLatestArtifactForStage(input.run.id, 'final');
         if (!existing) {
@@ -378,14 +386,6 @@ function continuationNode(
     default:
       return null;
   }
-}
-
-function readFinalBody(artifacts: WritingStageArtifacts): string {
-  for (const key of ['finalValidate', 'proof', 'revision', 'draft']) {
-    const value = artifacts[key] as SharedWritingArtifact | undefined;
-    if (value?.body?.trim()) return value.body;
-  }
-  return '';
 }
 
 export async function loadContinuationArtifact(

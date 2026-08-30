@@ -12,6 +12,23 @@ import type { WritingSourceKind } from '../contracts/writingSource';
 
 export const STAGE_CONTEXT_PROJECTION_VERSION = 1 as const;
 
+/**
+ * Phase IV composition evidence. It describes the deterministic projection,
+ * not a second allocator and not a model decision.
+ */
+export interface StageContextComposition {
+  version: 1;
+  mode: 'phase4';
+  mandatoryCandidateIds: string[];
+  includedPreferredCandidateIds: string[];
+  includedOptionalCandidateIds: string[];
+  droppedPreferredCandidateIds: string[];
+  droppedOptionalCandidateIds: string[];
+  mandatoryTokens: number;
+  preferredTokens: number;
+  optionalTokens: number;
+}
+
 /** '*' = keep the full frozen render. Arrays are kind allowlists. */
 export const STAGE_CONTEXT_KIND_ALLOWLIST: Record<
   SharedWritingStageName,
@@ -91,6 +108,7 @@ export interface StageContextProjection {
   projectedTokens: number;
   fingerprint: string;
   carriesFullFrozenContext: boolean;
+  composition?: StageContextComposition;
 }
 
 export function projectFrozenContextForStage(input: {
@@ -101,6 +119,17 @@ export function projectFrozenContextForStage(input: {
   const fullText = input.frozenContext.rendered?.text || '';
   const materials = input.frozenContext.materials ?? [];
   const renderedItems = input.frozenContext.rendered?.items ?? [];
+  const phase4 = input.frozenContext.stagePolicy?.values?.phase4GatePolicyVersion ===
+    'phase4-gates-v1';
+  if (phase4 && (input.stage === 'qa' || input.stage === 'revision')) {
+    return projectPhase4ElasticContext({
+      frozenContext: input.frozenContext,
+      stage: input.stage,
+      fullText,
+      materials,
+      renderedItems,
+    });
+  }
   if (allowlist === '*' || materials.length === 0) {
     const kinds = uniqueKinds(materials);
     const includedCandidateIds = includedRenderedIds(renderedItems);
@@ -157,6 +186,131 @@ export function projectFrozenContextForStage(input: {
       }),
     ),
     carriesFullFrozenContext: false,
+  };
+}
+
+const PHASE4_ELASTIC_KINDS: Record<
+  'qa' | 'revision',
+  readonly WritingSourceKind[]
+> = {
+  qa: [
+    'instruction',
+    'outline',
+    'writer_style',
+    'canon',
+    'source_boundary',
+    'seam',
+    'primary_anchor',
+    'story_memory',
+    'structured_continuity_state',
+  ],
+  revision: [
+    'instruction',
+    'outline',
+    'writer_style',
+    'canon',
+    'source_boundary',
+    'seam',
+    'primary_anchor',
+    'story_memory',
+    'structured_continuity_state',
+  ],
+};
+
+function projectPhase4ElasticContext(input: {
+  frozenContext: FrozenWritingContext;
+  stage: 'qa' | 'revision';
+  fullText: string;
+  materials: FrozenWritingContext['materials'];
+  renderedItems: NonNullable<FrozenWritingContext['rendered']>['items'];
+}): StageContextProjection {
+  const materialById = new Map(
+    input.materials.map(item => [item.source.candidateId, item.source]),
+  );
+  const allow = new Set(PHASE4_ELASTIC_KINDS[input.stage]);
+  const blocks: string[] = [];
+  const includedCandidateIds: string[] = [];
+  const includedKinds: WritingSourceKind[] = [];
+  const mandatoryCandidateIds: string[] = [];
+  const includedPreferredCandidateIds: string[] = [];
+  const includedOptionalCandidateIds: string[] = [];
+  const droppedPreferredCandidateIds: string[] = [];
+  const droppedOptionalCandidateIds: string[] = [];
+  let mandatoryTokens = 0;
+  let preferredTokens = 0;
+  let optionalTokens = 0;
+
+  for (const item of input.renderedItems) {
+    const source = materialById.get(item.candidateId);
+    if (!source) continue;
+    const requirement = source.requirement;
+    const block = item.included
+      ? extractRenderedBlock(input.fullText, source.kind, item.candidateId)
+      : '';
+    const shouldInclude = Boolean(block) &&
+      (requirement === 'mandatory' || allow.has(source.kind));
+
+    if (shouldInclude) {
+      blocks.push(block);
+      includedCandidateIds.push(item.candidateId);
+      if (!includedKinds.includes(source.kind)) includedKinds.push(source.kind);
+      if (requirement === 'mandatory') {
+        mandatoryCandidateIds.push(item.candidateId);
+        mandatoryTokens += estimateTokens(block);
+      } else if (requirement === 'preferred') {
+        includedPreferredCandidateIds.push(item.candidateId);
+        preferredTokens += estimateTokens(block);
+      } else {
+        includedOptionalCandidateIds.push(item.candidateId);
+        optionalTokens += estimateTokens(block);
+      }
+      continue;
+    }
+
+    if (requirement === 'mandatory') {
+      // A missing rendered Mandatory source is recorded as absent by the
+      // upstream freeze contract; this projection never silently promotes a
+      // non-mandatory source in its place.
+      mandatoryCandidateIds.push(item.candidateId);
+    } else if (requirement === 'preferred') {
+      droppedPreferredCandidateIds.push(item.candidateId);
+    } else {
+      droppedOptionalCandidateIds.push(item.candidateId);
+    }
+  }
+
+  const text = blocks.join('\n\n');
+  const composition: StageContextComposition = {
+    version: 1,
+    mode: 'phase4',
+    mandatoryCandidateIds,
+    includedPreferredCandidateIds,
+    includedOptionalCandidateIds,
+    droppedPreferredCandidateIds,
+    droppedOptionalCandidateIds,
+    mandatoryTokens,
+    preferredTokens,
+    optionalTokens,
+  };
+  return {
+    version: STAGE_CONTEXT_PROJECTION_VERSION,
+    stage: input.stage,
+    text,
+    includedCandidateIds,
+    includedKinds,
+    projectedTokens: estimateTokens(text),
+    fingerprint: sha256Hex(
+      JSON.stringify({
+        v: STAGE_CONTEXT_PROJECTION_VERSION,
+        mode: 'phase4',
+        stage: input.stage,
+        ids: includedCandidateIds,
+        text,
+        composition,
+      }),
+    ),
+    carriesFullFrozenContext: false,
+    composition,
   };
 }
 

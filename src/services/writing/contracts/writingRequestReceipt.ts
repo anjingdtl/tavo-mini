@@ -22,7 +22,10 @@ import {
   type LLMProviderReasoningCapability,
   type ProviderCapabilityConfig,
 } from '../../llm/providerCapabilities';
-import { projectFrozenContextForStage } from '../context/stageContextProjection';
+import {
+  projectFrozenContextForStage,
+  type StageContextComposition,
+} from '../context/stageContextProjection';
 import { SHARED_PROMPT_COMPILER_VERSION } from '../prompt/sharedPromptCompiler';
 import { resolveQualityProfileFromValues } from './generationQualityProfile';
 import { resolveExecutionProfileFromValues } from './executionProfile';
@@ -89,6 +92,8 @@ export interface WritingRequestReceipt {
   freezeFingerprint: string;
   truthProjectionFingerprint: string;
   stageProjectionFingerprint: string;
+  /** Deterministic Mandatory/Elastic composition for Phase IV stages. */
+  contextComposition?: StageContextComposition;
   messagesFingerprint: string;
   requestFingerprint: string;
   maxOutputTokens: number;
@@ -216,6 +221,9 @@ export function buildWritingRequestReceipt(input: {
     truthProjectionFingerprint:
       input.frozenContext.truthProjection?.fingerprint || '',
     stageProjectionFingerprint: stageProjection.fingerprint,
+    ...(stageProjection.composition
+      ? { contextComposition: stageProjection.composition }
+      : {}),
     messagesFingerprint,
     maxOutputTokens: input.compiled.maxTokens,
     responseFormat: input.compiled.responseFormat,

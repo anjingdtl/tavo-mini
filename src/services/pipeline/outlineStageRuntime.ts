@@ -76,6 +76,7 @@ import {
 } from '../writing/scenario/outlineWritingAdapter';
 import { buildWritingKernelFreezeTrace } from '../writing/unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../writing/contracts/freezeModelConfig';
+import { PHASE4_GATE_POLICY_VERSION } from '../writing/gates/phase4GatePolicy';
 import { resolveWritingCredential } from '../writing/stages/resolveFrozenCredential';
 import type {
   FrozenWritingContext,
@@ -1054,6 +1055,13 @@ async function actionPersistInitialSnapshot(
             .getState()
             .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
         ),
+        ...(pipelineTopologyLabel(
+          usePipelineTaskStore
+            .getState()
+            .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
+        ) === 'compact_standard'
+          ? { phase4GatePolicyVersion: PHASE4_GATE_POLICY_VERSION }
+          : {}),
         sharedStageMaxOutputTokens: buildSharedStageMaxOutputTokens({
           contextWindow: Number(runtime.requestConfig.context_window) || 0,
           modelMaxOutputTokens: runtime.requestConfig.max_output_tokens,

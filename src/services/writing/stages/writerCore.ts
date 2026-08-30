@@ -33,6 +33,7 @@ import {
   isAdoptableStructuredReport,
   hasExplicitRevisionNoOp,
   bindRevisionStateProposalFingerprint,
+  sanitizePhase4RevisionSidecar,
   shouldRunWriterFormatter,
   validateRevisionStructuredContract,
 } from './writerRecovery';
@@ -54,12 +55,14 @@ import {
   completeWritingGovernorShadow,
   decideWritingGovernorWire,
   getWritingGovernorProfileStore,
+  resolveWritingGovernorCurrentRequestWire,
   resolveWritingGovernorShadow,
   shouldEnableWritingGovernorProduction,
   type WritingGovernorShadow,
 } from '../governor/writingGovernor';
 import { deriveGenerationQualityProfile } from '../contracts/generationQualityProfile';
 import { resolveExecutionProfileFromValues } from '../contracts/executionProfile';
+import { isPhase4GatePolicy } from '../gates/phase4GatePolicy';
 
 /**
  * B6/B7 failure telemetry carried from the Shared Writer to the durable
@@ -281,8 +284,8 @@ export function buildSharedWriterFailureDiagnostics(input: {
   const selection = selectStructuredCandidate({
     content: result.text,
     reasoning: result.reasoningText,
-    expectedRootKeys:
-      input.stage === 'revision'
+      expectedRootKeys:
+        input.stage === 'revision'
         ? [
             'content',
             'body',
@@ -295,7 +298,7 @@ export function buildSharedWriterFailureDiagnostics(input: {
             'verdict',
             'report',
           ]
-        : ['content', 'verdict', 'findings'],
+        : ['content', 'decision', 'verdict', 'findings'],
     findingKeys: ['findings', 'actions', 'issues', 'errors', 'warnings'],
     allowSingleItemArray: input.stage === 'revision',
   });
@@ -446,6 +449,7 @@ export async function executeSharedWriterStage(input: {
       stage,
       legacyMaxTokens,
       governorShadow,
+      isPhase4GatePolicy(stageInput.stagePolicy.values),
     );
     const injected = await invokePhysicalWriterCall({
       stage,
@@ -540,6 +544,7 @@ export async function executeSharedWriterStage(input: {
     stage,
     legacyMaxTokens,
     governorShadow,
+    isPhase4GatePolicy(stageInput.stagePolicy.values),
   );
   const primaryStartedAt = Date.now();
   const primary = await invokePhysicalWriterCall({
@@ -810,24 +815,29 @@ function resolveStageWireMax(
   stage: SharedWritingStageName,
   legacyWireMax: number,
   shadow: WritingGovernorShadow,
+  phase4 = false,
 ): number {
-  const decision = decideWritingGovernorWire(
-    shadow,
-    shouldEnableWritingGovernorProduction(stage, shadow),
-  );
+  const decision = phase4
+    ? resolveWritingGovernorCurrentRequestWire(shadow, legacyWireMax)
+    : decideWritingGovernorWire(
+        shadow,
+        shouldEnableWritingGovernorProduction(stage, shadow),
+      );
   if (decision.blocked) {
     const error = new Error(
       `写作预算预检失败：${decision.reason || 'demand_exceeds_hard_ceiling'}`,
     );
     Object.assign(error, {
-      code: 'WRITING_GOVERNOR_PREFLIGHT_BLOCKED',
+      code: phase4
+        ? 'WRITING_PROVIDER_CAPABILITY_BLOCKED'
+        : 'WRITING_GOVERNOR_PREFLIGHT_BLOCKED',
       governorShadow: shadow,
       requestMayHaveExecuted: false,
       physicalRequestCount: 0,
     });
     throw error;
   }
-  return decision.enabled && decision.wireMax != null
+  return (phase4 || decision.enabled) && decision.wireMax != null
     ? Math.max(1, Math.floor(decision.wireMax))
     : legacyWireMax;
 }
@@ -1314,8 +1324,22 @@ function finalizeWriterArtifact(
   text: string,
   result?: Partial<LLMResult>,
 ): SharedWritingArtifact {
-  assertWriterFinishReason(stage, result);
+  const phase4 = isPhase4GatePolicy(stageInput.stagePolicy.values);
+  const qaLengthAdvisory =
+    phase4 && stage === 'qa' &&
+    String(result?.finishReason || '').toLowerCase() === 'length';
+  if (!qaLengthAdvisory) assertWriterFinishReason(stage, result);
   const artifact = parseSharedWriterOutput(stage, text);
+  if (qaLengthAdvisory) {
+    return {
+      ...artifact,
+      body: '',
+      diagnostics: [
+        ...(artifact.diagnostics || []),
+        'qa_truncated_advisory',
+      ],
+    };
+  }
   if (stage === 'revision') {
     const compactRevision =
       stageInput.stagePolicy.values?.pipelineTopologyVersion ===
@@ -1377,6 +1401,19 @@ function finalizeWriterArtifact(
       artifact.body = draftBody;
     }
     if (compactRevision) {
+      if (phase4) {
+        const sanitizedSidecar = sanitizePhase4RevisionSidecar({
+          parsed: artifact.structured!,
+          finalBody: artifact.body,
+        });
+        artifact.structured = sanitizedSidecar.parsed;
+        if (sanitizedSidecar.dropped || sanitizedSidecar.rebound) {
+          artifact.diagnostics = [
+            ...(artifact.diagnostics || []),
+            'revision_state_sidecar_advisory',
+          ];
+        }
+      }
       const boundStateProposals = bindRevisionStateProposalFingerprint({
         parsed: artifact.structured!,
         finalBody: artifact.body,
@@ -1391,6 +1428,7 @@ function finalizeWriterArtifact(
       const validation = validateRevisionStructuredContract({
         parsed: artifact.structured,
         finalBody: artifact.body,
+        phase4Contract: phase4,
       });
       if (!validation.valid) {
         const stateProposalFailure =
@@ -1407,17 +1445,26 @@ function finalizeWriterArtifact(
       }
     }
   }
-  if (!artifact.body.trim()) {
+  if (!artifact.body.trim() && !(phase4 && stage === 'qa')) {
     throw emptyWriterError(stage, { text, emptyReason: 'empty' });
   }
-  if (
+  const invalidStructuredReport =
     (stage === 'qa' ||
       stage === 'review' ||
       stage === 'audit' ||
       stage === 'factCheck' ||
       stage === 'revision') &&
-    !isAdoptableStructuredReport(stage, artifact.structured)
-  ) {
+    !isAdoptableStructuredReport(stage, artifact.structured);
+  if (invalidStructuredReport && phase4 && stage === 'qa') {
+    return {
+      ...artifact,
+      diagnostics: [
+        ...(artifact.diagnostics || []),
+        'qa_contract_advisory',
+      ],
+    };
+  }
+  if (invalidStructuredReport) {
     throw Object.assign(new Error(`${stage} 返回格式无效，需要结构化报告`), {
       code: 'SHARED_WRITER_INVALID_REPORT',
     });

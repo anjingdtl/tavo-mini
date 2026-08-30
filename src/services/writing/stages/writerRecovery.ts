@@ -10,6 +10,7 @@ import { selectStructuredCandidate } from '../../pipeline/structuredCandidate';
 import { sha256Hex } from '../../continuation/hashUtils';
 import {
   QA_STATE_PROPOSAL_TYPES,
+  extractFinalStateProposals,
   resolveEvidenceQuoteLocations,
 } from '../prompt/qaStateProposals';
 import { normalizeContinuationProposalSubjectRefType } from '../../continuation/generation/types';
@@ -54,6 +55,48 @@ export function bindRevisionStateProposalFingerprint(input: {
 }
 
 /**
+ * Phase IV treats the Revision state sidecar as optional metadata. Keep only
+ * locally parseable proposal rows, bind the body fingerprint locally, and
+ * drop malformed rows/fields without discarding an otherwise complete body.
+ */
+export function sanitizePhase4RevisionSidecar(input: {
+  parsed: Record<string, unknown>;
+  finalBody: string;
+}): {
+  parsed: Record<string, unknown>;
+  dropped: boolean;
+  rebound: boolean;
+} {
+  const hasSidecar =
+    Object.prototype.hasOwnProperty.call(input.parsed, 'finalStateProposals') ||
+    Object.prototype.hasOwnProperty.call(
+      input.parsed,
+      'proposalSourceBodyFingerprint',
+    );
+  if (!hasSidecar) {
+    return { parsed: input.parsed, dropped: false, rebound: false };
+  }
+  const raw = input.parsed.finalStateProposals;
+  const proposals = extractFinalStateProposals(input.parsed);
+  if (!Array.isArray(raw) || proposals.length === 0) {
+    const sanitized = { ...input.parsed };
+    delete sanitized.finalStateProposals;
+    delete sanitized.proposalSourceBodyFingerprint;
+    return { parsed: sanitized, dropped: true, rebound: false };
+  }
+  const expected = sha256Hex(String(input.finalBody ?? ''));
+  return {
+    parsed: {
+      ...input.parsed,
+      finalStateProposals: proposals,
+      proposalSourceBodyFingerprint: expected,
+    },
+    dropped: proposals.length < raw.length,
+    rebound: input.parsed.proposalSourceBodyFingerprint !== expected,
+  };
+}
+
+/**
  * The compact QA admission contract is intentionally stricter than the
  * historical Review/Audit adapters.  Revision must only see findings that
  * already carry the complete structured semantics; this validator never
@@ -68,6 +111,43 @@ export function validateQaStructuredContract(
   });
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return invalid('root_not_object');
+  }
+
+  // Phase IV compact protocol.  `decision` is the only required semantic
+  // field for a clean result; a revise result carries only short `{type,
+  // target}` findings.  The legacy verdict/finding contract below remains
+  // accepted for historical Resume and evidence replay.
+  if (Object.prototype.hasOwnProperty.call(parsed, 'decision')) {
+    if (parsed.decision !== 'clean' && parsed.decision !== 'revise') {
+      return invalid('decision');
+    }
+    if (parsed.decision === 'clean') {
+      if (
+        Object.prototype.hasOwnProperty.call(parsed, 'findings') &&
+        (!Array.isArray(parsed.findings) || parsed.findings.length > 0)
+      ) {
+        return invalid('clean_findings_not_empty');
+      }
+      return { valid: true, reason: null };
+    }
+    if (!Array.isArray(parsed.findings) || parsed.findings.length === 0) {
+      return invalid('revise_findings_empty');
+    }
+    for (let index = 0; index < parsed.findings.length; index += 1) {
+      const raw = parsed.findings[index];
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return invalid(`finding[${index}]_not_object`);
+      }
+      const finding = raw as Record<string, unknown>;
+      if (!nonEmptyString(finding.type)) {
+        return invalid(`finding[${index}]_type`);
+      }
+      const target = optionalStringField(finding, 'target');
+      if (!target.valid || !target.value) {
+        return invalid(`finding[${index}]_target`);
+      }
+    }
+    return { valid: true, reason: null };
   }
 
   const verdict = parsed.verdict;
@@ -135,6 +215,8 @@ export function validateQaStructuredContract(
 export function validateRevisionStructuredContract(input: {
   parsed: Record<string, unknown> | undefined;
   finalBody: string;
+  /** Phase IV accepts a body-first envelope; old callers keep the strict v1 contract. */
+  phase4Contract?: boolean;
 }): RevisionStructuredContractValidation {
   const invalid = (reason: string): RevisionStructuredContractValidation => ({
     valid: false,
@@ -143,6 +225,14 @@ export function validateRevisionStructuredContract(input: {
   const parsed = input.parsed;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return invalid('root_not_object');
+  }
+  if (input.phase4Contract) {
+    const content = nonEmptyString(parsed.content || parsed.body);
+    if (content) return { valid: true, reason: null };
+    if (hasExplicitRevisionNoOp(parsed) && input.finalBody.trim()) {
+      return { valid: true, reason: null };
+    }
+    return invalid('content_missing');
   }
   if (parsed.schemaVersion !== 1) return invalid('schemaVersion');
 
@@ -360,6 +450,22 @@ export function normalizeStructuredWriterPayload(
   stage: SharedWritingStageName,
   parsed: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (stage === 'qa') {
+    const normalized = { ...parsed };
+    if (normalized.decision === 'clean') {
+      if (!Object.prototype.hasOwnProperty.call(normalized, 'findings')) {
+        normalized.findings = [];
+      }
+      if (!Object.prototype.hasOwnProperty.call(normalized, 'verdict')) {
+        normalized.verdict = 'pass';
+      }
+    } else if (normalized.decision === 'revise') {
+      if (!Object.prototype.hasOwnProperty.call(normalized, 'verdict')) {
+        normalized.verdict = 'needs_revision';
+      }
+    }
+    return normalized;
+  }
   if (stage !== 'revision') return parsed;
 
   const hasRevisionSignal = (value: Record<string, unknown>): boolean => {
@@ -501,7 +607,7 @@ export function adoptStructuredWriterText(input: {
             'verdict',
             'report',
           ]
-        : ['content', 'verdict', 'findings'],
+        : ['content', 'decision', 'verdict', 'findings'],
     findingKeys: ['findings', 'actions', 'issues', 'errors', 'warnings'],
   });
   if (selection.candidate?.text) {

@@ -9,6 +9,8 @@
  * 极速 runs fewer stages, it does not shrink the prompt.
  */
 
+import { isPhase4GatePolicy } from '../gates/phase4GatePolicy';
+
 /** User-selectable execution profiles. `standard` is the historical default. */
 export type WritingExecutionProfile = 'standard' | 'one_shot';
 
@@ -78,6 +80,9 @@ export function allowsFormatterCallForStage(
   stage: string,
 ): boolean {
   if (!allowsFormatterCall(policy)) return false;
+  // Phase IV removes the second paid rescue request from the normal compact
+  // chain. Legacy frozen policies retain their historical compatibility path.
+  if (isPhase4GatePolicy(policy?.values)) return false;
   if (policy?.values?.pipelineTopologyVersion === 'compact_standard') {
     return stage === 'qa';
   }

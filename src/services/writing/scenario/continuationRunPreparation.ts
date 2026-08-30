@@ -37,6 +37,7 @@ import {
   CURRENT_PIPELINE_TOPOLOGY_VERSION,
   pipelineTopologyLabel,
 } from '../../pipeline/outlineWorkflowVersion';
+import { PHASE4_GATE_POLICY_VERSION } from '../gates/phase4GatePolicy';
 import type {
   FrozenModelConfig,
   WritingRequest,
@@ -185,6 +186,7 @@ export async function prepareContinuationRun(
         pipelineTopologyVersion: pipelineTopologyLabel(
           CURRENT_PIPELINE_TOPOLOGY_VERSION,
         ),
+        phase4GatePolicyVersion: PHASE4_GATE_POLICY_VERSION,
         ...(executionProfile === 'one_shot'
           ? { executionProfile: 'one_shot' as const }
           : {}),

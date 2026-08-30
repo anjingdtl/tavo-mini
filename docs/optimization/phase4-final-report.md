@@ -1,0 +1,96 @@
+# TAVO-MINI Phase IV Final Report
+
+日期：2026-08-30（Asia/Shanghai）
+施工仓：`F:\\ClaudeWorkSpace\\projects\\TAVO-MINI`
+唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
+
+## 最终判定
+
+**PHASE IV FINAL SEAL HOLD / NO-GO**
+
+Phase IV 已完成从 IV-0 到 IV-8 的自主 PDCA 工作与审计产物，但不能宣称 `PHASE IV FINAL SEALED / GO`。唯一未满足的最终 Required Gate 是当前版本真实 Android 5/10 章 paid E2E：设备真实 provider 返回 HTTP 401，当前版本没有合法的 First-Pass Adoptable 分母、同口径 latency/Token 分母或当前 Receipt/DB paid 样本。
+
+## 保护边界与范围
+
+- 开工前先执行 `git fetch origin`；当时 `HEAD`、`origin/main` 均为 `64b88580c134f67e3fb73d1951ef6bc972da5552`。
+- 工作区原有未提交/未跟踪用户文件未清理、未覆盖；旧 C10 冻结，不继续旧 Phase III-C Final Seal。
+- C8 Resume、C9 Observability、历史失败、`finishReason=length`、`outcome_unknown`、provider/network/parse 失败证据均保留。
+- Android 只使用同签名 release 的 `adb install -r`；没有执行 `adb uninstall` 或 `pm clear`。
+
+## 阶段 PDCA 结算
+
+| 阶段 | PLAN → RED → DO | CHECK-A | CHECK-B | ACT / 判定 |
+| --- | --- | --- | --- | --- |
+| IV-0 Baseline / Blocking Pareto | 完成只读基线与 Pareto | full verify 通过 | release/UI 可用；provider 401 | `GO` 进入 Gate 减法；新 paid sample HOLD |
+| IV-1 Gate 减法 | 18 项 inventory，8 Hard / 3 Advisory / 3 Merge / 4 Remove | targeted regression/typecheck/lint/elastic/version 通过 | install-r/UI 通过；401 | `GO` 进入 JSON 瘦身 |
+| IV-2 JSON 协议瘦身 | QA/Revision 最小协议 Red-first | regression 通过 | release/UI 通过；401 | `GO` |
+| IV-3 Governor 旁路化 | current-request veto Red-first | Governor/Writer/Receipt regression 通过 | release/UI 通过；401 | `GO`，physical call=0 |
+| IV-4 Context 阻滞治理 | Mandatory + Elastic Optional Red-first | Context regression 通过 | release/UI 通过；401 | `GO` |
+| IV-5 Persistence Boundary | Final Candidate/DB/sidecar Red-first | full verify 通过 | install-r/UI/数据保护通过；401 | `GO`，真实 paid 继续 HOLD |
+| IV-6 历史 A/B | comparator Red-first | 8 suites / 36 tests targeted 通过；typecheck/lint/elastic/version 通过 | install-r/UI/401 | `NO-GO/HOLD`，拒绝伪造 current First-Pass |
+| IV-7 真实 5/10 章连续运行 | continuous harness Red-first | final full verify 531 suites passed / 3 skipped；3751 tests passed / 8 skipped | install-r、数据保护、UI/XML/PNG/logcat；401 | `NO-GO/HOLD`，真实 5/10 分母缺失 |
+| IV-8 Final Seal | closure matrix + final report | full verify evidence inherited from IV-7 | no new valid paid sample; same 401 blocker | `PHASE IV FINAL SEAL HOLD / NO-GO` |
+
+## 治理结果
+
+### 主链
+
+Compact 写作链已收敛为：
+
+```text
+Freeze → Draft → ONE QA → (optional Revision) → local Persistence Boundary
+```
+
+没有新增 Agent、Writer、Context、Memory、Prompt Compiler 或 LLM stage。FinalValidate 只承担本地 Persistence Boundary；正文、状态 sidecar、Canon/State mutation 的信任边界不再分散到多个质量 Gate。
+
+### Gate / JSON / Context / Governor
+
+- Gate inventory 从 18 项候选/交叉门禁收敛为 8 Hard、3 Advisory、3 Merge、4 Remove。
+- QA clean 从代表性旧 envelope 96 字符降为 `{"decision":"clean"}` 20 字符；该结果只证明协议瘦身，不冒充 token 计费下降。
+- QA/Revision 的 hash、fingerprint、diff、changeset 尽量本地计算；Revision 正文优先，非关键 sidecar 可丢弃。
+- Context 使用 Mandatory + Elastic Optional；先做 Optional 压缩、去重和低相关资料裁剪，禁止优先阻断整章；按 stage 不复制 Draft Optional。
+- Governor 观察当前请求并调优下一轮；current-request learned veto 已旁路，Governor physical call=0。
+
+### Persistence / 安全
+
+- Final Candidate 是唯一持久化候选；空结果、截断正文、DB transaction、Resume/Idempotency、Canon/State safety 均 fail-closed。
+- `finishReason=length` 不作为 Final；`outcome_unknown` 不自动 retry；所有历史 paid ledger/Receipt 继续可审计。
+- IV-7 release 安装后 `firstInstallTime=2026-08-08 07:48:12` 保持不变，作品库仍显示 `SM43U2Proj / 2 章 / 13 字`，证明 `adb install -r` 未清理数据。
+
+## 指标结算
+
+| 指标 | C9 baseline / 历史 | Phase IV 当前 | 结论 |
+| --- | --- | --- | --- |
+| E2E First-Pass Adoptable | C9 无该字段；历史 deterministic 8/8、restricted real 2/2 | 无合法 current paid 分母 | HOLD，不可计算提升 |
+| provider latency | p50/p95 `187740/337781 ms` | 无同口径 sample | HOLD |
+| total latency | p50/p95 `187764/337786.8 ms` | 无同口径 sample | HOLD |
+| input tokens | p50/p95 `38125/42615` | 代码已减压，未形成 paid sample | 不宣称降幅 |
+| output/reasoning tokens | p50/p95 `11435/17017.4` / `9587/15633.8` | 无同口径 sample | HOLD |
+| `finishReason=length` | `5/38 = 13.16%` | 规则保留，当前无分母 | HOLD |
+| `outcome_unknown` | `1/38 = 2.63%` | 规则保留，401 不作 unknown paid run | HOLD |
+| exact-set invalid-format | `0/38` | 最小合同确定性通过 | 无 E2E 降幅可报 |
+| Context block | C9 无可用分母 | Mandatory/Elastic contract 通过 | 无真实 rate 可报 |
+| Governor physical calls | `0` | `0`（代码/确定性） | 安全目标保持 |
+
+## Evidence Index
+
+- 主进度与 PDCA：`docs/optimization/phase4-progress.md`
+- IV-0 baseline/Pareto：`docs/optimization/phase4-baseline-and-blocking-pareto.md`
+- Gate inventory：`docs/optimization/phase4-gate-inventory.md`
+- Historical A/B：`docs/optimization/phase4-historical-ab.md`
+- Continuous harness：`docs/optimization/phase4-continuous-harness.md`
+- IV-7 final full verify / Android / UI / logcat：`test-logs/phase4-iv7-20260830-155254/iv7-check-b.md`
+- IV-0～IV-6 Android evidence：`test-logs/phase4-iv0-baseline-20260830-144426/`、`test-logs/phase4-iv1-4-20260830-152100/`、`test-logs/phase4-iv5-20260830-153500/`、`test-logs/phase4-iv6-20260830-154500/`
+- C9 aggregate/Receipt/projection：`test-logs/phase3-c9-cost-latency-20260830-000001/`
+- C8/C9/旧 C10 状态：`docs/optimization/phase3-c-progress.md` 与历史 Phase III-C evidence 原样保留
+
+## 最小解封动作
+
+凭据恢复后，不再改架构：
+
+1. 在设备 UI 更新合法 credential，执行 `保存并测试`。
+2. 同一签名 release、同一设备，仅 `adb install -r`，连续跑 5 章与 10 章。
+3. 保存每章 Receipt/DB/UI/logcat，运行 `phase4ContinuousHarness` 与 `phase4HistoricalAb`。
+4. 只有 First-Pass、A/B、Context/length/unknown、DB/Receipt、Resume、无 hidden retry、Governor=0 全部满足时，才允许把最终状态改成 GO。
+
+当前最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`

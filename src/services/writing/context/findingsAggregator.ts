@@ -121,14 +121,16 @@ function normalizeFinding(
     raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
       : { issue: String(raw ?? '') };
-  const issue = String(row.issue ?? row.summary ?? row.content ?? '').trim();
+  const issue = String(
+    row.issue ?? row.summary ?? row.content ?? row.type ?? '',
+  ).trim();
   const instruction = String(row.instruction ?? row.fix ?? '').trim();
   const target = String(row.target ?? row.span ?? '').trim();
   const evidence = String(row.evidence ?? '').trim();
   const requirementIds = Array.isArray(row.requirementIds)
     ? row.requirementIds.map(item => String(item))
     : [];
-  const severity = normalizeSeverity(row.severity);
+  const severity = normalizeSeverity(row.severity, sourceStage, row.type);
   return {
     findingId: String(row.findingId ?? row.id ?? `${sourceStage}-${index + 1}`),
     sourceStage,
@@ -141,11 +143,20 @@ function normalizeFinding(
   };
 }
 
-function normalizeSeverity(value: unknown): AggregatedFinding['severity'] {
+function normalizeSeverity(
+  value: unknown,
+  sourceStage?: FindingsSourceStage,
+  type?: unknown,
+): AggregatedFinding['severity'] {
   const text = String(value ?? '').toLowerCase();
   if (text === 'blocking' || text === 'error' || text === 'mandatory') {
     return 'blocking';
   }
   if (text === 'warning' || text === 'preferred') return 'warning';
+  // Phase IV's minimal QA finding deliberately omits severity. A valid
+  // `{type,target}` under decision=revise is actionable quality advice, not a
+  // new safety hard gate; treat it as a warning for the existing local
+  // revision trigger.
+  if (sourceStage === 'qa' && String(type ?? '').trim()) return 'warning';
   return 'info';
 }

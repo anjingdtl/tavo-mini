@@ -249,6 +249,9 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
     });
 
     // 第一次抛 safe_retry；第二次成功前检查 used 已实时入账。
+    // Compact Standard 在 Draft 成功后还会执行一次统一 QA，因此为
+    // 当前主链提供第三个确定性响应，避免测试把合法的 QA 调用误判成
+    // 预算重复计数。
     let checkedUsage = false;
     mockCallLLMResult = jest
       .fn()
@@ -278,7 +281,14 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
           totalTokens: 200,
           emptyReason: null,
         };
-      });
+      })
+      .mockImplementationOnce(async () => ({
+        text: JSON.stringify({ decision: 'clean' }),
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        emptyReason: null,
+      }));
 
     await reconcilePipelineTask(taskId, chapter, {
       batchBudgetGate: { batchId: 'b1' },
@@ -292,7 +302,7 @@ describe('CL-06: 真实硬门禁 used + upcoming <= cap', () => {
     const final = await one(
       `SELECT used_llm_calls FROM multi_chapter_batches WHERE id = 'b1'`,
     );
-    expect(Number(final?.used_llm_calls ?? 0)).toBe(2);
+    expect(Number(final?.used_llm_calls ?? 0)).toBe(3);
   });
 
   it('used + 1 > maxLlmCalls → 第二次请求前被阻断', async () => {
