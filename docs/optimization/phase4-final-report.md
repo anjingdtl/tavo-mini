@@ -1,14 +1,16 @@
 # TAVO-MINI Phase IV Final Report
 
-日期：2026-08-30（Asia/Shanghai）
+日期：2026-08-30（Asia/Shanghai）；IV-10 DeepSeek 根因隔离轮结算更新：2026-08-31
 施工仓：`F:\\ClaudeWorkSpace\\projects\\TAVO-MINI`
 唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
 
 ## 最终判定
 
-**PHASE IV FINAL SEAL HOLD / NO-GO**
+**PHASE IV FINAL SEAL HOLD / NO-GO**（IV-10 后维持；两个历史 blocker 已关闭，余下缺口已收敛为单一 model 侧病态计划，详见下文 IV-10 结算）
 
-Phase IV 已完成从 IV-0 到 IV-8 的自主 PDCA 工作与审计产物，但不能宣称 `PHASE IV FINAL SEALED / GO`。唯一未满足的最终 Required Gate 是当前版本真实 Android 5/10 章 paid E2E：设备真实 provider 返回 HTTP 401，当前版本没有合法的 First-Pass Adoptable 分母、同口径 latency/Token 分母或当前 Receipt/DB paid 样本。
+- ~~唯一未满足的最终 Required Gate 是当前版本真实 Android 5/10 章 paid E2E：设备真实 provider 返回 HTTP 401~~（2026-08-30 凭据恢复后解除）
+- ~~新 blocker 是提供端对边界首章 Draft 的持续停摆（外部依赖）~~（2026-08-31 IV-10 证伪并关闭：根因为特定章节计划梗概触发的模型失控超长生成，provider 无关，应用侧 fail-closed 正确）
+- **现行余下缺口**：10 章批次 9/10 adopted（First-Pass 8/10），唯一失败章为 model 侧病态计划（3 次尝试全部失控：1×570s@200k、2×length@65,536），P0-05 正确拒绝持久化；5 章 Required Gate 已 PASS（5/5，First-Pass 5/5）；Historical A/B 按比较器规则 NO-GO（86.7% < 历史确定性 100%）。
 
 ## 保护边界与范围
 
@@ -107,3 +109,38 @@ Freeze → Draft → ONE QA → (optional Revision) → local Persistence Bounda
 - **5 章连续（真实）**：4/5 adopted（3 clean first-pass；First-Pass Adoptable 3/5）；第 5 章 Draft 提供端连续 5 次 570s 停摆。physical calls 2–3/章；无 crash/ANR；Receipt/DB/UI/logcat 齐全（`test-logs/phase4-preseal-20260830-1650/`）。
 - **10 章连续（真实）**：第 1 章 Draft 连续 4 次 570s 停摆（含冷重启 C8 Resume），0/10；停止重试避免无效 paid 调用。
 - **最终判定维持 `PHASE IV FINAL SEAL HOLD / NO-GO`**：401 已解除，新 blocker 是提供端对边界首章 Draft 的持续停摆（外部依赖）。全部 Required Gate 真实 PASS 之前，不得写 `PHASE IV FINAL SEALED / GO`。
+  （IV-10 更新：上一行所记"提供端停摆"归因已被修正并关闭，见下节。）
+
+## IV-10 DeepSeek Provider/App 根因隔离结算（2026-08-30/31）
+
+基线 `HEAD == origin/main == 8cec6a5f`；工作区无已跟踪改动；生产代码零改动；零新增 Gate/LLM stage/retry/Agent。
+
+### 根因（证据支持）
+
+**"Boundary-first Draft 570s 停摆" = 特定章节计划梗概触发的模型失控超长生成**，经非流式（`stream:false`）+ 570s total watchdog 观测为"无输出停摆"。
+
+- 触发具有计划特异性：「账册的末行」3/3 确定性失控；「高潮听证」1/2 随机；同日其余 13 个计划 0 失控。GLM 侧对应「重走档案路线」「启封栏里的名字」（thinking-high 推理失控越界 570s；2026-08-30 10:58–13:26 存在 provider 退化窗口放大失效面，期间小请求仍成功）。
+- wire max_tokens 只改变观测形态：200k cap → >9.5min 盲停（outcome_unknown）；65,536 cap → ~5.8min 可见 `finishReason=length`（token 级实锤：65,536/65,536 满额输出，189 tok/s，reasoningTokens=null）。
+- 已证伪假设：GLM provider 特异（DeepSeek 复现）、"7k 小上下文边界首章"（真实 53–70k，估算器伪像）、体积阈值（同位置 69,485 成功 vs 69,650 失控；74,306/74,240 更大成功）、transport/watchdog 缺陷（234,748 字节 draft body 完整上传 2.3s；watchdog 分类正确）、Resume/Governor（旁路完好，physical call=0）。
+
+### 真实 DeepSeek 结算
+
+| Gate | 结果 |
+| --- | --- |
+| 5 章连续 | **PASS：5/5 adopted，First-Pass 5/5**（11 调用，in 727,531 / out 15,414）|
+| 10 章连续 | 9/10 adopted，First-Pass 8/10（28 调用，in 1,195,182 / out 156,334）；唯一失败章 fail-closed 正确 |
+| 合计 | 15 章尝试：14 adopted（93%）、First-Pass 13/15（87%）；draft 延迟 20–90s（GLM 同类 412–665s）|
+| GLM 连停 4 次的原请求（chapter 118）| DeepSeek 22.8s 一次通过 |
+| Historical A/B | **NO-GO**：86.7% < 历史确定性 100%；次级 outcome_unknown 2/34 vs 1/38 回退 |
+
+### P0 与安全边界（本轮全部保持）
+
+P0-05 length 拒绝持久化 ×2 ✓；P0-06 outcome_unknown 零自动 retry（3 次重试均 UI 用户确认）✓；P0-07/08 Governor 旁路、physical call=0 ✓；P0-10 全部真实调用入账 ✓；P0-11 未 uninstall/pm clear（本轮零 APK 重装，代码零改动）✓；P0-12 批次跨 provider/跨重启 resume 正常 ✓；crash/ANR=0 ✓。
+
+### 配置变更（唯一持久状态）
+
+`llm_config id=2 max_output_tokens`: 0(AUTO→200k) → **65,536**（用户可配置能力字段，非业务固定值；把失控生成的失败形态从 9.5min 盲停变为 ~6min 可分类 length 失败）。其余配置与用户 `DS测试用例.txt` 一致。
+
+### 解封剩余动作
+
+按 `phase4-requirement-closure.md`「真实解封条件（IV-10 后）」：连续 10 章新批次形成 10/10 分母（遇病态计划按用户确认重试/重计划），A/B 收敛后即可重评 `PHASE IV FINAL SEALED / GO`。

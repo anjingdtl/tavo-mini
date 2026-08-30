@@ -120,3 +120,13 @@ item 1 的三次尝试横跨修正前后，构成天然 A/B：
 - UI 取证：`llm-save-test-pass.png`、`batch5-started.png`、`plan5.png`、`ui-*.xml`、`final-state.png`
 - 测试 helper：`scripts/qa/ui-tap.mjs`、`scripts/qa/ui-find.mjs`、`scripts/qa/db_probe.py`
 - 代码与测试：提交 `b83af379`（本仓库 main）
+
+## 10. IV-10 修正附言（2026-08-31，DeepSeek 根因隔离轮）
+
+本报告 §7「阻断分析」的以下表述被 IV-10 轮证据**修正**（原始记录作为历史证据保留，不删改）：
+
+1. ~~"所有停摆均为「原著边界 fresh 首章」（in≈6.2–7.1k 小上下文）"~~ —— **错误**。7k 是 `estimateMessagesTokens`/`stage_results.input_tokens` 的派生/估算值；receipt `governorShadow.actualPromptTokens` 与 provider 实报证明停摆请求真实输入为 **GLM ≈54k、DeepSeek 69,650 tokens**（大上下文请求）。
+2. ~~"为 provider 侧对特定请求模式的持续停摆，非应用缺陷"~~ —— 结论方向正确（非应用缺陷），但归因不完整：IV-10 证明同一停摆在 DeepSeek 上复现，根因是**特定章节计划梗概触发的模型失控超长生成**（provider 无关），非"GLM provider 特异"。
+3. ~~"570s 看门狗……不允许放宽"~~ —— 维持（IV-10 同样未放宽；wire max_tokens=65,536 的 config 缓解使失控在 ~6min 内变为可分类失败，见 `phase4-progress.md` IV-10）。
+
+修正证据链：`test-logs/phase4-deepseek-rca-20260830/README-evidence.md`（同位置重计划判别、token 级 65,536 满额失控、传输层 234,748 字节完整上传等）。

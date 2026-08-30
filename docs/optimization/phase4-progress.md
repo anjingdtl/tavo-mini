@@ -47,7 +47,59 @@ Exact HEAD / origin/main：`64b88580c134f67e3fb73d1951ef6bc972da5552`
 - **Governor 旁路复核**：`__tests__/phase4GovernorBypass.test.ts` 原样通过；无 Governor physical call。
 - **验证链**：targeted（7 suites / 35 tests）→ typecheck → `lint --quiet` → `verify:elastic` → full verify（532 suites passed / 3 skipped；3759 tests passed / 8 skipped；VERIFY_EXIT_CODE=0）→ signed APK → `adb install -r`（数据保留，firstInstallTime 不变）。
 
-## 当前阶段结论
+## IV-10 DeepSeek Provider/App 根因隔离（2026-08-30/31）
+
+用户将软件 LLM 配置切换为 DeepSeek（`deepseek-v4-flash` @ `api.deepseek.com`，UI 保存并测试通过；密钥在 keychain，不入文档）。本轮任务不是扩展架构，而是对"GLM 时代 Boundary-first Draft 570s 停摆"做 Provider/App 根因隔离：PLAN → RED/复现 → 证据 → 假设淘汰 → 最小实验 → CHECK-A/B → ACT。**生产代码零改动**（无新 Gate/LLM call/Agent/Writer/Context/Memory；不新增 blocking）。
+
+### PDCA
+
+| 轮 | 变量 | 结果 |
+| --- | --- | --- |
+| R1 | provider GLM→DeepSeek，恢复 batch10（同冻结上下文，chapter 118 = GLM 连停 4 次的同一请求） | **22.8s 通过**；随后连过 7 章（51.5k→59.5k tokens 全部 20–70s）；item 8（63,581）一次 570s timeout，用户确认重试 43s 通过 |
+| R2 | 传输隔离（零付费）：主机→DeepSeek 305KB body；app→10.0.2.2 监听器（slirp 路径）真实 draft body | 主机 401 in 0.36s；**234,748/234,748 字节完整上传 2.3s** + 即时 400 → 传输层/watchdog 链路健康 |
+| R3 | item 10（69,650 tokens，批次最大） | 570s timeout ×1 → wire max_tokens 200k→65,536（仅改 config `max_output_tokens`）→ **length 截断 ×2（65,536/65,536 满额，189 tok/s，5.8min）**，P0-05 全部拒绝持久化 |
+| R4 | 同位置重计划（5 章批次，第 115 章「卷中遗页」= 失败 item 10「账册的末行」同位置，输入仅差 165 tokens） | **正常通过（输出 1,323）**；后续章上下文更大（72,034/74,306/74,240）全部正常，5/5 adopted、First-Pass 5/5 |
+
+### 根因树（假设淘汰）
+
+| 假设 | 判定 | 证据 |
+| --- | --- | --- |
+| H1 GLM provider/model/endpoint 特异 | **证伪** | DeepSeek 复现同类停摆（item 8/10） |
+| H2 "边界首章 7k 小请求"形态 | **证伪** | 停摆请求真实输入 ≈53–70k（`estimateMessagesTokens` 中文估算失真 + `stage_results.input_tokens` 为派生值，二者误导了 IV-9 叙事；governor `actualPromptTokens` 与 provider 实报为准） |
+| H3 请求体积阈值 | **证伪** | 同位置 69,485 成功 vs 69,650 失控（差 165 tokens）；74,306/74,240 更大请求成功 |
+| H4 transport / watchdog 缺陷 | **证伪** | R2 传输全通；watchdog 按设计触发、分类 `outcome_unknown` 正确、零自动 retry |
+| H5 reasoning/output wire 参数 | 部分成立（观测形态） | max_tokens 上限只改变失控的可观测形态（盲停 vs length 截断），不是触发因子 |
+| H6 Resume/ledger/Governor | **证伪** | 批次跨 provider、跨进程重启恢复正常；Governor `preflightBlocked=false`、physical call=0；账务完整 |
+| **H7 最终根因** | **成立** | **特定章节计划梗概触发模型失控超长生成**：「账册的末行」3/3 确定性失控（1×盲停 + 2×length）；「高潮听证」1/2 随机；其余 13 个计划 0/N。GLM 侧同理（「重走档案路线」「启封栏里的名字」在 thinking-high 下推理失控越界 570s，且 2026-08-30 10:58–13:26 存在 provider 退化窗口放大失效面，期间小请求 planner 仍成功） |
+
+### 结算（真实 DeepSeek）
+
+- **10 章批次** `batch_mtfrwv40_bhx4r5`：9/10 adopted，First-Pass 8/10；总调用 28，in 1,195,182 / out 156,334。唯一失败章被 P0-05 正确 fail-closed。
+- **5 章批次** `batch_mtbs11zh_oih677`：**5/5 adopted，First-Pass 5/5**；总调用 11，in 727,531 / out 15,414。
+- 合计 15 章尝试：14 adopted（93%）、First-Pass 13/15（87%）；draft 延迟 20–90s（GLM 同类 412–665s）。
+- crash/ANR=0；Governor physical call=0；`outcome_unknown` 零自动 retry；Resume/Idempotency 正常；DB/Receipt/UI/logcat 齐全（`test-logs/phase4-deepseek-rca-20260830/`）。
+
+### 配置变更（唯一持久状态变化，非代码）
+
+`llm_config id=2 max_output_tokens`: 0(AUTO→弹性 200k) → **65,536**。依据：失控生成下 200k wire cap 使失败表现为 9.5min 盲停 + outcome_unknown；65,536 使其在 ~6min 内变为可分类、可拒绝的 length 失败（P0-09 不受影响——这是用户可配置的模型能力字段，不是业务固定值；可在 UI 随时改回）。
+
+### 已知契约事实（记录，非本轮引入）
+
+DeepSeek V4 续写冻结 `thinking: disabled`（`freezeContinuationThinking`，commit `f525e933`，2026-08-17；理由：thinking-on 时 V4 JSON draft 返回 reasoning_only）。与 P0-01「Thinking Always On」字面冲突在此显式标注：P0-01 的验证语境是 GLM（thinking 正常参与生成）；DeepSeek 走的是更早的、有失败证据支撑的 V4 契约。
+
+### ACT / 判定
+
+- 原"GLM Boundary-first 停摆"根因**关闭**：已隔离（H7）、已表征、已缓解；该请求家族在 DeepSeek 上以 20–90s 正常完成（含 GLM 连停 4 次的原请求）。
+- 5 章 Required Gate：**PASS**。10 章 Required Gate：**9/10（NO-GO 未满分母）**——缺口为单一 model 侧病态计划，fail-closed 正确，同位置重计划已被 5 章批次证明可正常写作。
+- Historical A/B 按比较器规则 **NO-GO**（First-Pass 0.867 < 历史确定性 1.0；outcome_unknown 2/34 vs 1/38 次级回退）。
+- **`PHASE IV FINAL SEAL HOLD / NO-GO` 维持**——不为封板降低标准；10 章完整分母仍差 1 章，且缺口性质已从"未知外部停摆"收敛为"已理解的模型侧生成病理"。
+- 证据：`test-logs/phase4-deepseek-rca-20260830/README-evidence.md`。
+
+## 当前阶段结论（2026-08-31 IV-10 后更新）
+
+IV-9 时代"外部提供端停摆是唯一剩余 blocker"的表述已被 IV-10 根因隔离轮**取代**：停摆根因不是"外部提供端对边界首章的持续停摆"，而是"特定章节计划梗概触发的模型失控超长生成"（对 GLM 与 DeepSeek 同样成立，详见 IV-10 根因树）；IV-9 证据段中"边界首章 fresh 首章（in≈7k 小上下文）"的量化描述是估算器伪像，真实请求为 53–70k tokens（证据：`test-logs/phase4-deepseek-rca-20260830/`）。IV-9 的原始运行记录、42 次付费台账与 NO-GO 判定作为历史证据原样保留。
+
+## 历史阶段结论（IV-0～IV-9 期间，原样保留）
 
 IV-0 不修改生产逻辑。基线与阻滞 Pareto 已封存到 `phase4-baseline-and-blocking-pareto.md`。本轮 CHECK-B 已完成同签名 release `adb install -r`、启动、UI capability 核验；真实 provider 连接返回 HTTP 401（credential 过期/无效），因此新 paid sample 保持 HOLD，历史 C9 真实样本继续作为基线。主要阻滞不是账务或 Governor physical call，而是主链把质量协议、上下文复制和当前请求决策耦合在一起：`length`、JSON/报告合同和 Context/Governor preflight 共同吞噬一次通过率。IV-1 从 Gate inventory 开始。
 

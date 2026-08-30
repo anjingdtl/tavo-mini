@@ -1,28 +1,26 @@
 # TAVO-MINI Phase IV Requirement Closure
 
-日期：2026-08-30（Asia/Shanghai）
+日期：2026-08-30（Asia/Shanghai）；IV-10 DeepSeek 根因隔离轮更新：2026-08-31
 唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
-开工时 `HEAD == origin/main == 64b88580c134f67e3fb73d1951ef6bc972da5552`。
-最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`（2026-08-30 凭据恢复后真实运行更新：401 blocker 已解除，新 blocker 为提供端对边界首章 Draft 的持续停摆）
+开工时 `HEAD == origin/main == 64b88580c134f67e3fb73d1951ef6bc972da5552`；IV-10 轮基线 `HEAD == origin/main == 8cec6a5f`。
+最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`（2026-08-31 IV-10 更新：401 与"外部 provider 停摆"两个历史 blocker 均已解除/关闭；现余缺口为 10 章批次 9/10——单一 model 侧病态计划被 P0-05 正确 fail-closed）
 
-## 结论
+## 结论（IV-10 后）
 
-Phase IV 的主链减法、协议瘦身、Governor 旁路、Context 弹性化、Persistence Boundary 收拢、历史比较器和连续运行 harness 均已落地并通过本地回归。最终 Required Gate 不能全部 PASS：设备上的真实 provider probe 返回 `HTTP 401`（令牌过期或验证不正确），所以当前版本没有合法的真实 Android 5 章/10 章 paid 分母，也没有可用于 First-Pass A/B 的当前 Receipt/DB 样本。
+Phase IV 主链减法、协议瘦身、Governor 旁路、Context 弹性化、Persistence Boundary 收拢均已落地并通过回归。2026-08-30/31 的 DeepSeek 真实轮完成了 5 章（5/5 adopted，First-Pass 5/5）与 10 章（9/10 adopted，First-Pass 8/10）连续运行；原"Boundary-first Draft 570s 停摆"的根因已在证据支持下**关闭**：不是 provider 特异、不是传输/看门狗缺陷、不是"7k 小上下文"，而是**特定章节计划梗概触发的模型失控超长生成**——对 GLM（thinking-high，推理失控）与 DeepSeek（thinking-off，文本失控）同样成立，经非流式 + 570s 看门狗观测为"无输出停摆"；应用侧全程 fail-closed 正确（length 拒绝持久化、outcome_unknown 零自动 retry、账务完整）。10 章完整分母仍差 1 章（唯一失败章为 model 侧病态计划；同位置重计划已被 5 章批次证明可正常写作），故维持 `HOLD / NO-GO`，不为封板降低标准。
 
-该结论是外部 credential blocker 导致的 `HOLD`，不是把 401 折算成业务成功或业务失败；没有用 mock、contract test、旧版本结果或 C9 projection completion 冒充当前 E2E。
-
-## Final Seal Required Gates
+## Final Seal Required Gates（IV-10 后）
 
 | Required Gate | 结果 | 证据与边界 |
 | --- | --- | --- |
-| 当前版本真实 Android 5 章连续运行 | **部分真实样本 / NO-GO（未满分母）** | `test-logs/phase4-preseal-20260830-1650/`：4/5 章 adopted（3 章 clean first-pass），第 5 章 Draft 提供端连续 5 次 570s 停摆；QA 截断→Advisory skipped 已在生产验证 |
-| 当前版本真实 Android 10 章连续运行 | **NO-GO（提供端 blocker）** | 同目录：第 1 章 Draft 连续 4 次 570s 停摆（含冷重启 resume），0/10，停止重试避免无效 paid 调用 |
-| E2E First-Pass Adoptable Rate 可与历史 A/B 比较 | **部分真实 / HOLD** | 5 章批次真实 First-Pass 3/5、Adopted 4/5；分母仍缺 1 章与 10 章完整批次，不可宣称整体提升 |
-| latency / input-output-reasoning / length / unknown / Context block 可比 | HOLD | C9 数值完整保留；当前没有同口径 paid sample |
-| 当前 Receipt / DB / UI / logcat 证据齐全 | HOLD | UI/XML/PNG/logcat 已有；release `run-as` 返回 `package not debuggable`，当前 DB 不能直接拉取 |
-| 其余代码、协议和安全边界 | PASS（确定性/静态/历史证据） | 本文 P0 表、全量 verify 和 IV-0～IV-7 evidence index |
+| 当前版本真实 Android 5 章连续运行 | **PASS** | `test-logs/phase4-deepseek-rca-20260830/`：DeepSeek 5/5 adopted、First-Pass 5/5、总调用 11、in 727,531 / out 15,414 |
+| 当前版本真实 Android 10 章连续运行 | **NO-GO（9/10）** | 同目录：9/10 adopted（First-Pass 8/10）；唯一失败章「账册的末行」3 次尝试全部为模型失控生成（1×570s@200k cap、2×length@65,536 cap），P0-05 fail-closed 正确；同位置重计划（卷中遗页）正常通过 |
+| E2E First-Pass Adoptable Rate 可与历史 A/B 比较 | **NO-GO（有真实分母）** | DeepSeek 合计 13/15 = 86.7% < 历史确定性 8/8 = 100%（比较器规则 `current_first_pass_below_historical`）；次级 outcome_unknown 2/34 vs C9 1/38 回退。数据真实，不达标即 NO-GO，不折算 |
+| latency / input-output-reasoning / length / unknown / Context block 可比 | **有真实样本** | DeepSeek draft provider 延迟 20–90s（C9 p50 187.7s）；draft input 51.5k–74.3k（C9 p50 38.1k，3000 字目标 + standard 思考口径差异已标注）；length 事件 2/34 paid pipeline 调用（C9 5/38） |
+| 当前 Receipt / DB / UI / logcat 证据齐全 | **PASS** | debug 签名 `run-as` 可直接拉取 DB（`db-batch5-final.sqlite` 等 11 份快照）；UI/XML/PNG/logcat/crash buffer（空）齐全 |
+| 其余代码、协议和安全边界 | PASS | 全量 verify（532 suites / 3760 tests）、typecheck、lint --quiet、verify:elastic 全绿；P0 表见下 |
 
-## 十项最终问题
+## 十项最终问题（下列 1–10 为 IV-9 时回答，历史保留；第 4/5 条已被 IV-10 真实样本取代，更新见上表）
 
 1. **Hard Gate 从多少降到多少？**  本次可审计 inventory 共 18 项候选/交叉门禁，收敛为 8 项 Hard Block；另有 3 项 Advisory、3 项 Merge、4 项 Remove。这里的“18”是 inventory 总数，不把 18 项错误地称为 18 个 Hard Gate。
 2. **JSON Contract 减少多少？**  Compact clean 合同从代表性旧 envelope 的 96 字符降为 `{"decision":"clean"}` 的 20 字符，字符数减少 76、约 79.2%；这是协议形状指标，不是 token 账单指标。Revision 采用正文优先，hash/fingerprint/diff/changeset 尽量本地计算。
@@ -53,11 +51,11 @@ Phase IV 的主链减法、协议瘦身、Governor 旁路、Context 弹性化、
 | P0-12 Resume / Idempotency 不退化 | PASS（确定性） | Persistence Boundary、continuous harness 和 C8 证据 |
 | P0-13 不允许 Canon / Story Memory 污染 | PASS（确定性） | `canon_state_safety` 保持 Hard Block；状态 sidecar 非法可舍弃但不污染正文状态 |
 
-## 真实解封条件
+## 真实解封条件（IV-10 后）
 
-外部恢复合法 API credential 后，按下列固定顺序补证：
+历史 blocker（401 凭据、GLM"边界首章停摆"）均已关闭。当前唯一未满分的 Required Gate 是 10 章批次 9/10（单一 model 侧病态计划，已 root-cause）。按下列固定顺序补证：
 
-1. 同一签名 release、同一设备、同一 `adb install -r`；不清理已有数据。
-2. 在 UI `保存并测试` 验证连接成功；不要在文档中记录或输出 API Key。
-3. 用当前冻结上下文连续跑 5 章，再连续跑 10 章；每章采集 First-Pass、physical calls、Governor、Context composition、Resume/Idempotency、Receipt/DB、UI 和 logcat。
-4. 用 `phase4ContinuousHarness` 与 `phase4HistoricalAb` 计算真实分母和 A/B；只有所有 Required Gate PASS 才能把状态改为 `PHASE IV FINAL SEALED / GO`。
+1. 维持当前 DeepSeek 配置（`deepseek-v4-flash` @ `api.deepseek.com`，`max_output_tokens=65536`）与同签名 debug 包，仅 `adb install -r`；不清理数据。
+2. 连续新开 10 章批次：因失控生成按计划梗概随机/特定触发（今日观测 1/16 计划确定性 + 1/16 随机），遇到 length 截断/timeout 时按 UI 用户确认流程重试或对该章重计划（5 章批次已证明同位置重计划可正常写作），目标形成 10/10 adopted 分母。
+3. 用 `phase4ContinuousHarness` 与 `phase4HistoricalAb` 计算真实分母与 A/B；First-Pass 达到历史稳定水平（今日 86.7% vs 历史确定性 100% 的差距需由更大分母或改善收敛判定）且次级指标无回退时，才允许把状态改为 `PHASE IV FINAL SEALED / GO`。
+4. 全程不记录 API Key 与小说正文；每章 Receipt/DB/UI/logcat 入 `test-logs/`。

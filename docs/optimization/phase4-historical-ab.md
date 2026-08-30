@@ -24,6 +24,23 @@
 
 历史来源：`docs/optimization/TAVO-MINI_第二期_Final-Seal_最终封板报告_20260820.md`。C9 数字来源：`test-logs/phase3-c9-cost-latency-20260830-000001/c9-aggregate.json`。两者均保留为历史证据，不被本轮改写。
 
+## IV-10 补充：DeepSeek 真实轮快照（2026-08-31）
+
+当前版本已有真实 paid 分母（DeepSeek `deepseek-v4-flash`，2026-08-30/31，`test-logs/phase4-deepseek-rca-20260830/`）：
+
+| 指标 | 历史稳定版本 | C9 Baseline | Phase IV 当前（DeepSeek 真实轮） |
+|---|---|---|---|
+| E2E First-Pass Adoptable | deterministic `8/8`（=100%） | 无该字段 | **13/15 = 86.7%**（10 章批 8/10 + 5 章批 5/5；adopted 14/15 = 93.3%）|
+| Adopted | — | 无该字段 | 14/15（唯一失败章为 model 侧病态计划，P0-05 fail-closed）|
+| provider latency | 未统计 | p50/p95 187.7s/337.8s | draft 20–90s（思考口径不同：DeepSeek 冻结 thinking=disabled）|
+| `finishReason=length` | 未统计 | 5/38 = 13.16% | 2/34 paid pipeline 调用 = 5.9%（同一病态计划的 2 次尝试）|
+| `outcome_unknown` | 未统计 | 1/38 = 2.63% | 2/34 = 5.9%（**次级回退**；零自动 retry，均用户确认恢复）|
+| JSON failure | 未给同口径分母 | 0/38 | 0/34 |
+| physical calls | 未统计 | 38/38 writer | 34 pipeline 调用（draft 19 + qa 13 + brief 2）+ story-memory 后置调用如实入账；Governor=0 |
+| input tokens | 未统一 | p50 38,125 | draft 51.5k–74.3k（3000 字目标 + standard 档，口径不同不作降幅宣称）|
+
+**比较器判定（规则照旧执行）：`NO-GO`** —— `current_first_pass_below_historical`（86.7% < 100%）+ `current_outcome_unknown_worse_than_baseline`（2/34 > 1/38）。判定为真值结算：历史 100% 来自确定性回归（mock LLM），当前 86.7% 来自真实 provider 全天 15 章连续运行；两者口径差异已标注，但不因口径不同而放宽比较规则。
+
 ## 当前版本已验证的减法信号（非 E2E 通过率）
 
 - Gate inventory：18 项，`Hard 8 / Advisory 3 / Merge 3 / Remove 4`；Governor 当前请求否决、Formatter rescue call、model-side fingerprint 和重复诊断已从 Phase IV 标记路径移除。
