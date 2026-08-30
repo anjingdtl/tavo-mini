@@ -731,3 +731,60 @@ Act：C0 Regression、C1 Red→最小实现→targeted/full verify、APK/install
 - Thinking Always On；Pipeline 仍为单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；Mandatory Truth 未裁掉；没有固定业务 `maxTokens`；`finishReason=length` 继续 fail-closed；Governor 未增加 LLM 调用；所有真实 physical calls 均在 Receipt/DB/UI 计账；Generic Prior 未接管 Production。
 - C7 没有把 `570 → 900 → 1200` 当修复，也没有 Streaming Spike；C6 与本轮 Standard Clean 已证明现有非流式请求在 watchdog 内可完成，暂无区分长 reasoning/generation/gateway hang 的真实需求。
 - C7 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → `install-r` → Android 真实配置 LLM → DB/Receipt/UI/logcat → ACT 全部 PASS。故 C7 正式 `GO`，下一阶段为 `C8 — Durable Resume`；本节不写 `PHASE III-C FINAL SEALED / GO`。
+
+### C8 — Durable Resume（2026-08-30，PLAN）
+
+状态：`C8 PLAN / Red pending`。C7 已完成当前单请求的超时/失败归属封板，真实 Android Standard Clean 已证明 Draft 与 QA 能在冻结合同下稳定完成；C8 只处理 durable resume 的边界，不改变 Writing Pipeline 拓扑。
+
+#### 当前证据与根因假设
+
+- 当前统一 Outline 路径通过 `pipeline_stage_checkpoints` 与 `pipeline_stage_attempts` 保存阶段状态、Frozen request/Receipt 和 usage；已成功阶段由 `determineNextPipelineAction` 跳过，当前阶段由 CAS 重新 claim。已有单元测试覆盖部分成功 checkpoint preload，但尚未把 App kill/process restart 与真实 stage attempt 的关系封成 C8 gate。
+- 冷启动目前会把 `running` checkpoint 标成 `interrupted`；如果对应的 per-stage attempt 仍为 `started`，它可能已经跨过 provider request 边界。未经分类就允许用户 resume 会产生重复付费风险，尤其是 provider timeout、post-send network 和进程死亡窗口。该状态必须 fail closed 为 `outcome_unknown`，不得自动重发。
+- 失败节点 reset 顺序仍包含历史 `draft/review/factCheck/brief/proof`，对 Compact current topology 的 `qa` 不完整；resume reset 还必须保留成功节点、Frozen snapshot、stage attempts 和原始失败证据。最终 `Persist`/task completion 需要以已持久化的 final body 做幂等判断，避免恢复窗口重复写 Final。
+
+#### 只改什么 / 明确不改什么
+
+- 只补齐 Current-Pipeline-Only 的 resume contract：冷启动将未终态的 current pipeline stage attempt 安全分类；`outcome_unknown` 保持终态且不进入自动 retry；Compact `qa` 纳入拓扑感知 reset；成功 artifact/Frozen Contract/physical-call ledger 保持可复用；Final persist 与 completion 采用相同 body 的幂等回写。
+- Mock 允许注入 queue、pre-send network、post-send network、provider timeout、process-kill 前后的 durable rows；所有 fault 都必须在 Receipt、attempt ledger、checkpoint、UI/投影中可解释。安全 pre-send retry 仍只允许既有 `safe_retry/rate_limit` 规则。
+- 不改变单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；不增加 Agent、Context、Memory、Writer、Formatter 或 LLM 调用；不改 Thinking、Mandatory Truth、业务 `maxTokens`、570000ms watchdog、Governor 公式、provider protocol、`finishReason=length` 或 C7 failure classification。
+- 不改 legacy pipeline 的历史恢复语义；只让 current compact topology 具备明确、可审计的 durable resume 语义。旧 NO-GO、真实失败、旧 attempt 行和正文仍保留。
+
+#### C8 Red / CHECK / Android GO Gate
+
+- Red 先锁定：未终态 attempt 的冷启动分类；`outcome_unknown` 不可被 reset/auto-retry；Compact `qa` reset 保留 Draft 成功 checkpoint；Frozen Contract fingerprint 不漂移；Final body 相同只产生一次有效 persist；成功阶段恢复不产生新的 physical call。
+- CHECK-A：C8 targeted → typecheck/lint/`verify:elastic`/`verify:version` → full Jest/`verify`；失败证据追加保存，不覆盖旧记录。CHECK-B：APK build、SHA-256、`adb devices`、仅 `adb install -r`。
+- GO 必须在已配置真实 LLM 的 Android 上完成一次当前 compact run，并在实际运行中执行 `am force-stop` + relaunch；恢复后通过 DB/Receipt/stage attempts/projection/UI/logcat 证明 Frozen Contract 未漂移、成功阶段未重跑、未知请求未重发、Final 不重复写、无双收费、无 crash/ANR。通过后才进入 C9；本节不提前宣布 GO 或 Final Seal。
+
+### C8 — Durable Resume（2026-08-30，ACT / GO）
+
+状态：`C8 GO`。C8 在保留旧失败证据的前提下，完成了 Current Compact continuation ledger 的冷启动保护、Compact `qa` reset、成功阶段复用与 Final 幂等写入；真实 Android 已完成一次 `am force-stop` + relaunch 纠偏复核，以及一次修正版后的真实 Clean 完整闭环。本节不宣布 Phase III-C Final Seal。
+
+#### PLAN → Red → 最小实现
+
+- 首次真实 Android C8 形成有效 NO-GO：真实 run `ct_6795c550baf649609ccd1b089f7b0e0a` 在 `unified_qa` provider 请求进行中被 force-stop；重启后 run 已为 `interrupted/cold_start`，但实际使用的 `continuation_generation_stage_results` 仍显示 `unified_qa=running`、`request_reserved=1`、`request_count=1`。根因是初版 C8 只覆盖 `pipeline_tasks/pipeline_stage_attempts`，没有覆盖当前 Writing Kernel continuation ledger。证据 `test-logs/phase3-c8-durable-resume-20260830-000001/c8-real-no-go-before-continuation-fix.txt` 与 `c8-post-restart-projection.json` 保留，未重试、未删除、未清库。
+- Red-first 已追加实际 continuation-ledger 边界测试：`c8-continuation-ledger-red-before-fix.txt` 记录实现前 Compact reservation 未被保护；既有 C8 Red `c8-red-before-implementation.txt` 继续保留。新增测试覆盖 Compact/Legacy 隔离、已先变成 `interrupted` 的旧版本 run、CAS 幂等和后续 reservation 拒绝。
+- 最小纠偏在 `generationRepository.ts` 增加冻结 `pipelineTopologyVersion=compact_standard` 的 current stage reservation 冷启动扫描：只处理 `draft_writer/unified_qa/revision_writer` 的 `running + request_reserved=1 + request_count=1`，以 guarded update 落为 `interrupted/OUTCOME_UNKNOWN`，保留既有 reservation/usage，不伪造 receipt、不发起 retry；Legacy snapshot 不接管。`pipelineStageCheckpointRepository.ts` 将 Compact `qa` 纳入 reset 顺序，并把已有 `outcome_unknown/started` 作为不可重放边界；outline/continuation Final persistence 对相同正文采用幂等 no-op。Writing Pipeline、Thinking、Mandatory Truth、业务 `maxTokens`、570000ms watchdog、Governor/provider protocol、自动 retry 与 legacy 恢复语义均未改变。
+
+#### Targeted / Full Verify
+
+- C8 focused：`1 suite / 8 tests PASS`；C8 + C4–C7、resume、ledger、kernel、Final Candidate、continuation repository cross-layer：`18 suites / 95 tests PASS`。
+- 完整 `npm.cmd run verify`：lint `0 errors`、既有 `259 warnings`；typecheck PASS；`verify:elastic` PASS；`verify:version` PASS（V2.21.1 / versionCode=2210100）；Jest `523 suites passed / 3 existing suites skipped / 526 total`，`3720 tests passed / 8 existing tests skipped / 3728 total`。未改变仓库既有 skipped suites/tests。
+
+#### APK / install-r
+
+- C8 初次 APK 命令与 direct Gradle 均复现环境级 `Unable to establish loopback connection`；该失败保存在 `c8-apk-install-summary.txt`，未误判为源码失败。将本进程 `TEMP/TMP` 指向短路径 `C:\\tavo-gradle-tmp` 后构建成功：`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，大小 `59,882,758` bytes，SHA-256：`ACF6286AEC068738DFB8CD9D94E816C3A945592DC1AECBF9907C718FC196F459`。
+- `adb devices` 为 `emulator-5554 device`；只执行 `adb -s emulator-5554 install -r`，结果 `Success`。包 `com.shinewriter` 的 `versionName=V2.21.1`、`versionCode=2210100`、`minSdk=24`、`targetSdk=36` 保持，`firstInstallTime=2026-08-23 04:59:45` 未改变；没有 uninstall、`pm clear`、清库或重置用户数据。
+
+#### Real Android / DB / Receipt / UI / logcat
+
+- 修正版重启复核：旧 run `ct_6795c550baf649609ccd1b089f7b0e0a` 的 Draft success receipt 保持 1 个；`c8-post-fix-restart-projection.json` 显示 run `interrupted/cold_start`，`unified_qa` 为 `interrupted/OUTCOME_UNKNOWN`、`request_reserved=1`、`request_count=1`、`receiptCount=0`。再次冷启动 reconciliation 返回 0，`reserveContinuationStage` 返回 `reserved=false`，证明未知 provider 边界不重发、不双收费。
+- 修正版后的真实 Clean run `ct_3049f5f3aefd4ac5b482f96455c13f93`（targetPosition 95）在同一 App 已配置的真实 `open.bigmodel.cn-v4 / GLM-5.3-Flash` 上完成并通过语义 UI `采纳`。稳定 projection `c8-clean-adopted-projection.json`：`state=completed`、`completionReason=adopted`、`stageCount=4`、`receiptCount=3`、`dbIntegrity=ok`、`productionStage=draft+qa+revision-exact-safe-warm-start`。
+- 三个物理 stage 均为单次 reservation/单次 receipt，`physicalRequestCount=1`、`protocolFallbackCount=0`、`finishReason=stop`、Thinking enabled、Frozen/wire `high/high`、provider support=supported：Draft wire `24279`，usage `input/output/reasoning/visible=40333/13628/11558/2070`，Governor `ACTIVE/ready` samples `20`；QA wire `23201`，usage `24211/5577/5372/205`，Governor `ACTIVE/ready` samples `15`；Revision wire `15477`，usage `35882/10357/7992/2365`，Governor `PROBATION/not-ready` samples `2`。FinalValidate 为零请求 `success`，未增加隐藏调用。
+- UI 证据：`c8-clean-ai-dialog.xml/.png` 为真实请求确认；`c8-clean-result.xml/.png` 显示 `已修订`、`1,884 字 / 8 段`、`AI 本次修改：2 处`；语义点击 `采纳` 后 `c8-clean-adopted.xml/.png` 显示第 97 章正文与 `已保存`。稳定 projection 的敏感 key 计数 `api_key=0 / authorization=0 / bearer=0`，`rawPromptOrBodyStoredInProjection=false`。
+- 修正版重启后的产品进程 PID `25637` 过滤 logcat 共 `300` 行，`FATAL EXCEPTION / ANR / process death=0`；本 build 不向 logcat 输出 Governor/Receipt payload，Receipt/usage 以同一 run 脱敏 stable projection 为权威来源。证据集中在 `test-logs/phase3-c8-durable-resume-20260830-000001/`。
+
+#### ACT / P0 / Required Gate
+
+- C8 的真实 NO-GO 先被保留，再以 frozen compact topology 的 stage ledger 纠偏；没有把 `outcome_unknown` 变成可重放 pending，没有覆盖旧 run、旧 receipt 或真实失败证据。成功 Draft 不重跑，未知 QA reservation 不重发，相同 Final body 不重复写入。
+- Thinking Always On；仍为单 Freeze、单共享 Context、单 Writer/QA/Revision/Final Candidate/PostWriting/ONE Memory；无新增 Agent、第二 Context、Memory、Writer、Formatter 或 Governor LLM call；Mandatory Truth 未裁掉；没有固定业务 `maxTokens`；`finishReason=length` fail-closed；所有真实 paid calls 如实计账；Android 只使用 `adb install -r`；Generic Prior 未直接接管 Production。
+- C8 Required Gate：PLAN → Red → 最小实现 → targeted/full verify → APK → `install-r` → Android 真实配置 LLM → force-stop/relaunch → DB/Receipt/UI/logcat → ACT 全部 PASS。故 C8 正式 `GO`，下一阶段为 `C9`；本节不写 `PHASE III-C FINAL SEALED / GO`。

@@ -8,6 +8,7 @@
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
+import { executeTransaction } from '../../services/database/transaction';
 
 export type PipelineAttemptStatus =
   | 'started'
@@ -391,6 +392,95 @@ export async function getStageAttempt(
     [attemptId],
   );
   return row ? hydrateAttemptRow(row) : null;
+}
+
+/**
+ * Cold-start recovery for the current durable Outline pipeline.
+ *
+ * A process can die after an attempt row is created and before the provider
+ * response (or the attempt success/failure update) is durable.  `started` is
+ * therefore not a replayable state: the request may already have crossed the
+ * provider boundary and may already be billable.  Convert that row to the
+ * explicit outcome-unknown terminal state and fail the matching checkpoint
+ * closed.  A checkpoint that is already succeeded/skipped is authoritative;
+ * it contains the durable artifact, so the attempt is reconciled as
+ * succeeded instead of regressing a completed stage.
+ *
+ * This function intentionally has no retry side effect.  The caller may
+ * surface the task to the user, but the pipeline must never silently issue a
+ * second request for an unknown outcome.
+ */
+export async function markStartedPipelineAttemptsOutcomeUnknown(
+  now = Date.now(),
+): Promise<number> {
+  const rows = await all<{
+    id: string;
+    pipeline_task_id: string;
+    stage: string;
+    checkpoint_status?: string | null;
+  }>(
+    `SELECT a.id, a.pipeline_task_id, a.stage,
+            c.status AS checkpoint_status
+       FROM pipeline_stage_attempts AS a
+       JOIN pipeline_tasks AS t ON t.id = a.pipeline_task_id
+       LEFT JOIN pipeline_stage_checkpoints AS c
+         ON c.task_id = a.pipeline_task_id AND c.stage = a.stage
+      WHERE a.status = 'started'
+        AND t.pipeline_topology_version = 2`,
+  );
+  if (rows.length === 0) return 0;
+
+  const outcomeUnknownMessage =
+    '进程在请求完成前退出，结果未知；为避免重复收费，不自动重发。';
+  const statements = rows.flatMap(row => {
+    const checkpointStatus = String(row.checkpoint_status || '');
+    if (checkpointStatus === 'succeeded' || checkpointStatus === 'skipped') {
+      return [
+        {
+          sql: `UPDATE pipeline_stage_attempts
+                   SET status = 'succeeded', failure_class = NULL,
+                       error_code = NULL, error_message = NULL,
+                       completed_at = ?
+                 WHERE id = ? AND status = 'started'`,
+          params: [now, row.id],
+        },
+      ];
+    }
+    return [
+      {
+        sql: `UPDATE pipeline_stage_attempts
+                 SET status = 'outcome_unknown',
+                     failure_class = 'outcome_unknown',
+                     error_code = 'PROCESS_RESTART',
+                     error_message = ?,
+                     completed_at = ?
+               WHERE id = ? AND status = 'started'`,
+        params: [outcomeUnknownMessage, now, row.id],
+      },
+      {
+        sql: `UPDATE pipeline_stage_checkpoints
+                 SET status = 'failed',
+                     error_code = 'OUTCOME_UNKNOWN',
+                     error_message = ?,
+                     completed_at = ?,
+                     updated_at = ?
+               WHERE task_id = ? AND stage = ?
+                 AND status NOT IN ('succeeded', 'skipped')`,
+        params: [
+          outcomeUnknownMessage,
+          now,
+          now,
+          row.pipeline_task_id,
+          row.stage,
+        ],
+      },
+    ];
+  });
+  await executeTransaction(await openDatabase(), statements);
+  return rows.filter(row => {
+    const status = String(row.checkpoint_status || '');
+    return status !== 'succeeded' && status !== 'skipped';
+  }).length;
 }
 
 /** Clear cold-start reasoning scratch data once a checkpoint is settled. */

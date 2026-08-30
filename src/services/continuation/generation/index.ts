@@ -44,6 +44,7 @@ export {
   retryContinuationOutbox,
   retryFailedContinuationOutbox,
   getOutboxSummary,
+  markReservedContinuationStagesOutcomeUnknownOnColdStart,
   markRunsInterruptedOnColdStart,
   contentRevisionHash,
   resolveCheck,

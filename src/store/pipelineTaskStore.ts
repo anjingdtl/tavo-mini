@@ -559,6 +559,14 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     await awaitTaskPersistenceQueue(taskId);
     const existing = get().tasks.find(t => t.id === taskId);
     if (!existing) return;
+    // Durable Final/Persist may be replayed after a process restart.  The
+    // task status transition is owned by persistCompleteTask; this helper
+    // only writes the final body, so an identical body is a true no-op.
+    if (
+      String(existing.finalText || '').trim() === String(finalText || '').trim()
+    ) {
+      return;
+    }
     const next: PipelineTask = {
       ...existing,
       finalText,

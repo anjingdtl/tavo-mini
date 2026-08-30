@@ -188,6 +188,8 @@ export function createOutlineDurableAdapter(input: {
     async persistFinal(artifacts: WritingStageArtifacts) {
       const body = readFinalBody(artifacts);
       const store = usePipelineTaskStore.getState();
+      const existing = store.tasks.find(item => item.id === input.taskId);
+      if (!shouldPersistFinalBody(existing?.finalText, body)) return;
       if (store.persistTaskFinalText) {
         await store.persistTaskFinalText(input.taskId, body);
       } else {
@@ -208,4 +210,18 @@ function readFinalBody(artifacts: WritingStageArtifacts): string {
     }
   }
   return '';
+}
+
+/**
+ * Final body persistence is a durable idempotency boundary.  A process can
+ * die after the final text row is committed but before the task reaches its
+ * terminal status; replay must not write the same final body a second time.
+ */
+export function shouldPersistFinalBody(
+  existingBody: string | null | undefined,
+  nextBody: string,
+): boolean {
+  const next = String(nextBody || '').trim();
+  if (!next) return false;
+  return String(existingBody || '').trim() !== next;
 }

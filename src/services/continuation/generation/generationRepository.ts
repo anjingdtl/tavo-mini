@@ -47,6 +47,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const CONTINUATION_OUTCOME_UNKNOWN_CODE = 'OUTCOME_UNKNOWN';
+const CONTINUATION_OUTCOME_UNKNOWN_MESSAGE =
+  '请求结果未知；为避免重复收费，不自动重发。';
+
 function asBool(v: number | boolean | null | undefined): boolean {
   return v === 1 || v === true;
 }
@@ -877,6 +881,64 @@ export async function casUpdateRunState(
   return (res.rowsAffected ?? 0) > 0;
 }
 
+/**
+ * A process can disappear after the continuation provider boundary has been
+ * crossed but before the stage result is settled. The stage reservation is
+ * therefore authoritative: the compact current topology must become a
+ * terminal interrupted/OUTCOME_UNKNOWN row, never a fresh queued request.
+ *
+ * The topology check deliberately reads the frozen kernel policy from the
+ * durable snapshot. Legacy V5 rows may contain historical node names (and
+ * newer ledgers may contain compatibility rows), so a stage-name heuristic
+ * would risk taking over a legacy run. The SQL projection keeps the large
+ * snapshot body out of the CursorWindow.
+ */
+export async function markReservedContinuationStagesOutcomeUnknownOnColdStart(): Promise<number> {
+  const db = await openDatabase();
+  const ts = nowIso();
+  const [rows] = await db.executeSql(
+    `SELECT stage.run_id, stage.stage
+       FROM continuation_generation_stage_results AS stage
+       JOIN continuation_generation_runs AS run ON run.id = stage.run_id
+      WHERE run.state IN ('queued', 'running', 'interrupted')
+        AND json_extract(
+          run.context_snapshot_json,
+          '$.frozenWritingContext.stagePolicy.values.pipelineTopologyVersion'
+        ) = 'compact_standard'
+        AND stage.stage IN ('draft_writer', 'unified_qa', 'revision_writer')
+        AND stage.status = 'running'
+        AND stage.request_reserved = 1
+        AND stage.request_count = 1`,
+  );
+  let protectedStages = 0;
+  for (let index = 0; index < rows.rows.length; index += 1) {
+    const row = rows.rows.item(index);
+    const [updated] = await db.executeSql(
+      `UPDATE continuation_generation_stage_results
+          SET status = 'interrupted',
+              error_code = ?,
+              error_message = ?,
+              completed_at = ?,
+              updated_at = ?
+        WHERE run_id = ?
+          AND stage = ?
+          AND status = 'running'
+          AND request_reserved = 1
+          AND request_count = 1`,
+      [
+        CONTINUATION_OUTCOME_UNKNOWN_CODE,
+        CONTINUATION_OUTCOME_UNKNOWN_MESSAGE,
+        ts,
+        ts,
+        row.run_id,
+        row.stage,
+      ],
+    );
+    protectedStages += updated.rowsAffected ?? 0;
+  }
+  return protectedStages;
+}
+
 export async function markRunsInterruptedOnColdStart(): Promise<number> {
   const db = await openDatabase();
   const ts = nowIso();
@@ -950,7 +1012,9 @@ export async function markRunsInterruptedOnColdStart(): Promise<number> {
      WHERE state = 'running'`,
     [ts],
   );
-  return interruptedRuns + (outboxRes.rowsAffected ?? 0);
+  const protectedStages =
+    await markReservedContinuationStagesOutcomeUnknownOnColdStart();
+  return interruptedRuns + (outboxRes.rowsAffected ?? 0) + protectedStages;
 }
 
 export async function markRunsOutdatedForProject(

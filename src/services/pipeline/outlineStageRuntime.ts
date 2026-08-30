@@ -106,6 +106,7 @@ import {
 import {
   MAX_AUTO_RETRY_ATTEMPTS,
 } from '../llm/requestPolicy';
+import { shouldPersistFinalBody } from '../writing/persistence/outlineDurableAdapter';
 
 export type StageInfo = {
   stage: PipelineStageName | 'idle';
@@ -1319,10 +1320,15 @@ async function actionFinalizeFromDraft(
     } else {
       store.failTask(taskId, message);
     }
-    if (store.persistTaskFinalText) {
-      await store.persistTaskFinalText(taskId, draftText);
-    } else {
-      store.setTaskFinalText(taskId, draftText);
+    const current = usePipelineTaskStore
+      .getState()
+      .tasks.find(item => item.id === taskId);
+    if (shouldPersistFinalBody(current?.finalText, draftText)) {
+      if (store.persistTaskFinalText) {
+        await store.persistTaskFinalText(taskId, draftText);
+      } else {
+        store.setTaskFinalText(taskId, draftText);
+      }
     }
     if (emitForeground) {
       await PipelineForeground.notifyFailed(
@@ -1335,10 +1341,15 @@ async function actionFinalizeFromDraft(
     await PipelineForeground.stop(taskId);
     return;
   }
-  if (store.persistTaskFinalText) {
-    await store.persistTaskFinalText(taskId, finalText);
-  } else {
-    store.setTaskFinalText(taskId, finalText);
+  const current = usePipelineTaskStore
+    .getState()
+    .tasks.find(item => item.id === taskId);
+  if (shouldPersistFinalBody(current?.finalText, finalText)) {
+    if (store.persistTaskFinalText) {
+      await store.persistTaskFinalText(taskId, finalText);
+    } else {
+      store.setTaskFinalText(taskId, finalText);
+    }
   }
   if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成校验，准备保存', 98);
@@ -1366,10 +1377,15 @@ async function actionFinalizeFromProof(
   const proofText = await getStageText(taskId, 'proof');
   const text = proofText || (await getDraftText(taskId));
   await saveDraftBody(taskId, chapter, text);
-  if (store.persistTaskFinalText) {
-    await store.persistTaskFinalText(taskId, text);
-  } else {
-    store.setTaskFinalText(taskId, text);
+  const current = usePipelineTaskStore
+    .getState()
+    .tasks.find(item => item.id === taskId);
+  if (shouldPersistFinalBody(current?.finalText, text)) {
+    if (store.persistTaskFinalText) {
+      await store.persistTaskFinalText(taskId, text);
+    } else {
+      store.setTaskFinalText(taskId, text);
+    }
   }
   if (emitForeground) {
     await PipelineForeground.updateProgress(taskId, '已完成校验，准备保存', 98);

@@ -6,6 +6,7 @@ import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import { openDatabase } from '../connection/openDatabase';
 import { executeTransaction } from '../../services/database/transaction';
+import { getLatestStageAttempt } from './pipelineStageAttemptRepository';
 import type { Row } from './shared';
 import type {
   PipelineCheckpointStage,
@@ -245,7 +246,48 @@ export async function resetFailedStageCheckpointsForResume(
     `SELECT stage, status FROM pipeline_stage_checkpoints WHERE task_id = ?`,
     [taskId],
   );
-  const order = ['draft', 'review', 'factCheck', 'brief', 'proof', 'finalize'];
+  // Compact current topology is draft → qa → brief.  Keep the historical
+  // parallel review/factCheck order in the same list so legacy rows retain
+  // their sibling-preservation semantics.
+  const order = ['draft', 'qa', 'review', 'factCheck', 'brief', 'proof', 'finalize'];
+  const unknownStages = new Set<string>();
+  await Promise.all(
+    rows.map(async row => {
+      const status = String(row.status || '');
+      if (!['failed', 'interrupted', 'running'].includes(status)) return;
+      const attempt = await getLatestStageAttempt(taskId, String(row.stage));
+      if (
+        attempt?.status === 'outcome_unknown' ||
+        attempt?.failureClass === 'outcome_unknown' ||
+        attempt?.status === 'started'
+      ) {
+        unknownStages.add(String(row.stage));
+      }
+    }),
+  );
+  if (unknownStages.size > 0) {
+    const now = Date.now();
+    await executeTransaction(
+      await openDatabase(),
+      Array.from(unknownStages).map(stage => ({
+        sql: `UPDATE pipeline_stage_checkpoints
+                 SET status = 'failed',
+                     error_code = 'OUTCOME_UNKNOWN',
+                     error_message = ?,
+                     completed_at = ?,
+                     updated_at = ?
+               WHERE task_id = ? AND stage = ?
+                 AND status NOT IN ('succeeded', 'skipped')`,
+        params: [
+          '请求结果未知；为避免重复收费，不自动重发。',
+          now,
+          now,
+          taskId,
+          stage,
+        ],
+      })),
+    );
+  }
   const firstFailure = rows.reduce((minimum, row) => {
     const status = String(row.status || '');
     const index = order.indexOf(String(row.stage));
@@ -270,6 +312,10 @@ export async function resetFailedStageCheckpointsForResume(
           (firstFailure === order.indexOf('factCheck') && String(row.stage) === 'review')) &&
         String(row.status) === 'succeeded';
       if (isSuccessfulParallelSibling) return false;
+      // A request with an unknown outcome is an immutable manual-confirm
+      // boundary. Never turn it back into pending merely because the user
+      // opened the generic resume action.
+      if (unknownStages.has(String(row.stage))) return false;
       return index >= firstFailure;
     })
     .map(row => ({

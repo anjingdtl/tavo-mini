@@ -33,6 +33,7 @@ import {
   runWritingKernel,
 } from '../services/writing';
 import { resetFailedStageCheckpointsForResume } from '../data/repositories/pipelineStageCheckpointRepository';
+import { markStartedPipelineAttemptsOutcomeUnknown } from '../data/repositories/pipelineStageAttemptRepository';
 import {
   progressFor,
   type StartupPhase,
@@ -184,6 +185,22 @@ export const App: React.FC = () => {
         // 的运行，必须立即终态化，不能等 10 分钟 stale 窗口后继续卡住章节。
         reportPhase('recovering_tasks');
         await usePipelineTaskStore.getState().loadFromDB();
+        // A pipeline attempt left as `started` across process death may have
+        // crossed the provider boundary.  Mark it outcome_unknown before the
+        // UI can offer resume; this is deliberately a terminal no-replay
+        // boundary, not an automatic retry.
+        try {
+          const unknown = await markStartedPipelineAttemptsOutcomeUnknown();
+          if (unknown > 0) {
+            console.warn(
+              `[App] cold-start cleanup: classified ${unknown} pipeline attempt(s) as outcome_unknown`,
+            );
+          }
+        } catch (e) {
+          // Fail closed at the stage/resume boundary: a reconciliation failure
+          // must remain visible in logs rather than silently replaying a row.
+          console.warn('[App] pipeline attempt reconciliation skipped', e);
+        }
         const marked = usePipelineTaskStore.getState().markActiveTasksAsInterrupted();
         if (marked > 0) {
           console.log(
