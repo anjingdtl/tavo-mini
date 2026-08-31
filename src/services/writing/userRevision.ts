@@ -24,6 +24,7 @@ import {
 import * as db from '../database';
 import {
   findLatestAdoptedRunForChapter,
+  findLatestPendingReviewRunForChapter,
   getRunContextSnapshotJson,
 } from '../continuation/generation';
 import type { FrozenWritingContext } from './contracts/frozenWritingContext';
@@ -40,6 +41,17 @@ import {
   type RevisionChangeSet,
 } from './revisionChangeSet';
 import { createRevision } from '../revisionService';
+import { finalizeChapterMemory } from '../storyMemory/storyMemoryService';
+import { finalizeContinuationChapter } from './persist/continuationAdoption';
+import {
+  getLatestCompletedPipelineTaskForTarget,
+  getPipelineTaskAdoptionPayload,
+} from '../../data/repositories/pipelineTaskRepository';
+import {
+  getLatestEligibleArtifact,
+  insertArtifact,
+} from '../continuation/generation/generationRepository';
+import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
 
 export type UserRevisionKind = 'targeted_revision' | 'whole_chapter_rewrite';
 export type UserRevisionScenario = 'outline' | 'continuation';
@@ -61,6 +73,10 @@ export type UserRevisionErrorCode =
   | 'USER_REVISION_PREVIEW_NOT_PENDING'
   | 'USER_REVISION_CHAPTER_MISSING'
   | 'USER_REVISION_FROZEN_TRUTH_MISSING'
+  | 'USER_REVISION_CANDIDATE_MISSING'
+  | 'USER_REVISION_CANDIDATE_STALE'
+  | 'USER_REVISION_CANDIDATE_WRITE_FAILED'
+  | 'USER_REVISION_POST_WRITING_FAILED'
   | 'USER_REVISION_LLM_FAILED'
   | 'USER_REVISION_MULTIPLE_REQUESTS';
 
@@ -105,6 +121,17 @@ export interface UserRevisionSelectionSnapshot {
   instruction: string;
 }
 
+/**
+ * Where the revision base lives. `chapter` means the persisted chapter body is
+ * the authority (post-adoption). `pipeline_task` / `continuation_run` mean the
+ * Final Candidate Artifact is the authority (pre-adoption); applying such a
+ * revision writes the candidate store, never the chapter body.
+ */
+export type UserRevisionCandidateRef =
+  | { kind: 'chapter' }
+  | { kind: 'pipeline_task'; taskId: string }
+  | { kind: 'continuation_run'; runId: string };
+
 export interface UserRevisionReceipt {
   version: 1;
   actionId: string;
@@ -116,7 +143,15 @@ export interface UserRevisionReceipt {
   freezeFingerprint: string | null;
   truthProjectionFingerprint: string | null;
   modelConfigId: number | null;
+  /**
+   * P1-3 contract (Option B): `modelName`/`providerType` are the RESOLVED
+   * live values actually used on the wire, resolved from the persisted
+   * `modelConfigId` at request time. `frozenModelName` is recorded only as the
+   * frozen generation binding — never as the physical model identity.
+   */
   modelName: string;
+  providerType: string | null;
+  frozenModelName: string;
   instructionFingerprint: string;
   baseBodyFingerprint: string;
   candidateBodyFingerprint: string;
@@ -160,6 +195,8 @@ export interface UserRevisionPreview {
   patches?: RepairPatch[];
   diff: RevisionChangeSet;
   frozenTruth: UserRevisionFrozenTruth;
+  /** Where Apply must write: chapter body (default) or Final Candidate store. */
+  candidateRef: UserRevisionCandidateRef;
   receipt: UserRevisionReceipt;
   createdAt: number;
 }
@@ -652,6 +689,15 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
     );
   }
   const completedAt = Date.now();
+  // P1-3 Option B: the receipt explains the real physical call. When the
+  // config was resolved live, the resolved model identity is what the wire
+  // used; an injected test caller is itself the observed call.
+  const wireModelName = requestConfig
+    ? requestConfig.model_name
+    : input.frozenTruth.modelName;
+  const wireProviderType = requestConfig
+    ? requestConfig.provider_type
+    : null;
   const receiptBase: Omit<
     UserRevisionReceipt,
     | 'baseBodyFingerprint'
@@ -668,7 +714,9 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
     freezeFingerprint: input.frozenTruth.freezeFingerprint,
     truthProjectionFingerprint: input.frozenTruth.truthProjectionFingerprint,
     modelConfigId: input.frozenTruth.modelConfigId,
-    modelName: input.frozenTruth.modelName,
+    modelName: wireModelName,
+    providerType: wireProviderType,
+    frozenModelName: input.frozenTruth.modelName,
     instructionFingerprint: hashContent(input.instruction),
     thinking: { type: 'enabled' },
     governorBypassed: true,
@@ -786,6 +834,8 @@ export async function createTargetedRevisionPreview(input: {
   selectionStart: number;
   selectionEnd: number;
   frozenTruth: UserRevisionFrozenTruth;
+  /** Where Apply writes; defaults to the persisted chapter body. */
+  candidateRef?: UserRevisionCandidateRef;
   call?: UserRevisionLlmCaller;
   abortSignal?: AbortSignal;
 }): Promise<UserRevisionPreview> {
@@ -870,6 +920,7 @@ export async function createTargetedRevisionPreview(input: {
     patches,
     diff: computeRevisionChangeSet(body, candidate, []),
     frozenTruth: input.frozenTruth,
+    candidateRef: input.candidateRef ?? { kind: 'chapter' },
     receipt,
     createdAt: Date.now(),
   };
@@ -880,6 +931,8 @@ export async function createWholeChapterRewritePreview(input: {
   scenario: UserRevisionScenario;
   instruction: string;
   frozenTruth: UserRevisionFrozenTruth;
+  /** Where Apply writes; defaults to the persisted chapter body. */
+  candidateRef?: UserRevisionCandidateRef;
   call?: UserRevisionLlmCaller;
   abortSignal?: AbortSignal;
 }): Promise<UserRevisionPreview> {
@@ -953,6 +1006,7 @@ export async function createWholeChapterRewritePreview(input: {
     candidateBodyFingerprint: hashContent(candidate),
     diff: computeRevisionChangeSet(body, candidate, []),
     frozenTruth: input.frozenTruth,
+    candidateRef: input.candidateRef ?? { kind: 'chapter' },
     receipt,
     createdAt: Date.now(),
   };
@@ -1024,32 +1078,313 @@ export async function applyUserRevisionPreview(input: {
     preview.kind === 'targeted_revision'
       ? 'before_targeted_revision'
       : 'before_whole_chapter_rewrite';
-  const revisionId = await createRevision({
-    projectId: chapter.project_id,
-    targetType: 'chapter',
-    targetId: chapter.id,
-    title: chapter.title,
-    content: persistedBody,
-    source,
-    sourceRef: JSON.stringify({
-      version: 1,
-      previewId: preview.previewId,
-      receipt: preview.receipt,
-      selection: preview.selection
-        ? {
-            start: preview.selection.selectionStart,
-            end: preview.selection.selectionEnd,
-            baseBodyFingerprint: preview.selection.baseBodyFingerprint,
-            selectedTextFingerprint: preview.selection.selectedTextFingerprint,
-          }
-        : null,
-    }),
-  });
+  const revisionId = await createRevision(
+    {
+      projectId: chapter.project_id,
+      targetType: 'chapter',
+      targetId: chapter.id,
+      title: chapter.title,
+      content: persistedBody,
+      source,
+      sourceRef: JSON.stringify({
+        version: 1,
+        previewId: preview.previewId,
+        receipt: preview.receipt,
+        selection: preview.selection
+          ? {
+              start: preview.selection.selectionStart,
+              end: preview.selection.selectionEnd,
+              baseBodyFingerprint: preview.selection.baseBodyFingerprint,
+              selectedTextFingerprint: preview.selection.selectedTextFingerprint,
+            }
+          : null,
+      }),
+    },
+    // The before_* snapshot is the audit record for this action; it must land
+    // even when the pre-revision body equals the latest revision's body.
+    { skipContentDedupe: true },
+  );
   await db.updateChapter(chapter.id, { content: preview.candidateBody });
+  // P0-2: the revised body is the new authority. Re-enter the ONE existing
+  // PostWriting closure immediately — the user must not have to remember a
+  // separate "finalize" tap for Story Memory / Continuation State to describe
+  // the new body. Both closures enqueue a fingerprint-keyed outbox row, so the
+  // same revised body can never create a duplicate rebuild.
+  try {
+    if (preview.scenario === 'continuation') {
+      await finalizeContinuationChapter({
+        projectId: chapter.project_id,
+        chapterId: chapter.id,
+        content: preview.candidateBody,
+        allowRevisionAdvancedBody: true,
+      });
+    } else {
+      await finalizeChapterMemory(chapter.id, { revisionAdvancedBody: true });
+    }
+  } catch (error) {
+    // The chapter write without its PostWriting handoff would leave memory
+    // truth describing the pre-revision body — restore the persisted body so
+    // the visible content never diverges from memory authority.
+    await db
+      .updateChapter(chapter.id, { content: persistedBody })
+      .catch(() => {});
+    throw new UserRevisionError(
+      'USER_REVISION_POST_WRITING_FAILED',
+      `修订未应用：PostWriting/Memory 闭环失败（${
+        error instanceof Error ? error.message : String(error)
+      }）。正文已恢复原状，请重试。`,
+    );
+  }
   const updated: Chapter = { ...chapter, content: preview.candidateBody };
   return {
     revisionId,
     chapter: updated,
     preview: { ...preview, state: 'applied' },
   };
+}
+
+export interface UserRevisionCandidateBase {
+  baseBody: string;
+  baseBodyFingerprint: string;
+  frozenTruth: UserRevisionFrozenTruth;
+  candidateRef: UserRevisionCandidateRef;
+}
+
+/**
+ * P1-1 Pre-Adoption Revision base: the Final Candidate Artifact, not the
+ * chapter body. Outline candidates live in `pipeline_tasks.final_text`;
+ * continuation candidates are the run's latest eligible `final` artifact.
+ */
+export async function loadUserRevisionCandidateBase(input: {
+  projectId: number;
+  chapterId: number;
+  scenario: UserRevisionScenario;
+}): Promise<UserRevisionCandidateBase> {
+  if (input.scenario === 'continuation') {
+    const run = await findLatestPendingReviewRunForChapter(
+      input.projectId,
+      input.chapterId,
+    );
+    if (!run) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_MISSING',
+        '找不到待采纳的续写结果，无法修订候选正文。',
+      );
+    }
+    const snapshot = await getRunContextSnapshotJson(run.id);
+    const frozen = readFrozenFromSnapshot(snapshot);
+    if (!frozen) {
+      throw new UserRevisionError(
+        'USER_REVISION_FROZEN_TRUTH_MISSING',
+        '找不到本次续写的冻结上下文，无法修订候选正文。',
+      );
+    }
+    const artifact = await getLatestEligibleArtifact(run.id);
+    if (!artifact || !String(artifact.content || '').trim()) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_MISSING',
+        '本次续写没有可修订的候选正文。',
+      );
+    }
+    if (run.workflowVersion === 5 && artifact.stage !== 'final') {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_MISSING',
+        '只有最终稿候选支持在结果页修订。',
+      );
+    }
+    return {
+      baseBody: String(artifact.content),
+      baseBodyFingerprint: hashContent(String(artifact.content)),
+      frozenTruth: projectUserRevisionFrozenTruth({
+        frozen,
+        scenario: 'continuation',
+        writingRunId: run.id,
+      }),
+      candidateRef: { kind: 'continuation_run', runId: run.id },
+    };
+  }
+
+  const task = await getLatestCompletedPipelineTaskForTarget(
+    'chapter',
+    input.chapterId,
+  );
+  if (!task) {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_MISSING',
+      '找不到已完成的大纲生成结果，无法修订候选正文。',
+    );
+  }
+  const [payload, contextPayload] = await Promise.all([
+    getPipelineTaskAdoptionPayload(task.id),
+    getPipelineTaskContextPayload(task.id),
+  ]);
+  const finalText = String(payload?.finalText || '');
+  if (!finalText.trim()) {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_MISSING',
+      '该任务没有可修订的候选正文。',
+    );
+  }
+  const frozen = readFrozenFromSnapshot(contextPayload);
+  if (!frozen) {
+    throw new UserRevisionError(
+      'USER_REVISION_FROZEN_TRUTH_MISSING',
+      '找不到本次生成的冻结上下文，无法修订候选正文。',
+    );
+  }
+  return {
+    baseBody: finalText,
+    baseBodyFingerprint: hashContent(finalText),
+    frozenTruth: projectUserRevisionFrozenTruth({
+      frozen,
+      scenario: 'outline',
+      writingRunId: frozen.writingRunId,
+    }),
+    candidateRef: { kind: 'pipeline_task', taskId: task.id },
+  };
+}
+
+/**
+ * Apply a Pre-Adoption revision to the Final Candidate Artifact store. The
+ * chapter body is never written here — adoption remains the single boundary
+ * that promotes the (revised) candidate into the chapter and starts PostWriting.
+ */
+export async function applyUserRevisionPreviewToCandidate(input: {
+  preview: UserRevisionPreview;
+}): Promise<{ revisionId: number; preview: UserRevisionPreview }> {
+  const preview = input.preview;
+  if (preview.state !== 'pending') {
+    throw new UserRevisionError(
+      'USER_REVISION_PREVIEW_NOT_PENDING',
+      '该修订预览已经结束，不能重复应用。',
+    );
+  }
+  if (preview.candidateRef.kind === 'chapter') {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_WRITE_FAILED',
+      '该预览不是候选修订，请使用章节应用路径。',
+    );
+  }
+  const chapter = await db.getChapterById(preview.chapterId);
+  if (!chapter) {
+    throw new UserRevisionError(
+      'USER_REVISION_CHAPTER_MISSING',
+      '章节不存在，无法应用修订。',
+    );
+  }
+  assertFrozenTruthBinding({
+    frozenTruth: preview.frozenTruth,
+    chapter,
+    scenario: preview.scenario,
+  });
+
+  // CAS: re-read the CURRENT candidate. If it changed while the LLM was
+  // running, the preview is stale and must never overwrite it.
+  let currentCandidate = '';
+  let currentArtifactId: string | null = null;
+  if (preview.candidateRef.kind === 'pipeline_task') {
+    const payload = await getPipelineTaskAdoptionPayload(
+      preview.candidateRef.taskId,
+    );
+    currentCandidate = String(payload?.finalText || '');
+  } else {
+    const artifact = await getLatestEligibleArtifact(
+      preview.candidateRef.runId,
+    );
+    currentCandidate = String(artifact?.content || '');
+    currentArtifactId = artifact?.id ?? null;
+  }
+  if (!currentCandidate.trim()) {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_MISSING',
+      '候选正文已不存在，无法应用修订。',
+    );
+  }
+  if (hashContent(currentCandidate) !== preview.baseBodyFingerprint) {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_STALE',
+      '候选正文已发生变化，请重新发起修订。',
+    );
+  }
+  // Shared Final Plain-Text Integrity gate at the candidate final write.
+  assertFinalBody(preview.candidateBody);
+
+  const source =
+    preview.kind === 'targeted_revision'
+      ? 'before_targeted_revision'
+      : 'before_whole_chapter_rewrite';
+  const revisionId = await createRevision(
+    {
+      projectId: chapter.project_id,
+      targetType: 'chapter',
+      targetId: chapter.id,
+      title: chapter.title,
+      content: currentCandidate,
+      source,
+      sourceRef: JSON.stringify({
+        version: 1,
+        scope: 'pre_adoption_candidate',
+        previewId: preview.previewId,
+        candidate: preview.candidateRef,
+        receipt: preview.receipt,
+        selection: preview.selection
+          ? {
+              start: preview.selection.selectionStart,
+              end: preview.selection.selectionEnd,
+              baseBodyFingerprint: preview.selection.baseBodyFingerprint,
+              selectedTextFingerprint: preview.selection.selectedTextFingerprint,
+            }
+          : null,
+      }),
+    },
+    { skipContentDedupe: true },
+  );
+
+  if (preview.candidateRef.kind === 'pipeline_task') {
+    const store = usePipelineTaskStore.getState();
+    await store.persistTaskFinalText(
+      preview.candidateRef.taskId,
+      preview.candidateBody,
+    );
+    const verify = await getPipelineTaskAdoptionPayload(
+      preview.candidateRef.taskId,
+    );
+    if (
+      hashContent(String(verify?.finalText || '')) !==
+      preview.candidateBodyFingerprint
+    ) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_WRITE_FAILED',
+        '候选正文写入未生效，请重试。',
+      );
+    }
+  } else {
+    if (!currentArtifactId) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_MISSING',
+        '候选正文已不存在，无法应用修订。',
+      );
+    }
+    await insertArtifact({
+      runId: preview.candidateRef.runId,
+      stage: 'final',
+      content: preview.candidateBody,
+      parentArtifactId: currentArtifactId,
+      eligibilityStatus: 'eligible',
+      requireStageMatch: true,
+    });
+    const verify = await getLatestEligibleArtifact(preview.candidateRef.runId);
+    if (
+      !verify ||
+      hashContent(String(verify.content || '')) !==
+        preview.candidateBodyFingerprint
+    ) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_WRITE_FAILED',
+        '候选正文写入未生效，请重试。',
+      );
+    }
+  }
+
+  return { revisionId, preview: { ...preview, state: 'applied' } };
 }

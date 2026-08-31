@@ -333,6 +333,11 @@ export function resolveLLMTimeoutPolicy(
     // normal timeout even when the model is still processing a valid request.
     scenario.startsWith('continuation_') ||
     scenario.startsWith('story_memory_') ||
+    // User revisions are single-shot thinking-enabled novel-prose calls with
+    // the same latency profile as a pipeline stage. The 60s normal timeout
+    // converts a slow-but-valid revision into an outcome-unknown abort, which
+    // the one-physical-request revision contract must never risk.
+    scenario.startsWith('user_revision_') ||
     scenario === 'pipeline_draft' ||
     scenario === 'pipeline_qa' ||
     scenario === 'pipeline_review' ||

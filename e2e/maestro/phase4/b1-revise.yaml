@@ -1,0 +1,31 @@
+appId: com.shinewriter
+---
+# B1 formal steps inside the candidate revision modal (selection is pre-made
+# via hardware-keyboard gestures on the selection box).
+- tapOn:
+    id: user-revision-instruction
+- inputText: 'make the dialogue more restrained - keep facts'
+- hideKeyboard
+- tapOn:
+    id: user-revision-generate
+- extendedWaitUntil:
+    visible: '选区修改前'
+    timeout: 420000
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- tapOn:
+    id: user-revision-apply

@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { ChevronRight, Focus } from 'lucide-react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -290,9 +290,19 @@ export const ChapterEditor: React.FC<Props> = ({
     // selection before delivering a toolbar tap. Keep the last non-empty
     // UTF-16 range as the user-selected revision scope.
     setSelection(activeSelection);
+    // Dismiss the IME before opening the sheet: opening a Modal window while
+    // the content TextInput owns focus and the keyboard is up makes the
+    // window focus switch dismiss the sheet immediately on some devices.
+    TextInput.State.currentlyFocusedInput()?.blur();
     setRevisionKind('targeted_revision');
     setRevisionVisible(true);
   }, [selection]);
+
+  const openWholeChapterRewrite = useCallback(() => {
+    TextInput.State.currentlyFocusedInput()?.blur();
+    setRevisionKind('whole_chapter_rewrite');
+    setRevisionVisible(true);
+  }, []);
 
   const handleContentSelectionChange = useCallback(
     (nextSelection: { start: number; end: number }) => {
@@ -304,10 +314,6 @@ export const ChapterEditor: React.FC<Props> = ({
     [],
   );
 
-  const openWholeChapterRewrite = useCallback(() => {
-    setRevisionKind('whole_chapter_rewrite');
-    setRevisionVisible(true);
-  }, []);
 
   const handleRevisionApplied = useCallback(
     (content: string) => {

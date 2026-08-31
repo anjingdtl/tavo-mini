@@ -1,6 +1,8 @@
 const mockGetChapterById = jest.fn();
 const mockUpdateChapter = jest.fn();
 const mockCreateRevision = jest.fn();
+const mockFinalizeChapterMemory = jest.fn();
+const mockFinalizeContinuationChapter = jest.fn();
 
 jest.mock('../src/services/database', () => ({
   getChapterById: (...args: unknown[]) => mockGetChapterById(...args),
@@ -9,6 +11,16 @@ jest.mock('../src/services/database', () => ({
 
 jest.mock('../src/services/revisionService', () => ({
   createRevision: (...args: unknown[]) => mockCreateRevision(...args),
+}));
+
+jest.mock('../src/services/storyMemory/storyMemoryService', () => ({
+  finalizeChapterMemory: (...args: unknown[]) =>
+    mockFinalizeChapterMemory(...args),
+}));
+
+jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
+  finalizeContinuationChapter: (...args: unknown[]) =>
+    mockFinalizeContinuationChapter(...args),
 }));
 
 import {
@@ -69,6 +81,8 @@ describe('user revision persistence boundary', () => {
     mockGetChapterById.mockResolvedValue(chapter);
     mockUpdateChapter.mockResolvedValue(undefined);
     mockCreateRevision.mockResolvedValue(42);
+    mockFinalizeChapterMemory.mockResolvedValue({ ok: true });
+    mockFinalizeContinuationChapter.mockResolvedValue({ ok: true });
   });
 
   it('writes a recoverable before-snapshot and body-free receipt on apply', async () => {
@@ -89,6 +103,8 @@ describe('user revision persistence boundary', () => {
         source: 'before_whole_chapter_rewrite',
         sourceRef: expect.any(String),
       }),
+      // Audit snapshots skip the content dedupe so the receipt always lands.
+      { skipContentDedupe: true },
     );
     const sourceRef = JSON.parse(mockCreateRevision.mock.calls[0][0].sourceRef);
     expect(sourceRef.receipt).toBeDefined();
@@ -97,6 +113,33 @@ describe('user revision persistence boundary', () => {
     expect(JSON.stringify(sourceRef)).not.toContain('原稿。');
     expect(mockUpdateChapter).toHaveBeenCalledWith(8, { content: '新稿。' });
     expect(applied.preview.state).toBe('applied');
+    // P0-2: apply must re-enter the ONE existing PostWriting closure with the
+    // revision-advanced opt-in so memory describes the new body.
+    expect(mockFinalizeChapterMemory).toHaveBeenCalledWith(8, {
+      revisionAdvancedBody: true,
+    });
+  });
+
+  it('restores the previous body when the PostWriting closure fails', async () => {
+    const preview = await createWholeChapterRewritePreview({
+      chapter,
+      scenario: 'outline',
+      instruction: '增强冲突。',
+      frozenTruth: truth,
+      call: jest.fn().mockResolvedValue(llmResult('新稿。')),
+    });
+    mockFinalizeChapterMemory.mockRejectedValue(
+      new Error('WRITING_POST_WRITING_REVISION_DRIFT: x'),
+    );
+
+    await expect(applyUserRevisionPreview({ preview })).rejects.toMatchObject({
+      code: 'USER_REVISION_POST_WRITING_FAILED',
+    });
+    // The chapter write is rolled back so the visible body never diverges
+    // from memory authority.
+    expect(mockUpdateChapter).toHaveBeenLastCalledWith(8, {
+      content: '原稿。',
+    });
   });
 
   it('rejects a changed chapter before creating a revision or updating content', async () => {

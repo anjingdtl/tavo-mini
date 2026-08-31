@@ -29,4 +29,20 @@ describe('LLM timeout policy', () => {
       LLM_TIMEOUTS.chapterDraftMs,
     );
   });
+
+  it('gives user revision calls the long chapter-draft timeout', () => {
+    // A user revision is one thinking-enabled novel-prose call; the 60s
+    // normal timeout would turn a slow-but-valid revision into an
+    // outcome-unknown abort, which the one-request contract cannot risk.
+    expect(
+      resolveLLMTimeoutPolicy('user_revision_targeted').totalTimeoutMs,
+    ).toBe(LLM_TIMEOUTS.chapterDraftMs);
+    expect(
+      resolveLLMTimeoutPolicy('user_revision_whole_chapter').totalTimeoutMs,
+    ).toBe(LLM_TIMEOUTS.chapterDraftMs);
+    // Ordinary chat keeps the normal watchdog.
+    expect(resolveLLMTimeoutPolicy('chat').totalTimeoutMs).toBe(
+      LLM_TIMEOUTS.normalMs,
+    );
+  });
 });

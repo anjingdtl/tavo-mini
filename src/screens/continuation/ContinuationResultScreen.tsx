@@ -29,6 +29,8 @@ import {
 } from '../../components/UnifiedPipelineStageView';
 import { useThemeStore } from '../../store/themeStore';
 import { FinalManuscriptCard } from '../../components/FinalManuscriptCard';
+import { UserRevisionModal } from '../../components/UserRevisionModal';
+import type { UserRevisionKind } from '../../services/writing/userRevision';
 import {
   buildFinalArtifactFromContinuationArtifacts,
   type FinalWritingArtifact,
@@ -363,6 +365,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [finalArtifact, setFinalArtifact] =
     useState<FinalWritingArtifact | null>(null);
   const [busy, setBusy] = useState(false);
+  // P1-1 Pre-Adoption Revision：awaiting_user 的 V5 结果页直接修订 Final Candidate。
+  const [candidateRevisionKind, setCandidateRevisionKind] =
+    useState<UserRevisionKind | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showDetails, setShowDetails] = useState(false);
 
@@ -1942,6 +1947,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
                             },
                           );
                         }
+                      : run.workflowVersion === 5 &&
+                        run.state === 'awaiting_user'
+                      ? () => setCandidateRevisionKind('targeted_revision')
                       : undefined
                   }
                   onWholeChapterRewrite={
@@ -1960,6 +1968,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
                             },
                           );
                         }
+                      : run.workflowVersion === 5 &&
+                        run.state === 'awaiting_user'
+                      ? () => setCandidateRevisionKind('whole_chapter_rewrite')
                       : undefined
                   }
                 />
@@ -2017,6 +2028,39 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           </>
         )}
       </ScrollView>
+      {candidateRevisionKind != null && run ? (
+        <UserRevisionModal
+          visible
+          kind={candidateRevisionKind}
+          chapter={{
+            id: Number((run as any).chapterId ?? (run as any).chapter_id ?? 0),
+            project_id: run.projectId,
+            position: 0,
+            title: '',
+            synopsis: '',
+            content: '',
+            status: 'draft',
+            summary_json: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }}
+          scenario="continuation"
+          selectionStart={0}
+          selectionEnd={0}
+          candidate={{
+            chapterId: Number(
+              (run as any).chapterId ?? (run as any).chapter_id ?? 0,
+            ),
+            projectId: run.projectId,
+            scenario: 'continuation',
+          }}
+          onClose={() => setCandidateRevisionKind(null)}
+          onApplied={() => {}}
+          onCandidateApplied={() => {
+            reload().catch(() => {});
+          }}
+        />
+      ) : null}
     </Screen>
   );
 };

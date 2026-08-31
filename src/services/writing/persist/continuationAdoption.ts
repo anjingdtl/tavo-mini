@@ -1800,6 +1800,13 @@ export async function finalizeContinuationChapter(input: {
   chapterId: number;
   content: string;
   sourceRunId?: string | null;
+  /**
+   * P0-2: the finalized body is a user-revision advance of the same run. The
+   * run snapshot keeps the original body's immutable persisted event, so the
+   * REVISION_DRIFT guard fires; the snapshot is left untouched and the new
+   * fingerprint-keyed rebuild outbox row below is the memory authority.
+   */
+  allowRevisionAdvancedBody?: boolean;
 }): Promise<{ revisionHash: string; outboxDedupeKey: string }> {
   if (!input.content.trim()) {
     throw new Error('章节正文为空，无法定稿。请先采纳或写入正文。');
@@ -1901,15 +1908,29 @@ export async function finalizeContinuationChapter(input: {
       );
     }
     if (snapshot.writingKernelTrace) {
-      finalizedKernelSnapshotJson = JSON.stringify(
-        closeContinuationPostWritingSnapshot({
-          snapshot,
-          persistedEvent,
-          // Story Memory is queued after the atomic finalize boundary; the
-          // trace records the handoff without a paid PostWriting call.
-          durationMs: 0,
-        }),
-      );
+      try {
+        finalizedKernelSnapshotJson = JSON.stringify(
+          closeContinuationPostWritingSnapshot({
+            snapshot,
+            persistedEvent,
+            // Story Memory is queued after the atomic finalize boundary; the
+            // trace records the handoff without a paid PostWriting call.
+            durationMs: 0,
+          }),
+        );
+      } catch (closureError) {
+        const isRevisionDrift =
+          closureError instanceof Error &&
+          closureError.message.startsWith(
+            'WRITING_POST_WRITING_REVISION_DRIFT',
+          );
+        if (!(input.allowRevisionAdvancedBody && isRevisionDrift)) {
+          throw closureError;
+        }
+        // Keep the frozen snapshot untouched; the rebuild outbox row in the
+        // transaction below carries the revised body's authority.
+        finalizedKernelSnapshotJson = null;
+      }
     }
   }
 

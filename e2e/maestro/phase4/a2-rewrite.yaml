@@ -1,0 +1,60 @@
+appId: com.shinewriter
+---
+# A2 formal: whole-chapter rewrite on the adopted chapter (editor path,
+# exercises the P0-2 revision-advanced ONE Memory closure on apply).
+- tapOn:
+    id: chapter-whole-rewrite
+- extendedWaitUntil:
+    visible:
+      id: user-revision-instruction
+    timeout: 15000
+- tapOn:
+    id: user-revision-instruction
+- inputText: 'rewrite this whole chapter with tighter pacing, same facts and the same ending beat'
+- tapOn:
+    id: user-revision-generate
+- extendedWaitUntil:
+    visible: '重写预览'
+    timeout: 420000
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- swipe:
+    start: 540, 2000
+    end: 540, 400
+    duration: 350
+- tapOn:
+    id: user-revision-apply

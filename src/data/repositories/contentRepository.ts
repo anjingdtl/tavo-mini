@@ -76,6 +76,24 @@ export async function getLatestContentRevision(
   );
 }
 
+/**
+ * Latest revision whose source is `pipeline`. The Outline PostWriting binding
+ * must look through later non-pipeline rows (e.g. a before_*_revision audit
+ * snapshot written between adoption and a finalize) — the binding means
+ * "which pipeline task produced this chapter", not "the newest row".
+ */
+export async function getLatestPipelineContentRevision(
+  targetType: string,
+  targetId: number,
+): Promise<any | null> {
+  return one(
+    `SELECT * FROM content_revisions
+      WHERE target_type = ? AND target_id = ? AND source = 'pipeline'
+      ORDER BY created_at DESC LIMIT 1`,
+    [targetType, targetId],
+  );
+}
+
 export async function deleteContentRevision(id: number): Promise<void> {
   await execute(
     await openDatabase(),

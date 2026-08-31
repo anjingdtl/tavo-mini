@@ -1,0 +1,26 @@
+appId: com.shinewriter
+---
+# A1 formal step 2: open targeted revision with the pre-made real selection,
+# send the instruction, generate the preview and apply it.
+- extendedWaitUntil:
+    visible:
+      id: user-revision-instruction
+    timeout: 15000
+- assertVisible: '当前选区'
+- tapOn:
+    id: user-revision-instruction
+- inputText: 'tighten this passage, keep every fact and the restrained tone'
+- tapOn:
+    id: user-revision-generate
+- extendedWaitUntil:
+    visible: '选区修改前'
+    timeout: 180000
+- assertVisible: '选区修改后'
+- assertVisible: '确认应用'
+- tapOn:
+    id: user-revision-apply
+- runFlow:
+    when:
+      visible: '正文与故事记忆已更新'
+    commands:
+      - assertVisible: '正文与故事记忆已更新'

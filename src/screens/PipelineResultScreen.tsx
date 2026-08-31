@@ -48,6 +48,8 @@ import {
 import { resetFailedStageCheckpointsForResume } from '../data/repositories/pipelineStageCheckpointRepository';
 import { getOutboxByDedupe } from '../services/continuation/generation/generationRepository';
 import { FinalManuscriptCard } from '../components/FinalManuscriptCard';
+import { UserRevisionModal } from '../components/UserRevisionModal';
+import type { UserRevisionKind } from '../services/writing/userRevision';
 import { buildFinalArtifactFromOutlineTask } from '../services/writing/finalArtifactData';
 import { navigateToChapterEditor } from '../navigation/navigationRef';
 import type { PipelineStageResult, PipelineTask } from '../types/pipeline';
@@ -568,6 +570,11 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
   const [adopting, setAdopting] = useState(false);
   const [outlineMemoryOutboxState, setOutlineMemoryOutboxState] =
     useState<OutlineMemoryOutboxState | null>(null);
+  // P1-1 Pre-Adoption Revision：未采纳的结果页直接修订 Final Candidate。
+  const [candidateRevisionKind, setCandidateRevisionKind] =
+    useState<UserRevisionKind | null>(null);
+  const [candidateRevisionProjectId, setCandidateRevisionProjectId] =
+    useState<number | null>(null);
   const detailLoadAttemptedRef = useRef<Set<string>>(new Set());
   // 标记是否已被 handleAccept 标记为 accept，避免 unmount cleanup 的
   // setTimeout 与 handleAccept 的 resolveTask('accept') 竞态重复 resolve。
@@ -897,6 +904,27 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
 
   const revisionReady =
     task.status === 'completed' && task.resolvedAction === 'accept';
+  // P1-1: 未采纳但已有 Final Candidate 的完成任务，允许在结果页直接修订候选。
+  const candidateRevisionReady =
+    task.status === 'completed' &&
+    task.targetType === 'chapter' &&
+    Boolean(task.finalText) &&
+    task.resolvedAction == null;
+
+  const openCandidateRevision = async (kind: UserRevisionKind) => {
+    if (adopting) return;
+    try {
+      const chapterRow = await db.getChapterById(task.targetId);
+      if (!chapterRow) {
+        Alert.alert('无法修订', '章节不存在，无法修订候选正文。');
+        return;
+      }
+      setCandidateRevisionProjectId(chapterRow.project_id);
+      setCandidateRevisionKind(kind);
+    } catch (error: any) {
+      Alert.alert('无法修订', error?.message || '加载章节失败。');
+    }
+  };
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -1108,6 +1136,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
                         revisionMode: 'targeted',
                       });
                     }
+                  : candidateRevisionReady
+                  ? () => openCandidateRevision('targeted_revision')
                   : undefined
               }
               onWholeChapterRewrite={
@@ -1118,6 +1148,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
                         revisionMode: 'whole',
                       });
                     }
+                  : candidateRevisionReady
+                  ? () => openCandidateRevision('whole_chapter_rewrite')
                   : undefined
               }
             />
@@ -1299,6 +1331,36 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
           </View>
         ) : null}
       </ScrollView>
+      {candidateRevisionKind != null &&
+      candidateRevisionProjectId != null &&
+      task.targetType === 'chapter' ? (
+        <UserRevisionModal
+          visible
+          kind={candidateRevisionKind}
+          chapter={{
+            id: task.targetId,
+            project_id: candidateRevisionProjectId,
+            position: 0,
+            title: chapterTitle || '',
+            synopsis: '',
+            content: '',
+            status: 'draft',
+            summary_json: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }}
+          scenario="outline"
+          selectionStart={0}
+          selectionEnd={0}
+          candidate={{
+            chapterId: task.targetId,
+            projectId: candidateRevisionProjectId,
+            scenario: 'outline',
+          }}
+          onClose={() => setCandidateRevisionKind(null)}
+          onApplied={() => {}}
+        />
+      ) : null}
     </Screen>
   );
 };

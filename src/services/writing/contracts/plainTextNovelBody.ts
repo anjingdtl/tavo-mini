@@ -46,8 +46,15 @@ const PROMPT_PREFIX_RE =
 const JSON_WRAPPER_PREFIX_RE =
   /^(?:JSON|JSON\s*Patch|Result|Response|Output|Final(?:\s+Answer)?|Answer|Payload|Data|结果(?:如下)?|返回结果|输出结果|以下(?:是|为)\s*JSON)\s*[:：]?\s*/i;
 
+/**
+ * Patch/Diff leakage is only a hard failure in STRUCTURAL shapes: a line that
+ * consists of the patch note, or a line-initial "修改说明：" style label, or
+ * deterministic diff/patch syntax. The same words inside a natural sentence
+ * (e.g. 「他反复交代，其余内容不变，只把最后一句压低。」) are ordinary prose and
+ * must not be rejected — this gate blocks protocol pollution, not vocabulary.
+ */
 const PATCH_MARKER_RE =
-  /(?:其余内容(?:不变|保持不变)|修改说明|以上为修改|仅修改以下|以下为修改部分|JSON\s*Patch|diff\s+--git|^@@\s)/im;
+  /JSON\s*Patch|diff\s+--git|^@@\s|^[ \t]*(?:[-*•][ \t]*)?(?:【修改说明】|修改说明\s*[：:]|以上为修改[^。！？\r\n]{0,16}[。！？]?\s*$|仅修改以下\s*[：:]?|以下为修改部分|其余内容(?:不变|保持不变)[。！]?\s*$)/im;
 
 function isTitleLine(line: string): boolean {
   return /^(?:第\s*[0-9０-９一二三四五六七八九十百千]+\s*章|Chapter\s+\d+|卷\s*[0-9０-９一二三四五六七八九十百千]+)(?:\s|[:：.。\-—]|$)/i.test(

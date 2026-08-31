@@ -1,0 +1,24 @@
+appId: com.shinewriter
+---
+# A1 formal (Phase IV-13 final closure): navigate to chapter 雾港前夕 editor.
+- launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
+- extendedWaitUntil:
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-editor
+- extendedWaitUntil:
+    visible: '雾港前夕'
+    timeout: 10000
+- tapOn: '雾港前夕'
+- extendedWaitUntil:
+    visible:
+      id: chapter-editor
+    timeout: 10000
+- assertVisible: '章节编辑'

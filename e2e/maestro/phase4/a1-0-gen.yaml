@@ -1,0 +1,30 @@
+appId: com.shinewriter
+---
+# A1 formal step 0 (candidate path): regenerate the current outline chapter so
+# an un-adopted Final Candidate exists on the pipeline result page.
+- launchApp
+- runFlow:
+    when:
+      visible: '我知道了'
+    commands:
+      - tapOn: '我知道了'
+- extendedWaitUntil:
+    visible:
+      id: project-library
+    timeout: 20000
+- tapOn:
+    id: tab-editor
+- extendedWaitUntil:
+    visible: '雾港前夕'
+    timeout: 10000
+- tapOn: '雾港前夕'
+- extendedWaitUntil:
+    visible:
+      id: chapter-editor
+    timeout: 10000
+- assertVisible: '章节编辑'
+- tapOn:
+    id: chapter-ai-generate
+- extendedWaitUntil:
+    visible: '流水线结果'
+    timeout: 600000

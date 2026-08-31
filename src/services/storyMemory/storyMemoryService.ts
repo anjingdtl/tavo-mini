@@ -69,7 +69,7 @@ import {
   updateStoryMemoryForeground,
 } from './storyMemoryForeground';
 import { recordPostWritingObservability } from '../writing/observability/writingObservabilityCollector';
-import { getLatestContentRevision } from '../../data/repositories/contentRepository';
+import { getLatestPipelineContentRevision } from '../../data/repositories/contentRepository';
 import { getPipelineTaskById } from '../../data/repositories/pipelineTaskRepository';
 import {
   enqueueOutlineStoryMemoryPostWriting,
@@ -95,7 +95,7 @@ async function resolveOutlinePostWritingTraceBinding(
 ): Promise<OutlinePostWritingTraceBinding | null> {
   let latestRevision: any | null = null;
   try {
-    latestRevision = await getLatestContentRevision('chapter', chapterId);
+    latestRevision = await getLatestPipelineContentRevision('chapter', chapterId);
   } catch (error) {
     console.warn(
       '[story-memory] OUTLINE_POST_WRITING_SOURCE_LOOKUP_FAILED:',
@@ -1061,6 +1061,14 @@ export async function finalizeChapterMemory(
     freezeFingerprint?: string;
     executionProfile?: 'standard' | 'one_shot';
     appliedRequirementIds?: string[];
+    /**
+     * P0-2: the finalized body is a user-revision advance of the same
+     * generation. The frozen Kernel trace keeps the original body's immutable
+     * persisted event, so its REVISION_DRIFT guard fires; the new fingerprint-
+     * keyed outbox row (already enqueued) is the memory authority for the new
+     * body. Only the trace re-closure is skipped in that case.
+     */
+    revisionAdvancedBody?: boolean;
   } = {},
 ): Promise<FinalizeChapterMemoryResult> {
   const startedAt = Date.now();
@@ -1306,11 +1314,28 @@ export async function finalizeChapterMemory(
         persistedEvent: writingPersistedEvent,
         taskId: pipelineTaskId,
       });
-      await persistOutlinePostWritingClosure({
-        taskId: pipelineTaskId,
-        persistedEvent: writingPersistedEvent,
-        durationMs: Date.now() - startedAt,
-      });
+      try {
+        await persistOutlinePostWritingClosure({
+          taskId: pipelineTaskId,
+          persistedEvent: writingPersistedEvent,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (closureError) {
+        const isRevisionDrift =
+          closureError instanceof Error &&
+          closureError.message.startsWith(
+            'WRITING_POST_WRITING_REVISION_DRIFT',
+          );
+        if (!(options.revisionAdvancedBody && isRevisionDrift)) {
+          throw closureError;
+        }
+        // The trace's immutable event belongs to the pre-revision body; the
+        // new fingerprint-keyed outbox row above is the memory authority.
+        console.warn(
+          '[story-memory] OUTLINE_POST_WRITING_REVISION_ADVANCED:',
+          chapterId,
+        );
+      }
 
       // Cold-start processing is the reliable delivery path. This import is
       // only a best-effort acceleration while the app remains open.
