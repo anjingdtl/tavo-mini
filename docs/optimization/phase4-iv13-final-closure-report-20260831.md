@@ -143,27 +143,25 @@ violation **0**；Revision 后 PostWriting/Memory stale state **0**（缺陷④�
 
 ### B3 附记
 
-B3 首跑与显式恢复重跑均在章节 1（第 120 章·涨潮夜行）Draft 阶段遭遇传输层失败，
-应用按合同 **fail-closed 暂停批次**（无 hidden retry、无自动重试、无 outcome_unknown
-误判），两次均已保留截图证据（`b3-started.png` / `b3-fail-evidence.png` /
-`b3-resumed.png`）。Root cause 定界：同一会话中 A3 大纲批量 3/3 全过（7 次调用）、
-B1 续写单章全链路通过、应用内 LLM 连接测试通过——失败集中于夜间模拟器 NAT→宿主
-WiFi 链路（2Mbps legacy、beacon loss 持续），分类为 **provider transport / 环境**，
-非 App/Adapter/Prompt Contract 缺陷。恢复路径（确认后继续）为应用既有显式恢复动作，
-复用已完成检查点、只重跑失败章。
-
-按 §十五封板条件（续写 3 章批量须 3/3 PASS），本轮最终状态为：
+B3 先后 4 次（首跑 + 3 次显式"确认后继续"恢复）均在章节 1（第 120 章·涨潮夜行）
+Draft 阶段遭遇传输层失败，应用每次按合同 **fail-closed 暂停批次**（无 hidden retry、
+无自动重试、无 outcome_unknown 误判、无重复计费），全部截图证据保留于
+`test-logs/phase4-iv13-final-android-20260831/`（b3-started / b3-fail-evidence /
+b3-resumed / b3-resume3）。Root cause 定界：同会话 A3 大纲批量 3/3（7 次调用）、
+B1 续写单章全链路、应用内 LLM 连接测试均通过；失败集中于深夜模拟器 NAT→宿主
+WiFi 链路（2Mbps legacy、持续 beacon loss），分类为 **provider transport / 环境**，
+非 App/Adapter/Prompt Contract 缺陷。按 §十五封板条件（B3 须 3/3 PASS），本轮最终：
 
 **PHASE IV FINAL SEAL HOLD / NO-GO**
 
 - 已达标：Final Plain-Text Integrity PASS；A1 1/1、A2 1/1、A3 3/3；B1 1/1、B2 1/1；
   Unselected 100%；Out-of-range 0；Stale 0；JSON/protocol leakage 0；Thinking Always On；
   Governor physical 0；hidden retry 0；duplicate paid 0；Canon/Source hard violation 0；
-  Revision 后 Memory/State authority 一致（缺陷④修复后 DB 复验）；typecheck/lint/
-  verify/verify:elastic/verify:version/APK/install-r/DB/Receipt/UI 全 PASS。
-- 未达标：B3 续写 3 章批量 0/3（两次传输层暂停，证据在案）。
-- 恢复路径：网络稳定窗口内对同一批次执行"确认后继续"（应用原生恢复，只重跑第 1 章），
-  完成后按同一固定分母补记 B3 数据行，再行封板复评。不扩大样本、不换评分口径。
+  Revision 后 Memory/State authority 一致（缺陷④修复后 DB 复验）；最终全量回归
+  verify PASS（541 suites / 3,813 tests，exit 0）+ typecheck/lint quiet 全过。
+- 未达标：B3 续写 3 章批量 0/3（4 次传输层暂停，环境阻塞，证据在案）。
+- 恢复路径：网络稳定窗口内对同一批次"确认后继续"（只重跑第 1 章），完成后按同一
+  固定分母补记 B3 数据行，再行封板复评。不扩大样本、不换评分口径。
 
 ## 9. 证据索引
 
