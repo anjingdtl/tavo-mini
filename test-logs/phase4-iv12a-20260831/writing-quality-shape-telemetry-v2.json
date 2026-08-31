@@ -1,0 +1,2860 @@
+{
+  "schema": "shinewriter.writing-quality-stability-matrix.v1",
+  "generatedAt": "2026-08-31T05:02:07.742Z",
+  "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+  "interpretation": {
+    "literaryQuality": "deterministic proxies and nullable annotations; not an automatic literary score",
+    "pipelineStability": "descriptive batch/attempt outcome evidence",
+    "correlationUnit": "one batch condition key shared by every chapter observation"
+  },
+  "dimensions": [
+    "thinking",
+    "reasoningEffort",
+    "qualityProfile",
+    "executionProfile",
+    "model",
+    "literaryQualityProxy",
+    "pipelineStability"
+  ],
+  "batchCount": 3,
+  "batches": [
+    {
+      "label": "fast",
+      "sourceArtifact": "fast-v2-final.sqlite",
+      "databaseIntegrity": "ok",
+      "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "batch": {
+        "id": "batch_iv12a_fast",
+        "projectId": 67,
+        "status": "completed",
+        "chapterCount": 4,
+        "targetWordsPerChapter": 800,
+        "pipelineMode": "full",
+        "writingMode": "outline",
+        "reasoningEffort": "low",
+        "executionProfile": "one_shot",
+        "createdAt": 1788148541346,
+        "startedAt": 0,
+        "completedAt": 1788150716455,
+        "errorCode": null
+      },
+      "condition": {
+        "key": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+        "model": [
+          "deepseek-v4-flash"
+        ],
+        "providerAdapterId": [
+          "openai-compatible-generic"
+        ],
+        "thinking": [
+          "enabled"
+        ],
+        "reasoningEffort": [
+          "low"
+        ],
+        "qualityProfile": [
+          "fast"
+        ],
+        "executionProfile": [
+          "one_shot"
+        ],
+        "responseFormat": [
+          "text"
+        ],
+        "configuredContextWindow": [
+          1000000
+        ],
+        "completionCapability": [
+          200000
+        ],
+        "wireMaxTokens": [
+          200000
+        ],
+        "physicalRequestValues": [
+          1
+        ],
+        "consistent": {
+          "model": true,
+          "thinking": true,
+          "reasoningEffort": true,
+          "qualityProfile": true,
+          "executionProfile": true
+        }
+      },
+      "literaryQuality": {
+        "measurementMethod": "deterministic_proxy_only; no subjective score",
+        "expectedChapterCount": 4,
+        "chapterCountWithContent": 4,
+        "contentAvailabilityRate": 1,
+        "bodyChars": {
+          "count": 4,
+          "min": 1638,
+          "max": 2757,
+          "mean": 2076.75,
+          "median": 1884,
+          "p95": 2028
+        },
+        "bodyCharsNoWhitespace": {
+          "count": 4,
+          "min": 1576,
+          "max": 2693,
+          "mean": 2006.25,
+          "median": 1834,
+          "p95": 1922
+        },
+        "paragraphCount": {
+          "count": 4,
+          "min": 26,
+          "max": 54,
+          "mean": 36.25,
+          "median": 32,
+          "p95": 33
+        },
+        "sentenceCount": {
+          "count": 4,
+          "min": 80,
+          "max": 128,
+          "mean": 103,
+          "median": 89,
+          "p95": 115
+        },
+        "sentenceLengthMean": 19.88,
+        "paragraphLengthMean": 59.25,
+        "dialogueRatioMean": 0.11,
+        "uniqueSentenceRatioMean": 1,
+        "duplicateSentenceCountTotal": 2,
+        "adjacentRepeatedSentenceCountTotal": 0,
+        "terminalDiversityMean": 1.75,
+        "endingKindCounts": {
+          "closed": 4
+        },
+        "protocolLeakChapterCount": 0,
+        "humanOrEvaluatorAnnotation": {
+          "status": "not_collected",
+          "score": null,
+          "dimensions": {
+            "proseNaturalness": null,
+            "sceneCoherence": null,
+            "causalContinuity": null,
+            "characterConsistency": null,
+            "styleFit": null,
+            "endingEffectiveness": null
+          }
+        }
+      },
+      "pipelineStability": {
+        "batchStatus": "completed",
+        "expectedChapterCount": 4,
+        "observedItemCount": 4,
+        "itemStatusCounts": {
+          "succeeded": 4
+        },
+        "fullPipelineCount": 4,
+        "firstPassSuccessCount": 4,
+        "firstPassSuccessRate": 1,
+        "failedCount": 0,
+        "outcomeUnknownCount": 0,
+        "pendingCount": 0,
+        "retryCountFromItems": 0,
+        "retryCountFromAttempts": 0,
+        "stageAttemptCount": 4,
+        "succeededStageAttemptCount": 4,
+        "failedStageAttemptCount": 0,
+        "physicalRequestCount": 4,
+        "protocolFallbackCount": 0,
+        "formatterCallCount": 0,
+        "finishReasonCounts": {
+          "stop": 4
+        },
+        "emptyReasonCounts": {
+          "unknown": 4
+        },
+        "responseChannelCounts": {
+          "unknown": 4
+        },
+        "failureClassCounts": {
+          "unknown": 4
+        },
+        "errorCodeCounts": {},
+        "stageLatencyMs": {
+          "count": 4,
+          "min": 18734,
+          "max": 104085,
+          "mean": 44777,
+          "median": 20351,
+          "p95": 35938
+        },
+        "usage": {
+          "batchInputTokens": 29358,
+          "batchOutputTokens": 15102,
+          "batchLlmCalls": 4,
+          "attemptInputTokens": 29358,
+          "attemptOutputTokens": 15102,
+          "attemptReasoningTokens": 9433,
+          "attemptVisibleOutputTokens": 5669,
+          "reasoningToOutputRatio": 0.62
+        },
+        "batchWallTimeMs": null
+      },
+      "chapters": [
+        {
+          "ordinal": 1,
+          "chapterId": 9272,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 2028,
+            "bodyCharsNoWhitespace": 1922,
+            "paragraphCount": 54,
+            "sentenceCount": 128,
+            "sentenceLength": {
+              "count": 128,
+              "min": 3,
+              "max": 51,
+              "mean": 15.44,
+              "median": 14,
+              "p95": 32
+            },
+            "paragraphLength": {
+              "count": 54,
+              "min": 5,
+              "max": 116,
+              "mean": 35.59,
+              "median": 26,
+              "p95": 79
+            },
+            "dialogue": {
+              "ratio": 0.27,
+              "quotedChars": 538,
+              "quotePairs": 44,
+              "dialogueParagraphs": 36
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 0.98,
+              "duplicateSentenceCount": 2,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 119,
+                "？": 9
+              },
+              "terminalDiversity": 2,
+              "emotionalTerminalRatio": 0.07
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 18734,
+            "inputTokens": 4525,
+            "outputTokens": 1477,
+            "reasoningTokens": 177,
+            "visibleOutputTokens": 1300,
+            "reasoningToOutputRatio": 0.12,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 2,
+          "chapterId": 9273,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1638,
+            "bodyCharsNoWhitespace": 1576,
+            "paragraphCount": 32,
+            "sentenceCount": 80,
+            "sentenceLength": {
+              "count": 80,
+              "min": 4,
+              "max": 51,
+              "mean": 20,
+              "median": 18,
+              "p95": 36
+            },
+            "paragraphLength": {
+              "count": 32,
+              "min": 4,
+              "max": 137,
+              "mean": 49.25,
+              "median": 38,
+              "p95": 112
+            },
+            "dialogue": {
+              "ratio": 0.12,
+              "quotedChars": 196,
+              "quotePairs": 19,
+              "dialogueParagraphs": 12
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 77,
+                "？": 3
+              },
+              "terminalDiversity": 2,
+              "emotionalTerminalRatio": 0.04
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 20351,
+            "inputTokens": 6968,
+            "outputTokens": 1576,
+            "reasoningTokens": 491,
+            "visibleOutputTokens": 1085,
+            "reasoningToOutputRatio": 0.31,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 3,
+          "chapterId": 9274,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1884,
+            "bodyCharsNoWhitespace": 1834,
+            "paragraphCount": 26,
+            "sentenceCount": 89,
+            "sentenceLength": {
+              "count": 89,
+              "min": 4,
+              "max": 50,
+              "mean": 20.67,
+              "median": 20,
+              "p95": 40
+            },
+            "paragraphLength": {
+              "count": 26,
+              "min": 5,
+              "max": 156,
+              "mean": 70.54,
+              "median": 66,
+              "p95": 137
+            },
+            "dialogue": {
+              "ratio": 0.04,
+              "quotedChars": 84,
+              "quotePairs": 6,
+              "dialogueParagraphs": 6
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 88,
+                "…": 2
+              },
+              "terminalDiversity": 2,
+              "emotionalTerminalRatio": 0
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 104085,
+            "inputTokens": 8300,
+            "outputTokens": 9381,
+            "reasoningTokens": 8062,
+            "visibleOutputTokens": 1319,
+            "reasoningToOutputRatio": 0.86,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 4,
+          "chapterId": 9275,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 2757,
+            "bodyCharsNoWhitespace": 2693,
+            "paragraphCount": 33,
+            "sentenceCount": 115,
+            "sentenceLength": {
+              "count": 115,
+              "min": 3,
+              "max": 56,
+              "mean": 23.42,
+              "median": 22,
+              "p95": 44
+            },
+            "paragraphLength": {
+              "count": 33,
+              "min": 10,
+              "max": 182,
+              "mean": 81.61,
+              "median": 81,
+              "p95": 135
+            },
+            "dialogue": {
+              "ratio": 0,
+              "quotedChars": 0,
+              "quotePairs": 0,
+              "dialogueParagraphs": 0
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 115
+              },
+              "terminalDiversity": 1,
+              "emotionalTerminalRatio": 0
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 35938,
+            "inputTokens": 9565,
+            "outputTokens": 2668,
+            "reasoningTokens": 703,
+            "visibleOutputTokens": 1965,
+            "reasoningToOutputRatio": 0.26,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        }
+      ],
+      "observations": [
+        {
+          "batchId": "batch_iv12a_fast",
+          "ordinal": 1,
+          "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "thinking": "enabled",
+          "reasoningEffort": "low",
+          "qualityProfile": "fast",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 2028,
+            "paragraphCount": 54,
+            "sentenceCount": 128,
+            "dialogueRatio": 0.27,
+            "uniqueSentenceRatio": 0.98,
+            "duplicateSentenceCount": 2,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 18734,
+            "inputTokens": 4525,
+            "outputTokens": 1477,
+            "reasoningTokens": 177,
+            "visibleOutputTokens": 1300,
+            "reasoningToOutputRatio": 0.12,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_fast",
+          "ordinal": 2,
+          "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "thinking": "enabled",
+          "reasoningEffort": "low",
+          "qualityProfile": "fast",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1638,
+            "paragraphCount": 32,
+            "sentenceCount": 80,
+            "dialogueRatio": 0.12,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 20351,
+            "inputTokens": 6968,
+            "outputTokens": 1576,
+            "reasoningTokens": 491,
+            "visibleOutputTokens": 1085,
+            "reasoningToOutputRatio": 0.31,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_fast",
+          "ordinal": 3,
+          "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "thinking": "enabled",
+          "reasoningEffort": "low",
+          "qualityProfile": "fast",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1884,
+            "paragraphCount": 26,
+            "sentenceCount": 89,
+            "dialogueRatio": 0.04,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 104085,
+            "inputTokens": 8300,
+            "outputTokens": 9381,
+            "reasoningTokens": 8062,
+            "visibleOutputTokens": 1319,
+            "reasoningToOutputRatio": 0.86,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_fast",
+          "ordinal": 4,
+          "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+          "thinking": "enabled",
+          "reasoningEffort": "low",
+          "qualityProfile": "fast",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 2757,
+            "paragraphCount": 33,
+            "sentenceCount": 115,
+            "dialogueRatio": 0,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 1,
+            "succeededStageAttemptCount": 1,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 1,
+            "protocolFallbackCount": 0,
+            "latencyMs": 35938,
+            "inputTokens": 9565,
+            "outputTokens": 2668,
+            "reasoningTokens": 703,
+            "visibleOutputTokens": 1965,
+            "reasoningToOutputRatio": 0.26,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        }
+      ]
+    },
+    {
+      "label": "standard",
+      "sourceArtifact": "standard-v2-final.sqlite",
+      "databaseIntegrity": "ok",
+      "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "batch": {
+        "id": "batch_iv12a_standard",
+        "projectId": 67,
+        "status": "completed",
+        "chapterCount": 4,
+        "targetWordsPerChapter": 800,
+        "pipelineMode": "full",
+        "writingMode": "outline",
+        "reasoningEffort": "high",
+        "executionProfile": "standard",
+        "createdAt": 1788148541346,
+        "startedAt": 0,
+        "completedAt": 1788151483573,
+        "errorCode": null
+      },
+      "condition": {
+        "key": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+        "model": [
+          "deepseek-v4-flash"
+        ],
+        "providerAdapterId": [
+          "openai-compatible-generic"
+        ],
+        "thinking": [
+          "enabled"
+        ],
+        "reasoningEffort": [
+          "high",
+          "low"
+        ],
+        "qualityProfile": [
+          "standard"
+        ],
+        "executionProfile": [
+          "standard"
+        ],
+        "responseFormat": [
+          "text",
+          "json_object"
+        ],
+        "configuredContextWindow": [
+          1000000
+        ],
+        "completionCapability": [
+          200000
+        ],
+        "wireMaxTokens": [
+          200000
+        ],
+        "physicalRequestValues": [
+          1
+        ],
+        "consistent": {
+          "model": true,
+          "thinking": true,
+          "reasoningEffort": false,
+          "qualityProfile": true,
+          "executionProfile": true
+        }
+      },
+      "literaryQuality": {
+        "measurementMethod": "deterministic_proxy_only; no subjective score",
+        "expectedChapterCount": 4,
+        "chapterCountWithContent": 4,
+        "contentAvailabilityRate": 1,
+        "bodyChars": {
+          "count": 4,
+          "min": 1184,
+          "max": 3665,
+          "mean": 2105,
+          "median": 1664,
+          "p95": 1907
+        },
+        "bodyCharsNoWhitespace": {
+          "count": 4,
+          "min": 1114,
+          "max": 3601,
+          "mean": 2033.5,
+          "median": 1598,
+          "p95": 1821
+        },
+        "paragraphCount": {
+          "count": 4,
+          "min": 33,
+          "max": 44,
+          "mean": 36.75,
+          "median": 34,
+          "p95": 36
+        },
+        "sentenceCount": {
+          "count": 4,
+          "min": 88,
+          "max": 176,
+          "mean": 116,
+          "median": 91,
+          "p95": 109
+        },
+        "sentenceLengthMean": 17.05,
+        "paragraphLengthMean": 57.11,
+        "dialogueRatioMean": 0.14,
+        "uniqueSentenceRatioMean": 0.99,
+        "duplicateSentenceCountTotal": 4,
+        "adjacentRepeatedSentenceCountTotal": 0,
+        "terminalDiversityMean": 2.5,
+        "endingKindCounts": {
+          "closed": 4
+        },
+        "protocolLeakChapterCount": 0,
+        "humanOrEvaluatorAnnotation": {
+          "status": "not_collected",
+          "score": null,
+          "dimensions": {
+            "proseNaturalness": null,
+            "sceneCoherence": null,
+            "causalContinuity": null,
+            "characterConsistency": null,
+            "styleFit": null,
+            "endingEffectiveness": null
+          }
+        }
+      },
+      "pipelineStability": {
+        "batchStatus": "completed",
+        "expectedChapterCount": 4,
+        "observedItemCount": 4,
+        "itemStatusCounts": {
+          "succeeded": 4
+        },
+        "fullPipelineCount": 4,
+        "firstPassSuccessCount": 4,
+        "firstPassSuccessRate": 1,
+        "failedCount": 0,
+        "outcomeUnknownCount": 0,
+        "pendingCount": 0,
+        "retryCountFromItems": 0,
+        "retryCountFromAttempts": 0,
+        "stageAttemptCount": 8,
+        "succeededStageAttemptCount": 8,
+        "failedStageAttemptCount": 0,
+        "physicalRequestCount": 8,
+        "protocolFallbackCount": 0,
+        "formatterCallCount": 0,
+        "finishReasonCounts": {
+          "stop": 8
+        },
+        "emptyReasonCounts": {
+          "unknown": 8
+        },
+        "responseChannelCounts": {
+          "unknown": 8
+        },
+        "failureClassCounts": {
+          "unknown": 8
+        },
+        "errorCodeCounts": {},
+        "stageLatencyMs": {
+          "count": 8,
+          "min": 1410,
+          "max": 207531,
+          "mean": 87071.38,
+          "median": 2593,
+          "p95": 188012
+        },
+        "usage": {
+          "batchInputTokens": 59681,
+          "batchOutputTokens": 59179,
+          "batchLlmCalls": 8,
+          "attemptInputTokens": 59681,
+          "attemptOutputTokens": 59179,
+          "attemptReasoningTokens": 53427,
+          "attemptVisibleOutputTokens": 5752,
+          "reasoningToOutputRatio": 0.9
+        },
+        "batchWallTimeMs": null
+      },
+      "chapters": [
+        {
+          "ordinal": 1,
+          "chapterId": 9272,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1664,
+            "bodyCharsNoWhitespace": 1598,
+            "paragraphCount": 34,
+            "sentenceCount": 91,
+            "sentenceLength": {
+              "count": 91,
+              "min": 3,
+              "max": 61,
+              "mean": 17.91,
+              "median": 15,
+              "p95": 34
+            },
+            "paragraphLength": {
+              "count": 34,
+              "min": 4,
+              "max": 132,
+              "mean": 47,
+              "median": 45,
+              "p95": 110
+            },
+            "dialogue": {
+              "ratio": 0.27,
+              "quotedChars": 447,
+              "quotePairs": 28,
+              "dialogueParagraphs": 19
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 86,
+                "？": 5
+              },
+              "terminalDiversity": 2,
+              "emotionalTerminalRatio": 0.05
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 190605,
+            "inputTokens": 10035,
+            "outputTokens": 16466,
+            "reasoningTokens": 15353,
+            "visibleOutputTokens": 1113,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 2,
+          "chapterId": 9273,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1184,
+            "bodyCharsNoWhitespace": 1114,
+            "paragraphCount": 36,
+            "sentenceCount": 88,
+            "sentenceLength": {
+              "count": 88,
+              "min": 3,
+              "max": 34,
+              "mean": 12.91,
+              "median": 10,
+              "p95": 25
+            },
+            "paragraphLength": {
+              "count": 36,
+              "min": 5,
+              "max": 114,
+              "mean": 30.94,
+              "median": 19,
+              "p95": 73
+            },
+            "dialogue": {
+              "ratio": 0.16,
+              "quotedChars": 186,
+              "quotePairs": 21,
+              "dialogueParagraphs": 17
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 0.98,
+              "duplicateSentenceCount": 2,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 86,
+                "？": 1,
+                "…": 2
+              },
+              "terminalDiversity": 3,
+              "emotionalTerminalRatio": 0.01
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 127674,
+            "inputTokens": 13930,
+            "outputTokens": 11320,
+            "reasoningTokens": 10542,
+            "visibleOutputTokens": 778,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 3,
+          "chapterId": 9274,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 3665,
+            "bodyCharsNoWhitespace": 3601,
+            "paragraphCount": 33,
+            "sentenceCount": 176,
+            "sentenceLength": {
+              "count": 176,
+              "min": 3,
+              "max": 61,
+              "mean": 20.52,
+              "median": 18,
+              "p95": 43
+            },
+            "paragraphLength": {
+              "count": 33,
+              "min": 9,
+              "max": 245,
+              "mean": 109.12,
+              "median": 106,
+              "p95": 182
+            },
+            "dialogue": {
+              "ratio": 0.08,
+              "quotedChars": 280,
+              "quotePairs": 10,
+              "dialogueParagraphs": 6
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 172,
+                "…": 8
+              },
+              "terminalDiversity": 2,
+              "emotionalTerminalRatio": 0
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 169351,
+            "inputTokens": 17230,
+            "outputTokens": 13315,
+            "reasoningTokens": 10837,
+            "visibleOutputTokens": 2478,
+            "reasoningToOutputRatio": 0.81,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 4,
+          "chapterId": 9275,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1907,
+            "bodyCharsNoWhitespace": 1821,
+            "paragraphCount": 44,
+            "sentenceCount": 109,
+            "sentenceLength": {
+              "count": 109,
+              "min": 3,
+              "max": 47,
+              "mean": 16.85,
+              "median": 14,
+              "p95": 37
+            },
+            "paragraphLength": {
+              "count": 44,
+              "min": 4,
+              "max": 108,
+              "mean": 41.39,
+              "median": 37,
+              "p95": 90
+            },
+            "dialogue": {
+              "ratio": 0.06,
+              "quotedChars": 105,
+              "quotePairs": 15,
+              "dialogueParagraphs": 14
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 0.98,
+              "duplicateSentenceCount": 2,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 106,
+                "？": 2,
+                "！": 1
+              },
+              "terminalDiversity": 3,
+              "emotionalTerminalRatio": 0.03
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 208941,
+            "inputTokens": 18486,
+            "outputTokens": 18078,
+            "reasoningTokens": 16695,
+            "visibleOutputTokens": 1383,
+            "reasoningToOutputRatio": 0.92,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        }
+      ],
+      "observations": [
+        {
+          "batchId": "batch_iv12a_standard",
+          "ordinal": 1,
+          "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "standard",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1664,
+            "paragraphCount": 34,
+            "sentenceCount": 91,
+            "dialogueRatio": 0.27,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 190605,
+            "inputTokens": 10035,
+            "outputTokens": 16466,
+            "reasoningTokens": 15353,
+            "visibleOutputTokens": 1113,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_standard",
+          "ordinal": 2,
+          "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "standard",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1184,
+            "paragraphCount": 36,
+            "sentenceCount": 88,
+            "dialogueRatio": 0.16,
+            "uniqueSentenceRatio": 0.98,
+            "duplicateSentenceCount": 2,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 127674,
+            "inputTokens": 13930,
+            "outputTokens": 11320,
+            "reasoningTokens": 10542,
+            "visibleOutputTokens": 778,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_standard",
+          "ordinal": 3,
+          "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "standard",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 3665,
+            "paragraphCount": 33,
+            "sentenceCount": 176,
+            "dialogueRatio": 0.08,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 169351,
+            "inputTokens": 17230,
+            "outputTokens": 13315,
+            "reasoningTokens": 10837,
+            "visibleOutputTokens": 2478,
+            "reasoningToOutputRatio": 0.81,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_standard",
+          "ordinal": 4,
+          "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "standard",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1907,
+            "paragraphCount": 44,
+            "sentenceCount": 109,
+            "dialogueRatio": 0.06,
+            "uniqueSentenceRatio": 0.98,
+            "duplicateSentenceCount": 2,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 208941,
+            "inputTokens": 18486,
+            "outputTokens": 18078,
+            "reasoningTokens": 16695,
+            "visibleOutputTokens": 1383,
+            "reasoningToOutputRatio": 0.92,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        }
+      ]
+    },
+    {
+      "label": "quality",
+      "sourceArtifact": "quality-v2-final.sqlite",
+      "databaseIntegrity": "ok",
+      "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "batch": {
+        "id": "batch_iv12a_quality",
+        "projectId": 67,
+        "status": "completed",
+        "chapterCount": 4,
+        "targetWordsPerChapter": 800,
+        "pipelineMode": "full",
+        "writingMode": "outline",
+        "reasoningEffort": "max",
+        "executionProfile": "standard",
+        "createdAt": 1788148541346,
+        "startedAt": 0,
+        "completedAt": 1788152330269,
+        "errorCode": null
+      },
+      "condition": {
+        "key": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+        "model": [
+          "deepseek-v4-flash"
+        ],
+        "providerAdapterId": [
+          "openai-compatible-generic"
+        ],
+        "thinking": [
+          "enabled"
+        ],
+        "reasoningEffort": [
+          "max",
+          "low"
+        ],
+        "qualityProfile": [
+          "quality"
+        ],
+        "executionProfile": [
+          "standard"
+        ],
+        "responseFormat": [
+          "text",
+          "json_object"
+        ],
+        "configuredContextWindow": [
+          1000000
+        ],
+        "completionCapability": [
+          200000
+        ],
+        "wireMaxTokens": [
+          200000
+        ],
+        "physicalRequestValues": [
+          1
+        ],
+        "consistent": {
+          "model": true,
+          "thinking": true,
+          "reasoningEffort": false,
+          "qualityProfile": true,
+          "executionProfile": true
+        }
+      },
+      "literaryQuality": {
+        "measurementMethod": "deterministic_proxy_only; no subjective score",
+        "expectedChapterCount": 4,
+        "chapterCountWithContent": 4,
+        "contentAvailabilityRate": 1,
+        "bodyChars": {
+          "count": 4,
+          "min": 1572,
+          "max": 3786,
+          "mean": 2674.25,
+          "median": 2045,
+          "p95": 3294
+        },
+        "bodyCharsNoWhitespace": {
+          "count": 4,
+          "min": 1517,
+          "max": 3682,
+          "mean": 2570.75,
+          "median": 1963,
+          "p95": 3121
+        },
+        "paragraphCount": {
+          "count": 4,
+          "min": 27,
+          "max": 88,
+          "mean": 52.5,
+          "median": 42,
+          "p95": 53
+        },
+        "sentenceCount": {
+          "count": 4,
+          "min": 79,
+          "max": 180,
+          "mean": 139,
+          "median": 123,
+          "p95": 174
+        },
+        "sentenceLengthMean": 18.61,
+        "paragraphLengthMean": 52,
+        "dialogueRatioMean": 0.13,
+        "uniqueSentenceRatioMean": 0.99,
+        "duplicateSentenceCountTotal": 4,
+        "adjacentRepeatedSentenceCountTotal": 0,
+        "terminalDiversityMean": 2.5,
+        "endingKindCounts": {
+          "closed": 4
+        },
+        "protocolLeakChapterCount": 0,
+        "humanOrEvaluatorAnnotation": {
+          "status": "not_collected",
+          "score": null,
+          "dimensions": {
+            "proseNaturalness": null,
+            "sceneCoherence": null,
+            "causalContinuity": null,
+            "characterConsistency": null,
+            "styleFit": null,
+            "endingEffectiveness": null
+          }
+        }
+      },
+      "pipelineStability": {
+        "batchStatus": "completed",
+        "expectedChapterCount": 4,
+        "observedItemCount": 4,
+        "itemStatusCounts": {
+          "succeeded": 4
+        },
+        "fullPipelineCount": 4,
+        "firstPassSuccessCount": 4,
+        "firstPassSuccessRate": 1,
+        "failedCount": 0,
+        "outcomeUnknownCount": 0,
+        "pendingCount": 0,
+        "retryCountFromItems": 0,
+        "retryCountFromAttempts": 0,
+        "stageAttemptCount": 8,
+        "succeededStageAttemptCount": 8,
+        "failedStageAttemptCount": 0,
+        "physicalRequestCount": 8,
+        "protocolFallbackCount": 0,
+        "formatterCallCount": 0,
+        "finishReasonCounts": {
+          "stop": 8
+        },
+        "emptyReasonCounts": {
+          "unknown": 8
+        },
+        "responseChannelCounts": {
+          "unknown": 8
+        },
+        "failureClassCounts": {
+          "unknown": 8
+        },
+        "errorCodeCounts": {},
+        "stageLatencyMs": {
+          "count": 8,
+          "min": 2062,
+          "max": 243057,
+          "mean": 95176,
+          "median": 7297,
+          "p95": 230459
+        },
+        "usage": {
+          "batchInputTokens": 68015,
+          "batchOutputTokens": 62477,
+          "batchLlmCalls": 8,
+          "attemptInputTokens": 68015,
+          "attemptOutputTokens": 62477,
+          "attemptReasoningTokens": 55073,
+          "attemptVisibleOutputTokens": 7404,
+          "reasoningToOutputRatio": 0.88
+        },
+        "batchWallTimeMs": null
+      },
+      "chapters": [
+        {
+          "ordinal": 1,
+          "chapterId": 9272,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 3294,
+            "bodyCharsNoWhitespace": 3121,
+            "paragraphCount": 88,
+            "sentenceCount": 174,
+            "sentenceLength": {
+              "count": 174,
+              "min": 3,
+              "max": 58,
+              "mean": 18.44,
+              "median": 15,
+              "p95": 41
+            },
+            "paragraphLength": {
+              "count": 88,
+              "min": 4,
+              "max": 160,
+              "mean": 35.47,
+              "median": 20,
+              "p95": 93
+            },
+            "dialogue": {
+              "ratio": 0.28,
+              "quotedChars": 925,
+              "quotePairs": 59,
+              "dialogueParagraphs": 49
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 153,
+                "？": 20,
+                "…": 2
+              },
+              "terminalDiversity": 3,
+              "emotionalTerminalRatio": 0.11
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 65462,
+            "inputTokens": 11100,
+            "outputTokens": 5330,
+            "reasoningTokens": 3171,
+            "visibleOutputTokens": 2159,
+            "reasoningToOutputRatio": 0.59,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 2,
+          "chapterId": 9273,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 2045,
+            "bodyCharsNoWhitespace": 1963,
+            "paragraphCount": 42,
+            "sentenceCount": 123,
+            "sentenceLength": {
+              "count": 123,
+              "min": 3,
+              "max": 49,
+              "mean": 16.25,
+              "median": 14,
+              "p95": 37
+            },
+            "paragraphLength": {
+              "count": 42,
+              "min": 5,
+              "max": 135,
+              "mean": 46.74,
+              "median": 25,
+              "p95": 118
+            },
+            "dialogue": {
+              "ratio": 0.22,
+              "quotedChars": 453,
+              "quotePairs": 27,
+              "dialogueParagraphs": 24
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 0.97,
+              "duplicateSentenceCount": 4,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 1
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 116,
+                "？": 6,
+                "…": 2
+              },
+              "terminalDiversity": 3,
+              "emotionalTerminalRatio": 0.05
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 232906,
+            "inputTokens": 17497,
+            "outputTokens": 19632,
+            "reasoningTokens": 18252,
+            "visibleOutputTokens": 1380,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 3,
+          "chapterId": 9274,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 1572,
+            "bodyCharsNoWhitespace": 1517,
+            "paragraphCount": 27,
+            "sentenceCount": 79,
+            "sentenceLength": {
+              "count": 79,
+              "min": 3,
+              "max": 46,
+              "mean": 19.29,
+              "median": 19,
+              "p95": 35
+            },
+            "paragraphLength": {
+              "count": 27,
+              "min": 9,
+              "max": 114,
+              "mean": 56.3,
+              "median": 53,
+              "p95": 107
+            },
+            "dialogue": {
+              "ratio": 0.01,
+              "quotedChars": 23,
+              "quotePairs": 2,
+              "dialogueParagraphs": 2
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 79
+              },
+              "terminalDiversity": 1,
+              "emotionalTerminalRatio": 0
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 0,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 250354,
+            "inputTokens": 18409,
+            "outputTokens": 19782,
+            "reasoningTokens": 18628,
+            "visibleOutputTokens": 1154,
+            "reasoningToOutputRatio": 0.94,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        },
+        {
+          "ordinal": 4,
+          "chapterId": 9275,
+          "status": "succeeded",
+          "completionQuality": "full_pipeline",
+          "retryCount": 0,
+          "errorCode": null,
+          "taskStatus": "completed",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "method": [
+              "utf16_text_length",
+              "cjk_sentence_shape",
+              "paragraph_shape",
+              "dialogue_quote_ratio",
+              "repetition_signals",
+              "terminal_punctuation_shape",
+              "chapter_boundary_signals"
+            ],
+            "bodyChars": 3786,
+            "bodyCharsNoWhitespace": 3682,
+            "paragraphCount": 53,
+            "sentenceCount": 180,
+            "sentenceLength": {
+              "count": 180,
+              "min": 3,
+              "max": 110,
+              "mean": 20.47,
+              "median": 19,
+              "p95": 42
+            },
+            "paragraphLength": {
+              "count": 53,
+              "min": 4,
+              "max": 164,
+              "mean": 69.47,
+              "median": 70,
+              "p95": 131
+            },
+            "dialogue": {
+              "ratio": 0.01,
+              "quotedChars": 49,
+              "quotePairs": 8,
+              "dialogueParagraphs": 8
+            },
+            "repetition": {
+              "uniqueSentenceRatio": 1,
+              "duplicateSentenceCount": 0,
+              "adjacentRepeatedSentenceCount": 0,
+              "duplicateParagraphGroupCount": 0
+            },
+            "punctuation": {
+              "terminalCounts": {
+                "。": 177,
+                "？": 2,
+                "！": 1
+              },
+              "terminalDiversity": 3,
+              "emotionalTerminalRatio": 0.02
+            },
+            "chapterBoundary": {
+              "endingKind": "closed",
+              "transitionCueCount": 1,
+              "startsWithProtocol": false,
+              "protocolLeakMarkers": []
+            },
+            "literaryQualityAnnotation": {
+              "status": "not_collected",
+              "source": null,
+              "rubricVersion": null,
+              "overall": null,
+              "dimensions": {
+                "proseNaturalness": null,
+                "sceneCoherence": null,
+                "causalContinuity": null,
+                "characterConsistency": null,
+                "styleFit": null,
+                "endingEffectiveness": null
+              }
+            }
+          },
+          "stability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 212686,
+            "inputTokens": 21009,
+            "outputTokens": 17733,
+            "reasoningTokens": 15022,
+            "visibleOutputTokens": 2711,
+            "reasoningToOutputRatio": 0.85,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          }
+        }
+      ],
+      "observations": [
+        {
+          "batchId": "batch_iv12a_quality",
+          "ordinal": 1,
+          "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "quality",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 3294,
+            "paragraphCount": 88,
+            "sentenceCount": 174,
+            "dialogueRatio": 0.28,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 65462,
+            "inputTokens": 11100,
+            "outputTokens": 5330,
+            "reasoningTokens": 3171,
+            "visibleOutputTokens": 2159,
+            "reasoningToOutputRatio": 0.59,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_quality",
+          "ordinal": 2,
+          "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "quality",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 2045,
+            "paragraphCount": 42,
+            "sentenceCount": 123,
+            "dialogueRatio": 0.22,
+            "uniqueSentenceRatio": 0.97,
+            "duplicateSentenceCount": 4,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 232906,
+            "inputTokens": 17497,
+            "outputTokens": 19632,
+            "reasoningTokens": 18252,
+            "visibleOutputTokens": 1380,
+            "reasoningToOutputRatio": 0.93,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_quality",
+          "ordinal": 3,
+          "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "quality",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 1572,
+            "paragraphCount": 27,
+            "sentenceCount": 79,
+            "dialogueRatio": 0.01,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 250354,
+            "inputTokens": 18409,
+            "outputTokens": 19782,
+            "reasoningTokens": 18628,
+            "visibleOutputTokens": 1154,
+            "reasoningToOutputRatio": 0.94,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        },
+        {
+          "batchId": "batch_iv12a_quality",
+          "ordinal": 4,
+          "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+          "thinking": "enabled",
+          "reasoningEffort": "mixed",
+          "qualityProfile": "quality",
+          "model": "deepseek-v4-flash",
+          "literaryQualityProxy": {
+            "measurementStatus": "deterministic_proxy_collected",
+            "bodyChars": 3786,
+            "paragraphCount": 53,
+            "sentenceCount": 180,
+            "dialogueRatio": 0.01,
+            "uniqueSentenceRatio": 1,
+            "duplicateSentenceCount": 0,
+            "endingKind": "closed",
+            "protocolLeak": false
+          },
+          "pipelineStability": {
+            "stageAttemptCount": 2,
+            "succeededStageAttemptCount": 2,
+            "failedStageAttemptCount": 0,
+            "retryCount": 0,
+            "physicalRequestCount": 2,
+            "protocolFallbackCount": 0,
+            "latencyMs": 212686,
+            "inputTokens": 21009,
+            "outputTokens": 17733,
+            "reasoningTokens": 15022,
+            "visibleOutputTokens": 2711,
+            "reasoningToOutputRatio": 0.85,
+            "finishReasons": [
+              "stop"
+            ],
+            "emptyReasons": [],
+            "responseChannels": [],
+            "failureClasses": [],
+            "errorCodes": []
+          },
+          "deliveryStatus": "succeeded",
+          "completionQuality": "full_pipeline"
+        }
+      ]
+    }
+  ],
+  "observations": [
+    {
+      "batchId": "batch_iv12a_fast",
+      "ordinal": 1,
+      "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "thinking": "enabled",
+      "reasoningEffort": "low",
+      "qualityProfile": "fast",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 2028,
+        "paragraphCount": 54,
+        "sentenceCount": 128,
+        "dialogueRatio": 0.27,
+        "uniqueSentenceRatio": 0.98,
+        "duplicateSentenceCount": 2,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 1,
+        "succeededStageAttemptCount": 1,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 1,
+        "protocolFallbackCount": 0,
+        "latencyMs": 18734,
+        "inputTokens": 4525,
+        "outputTokens": 1477,
+        "reasoningTokens": 177,
+        "visibleOutputTokens": 1300,
+        "reasoningToOutputRatio": 0.12,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_fast",
+      "ordinal": 2,
+      "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "thinking": "enabled",
+      "reasoningEffort": "low",
+      "qualityProfile": "fast",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1638,
+        "paragraphCount": 32,
+        "sentenceCount": 80,
+        "dialogueRatio": 0.12,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 1,
+        "succeededStageAttemptCount": 1,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 1,
+        "protocolFallbackCount": 0,
+        "latencyMs": 20351,
+        "inputTokens": 6968,
+        "outputTokens": 1576,
+        "reasoningTokens": 491,
+        "visibleOutputTokens": 1085,
+        "reasoningToOutputRatio": 0.31,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_fast",
+      "ordinal": 3,
+      "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "thinking": "enabled",
+      "reasoningEffort": "low",
+      "qualityProfile": "fast",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1884,
+        "paragraphCount": 26,
+        "sentenceCount": 89,
+        "dialogueRatio": 0.04,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 1,
+        "succeededStageAttemptCount": 1,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 1,
+        "protocolFallbackCount": 0,
+        "latencyMs": 104085,
+        "inputTokens": 8300,
+        "outputTokens": 9381,
+        "reasoningTokens": 8062,
+        "visibleOutputTokens": 1319,
+        "reasoningToOutputRatio": 0.86,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_fast",
+      "ordinal": 4,
+      "correlationKey": "batch_iv12a_fast|deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=low|quality=fast|execution=one_shot",
+      "thinking": "enabled",
+      "reasoningEffort": "low",
+      "qualityProfile": "fast",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 2757,
+        "paragraphCount": 33,
+        "sentenceCount": 115,
+        "dialogueRatio": 0,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 1,
+        "succeededStageAttemptCount": 1,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 1,
+        "protocolFallbackCount": 0,
+        "latencyMs": 35938,
+        "inputTokens": 9565,
+        "outputTokens": 2668,
+        "reasoningTokens": 703,
+        "visibleOutputTokens": 1965,
+        "reasoningToOutputRatio": 0.26,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_standard",
+      "ordinal": 1,
+      "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "standard",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1664,
+        "paragraphCount": 34,
+        "sentenceCount": 91,
+        "dialogueRatio": 0.27,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 190605,
+        "inputTokens": 10035,
+        "outputTokens": 16466,
+        "reasoningTokens": 15353,
+        "visibleOutputTokens": 1113,
+        "reasoningToOutputRatio": 0.93,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_standard",
+      "ordinal": 2,
+      "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "standard",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1184,
+        "paragraphCount": 36,
+        "sentenceCount": 88,
+        "dialogueRatio": 0.16,
+        "uniqueSentenceRatio": 0.98,
+        "duplicateSentenceCount": 2,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 127674,
+        "inputTokens": 13930,
+        "outputTokens": 11320,
+        "reasoningTokens": 10542,
+        "visibleOutputTokens": 778,
+        "reasoningToOutputRatio": 0.93,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_standard",
+      "ordinal": 3,
+      "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "standard",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 3665,
+        "paragraphCount": 33,
+        "sentenceCount": 176,
+        "dialogueRatio": 0.08,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 169351,
+        "inputTokens": 17230,
+        "outputTokens": 13315,
+        "reasoningTokens": 10837,
+        "visibleOutputTokens": 2478,
+        "reasoningToOutputRatio": 0.81,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_standard",
+      "ordinal": 4,
+      "correlationKey": "batch_iv12a_standard|deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=high,low|quality=standard|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "standard",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1907,
+        "paragraphCount": 44,
+        "sentenceCount": 109,
+        "dialogueRatio": 0.06,
+        "uniqueSentenceRatio": 0.98,
+        "duplicateSentenceCount": 2,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 208941,
+        "inputTokens": 18486,
+        "outputTokens": 18078,
+        "reasoningTokens": 16695,
+        "visibleOutputTokens": 1383,
+        "reasoningToOutputRatio": 0.92,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_quality",
+      "ordinal": 1,
+      "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "quality",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 3294,
+        "paragraphCount": 88,
+        "sentenceCount": 174,
+        "dialogueRatio": 0.28,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 65462,
+        "inputTokens": 11100,
+        "outputTokens": 5330,
+        "reasoningTokens": 3171,
+        "visibleOutputTokens": 2159,
+        "reasoningToOutputRatio": 0.59,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_quality",
+      "ordinal": 2,
+      "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "quality",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 2045,
+        "paragraphCount": 42,
+        "sentenceCount": 123,
+        "dialogueRatio": 0.22,
+        "uniqueSentenceRatio": 0.97,
+        "duplicateSentenceCount": 4,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 232906,
+        "inputTokens": 17497,
+        "outputTokens": 19632,
+        "reasoningTokens": 18252,
+        "visibleOutputTokens": 1380,
+        "reasoningToOutputRatio": 0.93,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_quality",
+      "ordinal": 3,
+      "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "quality",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 1572,
+        "paragraphCount": 27,
+        "sentenceCount": 79,
+        "dialogueRatio": 0.01,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 250354,
+        "inputTokens": 18409,
+        "outputTokens": 19782,
+        "reasoningTokens": 18628,
+        "visibleOutputTokens": 1154,
+        "reasoningToOutputRatio": 0.94,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    },
+    {
+      "batchId": "batch_iv12a_quality",
+      "ordinal": 4,
+      "correlationKey": "batch_iv12a_quality|deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "conditionKey": "deepseek-v4-flash|thinking=enabled|effort=max,low|quality=quality|execution=standard",
+      "thinking": "enabled",
+      "reasoningEffort": "mixed",
+      "qualityProfile": "quality",
+      "model": "deepseek-v4-flash",
+      "literaryQualityProxy": {
+        "measurementStatus": "deterministic_proxy_collected",
+        "bodyChars": 3786,
+        "paragraphCount": 53,
+        "sentenceCount": 180,
+        "dialogueRatio": 0.01,
+        "uniqueSentenceRatio": 1,
+        "duplicateSentenceCount": 0,
+        "endingKind": "closed",
+        "protocolLeak": false
+      },
+      "pipelineStability": {
+        "stageAttemptCount": 2,
+        "succeededStageAttemptCount": 2,
+        "failedStageAttemptCount": 0,
+        "retryCount": 0,
+        "physicalRequestCount": 2,
+        "protocolFallbackCount": 0,
+        "latencyMs": 212686,
+        "inputTokens": 21009,
+        "outputTokens": 17733,
+        "reasoningTokens": 15022,
+        "visibleOutputTokens": 2711,
+        "reasoningToOutputRatio": 0.85,
+        "finishReasons": [
+          "stop"
+        ],
+        "emptyReasons": [],
+        "responseChannels": [],
+        "failureClasses": [],
+        "errorCodes": []
+      },
+      "deliveryStatus": "succeeded",
+      "completionQuality": "full_pipeline"
+    }
+  ]
+}

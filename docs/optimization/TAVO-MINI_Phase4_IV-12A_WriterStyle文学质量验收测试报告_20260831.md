@@ -75,13 +75,15 @@ d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27
 - 使用同一 Context 构建版本和相同任务上下文输入；每个样本独立冻结，`contextIsolatedPerSample=true`，避免跨样本污染。
 - 同一模型、同一 Thinking 开启语义；只改变质量档位对应的 reasoning/execution 配置。
 
-### 4.2 运行矩阵
+### 4.2 运行矩阵与 Physical Calls 口径
+
+本报告的 `Physical Calls` 指阶段级真实网络请求，不是“每个章节只允许一次”的抽象章节计数。Fast 只有一次 Draft 请求；Standard/Quality 各有一次 Draft 和一次 QA 请求。没有 retry、fallback 或自动 re-plan，因此每章物理请求分别为 Fast=1、Standard=2、Quality=2。
 
 | 档位 | reasoning / execution | 样本 | 批次完成 | LLM calls | 每章物理请求 | First-Pass | retry / fallback |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fast | `low` / `one_shot` | 4 | 4/4 | 4 | 1 | 4/4 | 0 / 0 |
-| Standard | `high` / `standard` | 4 | 4/4 | 8 | 1 | 4/4 | 0 / 0 |
-| Quality | `max` / `standard` | 4 | 4/4 | 8 | 1 | 4/4 | 0 / 0 |
+| Fast | `low` / `one_shot` | 4 | 4/4 | 4 | 1/chapter | 4/4 | 0 / 0 |
+| Standard | `high` / `standard` | 4 | 4/4 | 8 | 2/chapter | 4/4 | 0 / 0 |
+| Quality | `max` / `standard` | 4 | 4/4 | 8 | 2/chapter | 4/4 | 0 / 0 |
 
 所有样本均为 Thinking enabled、finish reason 为可接受的 stop、无 outcome_unknown；Governor 没有 physical call，也没有阻断 current request。
 

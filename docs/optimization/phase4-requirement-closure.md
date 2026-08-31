@@ -1,15 +1,31 @@
 # TAVO-MINI Phase IV Requirement Closure
 
-日期：2026-08-30（Asia/Shanghai）；IV-10 DeepSeek 根因隔离轮更新：2026-08-31
-唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
-开工时 `HEAD == origin/main == 64b88580c134f67e3fb73d1951ef6bc972da5552`；IV-10 轮基线 `HEAD == origin/main == 8cec6a5f`。
-最终状态：`PHASE IV FINAL SEAL HOLD / NO-GO`（2026-08-31 IV-10 更新：401 与"外部 provider 停摆"两个历史 blocker 均已解除/关闭；现余缺口为 10 章批次 9/10——单一 model 侧病态计划被 P0-05 正确 fail-closed）
+日期：2026-08-31（Asia/Shanghai）
+施工仓：`E:\AiWorkSpace\tavo-mini`
+唯一主方案：[`TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`](E:/AiWorkSpace/tavo-mini/docs/optimization/TAVO-MINI_Phase4_%E4%BC%98%E5%8C%96%E5%BB%BA%E8%AE%BE%E4%B8%8EWriterStyle%E6%96%87%E5%AD%A6%E8%B4%A8%E9%87%8F%E6%9C%80%E7%BB%88%E5%B0%81%E6%9D%BF%E6%96%B9%E6%A1%88_20260831.md)
+IV-12A 开工时 `HEAD == origin/main == 24b65486337cf0c45a2a5aa9d82661d0f1644f23`。
+当前状态：`PHASE IV FINAL SEALED / GO`
 
-## 结论（IV-10 后）
+## 当前结论（IV-12A～E）
 
-Phase IV 主链减法、协议瘦身、Governor 旁路、Context 弹性化、Persistence Boundary 收拢均已落地并通过回归。2026-08-30/31 的 DeepSeek 真实轮完成了 5 章（5/5 adopted，First-Pass 5/5）与 10 章（9/10 adopted，First-Pass 8/10）连续运行；原"Boundary-first Draft 570s 停摆"的根因已在证据支持下**关闭**：不是 provider 特异、不是传输/看门狗缺陷、不是"7k 小上下文"，而是**特定章节计划梗概触发的模型失控超长生成**——对 GLM（thinking-high，推理失控）与 DeepSeek（thinking-off，文本失控）同样成立，经非流式 + 570s 看门狗观测为"无输出停摆"；应用侧全程 fail-closed 正确（length 拒绝持久化、outcome_unknown 零自动 retry、账务完整）。10 章完整分母仍差 1 章（唯一失败章为 model 侧病态计划；同位置重计划已被 5 章批次证明可正常写作），故维持 `HOLD / NO-GO`，不为封板降低标准。
+IV-12A～E 完成了以真实 Writer Style 为 SSOT 的 Style Requirement / Adherence 合同、4 类计划 × Fast/Standard/Quality 同题 A/B、Narrative Completion 验收和 Completion Boundary 文学回归。12 个样本全部有效：三档均 4/4 完成与 first-pass；25/25 条 Style Requirement 均完成评测，Adherence=1.0、Hard Style Violation=0、Style Drift=0；Scene Completion、Beat Realization、Character Consistency、Causal Continuity、Ending Effectiveness 及 Boundary 五项均 PASS。
 
-## Final Seal Required Gates（IV-10 后）
+当前 Required Gates：
+
+| Required Gate | 结果 | 证据与边界 |
+| --- | --- | --- |
+| Writer Style SSOT / Requirement Projection | **PASS** | 真实冻结 Style；25 条要求（Mandatory 4 / Preferred 19 / Avoid 2）；12/12 assessed、unknown=0 |
+| Fast / Standard / Quality 同题 A/B | **PASS** | 同 Plan fingerprint、同 Style/Projection fingerprint、同 Context 构建版本；4×3=12 样本可配对 |
+| Writer Style Adherence | **PASS** | 三档均 1.0；Hard Style Violation=0；Style Drift=0 |
+| Narrative Completion | **PASS** | 五项维度逐样本通过，最低分 3/4 |
+| Completion Boundary 文学回归 | **PASS** | 无场景缩水、摘要化、情绪过快、动作链截断、慢节奏清单化或模板化结尾 |
+| Safety / Throughput | **PASS** | Thinking enabled；Mandatory Truth 保持；Governor physical call=0；无 hidden retry；12/12 first-pass |
+| Receipt / DB / Android | **PASS** | 三份 DB integrity=ok；快照恢复 SHA-256 一致；`adb install -r`；crash/ANR=0 |
+| Engineering | **PASS** | full verify、targeted 13/13、typecheck、lint quiet、Elastic、version、APK 全通过 |
+
+## Historical Evidence — Final Seal Required Gates（IV-10 后，封存）
+
+> 本表只保留 IV-10 当时的验收快照；其中的 9/10 与 NO-GO 已由 IV-12A～E 当前矩阵和最终工程复核替代，不是当前状态。
 
 | Required Gate | 结果 | 证据与边界 |
 | --- | --- | --- |
@@ -33,27 +49,37 @@ Phase IV 主链减法、协议瘦身、Governor 旁路、Context 弹性化、Per
 9. **P0 安全是否全部保留？** 代码/确定性检查/历史证据层面是；当前真实 5/10 Android 运行仍待凭据恢复后补证。P0 逐项见下表。
 10. **是否回到正常写作链而非工程协议链？** 是（实现方向）。Compact 主链为 `Freeze → Draft → ONE QA → (optional Revision) → local Persistence Boundary`，不新增 LLM stage；最终 E2E 通过率仍需真实样本确认。
 
-## P0 Closure
+## P0 Closure（当前 IV-12）
 
 | P0 | 闭环状态 | 证据/说明 |
 | --- | --- | --- |
-| P0-01 Thinking Always On | PASS（代码/契约） | 写作请求和模型可见契约保持 thinking；无关闭路径 |
+| P0-01 Thinking Always On | PASS（当前矩阵） | IV-12 三档 12 个样本均为 `thinking=enabled`；无关闭路径 |
 | P0-02 不新增 Agent / Multi-Agent | PASS | Phase IV 只改现有 Writing Kernel 路径 |
 | P0-03 不新增第二 Writer / Context / Memory / Prompt Compiler | PASS | 未增加第二实例；上下文为既有 projection 的收拢 |
 | P0-04 Mandatory Truth 不因 throughput 被裁掉 | PASS（确定性） | Mandatory projection 与 truth/canon safety 保留 |
 | P0-05 `finishReason=length` 不持久化为 Final | PASS（确定性） | `truncated_output` 为 Hard Block；Persistence Boundary fail-closed |
 | P0-06 `outcome_unknown` 永不自动 retry | PASS（确定性/历史） | C9 `1/38` ledger-only 仍保留；无自动 retry |
 | P0-07 Governor 不阻断当前请求 | PASS（确定性） | `phase4GovernorBypass.test.ts` |
-| P0-08 Governor physical call = 0 | PASS（确定性/历史） | C9=0；Phase IV Governor 仅本地旁路观察 |
+| P0-08 Governor physical call = 0 | PASS（当前矩阵） | IV-12 三档真实矩阵均为 0；Governor 仅本地旁路观察 |
 | P0-09 禁止固定业务 maxTokens | PASS（代码/Elastic） | `verify:elastic` 通过；运行时弹性派生，不回写固定业务值 |
-| P0-10 Physical Paid Calls 如实计账 | PASS（历史；当前无 paid sample） | C9 paid denominator=38；401 不计为付费成功 |
-| P0-11 Android 只 `adb install -r` | PASS | IV-0～IV-7 仅使用签名 release `adb install -r`；未 uninstall/pm clear |
-| P0-12 Resume / Idempotency 不退化 | PASS（确定性） | Persistence Boundary、continuous harness 和 C8 证据 |
+| P0-10 Physical Paid Calls 如实计账 | PASS（当前矩阵） | IV-12 calls=20（Fast 4 + Standard 8 + Quality 8）；每章物理请求为 1/2/2；无重复收费或 hidden retry |
+| P0-11 Android 只 `adb install -r` | PASS | IV-12 使用同代码 debug APK 的 `adb install -r`；未 uninstall/pm clear；测试后恢复设备快照 |
+| P0-12 Resume / Idempotency 不退化 | PASS（确定性/历史回归） | Persistence Boundary、continuous harness、C8 证据与本轮 DB 快照恢复均通过 |
 | P0-13 不允许 Canon / Story Memory 污染 | PASS（确定性） | `canon_state_safety` 保持 Hard Block；状态 sidecar 非法可舍弃但不污染正文状态 |
 
-## 真实解封条件（IV-10 后）
+## 当前 Evidence Index（IV-12）
 
-历史 blocker（401 凭据、GLM"边界首章停摆"）均已关闭。当前唯一未满分的 Required Gate 是 10 章批次 9/10（单一 model 侧病态计划，已 root-cause）。按下列固定顺序补证：
+- Writer Style / Narrative / Boundary 报告：`docs/optimization/TAVO-MINI_Phase4_IV-12A_WriterStyle文学质量验收测试报告_20260831.md`
+- 脱敏 annotations：`test-logs/phase4-iv12a-20260831/annotations-v2.json`
+- 脱敏 Writer Style evidence：`test-logs/phase4-iv12a-20260831/writer-style-evidence-v2.json`
+- Literary Shape Telemetry：`test-logs/phase4-iv12a-20260831/writing-quality-shape-telemetry-v2.json`
+- Android / DB / UI / logcat：`test-logs/phase4-iv12a-20260831/`、`test-logs/phase4-iv12a-preflight-20260831/`
+
+## Historical Evidence — 真实解封条件（IV-10，已完成并封存）
+
+> 本节只保留 IV-10 当时的解封条件与操作记录，已由 IV-12A～E 完成闭环，不是当前待办。
+
+历史 blocker（401 凭据、GLM"边界首章停摆"）均已关闭。当时唯一未满分的 Required Gate 是 10 章批次 9/10（单一 model 侧病态计划，已 root-cause）；该段为 IV-10 Historical Evidence，不是当前解封条件。
 
 1. 维持当前 DeepSeek 配置（`deepseek-v4-flash` @ `api.deepseek.com`，`max_output_tokens=65536`）与同签名 debug 包，仅 `adb install -r`；不清理数据。
 2. 连续新开 10 章批次：因失控生成按计划梗概随机/特定触发（今日观测 1/16 计划确定性 + 1/16 随机），遇到 length 截断/timeout 时按 UI 用户确认流程重试或对该章重计划（5 章批次已证明同位置重计划可正常写作），目标形成 10/10 adopted 分母。

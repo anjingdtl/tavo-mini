@@ -1,0 +1,540 @@
+{
+  "rubricVersion": "phase4-narrative-quality-v1",
+  "minimumScore": 3,
+  "annotations": {
+    "fast": {
+      "1": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:incremental"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "2": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 3, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 3, "evidenceCodes": ["beats:choice-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 3, "evidenceCodes": ["ending:unfinished-opening"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-rushed"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "3": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "4": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 3, "evidenceCodes": ["beats:evidence-compromised-clue-preserved"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      }
+    },
+    "standard": {
+      "1": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "2": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:incremental"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "3": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "4": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      }
+    },
+    "quality": {
+      "1": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "2": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:incremental"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "3": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 3, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 3, "evidenceCodes": ["ending:specific-cliff"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      },
+      "4": {
+        "source": "independent_evaluator",
+        "rules": {
+          "style:narration.pointOfView": {"assessment": "satisfied"},
+          "style:narration.narratorDistance": {"assessment": "satisfied"},
+          "style:narration.viewpointSwitching": {"assessment": "satisfied"},
+          "style:narration.interiority": {"assessment": "satisfied"},
+          "style:language.texture": {"assessment": "satisfied"},
+          "style:language.syntax": {"assessment": "satisfied"},
+          "style:language.vocabulary": {"assessment": "satisfied"},
+          "style:language.paragraphStructure": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.sceneEnvironment": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterPresentation": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.characterVoice": {"assessment": "satisfied"},
+          "style:sceneAndCharacter.dialogue": {"assessment": "satisfied"},
+          "style:narrativeMechanics.pacing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.conflict": {"assessment": "satisfied"},
+          "style:narrativeMechanics.informationReveal": {"assessment": "satisfied"},
+          "style:narrativeMechanics.suspense": {"assessment": "satisfied"},
+          "style:narrativeMechanics.foreshadowing": {"assessment": "satisfied"},
+          "style:narrativeMechanics.chapterStructure": {"assessment": "satisfied"},
+          "style:narrativeMechanics.continuity": {"assessment": "satisfied"},
+          "style:literaryTexture.imagery": {"assessment": "satisfied"},
+          "style:literaryTexture.sensory": {"assessment": "satisfied"},
+          "style:prohibitions.0": {"assessment": "satisfied"},
+          "style:prohibitions.1": {"assessment": "satisfied"},
+          "style:extraInstructions.0": {"assessment": "satisfied"},
+          "style:extraInstructions.1": {"assessment": "satisfied"}
+        },
+        "narrative": {
+          "sceneCompletion": {"status": "pass", "score": 4, "evidenceCodes": ["scene:complete"]},
+          "beatRealization": {"status": "pass", "score": 4, "evidenceCodes": ["beats:all-realized"]},
+          "characterConsistency": {"status": "pass", "score": 4, "evidenceCodes": ["character:consistent"]},
+          "causalContinuity": {"status": "pass", "score": 4, "evidenceCodes": ["causal:traceable"]},
+          "endingEffectiveness": {"status": "pass", "score": 4, "evidenceCodes": ["ending:specific-hook"]}
+        },
+        "completionBoundary": {
+          "investigationSummary": {"status": "pass", "evidenceCodes": ["boundary:scene-rendered"]},
+          "emotionTooFast": {"status": "pass", "evidenceCodes": ["emotion:not-applicable"]},
+          "actionChainTruncated": {"status": "pass", "evidenceCodes": ["action:consequence-present"]},
+          "slowPaceChecklisting": {"status": "pass", "evidenceCodes": ["pace:not-checklist"]},
+          "templateEnding": {"status": "pass", "evidenceCodes": ["ending:not-template"]}
+        }
+      }
+    }
+  }
+}

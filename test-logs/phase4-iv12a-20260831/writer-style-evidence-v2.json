@@ -1,0 +1,3409 @@
+{
+  "schema": "shinewriter.writer-style-adherence.v1",
+  "contractVersion": "writer-style-adherence-v1",
+  "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+  "evidenceLayer": "test-evidence-acceptance-only",
+  "productionJudgeLlm": false,
+  "productionLiteraryGate": false,
+  "productionRetryOrReplan": false,
+  "matrix": {
+    "sampleCount": 12,
+    "profiles": [
+      "fast",
+      "standard",
+      "quality"
+    ],
+    "comparability": {
+      "matrix": [
+        "fast",
+        "standard",
+        "quality"
+      ],
+      "samePlan": true,
+      "sameWriterStyle": true,
+      "sameStyleRequirementProjection": true,
+      "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+      "writerStyleFingerprints": [
+        "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+      ],
+      "styleProjectionFingerprints": [
+        "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d"
+      ],
+      "contextIsolatedPerSample": true
+    }
+  },
+  "runs": [
+    {
+      "profile": "fast",
+      "batch": {
+        "id": "batch_iv12a_fast",
+        "project_id": 67,
+        "status": "completed",
+        "chapter_count": 4,
+        "completed_count": 4,
+        "current_ordinal": 4,
+        "used_llm_calls": 4,
+        "reasoning_effort": "low",
+        "execution_profile": "one_shot",
+        "outline_workflow_version": 4,
+        "context_budget_version": 7,
+        "pipeline_topology_version": 2
+      },
+      "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+      "samples": [
+        {
+          "sampleId": "fast:1",
+          "profile": "fast",
+          "ordinal": 1,
+          "batch": {
+            "id": "batch_iv12a_fast",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "low",
+            "executionProfile": "one_shot",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 4
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "22018601444db59a",
+            "pipelineContextHash": "43a340ee2ef1e6d30156a971ecc5f795",
+            "contextChars": 63154,
+            "bodyChars": 2028,
+            "bodySha256": "a8d1ff1b5b6b6d6ea2924545d0cf89b12f196221402f412846fc4de8f4c4bafe",
+            "createdAt": 1788150533140,
+            "updatedAt": 1788150552670
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": "one_shot",
+              "reasoningEffort": "low",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 0
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "skipped",
+              "attempt_count": 0
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 1477,
+              "visible_output_tokens": 1300,
+              "reasoning_tokens": 177,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:incremental"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "fast:2",
+          "profile": "fast",
+          "ordinal": 2,
+          "batch": {
+            "id": "batch_iv12a_fast",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "low",
+            "executionProfile": "one_shot",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 4
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "850b5453ec7d3582",
+            "pipelineContextHash": "a142b2e459fda8d207a659424f2eadd6",
+            "contextChars": 85165,
+            "bodyChars": 1638,
+            "bodySha256": "3196309e35ebd46b9bec51884b0c2347890216e68e18b2a41403de3878d9e01f",
+            "createdAt": 1788150552849,
+            "updatedAt": 1788150574120
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": "one_shot",
+              "reasoningEffort": "low",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 0
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "skipped",
+              "attempt_count": 0
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 1576,
+              "visible_output_tokens": 1085,
+              "reasoning_tokens": 491,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "beats:choice-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "ending:unfinished-opening"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-rushed"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "beats:choice-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "ending:unfinished-opening"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "fast:3",
+          "profile": "fast",
+          "ordinal": 3,
+          "batch": {
+            "id": "batch_iv12a_fast",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "low",
+            "executionProfile": "one_shot",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 4
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "e1ffbc08fc90c4f9",
+            "pipelineContextHash": "02c4512892874c9ab4bbc3c9d949ffba",
+            "contextChars": 97077,
+            "bodyChars": 1884,
+            "bodySha256": "640de8a4737e63262e8eadbf262f8e9d128d0762fc3f8c83c707cc88492c0202",
+            "createdAt": 1788150574262,
+            "updatedAt": 1788150679280
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": "one_shot",
+              "reasoningEffort": "low",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 0
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "skipped",
+              "attempt_count": 0
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 9381,
+              "visible_output_tokens": 1319,
+              "reasoning_tokens": 8062,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "fast:4",
+          "profile": "fast",
+          "ordinal": 4,
+          "batch": {
+            "id": "batch_iv12a_fast",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "low",
+            "executionProfile": "one_shot",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 4
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "427bf5e5e4fae3f5",
+            "pipelineContextHash": "d50adc6193ae8465c6755d4b232fc810",
+            "contextChars": 111323,
+            "bodyChars": 2757,
+            "bodySha256": "e22940e070bf1666f50f74e4588cf48c426835ab90aef20f42d52d22e3d89ec0",
+            "createdAt": 1788150679449,
+            "updatedAt": 1788150716471
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": "one_shot",
+              "reasoningEffort": "low",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 0
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "skipped",
+              "attempt_count": 0
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 2668,
+              "visible_output_tokens": 1965,
+              "reasoning_tokens": 703,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "beats:evidence-compromised-clue-preserved"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "beats:evidence-compromised-clue-preserved"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "profile": "standard",
+      "batch": {
+        "id": "batch_iv12a_standard",
+        "project_id": 67,
+        "status": "completed",
+        "chapter_count": 4,
+        "completed_count": 4,
+        "current_ordinal": 4,
+        "used_llm_calls": 8,
+        "reasoning_effort": "high",
+        "execution_profile": "standard",
+        "outline_workflow_version": 4,
+        "context_budget_version": 7,
+        "pipeline_topology_version": 2
+      },
+      "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+      "samples": [
+        {
+          "sampleId": "standard:1",
+          "profile": "standard",
+          "ordinal": 1,
+          "batch": {
+            "id": "batch_iv12a_standard",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "high",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "847cd23e767ce38c",
+            "pipelineContextHash": "d5cca9458905009af8a0f938294d079a",
+            "contextChars": 62724,
+            "bodyChars": 1664,
+            "bodySha256": "76006f309bd668b09a5255324b70259ab12ba094f00dac7d7adac357d4de6aa0",
+            "createdAt": 1788150781780,
+            "updatedAt": 1788150973370
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 16265,
+              "visible_output_tokens": 1107,
+              "reasoning_tokens": 15158,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 201,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 195,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "standard:2",
+          "profile": "standard",
+          "ordinal": 2,
+          "batch": {
+            "id": "batch_iv12a_standard",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "high",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "242bb0d0e0143bbb",
+            "pipelineContextHash": "4e43356c06cc26d2b03bb7f9520ad2c7",
+            "contextChars": 81788,
+            "bodyChars": 1184,
+            "bodySha256": "ca72c0197f8efbdc8ae0e4284a226e7b778811ce328101d602025bc780c36611",
+            "createdAt": 1788150973519,
+            "updatedAt": 1788151102326
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 11233,
+              "visible_output_tokens": 772,
+              "reasoning_tokens": 10461,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 87,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 81,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:incremental"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "standard:3",
+          "profile": "standard",
+          "ordinal": 3,
+          "batch": {
+            "id": "batch_iv12a_standard",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "high",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "aa0e61f1b60aa850",
+            "pipelineContextHash": "70b7b34748a35e50f032495b409ea512",
+            "contextChars": 90561,
+            "bodyChars": 3665,
+            "bodySha256": "b970b40a876831943fc829c35f594fd9c36a63677a782ef705f5fbe5e35961ac",
+            "createdAt": 1788151102481,
+            "updatedAt": 1788151273069
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 13206,
+              "visible_output_tokens": 2472,
+              "reasoning_tokens": 10734,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 109,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 103,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "standard:4",
+          "profile": "standard",
+          "ordinal": 4,
+          "batch": {
+            "id": "batch_iv12a_standard",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "high",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "98be71f9a112d19d",
+            "pipelineContextHash": "0f973fdb4cd126b5b7ba081599f3243c",
+            "contextChars": 119372,
+            "bodyChars": 1907,
+            "bodySha256": "b7177a7caaf31d7d15bb0879b969cb1d9bcd1200649ebee56019eeed6e993d64",
+            "createdAt": 1788151273199,
+            "updatedAt": 1788151483587
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 18032,
+              "visible_output_tokens": 1377,
+              "reasoning_tokens": 16655,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 46,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 40,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "profile": "quality",
+      "batch": {
+        "id": "batch_iv12a_quality",
+        "project_id": 67,
+        "status": "completed",
+        "chapter_count": 4,
+        "completed_count": 4,
+        "current_ordinal": 4,
+        "used_llm_calls": 8,
+        "reasoning_effort": "max",
+        "execution_profile": "standard",
+        "outline_workflow_version": 4,
+        "context_budget_version": 7,
+        "pipeline_topology_version": 2
+      },
+      "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+      "samples": [
+        {
+          "sampleId": "quality:1",
+          "profile": "quality",
+          "ordinal": 1,
+          "batch": {
+            "id": "batch_iv12a_quality",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "max",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "bd005135857394f7",
+            "pipelineContextHash": "e78ab37882e31dc08aa94f4980ec53cc",
+            "contextChars": 62709,
+            "bodyChars": 3294,
+            "bodySha256": "76a6e059ef8fc3b0ca93eff3be3f842d2915031bf91eeda5bbafce81c02a53da",
+            "createdAt": 1788151562041,
+            "updatedAt": 1788151628947
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 5238,
+              "visible_output_tokens": 2153,
+              "reasoning_tokens": 3085,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 92,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 86,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "quality:2",
+          "profile": "quality",
+          "ordinal": 2,
+          "batch": {
+            "id": "batch_iv12a_quality",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "max",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "3b4f4ff8d0d38fe7",
+            "pipelineContextHash": "39ae842c02549e513a58bf4aa9f68f0b",
+            "contextChars": 94873,
+            "bodyChars": 2045,
+            "bodySha256": "afaf87ade02220de9031e0245d7a338d2ec2561af7f42833719e014b7d3615c5",
+            "createdAt": 1788151629185,
+            "updatedAt": 1788151863607
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 19441,
+              "visible_output_tokens": 1374,
+              "reasoning_tokens": 18067,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 191,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 185,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:incremental"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "quality:3",
+          "profile": "quality",
+          "ordinal": 3,
+          "batch": {
+            "id": "batch_iv12a_quality",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "max",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "93b1aca47c72ee21",
+            "pipelineContextHash": "2c8fa55cbae7f0688ab3c7da697bbebf",
+            "contextChars": 108765,
+            "bodyChars": 1572,
+            "bodySha256": "c4a5e12a5c53b9d898b37333758bd1290bde1649bc06fc39766e7c99db2798f4",
+            "createdAt": 1788151863798,
+            "updatedAt": 1788152115665
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 19172,
+              "visible_output_tokens": 1148,
+              "reasoning_tokens": 18024,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 610,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 604,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 3,
+                "evidenceCodes": [
+                  "ending:specific-cliff"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 3,
+                  "evidenceCodes": [
+                    "ending:specific-cliff"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "sampleId": "quality:4",
+          "profile": "quality",
+          "ordinal": 4,
+          "batch": {
+            "id": "batch_iv12a_quality",
+            "status": "completed",
+            "chapterCount": 4,
+            "completedCount": 4,
+            "reasoningEffort": "max",
+            "executionProfile": "standard",
+            "outlineWorkflowVersion": 4,
+            "contextBudgetVersion": 7,
+            "pipelineTopologyVersion": 2,
+            "usedLlmCalls": 8
+          },
+          "task": {
+            "status": "completed",
+            "inputFingerprint": "e85c95e2bae1bfda",
+            "pipelineContextHash": "3070896bd4374e85d5c7529440d16993",
+            "contextChars": 120055,
+            "bodyChars": 3786,
+            "bodySha256": "a1e7f5d036352b3b27da22751fa408a1e3a77dd4ad6541230dfeadbdb57134a0",
+            "createdAt": 1788152115846,
+            "updatedAt": 1788152330285
+          },
+          "comparability": {
+            "planFingerprint": "5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23",
+            "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+            "styleProjectionFingerprint": "1cdcb80019611e54eab7ed667b154a33a7d36b566cf43fe8d207ab2e2bd1d14d",
+            "contextStatic": {
+              "contextVersion": 4,
+              "contextPolicyHash": null,
+              "executionProfile": null,
+              "reasoningEffort": "max",
+              "writerStyleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27"
+            }
+          },
+          "checkpoints": [
+            {
+              "stage": "brief",
+              "status": "skipped",
+              "attempt_count": 1
+            },
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_count": 1
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_count": 1
+            }
+          ],
+          "attempts": [
+            {
+              "stage": "draft",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 17590,
+              "visible_output_tokens": 2705,
+              "reasoning_tokens": 14885,
+              "finish_reason": "stop"
+            },
+            {
+              "stage": "qa",
+              "status": "succeeded",
+              "attempt_no": 1,
+              "output_tokens": 143,
+              "visible_output_tokens": 6,
+              "reasoning_tokens": 137,
+              "finish_reason": "stop"
+            }
+          ],
+          "writerStyle": {
+            "schema": "shinewriter.writer-style-adherence.v1",
+            "contractVersion": "writer-style-adherence-v1",
+            "bodyPolicy": "metadata-only: no prompts, plans, synopsis, titles, chapter bodies, reasoning content, response bodies, API keys, or error messages",
+            "writerStyle": {
+              "assetId": 5,
+              "assetName": "IV12A冷静限知",
+              "sourceFormat": "shinewriter",
+              "styleFingerprint": "d896039e1e7e8c09a093bf0fb0fde43a0e29b93d0eefe637f911d644d3956b27",
+              "projectionCompleteness": "complete",
+              "requirementCount": 25,
+              "mandatoryRuleIds": [
+                "style:narration.pointOfView",
+                "style:narration.narratorDistance",
+                "style:narration.viewpointSwitching",
+                "style:extraInstructions.0"
+              ],
+              "preferredRuleIds": [
+                "style:narration.interiority",
+                "style:language.texture",
+                "style:language.syntax",
+                "style:language.vocabulary",
+                "style:language.paragraphStructure",
+                "style:sceneAndCharacter.sceneEnvironment",
+                "style:sceneAndCharacter.characterPresentation",
+                "style:sceneAndCharacter.characterVoice",
+                "style:sceneAndCharacter.dialogue",
+                "style:narrativeMechanics.pacing",
+                "style:narrativeMechanics.conflict",
+                "style:narrativeMechanics.informationReveal",
+                "style:narrativeMechanics.suspense",
+                "style:narrativeMechanics.foreshadowing",
+                "style:narrativeMechanics.chapterStructure",
+                "style:narrativeMechanics.continuity",
+                "style:literaryTexture.imagery",
+                "style:literaryTexture.sensory",
+                "style:extraInstructions.1"
+              ],
+              "avoidRuleIds": [
+                "style:prohibitions.0",
+                "style:prohibitions.1"
+              ]
+            },
+            "adherence": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "findings": [],
+            "blindEvaluation": {
+              "source": "independent_evaluator",
+              "status": "complete"
+            }
+          },
+          "narrativeQuality": {
+            "rubricVersion": "phase4-narrative-quality-v1",
+            "status": "pass",
+            "minimumScore": 3,
+            "dimensions": {
+              "sceneCompletion": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "scene:complete"
+                ]
+              },
+              "beatRealization": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "beats:all-realized"
+                ]
+              },
+              "characterConsistency": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "character:consistent"
+                ]
+              },
+              "causalContinuity": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "causal:traceable"
+                ]
+              },
+              "endingEffectiveness": {
+                "status": "pass",
+                "score": 4,
+                "evidenceCodes": [
+                  "ending:specific-hook"
+                ]
+              }
+            }
+          },
+          "completionBoundary": {
+            "rubricVersion": "phase4-completion-boundary-v1",
+            "status": "pass",
+            "checks": {
+              "investigationSummary": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "boundary:scene-rendered"
+                ]
+              },
+              "emotionTooFast": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "emotion:not-applicable"
+                ]
+              },
+              "actionChainTruncated": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "action:consequence-present"
+                ]
+              },
+              "slowPaceChecklisting": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "pace:not-checklist"
+                ]
+              },
+              "templateEnding": {
+                "status": "pass",
+                "evidenceCodes": [
+                  "ending:not-template"
+                ]
+              }
+            }
+          },
+          "acceptance": {
+            "status": "pass",
+            "reasons": [],
+            "writerStyle": {
+              "evaluationStatus": "pass",
+              "applicableRuleCount": 25,
+              "assessedRuleCount": 25,
+              "unknownRuleCount": 0,
+              "satisfiedRuleCount": 25,
+              "mandatoryRuleCount": 4,
+              "mandatorySatisfiedCount": 4,
+              "mandatoryPass": true,
+              "writerStyleAdherenceRate": 1,
+              "hardStyleViolationCount": 0,
+              "forbiddenPatternCount": 0,
+              "styleDriftCount": 0,
+              "violatedRuleIds": []
+            },
+            "narrativeQuality": {
+              "rubricVersion": "phase4-narrative-quality-v1",
+              "status": "pass",
+              "minimumScore": 3,
+              "dimensions": {
+                "sceneCompletion": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "scene:complete"
+                  ]
+                },
+                "beatRealization": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "beats:all-realized"
+                  ]
+                },
+                "characterConsistency": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "character:consistent"
+                  ]
+                },
+                "causalContinuity": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "causal:traceable"
+                  ]
+                },
+                "endingEffectiveness": {
+                  "status": "pass",
+                  "score": 4,
+                  "evidenceCodes": [
+                    "ending:specific-hook"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

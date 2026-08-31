@@ -12,7 +12,7 @@ IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 - 旧 C10 冻结为历史 checkpoint，不继续旧 Phase III-C Final Seal，也不删除或改写旧证据。
 - Android 只允许 `adb install -r`；Thinking Always On；`outcome_unknown` 永不自动 retry；不引入 Agent、第二 Writer、第二 Context、第二 Memory 或 Governor LLM call。
 
-## Phase IV PDCA 状态
+## Historical Evidence — IV-0～IV-8 PDCA 状态（封存）
 
 | 阶段 | PLAN | RED | DO | CHECK-A | CHECK-B | ACT / 决策 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -25,9 +25,23 @@ IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 | IV-6 历史 A/B | DONE | DONE（`phase4HistoricalAb.test.ts` Red-first） | DONE（fail-closed 历史比较器与 HOLD 语义） | DONE（8 suites / 36 tests；typecheck、lint、elastic、version） | HOLD（signed release `adb install -r`、UI/数据保护通过；真实 provider HTTP 401，无 current paid sample） | `NO-GO/HOLD`：比较器拒绝伪造 First-Pass；继续 IV-7 harness，凭据恢复后补 5/10 章真实样本 |
 | IV-7 真实 5/10 章连续运行 | DONE | DONE（`phase4ContinuousHarness.test.ts` Red-first） | DONE（纯汇总器；无新增生产 Gate/LLM stage） | DONE（full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped；typecheck、lint、elastic、version） | HOLD（signed release `adb install -r`、UI/数据保护通过；真实 provider HTTP 401，未形成 5/10 paid 分母） | `NO-GO/HOLD`：安全证据通过但真实 5/10 样本缺失；进入 IV-8 闭环，不发布虚假 GO |
 | IV-8 Final Seal | DONE | DONE（Required Gate 审计先识别 current paid sample 缺失） | DONE（closure matrix + final report；不新增生产 Gate/LLM stage） | DONE（继承 IV-7 full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped） | HOLD（继承 IV-7 signed release/UI/logcat；provider HTTP 401，5/10 real paid sample 缺失） | `PHASE IV FINAL SEAL HOLD / NO-GO`：不发布虚假 `PHASE IV FINAL SEALED / GO` |
-| IV-12A～E Writer Style / Literary Quality Final Seal | DONE | DONE（Style Requirement / Adherence contract；profile propagation 根因先修正） | DONE（同 Plan/Context/Writer Style 的 4×Fast/Standard/Quality；Completion Boundary 专项） | DONE（12/12 独立脱敏验收；全量 verify、APK、Android、DB/logcat） | PASS（Safety / Throughput / Writer Style / Narrative Quality / Engineering 全部 PASS） | `PHASE IV FINAL SEALED / GO`：只读测试证据，不新增生产 Judge/Gate/retry/re-plan |
 
-## IV-0 证据索引
+## 当前状态指针（IV-12A～E）
+
+当前唯一有效阶段结论为下文 `IV-12A～E Writer Style / Literary Quality Final Seal`：
+
+```text
+Safety PASS
+Throughput PASS
+Writer Style PASS
+Narrative Quality PASS
+Engineering PASS
+PHASE IV FINAL SEALED / GO
+```
+
+上表 IV-0～IV-8 的 HOLD/NO-GO 是 Historical Evidence 快照，不是当前态；IV-9～IV-11 的旧结算同样只作为历史证据保留。
+
+## Historical Evidence — IV-0 证据索引（封存）
 
 - Phase IV 主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
 - Phase III-C C9 聚合：`test-logs/phase3-c9-cost-latency-20260830-000001/c9-aggregate.json`
@@ -38,7 +52,7 @@ IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 - Phase IV IV-0 fresh install/real probe：`test-logs/phase4-iv0-baseline-20260830-144426/iv0-check-b.md`（release `adb install -r`、证书复用、UI capability、真实 401）
 
 
-## IV-9 Pre-Seal Correction（2026-08-30，凭据恢复后）
+## Historical Evidence — IV-9 Pre-Seal Correction（2026-08-30，凭据恢复后）
 
 开工基线：`HEAD == origin/main == 945cd2922aaf0d6ed4896ac76e6a7738df149870`；工作区仅有未跟踪用户文件，全部保留。本轮只做最小修正，不新增 Agent / 第二 Writer / 第二 Context / 第二 Memory / 大型 QA Gate / 额外 LLM call / 固定业务 maxTokens / unknown 自动 retry。
 
@@ -48,7 +62,7 @@ IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 - **Governor 旁路复核**：`__tests__/phase4GovernorBypass.test.ts` 原样通过；无 Governor physical call。
 - **验证链**：targeted（7 suites / 35 tests）→ typecheck → `lint --quiet` → `verify:elastic` → full verify（532 suites passed / 3 skipped；3759 tests passed / 8 skipped；VERIFY_EXIT_CODE=0）→ signed APK → `adb install -r`（数据保留，firstInstallTime 不变）。
 
-## IV-10 DeepSeek Provider/App 根因隔离（2026-08-30/31）
+## Historical Evidence — IV-10 DeepSeek Provider/App 根因隔离（2026-08-30/31）
 
 用户将软件 LLM 配置切换为 DeepSeek（`deepseek-v4-flash` @ `api.deepseek.com`，UI 保存并测试通过；密钥在 keychain，不入文档）。本轮任务不是扩展架构，而是对"GLM 时代 Boundary-first Draft 570s 停摆"做 Provider/App 根因隔离：PLAN → RED/复现 → 证据 → 假设淘汰 → 最小实验 → CHECK-A/B → ACT。**生产代码零改动**（无新 Gate/LLM call/Agent/Writer/Context/Memory；不新增 blocking）。
 
@@ -96,11 +110,11 @@ DeepSeek V4 续写冻结 `thinking: disabled`（`freezeContinuationThinking`，c
 - **`PHASE IV FINAL SEAL HOLD / NO-GO` 维持**——不为封板降低标准；10 章完整分母仍差 1 章，且缺口性质已从"未知外部停摆"收敛为"已理解的模型侧生成病理"。
 - 证据：`test-logs/phase4-deepseek-rca-20260830/README-evidence.md`。
 
-## 当前阶段结论（2026-08-31 IV-10 后更新）
+## Historical Evidence — 当前阶段结论（2026-08-31 IV-10 快照，已封存）
 
 IV-9 时代"外部提供端停摆是唯一剩余 blocker"的表述已被 IV-10 根因隔离轮**取代**：停摆根因不是"外部提供端对边界首章的持续停摆"，而是"特定章节计划梗概触发的模型失控超长生成"（对 GLM 与 DeepSeek 同样成立，详见 IV-10 根因树）；IV-9 证据段中"边界首章 fresh 首章（in≈7k 小上下文）"的量化描述是估算器伪像，真实请求为 53–70k tokens（证据：`test-logs/phase4-deepseek-rca-20260830/`）。IV-9 的原始运行记录、42 次付费台账与 NO-GO 判定作为历史证据原样保留。
 
-## IV-10 收尾代码复查（2026-08-31，关机前）
+## Historical Evidence — IV-10 收尾代码复查（2026-08-31，关机前）
 
 逐项复核生成流水线全部阻滞/阻断点，确认根因闭环且均有处理：
 
@@ -133,7 +147,7 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - 历史稳定版本采用 `TAVO-MINI_第二期_Final-Seal_最终封板报告_20260820.md` 的 Outline/Continuation 8/8 deterministic Android regression 与 2/2 restricted real LLM smoke；不把其历史结果算作本轮当前版本。
 - Baseline 采用 C9 `c9-aggregate.json` 的 38 paid-request denominator；当前版本若没有新的真实 Android paid sample，只输出“不可判定/待凭据恢复”，并继续构造可复现的比较器与 IV-7 harness。
 
-## IV-1 证据索引
+## Historical Evidence — IV-1 证据索引（封存）
 
 - Inventory：`docs/optimization/phase4-gate-inventory.md`
 - Machine-readable policy：`src/services/writing/gates/phase4GatePolicy.ts`
@@ -143,32 +157,32 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - IV-3 Governor bypass test：`__tests__/phase4GovernorBypass.test.ts`
 - IV-4 Context throughput test：`__tests__/phase4ContextThroughput.test.ts`
 
-## IV-5 证据索引
+## Historical Evidence — IV-5 证据索引（封存）
 
 - Persistence Boundary Red/DB/Receipt regression：`__tests__/phase4PersistenceBoundary.test.ts`
 - Final candidate regression：`__tests__/writingFinalCandidateContract.test.ts`、`__tests__/outlineDurableAdapterFinalCandidate.test.ts`
 - Signed Android / UI / 401 / logcat / install-r：`test-logs/phase4-iv5-20260830-153500/iv5-check-b.md`
 
-## IV-6 证据索引
+## Historical Evidence — IV-6 证据索引（封存）
 
 - Historical A/B Red/Green：`__tests__/phase4HistoricalAb.test.ts`、`src/services/writing/metrics/phase4HistoricalAb.ts`
 - Historical comparison and fail-closed conclusion：`docs/optimization/phase4-historical-ab.md`
 - Signed Android / UI / 401 / logcat / install-r：`test-logs/phase4-iv6-20260830-154500/iv6-check-b.md`
 
-## IV-7 PLAN — Continuous 5/10 Chapter Harness
+## Historical Evidence — IV-7 PLAN — Continuous 5/10 Chapter Harness（封存）
 
 - 以单一冻结上下文顺序跑 5 章与 10 章 compact 写作任务，逐章记录 First-Pass Adoptable、物理调用、Governor physical call、Context composition、Resume/Idempotency、DB integrity、crash/ANR；不虚构真实 provider 结果。
 - harness 只做可审计汇总，不新增 Writer、Agent、Context、Memory 或生产 Gate；任何 chapter count 不符、重复收费/调用、Governor physical call、DB 损坏或 crash/ANR 都是 NO-GO。
 - CHECK-B 必须使用同签名 release `adb install -r`，检查真实 Android UI、Receipt/DB 可见证据和 logcat；当前凭据若仍为 HTTP 401，则记录 `HOLD`，继续 IV-8 做闭环文档但不发布 Final Seal GO。
 
-## IV-8 PLAN — Final Seal Closure
+## Historical Evidence — IV-8 PLAN — Final Seal Closure（封存）
 
 - 逐条核对 Phase IV 主方案的 P0、阶段产物、PDCA、Android 安装约束、Receipt/DB/UI/logcat 证据和历史证据保留边界；把“已证明”“仅本地/确定性证明”“真实样本缺失”分开。
 - Final Seal 的第一验收指标仍是 E2E First-Pass Adoptable Rate；没有当前真实 Android 5/10 章分母时，结论必须是 `HOLD`，不得用 C9 projection completion、mock、contract test 或旧版本结果替代。
 - 复核主链没有新增工程 Gate、额外 LLM stage、Governor physical call 或固定业务 maxTokens；`outcome_unknown` 不自动 retry，`finishReason=length` 不持久化。
 - 完成 `phase4-requirement-closure.md` 与 `phase4-final-report.md`，记录最终可执行解封条件。若真实证据仍为 401，则完成审计文档但维持 `PHASE IV FINAL SEAL HOLD / NO-GO`，不输出 `PHASE IV FINAL SEALED / GO`。
 
-## IV-8 PDCA 结论
+## Historical Evidence — IV-8 PDCA 结论（封存）
 
 - **RED**：Final Seal Required Gate 审计发现当前版本没有合法的真实 Android 5/10 章 paid 分母；C9 projection completion、历史 8/8、mock 和 contract test 均不能替代 First-Pass。
 - **DO**：完成 `phase4-requirement-closure.md`、`phase4-final-report.md`，逐项记录 10 个最终问题和 13 个 P0 的证据等级；不引入新的生产 Gate、LLM stage 或 retry。
@@ -176,7 +190,7 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - **CHECK-B**：继承同签名 release `adb install -r`、UI/数据保护/XML/PNG/logcat 证据；`保存并测试` 为真实 HTTP 401，release DB 受 `run-as: package not debuggable` 限制，不能宣称当前 DB paid sample 完成。
 - **ACT / GO-NO-GO**：代码治理继续保持；最终封板保持 `PHASE IV FINAL SEAL HOLD / NO-GO`。凭据恢复后仅补真实 5/10 章和 Receipt/DB/First-Pass A/B，不改变已封存的主链减法方向。
 
-## IV-8 证据索引
+## Historical Evidence — IV-8 证据索引（封存）
 
 - Requirement closure：`docs/optimization/phase4-requirement-closure.md`
 - Final report：`docs/optimization/phase4-final-report.md`
@@ -184,7 +198,7 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - Historical A/B：`docs/optimization/phase4-historical-ab.md`
 - Historical C9 and C8/C9 evidence：`test-logs/phase3-c9-cost-latency-20260830-000001/`
 
-## IV-11 DeepSeek Thinking Always On 与质量-稳定性矩阵（2026-08-31）
+## Historical Evidence — IV-11 DeepSeek Thinking Always On 与质量-稳定性矩阵（2026-08-31）
 
 当前施工仓：`E:\AiWorkSpace\tavo-mini`。本节为当前事实更新；前文 IV-10 旧结算段落作为历史记录保留，不把历史 `Root Cause Closed` 表述直接当作本轮封板结论。
 
@@ -252,6 +266,7 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - Fast：`low / one_shot`，4 样本、4 calls、4/4 first-pass。
 - Standard：`high / standard`，4 样本、8 calls、4/4 first-pass，一次 Draft + 一次 QA。
 - Quality：`max / standard`，4 样本、8 calls、4/4 first-pass，一次 Draft + 一次 QA。
+- Physical Calls 口径为阶段级真实网络请求：Fast 为 1/chapter；Standard 为 2/chapter（Draft + QA）；Quality 为 2/chapter（Draft + QA）。因此三档总 calls 分别为 4、8、8，无 retry/fallback。
 
 三档 Writer Style 结果并列稳定：12/12 Adherence=1.0，Hard Style Violation=0，Style Drift=0。Standard 在本分母的叙事平均分均为 4.00，观察到 QA 的实际收益；Quality 相比 Standard 没有额外通过率或 Style 收益，额外 reasoning 成本未在本小样本中证明额外文学回报。上述结论不把档位名称当作质量保证，也不把形态 telemetry 当作文学校验分。
 
@@ -280,7 +295,7 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - 合同实现与测试：`scripts/qa/writerStyleAdherence.ts`、`__tests__/writerStyleAdherenceContract.test.ts`
 - 最小生产修正：`src/services/pipeline/outlineStageRuntime.ts`；回归：`__tests__/writingGenerationQualityProfile.test.ts`
 
-### IV-9 真实 Android 运行结算（凭据恢复后，2026-08-30）
+### Historical Evidence — IV-9 真实 Android 运行结算（凭据恢复后，2026-08-30）
 
 - 设备/包：emulator-5554，debug 签名 `adb install -r`（release 签名与在装 debug 包不兼容，且禁止 uninstall，故本轮真实运行使用同代码的 debug 构建；firstInstallTime=2026-08-23 保持不变，数据零丢失）。模型：GLM-5.3-Flash（UI `保存并测试` 通过）。
 - **5 章连续批次**（`batch_mtfkmlek_i6qms3`，目标 5 章/3000 字）：4/5 章 `full_pipeline` adopted；第 5 章 Draft 连续 5 次 `total_timeout`（本地 570s 看门狗，提供端对该 fresh-boundary 请求停摆，冷重启/in-place resume 均不收敛），用户确认式结束批次留证（status=cancelled，4 章成果保留）。
