@@ -454,6 +454,30 @@ function configFromExecution(
   };
 }
 
+/**
+ * Resolve the user-facing quality profile at the first Freeze boundary.
+ *
+ * Batch callers pass both the reasoning tier and execution profile as frozen
+ * overrides. In that case the live project setting is not authoritative: a
+ * stale live `generationQualityProfile` must not collapse a Standard/Quality
+ * batch back to Fast. Resume never calls this helper because its execution
+ * snapshot is already frozen.
+ */
+export function resolvePipelineGenerationQualityProfile(input: {
+  liveQualityProfile?: unknown;
+  selectedExecutionProfile?: unknown;
+  selectedReasoningEffort?: unknown;
+  hasFrozenProfileOverride: boolean;
+}) {
+  return deriveGenerationQualityProfile({
+    qualityProfile: input.hasFrozenProfileOverride
+      ? undefined
+      : input.liveQualityProfile,
+    executionProfile: input.selectedExecutionProfile,
+    reasoningEffort: input.selectedReasoningEffort,
+  });
+}
+
 function requestConfigFromExecution(
   execution: PipelineExecutionSnapshot,
 ): LLMRequestConfig {
@@ -862,10 +886,13 @@ async function actionPersistInitialSnapshot(
     options.pipelineExecutionProfileOverride !== null
       ? options.pipelineExecutionProfileOverride
       : runtime.config.executionProfile;
-  const selectedQualityProfile = deriveGenerationQualityProfile({
-    qualityProfile: runtime.config.generationQualityProfile,
-    executionProfile: selectedExecutionProfile,
-    reasoningEffort: selectedReasoningEffort,
+  const selectedQualityProfile = resolvePipelineGenerationQualityProfile({
+    liveQualityProfile: runtime.config.generationQualityProfile,
+    selectedExecutionProfile,
+    selectedReasoningEffort,
+    hasFrozenProfileOverride:
+      options.pipelineReasoningEffortOverride !== undefined ||
+      options.pipelineExecutionProfileOverride !== undefined,
   });
   const freshConfig =
     isStructured && !existingExecution && selectedReasoningEffort

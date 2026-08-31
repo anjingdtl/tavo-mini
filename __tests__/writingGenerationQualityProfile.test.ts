@@ -19,6 +19,7 @@ import {
 import { buildWritingStagePolicy } from '../src/services/writing/contracts/writingPolicy';
 import { COMPACT_WRITING_STAGE_DAG } from '../src/services/writing';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
+import { resolvePipelineGenerationQualityProfile } from '../src/services/pipeline/outlineStageRuntime';
 import {
   continuationRequest,
   outlineRequest,
@@ -73,6 +74,41 @@ describe('GenerationQualityProfile contract', () => {
         reasoningEffort: 'high',
       }),
     ).toBe('standard');
+  });
+
+  test('batch-frozen tier/profile overrides a stale live quality setting', () => {
+    expect(
+      resolvePipelineGenerationQualityProfile({
+        liveQualityProfile: 'fast',
+        selectedExecutionProfile: 'standard',
+        selectedReasoningEffort: 'high',
+        hasFrozenProfileOverride: true,
+      }),
+    ).toBe('standard');
+    expect(
+      resolvePipelineGenerationQualityProfile({
+        liveQualityProfile: 'fast',
+        selectedExecutionProfile: 'standard',
+        selectedReasoningEffort: 'max',
+        hasFrozenProfileOverride: true,
+      }),
+    ).toBe('quality');
+    expect(
+      resolvePipelineGenerationQualityProfile({
+        liveQualityProfile: 'quality',
+        selectedExecutionProfile: 'one_shot',
+        selectedReasoningEffort: 'low',
+        hasFrozenProfileOverride: true,
+      }),
+    ).toBe('fast');
+    expect(
+      resolvePipelineGenerationQualityProfile({
+        liveQualityProfile: 'quality',
+        selectedExecutionProfile: 'standard',
+        selectedReasoningEffort: 'high',
+        hasFrozenProfileOverride: false,
+      }),
+    ).toBe('quality');
   });
 
   test('Freeze fast inherits One-Shot: 1 paid call, no formatter, no primary retry', () => {

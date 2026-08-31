@@ -1,13 +1,13 @@
 # TAVO-MINI Phase IV Progress
 
-施工仓：`F:\\ClaudeWorkSpace\\projects\\TAVO-MINI`
-唯一主方案：`docs/optimization/TAVO-MINI_Phase4_流水线再治理与写作通过率恢复计划_20260830.md`
+施工仓：`E:\\AiWorkSpace\\tavo-mini`
+唯一主方案：`docs/optimization/TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`
 开工日期：2026-08-30（Asia/Shanghai）
-Exact HEAD / origin/main：`64b88580c134f67e3fb73d1951ef6bc972da5552`
+IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 
 ## 保护边界
 
-- 已执行 `git fetch origin`；开工时 `HEAD == origin/main`，工作区没有已跟踪文件改动。
+- 已执行 `git fetch origin --prune`；IV-12A 开工时 `HEAD == origin/main`。工作区中既有用户未跟踪文档与 QA 产物均未删除、未覆盖；本轮只处理明确的 Phase IV 代码、测试、报告和 progress 文件。
 - 用户未提交文件、旧 Phase III-C C10、C8 Resume、C9 Observability 以及全部历史失败证据均保留；不执行 `git reset`、`git clean`、`adb uninstall` 或 `pm clear`。
 - 旧 C10 冻结为历史 checkpoint，不继续旧 Phase III-C Final Seal，也不删除或改写旧证据。
 - Android 只允许 `adb install -r`；Thinking Always On；`outcome_unknown` 永不自动 retry；不引入 Agent、第二 Writer、第二 Context、第二 Memory 或 Governor LLM call。
@@ -25,6 +25,7 @@ Exact HEAD / origin/main：`64b88580c134f67e3fb73d1951ef6bc972da5552`
 | IV-6 历史 A/B | DONE | DONE（`phase4HistoricalAb.test.ts` Red-first） | DONE（fail-closed 历史比较器与 HOLD 语义） | DONE（8 suites / 36 tests；typecheck、lint、elastic、version） | HOLD（signed release `adb install -r`、UI/数据保护通过；真实 provider HTTP 401，无 current paid sample） | `NO-GO/HOLD`：比较器拒绝伪造 First-Pass；继续 IV-7 harness，凭据恢复后补 5/10 章真实样本 |
 | IV-7 真实 5/10 章连续运行 | DONE | DONE（`phase4ContinuousHarness.test.ts` Red-first） | DONE（纯汇总器；无新增生产 Gate/LLM stage） | DONE（full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped；typecheck、lint、elastic、version） | HOLD（signed release `adb install -r`、UI/数据保护通过；真实 provider HTTP 401，未形成 5/10 paid 分母） | `NO-GO/HOLD`：安全证据通过但真实 5/10 样本缺失；进入 IV-8 闭环，不发布虚假 GO |
 | IV-8 Final Seal | DONE | DONE（Required Gate 审计先识别 current paid sample 缺失） | DONE（closure matrix + final report；不新增生产 Gate/LLM stage） | DONE（继承 IV-7 full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped） | HOLD（继承 IV-7 signed release/UI/logcat；provider HTTP 401，5/10 real paid sample 缺失） | `PHASE IV FINAL SEAL HOLD / NO-GO`：不发布虚假 `PHASE IV FINAL SEALED / GO` |
+| IV-12A～E Writer Style / Literary Quality Final Seal | DONE | DONE（Style Requirement / Adherence contract；profile propagation 根因先修正） | DONE（同 Plan/Context/Writer Style 的 4×Fast/Standard/Quality；Completion Boundary 专项） | DONE（12/12 独立脱敏验收；全量 verify、APK、Android、DB/logcat） | PASS（Safety / Throughput / Writer Style / Narrative Quality / Engineering 全部 PASS） | `PHASE IV FINAL SEALED / GO`：只读测试证据，不新增生产 Judge/Gate/retry/re-plan |
 
 ## IV-0 证据索引
 
@@ -226,6 +227,58 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - Thinking contract：`__tests__/continuationThinkingAlwaysOn.test.ts`
 - Plan delta：`__tests__/phase4Iv11PlanDelta.test.ts`
 - Android 终态快照：`test-logs/phase4-iv11-android-20260831/`
+
+## IV-12A～E Writer Style / Literary Quality Final Seal（2026-08-31）
+
+本轮按新主方案从 IV-12A 开始自主完成 PDCA。文学评测严格停留在 Test/Evidence/Acceptance 层，真实项目 Writer Style 作为唯一 SSOT；没有新增生产 Judge LLM、文学 Gate、自动 retry/re-plan、第二 Writer、第二 Context 或固定业务 maxTokens。
+
+### PDCA
+
+| 环节 | 当前证据与结论 |
+| --- | --- |
+| PLAN | 建立 Style Requirement / Adherence 合同；同 Plan、同 Context 构建版本、同 Writer Style 下执行 Fast / Standard / Quality 同题 A/B；补做五项叙事维度与 Completion Boundary 专项。 |
+| RED | 首轮发现批次冻结质量档位可能沿用 stale live profile，Standard/Quality 的冻结 profile 与请求 override 不一致，首轮不纳入有效分母。 |
+| Root Cause | profile propagation 位于 `outlineStageRuntime` 的批次冻结推导，未统一使用当前请求的有效 quality/reasoning/execution override。 |
+| DO | 以 `resolvePipelineGenerationQualityProfile()` 做最小修正；Style 合同、脱敏 collector 和独立标注全部置于 `scripts/qa`/测试层。 |
+| CHECK-A | v2 重新执行 4 类计划 × 3 档质量 = 12 个样本；12/12 完成，三档均 4/4 first-pass，25/25 Style Requirement 逐样本完成。 |
+| CHECK-B | Adherence=1.0、Hard Style Violation=0、Style Drift=0；五项叙事维度及五项 Completion Boundary 检查全部 PASS；APK、`adb install -r`、DB integrity、logcat、全量工程验证通过。 |
+| ACT | Safety / Throughput / Writer Style / Narrative Quality / Engineering 全部 PASS，决策更新为 `PHASE IV FINAL SEALED / GO`。 |
+
+### Writer Style 合同与同题矩阵
+
+- 实际冻结 Writer Style 资产：`IV12A冷静限知`；Style Requirement Projection 共 25 条：Mandatory 4、Preferred 19、Avoid 2。
+- 同一 Plan fingerprint：`5f04c3fc6f27eee1a781d4f4cf15eb6ed5e9f99ce42544fc887d9a3c2d1b5b23`。
+- 同一 Writer Style / Projection fingerprint；每个样本独立冻结 Context，`contextIsolatedPerSample=true`，不发生跨样本污染。
+- Fast：`low / one_shot`，4 样本、4 calls、4/4 first-pass。
+- Standard：`high / standard`，4 样本、8 calls、4/4 first-pass，一次 Draft + 一次 QA。
+- Quality：`max / standard`，4 样本、8 calls、4/4 first-pass，一次 Draft + 一次 QA。
+
+三档 Writer Style 结果并列稳定：12/12 Adherence=1.0，Hard Style Violation=0，Style Drift=0。Standard 在本分母的叙事平均分均为 4.00，观察到 QA 的实际收益；Quality 相比 Standard 没有额外通过率或 Style 收益，额外 reasoning 成本未在本小样本中证明额外文学回报。上述结论不把档位名称当作质量保证，也不把形态 telemetry 当作文学校验分。
+
+### 叙事质量与 Completion Boundary
+
+12 个样本的 Scene Completion、Beat Realization、Character Consistency、Causal Continuity、Ending Effectiveness 全部 PASS，最低分为 3。调查没有摘要化，情绪没有过快跳变，动作保留后果链，慢节奏没有变为清单，结尾没有统一模板化套话。Fast 动作因果样本按保守标注为 Beat=3，但关键 beat 与后果仍然存在，未形成失败。
+
+句长、对白率、重复率、正文长度、段落形态和标点只作为 Literary Shape Telemetry；它们不参与文学质量 acceptance，也不能冒充 Writer Style 或 Narrative Quality 分数。
+
+### Safety / Throughput / Engineering
+
+- Thinking Always On；Mandatory Truth 不丢；Governor 继续旁路，physical call=0。
+- 无 hidden retry、protocol fallback 或自动 re-plan；三档样本无 retry，finish reason 可接受。
+- 三份矩阵 DB `integrity_check=ok`；设备原始快照测试后精确恢复，SHA-256 未变化。
+- `emulator-5554` 上使用 `dist/apk/debug/ShineWriter-V2.21.1-debug.apk` 执行 `adb install -r`；三档批次均完成，logcat 无应用 FATAL/ANR/OOM/超时异常。
+- `npm run verify`：534 suites passed / 4 skipped；3,773 tests passed / 9 skipped；targeted contract/profile tests 13/13；typecheck、`lint -- --quiet`、`verify:elastic`、`verify:version` 全部 PASS。
+- 本轮没有生产 Prompt 改动，因此不触发 pathological equivalent 3/3、5 章、10 章重新验证条件；若后续修改生产 Prompt 或 Completion Boundary wording，必须重新执行该条件。
+
+### IV-12 证据索引
+
+- 最终测试报告：`docs/optimization/TAVO-MINI_Phase4_IV-12A_WriterStyle文学质量验收测试报告_20260831.md`
+- Writer Style / Narrative / Boundary 脱敏证据：`test-logs/phase4-iv12a-20260831/writer-style-evidence-v2.json`
+- Literary Shape Telemetry：`test-logs/phase4-iv12a-20260831/writing-quality-shape-telemetry-v2.json`
+- 独立脱敏标注：`test-logs/phase4-iv12a-20260831/annotations-v2.json`
+- Android / DB / UI / logcat：`test-logs/phase4-iv12a-20260831/`、`test-logs/phase4-iv12a-preflight-20260831/`
+- 合同实现与测试：`scripts/qa/writerStyleAdherence.ts`、`__tests__/writerStyleAdherenceContract.test.ts`
+- 最小生产修正：`src/services/pipeline/outlineStageRuntime.ts`；回归：`__tests__/writingGenerationQualityProfile.test.ts`
 
 ### IV-9 真实 Android 运行结算（凭据恢复后，2026-08-30）
 
