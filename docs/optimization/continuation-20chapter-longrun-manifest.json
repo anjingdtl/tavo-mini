@@ -1,0 +1,301 @@
+{
+  "manifestSchemaVersion": 1,
+  "reportDate": "2026-08-31",
+  "result": "NO-GO",
+  "project": {
+    "projectId": 67,
+    "projectKey": "bailimeng-longrun-20260831",
+    "mode": "continuation",
+    "repoHead": "d9f84003",
+    "device": "emulator-5554",
+    "appVersion": "2.21.1"
+  },
+  "source": {
+    "sourceId": 4,
+    "title": "白篱梦",
+    "author": "希行",
+    "chapterCount": 299,
+    "normalizedCharacterCount": 1033681,
+    "normalizedSha256Prefix": "796e3299f283",
+    "boundaryMode": "end_of_source",
+    "boundaryChapterId": 308,
+    "boundaryPosition": 298,
+    "boundaryCharOffsetExclusive": 1033681,
+    "futureSourceChapterRowsAfterBoundary": 0
+  },
+  "preconditions": {
+    "canon": {
+      "analysisStatus": "ready",
+      "analysisCompleted": "6/6",
+      "activeSnapshotIdPrefix": "0d4656b9",
+      "activeSnapshotStatus": "ready",
+      "canonRevision": 1,
+      "counts": {
+        "characters": 13,
+        "worldRules": 3,
+        "relationships": 8,
+        "plotThreads": 6,
+        "timelineEvents": 18,
+        "evidence": 63
+      }
+    },
+    "styleProfileV2": {
+      "rowCount": 1,
+      "profileIdPrefix": "3f6eba04",
+      "state": "ready",
+      "reviewStatus": "pending",
+      "profileSchemaVersion": 2,
+      "analyzer": "style-v2-4",
+      "confidence": 0.95,
+      "settingsPointerMatches": true,
+      "fingerprintAndBoundaryMatch": true,
+      "effectiveInjectableByCurrentCode": true,
+      "retryTriggered": false
+    }
+  },
+  "configuration": {
+    "activeLlmConfigId": 3,
+    "provider": "Deepseek",
+    "modelObservedInReceipts": "deepseek-v4-flash",
+    "contextWindow": 1000000,
+    "completionCapability": 200000,
+    "pipelineMode": "full",
+    "executionProfile": "standard",
+    "reasoningEffort": "high",
+    "thinking": "enabled",
+    "targetLength": 3000,
+    "checkerEnabled": true,
+    "maxRepair": 1,
+    "plannerConfirmationPolicy": "never",
+    "balanced": {
+      "strictnessProfile": "balanced",
+      "levels": {
+        "world": "strict",
+        "character": "strict",
+        "relationship": "strict",
+        "plot": "balanced",
+        "experience": "strict",
+        "knowledge": "strict",
+        "style": "strict"
+      },
+      "effectiveStageLlmConfigIds": {
+        "planner": 3,
+        "writer": 3,
+        "checker": 3,
+        "repair": 3,
+        "stateExtraction": 3,
+        "control": 3
+      },
+      "rawPlannerLlmConfigId": null,
+      "plannerResolution": "active_model_fallback"
+    },
+    "strict": {
+      "strictnessProfile": "strict",
+      "levels": {
+        "world": "strict",
+        "character": "strict",
+        "relationship": "strict",
+        "plot": "strict",
+        "experience": "strict",
+        "knowledge": "strict",
+        "style": "strict"
+      },
+      "effectiveStageLlmConfigIds": {
+        "planner": 3,
+        "writer": 3,
+        "checker": 3,
+        "repair": 3,
+        "stateExtraction": 3,
+        "control": 3
+      },
+      "rawPlannerLlmConfigId": null,
+      "plannerResolution": "active_model_fallback"
+    }
+  },
+  "runs": {
+    "runA": {
+      "strictnessProfile": "balanced",
+      "batchId": "batch_mtgxzzwt_z4nok4",
+      "targetPositions": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "itemCount": 10,
+      "successCount": 10,
+      "fullPipelineCount": 10,
+      "finalAdoptedCount": 10,
+      "physicalStageRequests": 20,
+      "inputTokens": 464862,
+      "outputTokens": 60498,
+      "stageResults": {
+        "draft_writer": {"success": 10, "skipped": 0, "requestCount": 10, "inputTokens": 244087, "outputTokens": 49090},
+        "unified_qa": {"success": 9, "skipped": 1, "requestCount": 10, "inputTokens": 220775, "outputTokens": 11408},
+        "revision_writer": {"success": 0, "skipped": 10, "requestCount": 0, "inputTokens": 0, "outputTokens": 0},
+        "final_validate": {"success": 10, "skipped": 0, "requestCount": 0}
+      },
+      "providerRetryObserved": 0,
+      "protocolFallbackCount": 0,
+      "formatterFallbackCount": 0,
+      "stateGateRetryCountByPosition": {"0": 1, "1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "7": 2, "8": 1, "9": 1},
+      "finalCharacterCountsByPosition": {"0": 2004, "1": 3954, "2": 3142, "3": 2258, "4": 3433, "5": 2957, "6": 2861, "7": 3013, "8": 4791, "9": 2997}
+    },
+    "runB": {
+      "strictnessProfile": "strict",
+      "batchId": "batch_mtgyrr6g_bnsrdz",
+      "targetPositions": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "itemCount": 10,
+      "successCount": 10,
+      "fullPipelineCount": 10,
+      "finalAdoptedCount": 10,
+      "physicalStageRequests": 23,
+      "inputTokens": 1125017,
+      "outputTokens": 82078,
+      "stageResults": {
+        "draft_writer": {"success": 10, "skipped": 0, "requestCount": 10, "inputTokens": 508485, "outputTokens": 40038},
+        "unified_qa": {"success": 10, "skipped": 0, "requestCount": 10, "inputTokens": 469795, "outputTokens": 14282},
+        "revision_writer": {"success": 3, "skipped": 7, "requestCount": 3, "inputTokens": 146737, "outputTokens": 27758},
+        "final_validate": {"success": 10, "skipped": 0, "requestCount": 0}
+      },
+      "qaDecisionCounts": {"cleanPass": 7, "revise": 3, "findings": 4},
+      "qaFindingTypes": {"fact": 1, "continuity": 1, "character_voice": 1, "missing_required_event": 1},
+      "providerRetryObserved": 0,
+      "protocolFallbackCount": 0,
+      "formatterFallbackCount": 0,
+      "stateGateRetryCountByPosition": {"10": 1, "11": 2, "12": 1, "13": 1, "14": 1, "15": 1, "16": 1, "17": 1, "18": 1, "19": 1},
+      "finalCharacterCountsByPosition": {"10": 3984, "11": 3774, "12": 3391, "13": 3896, "14": 2634, "15": 5531, "16": 5160, "17": 1535, "18": 3781, "19": 2753}
+    },
+    "combined": {
+      "itemCount": 20,
+      "successCount": 20,
+      "finalAdoptedCount": 20,
+      "physicalStageRequests": 43,
+      "providerRetryObserved": 0,
+      "protocolFallbackCount": 0,
+      "formatterFallbackCount": 0,
+      "runCount": 20,
+      "oneRunPerTargetPosition": true,
+      "allStateCompleted": true,
+      "allCompletionReasonAdopted": true,
+      "adoptedHashEqualsFinalizedHashCount": 20,
+      "storyMemorySnapshotCount": 20,
+      "stateSyncOutboxCount": 20,
+      "stateSyncOutboxAttemptCount": 1,
+      "stateProposalCount": 0,
+      "stateEventCount": 0
+    }
+  },
+  "perChapterStatus": [
+    {"run": "A", "position": 0, "title": "西山重逢", "finalCharacters": 2004, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 1, "title": "结发为夫妻", "finalCharacters": 3954, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 2, "title": "监学风波", "finalCharacters": 3142, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 3, "title": "帝心难测", "finalCharacters": 2258, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 4, "title": "圣祖观来客", "finalCharacters": 3433, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 5, "title": "旧念残响", "finalCharacters": 2957, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 6, "title": "玄阳归心", "finalCharacters": 2861, "stateGateRetryCount": 1, "qa": "skipped_no_finding", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 7, "title": "朝堂风云", "finalCharacters": 3013, "stateGateRetryCount": 2, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 8, "title": "旧梦终散", "finalCharacters": 4791, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "A", "position": 9, "title": "山高水长", "finalCharacters": 2997, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true, "formatNote": "title_first_line_duplicate; trailing_newline_normalization"},
+    {"run": "B", "position": 10, "title": "雨后孤客", "finalCharacters": 3984, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 11, "title": "玄阳来讯", "finalCharacters": 3774, "stateGateRetryCount": 2, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true, "formatNote": "json_like_wrapper_persisted"},
+    {"run": "B", "position": 12, "title": "迷谷妖雾", "finalCharacters": 3391, "stateGateRetryCount": 1, "qa": "revise_fact", "revisionRequests": 1, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 13, "title": "远古祭坛", "finalCharacters": 3896, "stateGateRetryCount": 1, "qa": "revise_continuity", "revisionRequests": 1, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 14, "title": "碎片共鸣", "finalCharacters": 2634, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 15, "title": "心魔倒影", "finalCharacters": 5531, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 16, "title": "无梦之境", "finalCharacters": 5160, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 17, "title": "故人归来", "finalCharacters": 1535, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 18, "title": "溪边拾忆", "finalCharacters": 3781, "stateGateRetryCount": 1, "qa": "clean_pass", "revisionRequests": 0, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true},
+    {"run": "B", "position": 19, "title": "岁岁年年", "finalCharacters": 2753, "stateGateRetryCount": 1, "qa": "revise_voice_and_required_event", "revisionRequests": 1, "providerRetries": 0, "fallback": 0, "firstPass": true, "finalAdopted": true}
+  ],
+  "kpis": {
+    "firstPassAdoptable": {"successes": 20, "trials": 20, "rate": 1.0, "wilson95": [0.8389, 1.0]},
+    "draftDirectAdoptOperational": {"successes": 17, "trials": 20, "rate": 0.85, "wilson95": [0.6396, 0.9476], "definition": "no_physical_revision_writer_request"},
+    "draftFinalRawArtifactEquality": {"successes": 16, "trials": 20, "rate": 0.8, "wilson95": [0.584, 0.9193]},
+    "hardCanonViolationObserved": 0,
+    "futureSourceLeakageStructural": 0,
+    "sourceBoundaryViolationObserved": 0
+  },
+  "blindLiteraryScoring": {
+    "rubricItemCount": 10,
+    "scale": "1-5 per item",
+    "overallFormula": "2 * sum(10 rubric scores)",
+    "rounds": 2,
+    "sameEvaluatorForBothRounds": true,
+    "runAUnblindedMean": 79.0,
+    "runBUnblindedMean": 75.6,
+    "round1Mean": 77.6,
+    "round2Mean": 77.0,
+    "combinedMean": 77.3,
+    "combinedMeanExcludingDiagnosticWrapperSample": 79.3,
+    "formalGateUses": "all_20_samples"
+  },
+  "styleStats": {
+    "metricNotes": {
+      "repeatRate": "1 - unique_sentence_ratio",
+      "paragraphLength": "raw persisted text; wrapper diagnostic separately reported",
+      "ending": "punctuation proxy"
+    },
+    "buckets": [
+      {"positions": "1-5", "n": 5, "characterMean": 2958.2, "sentenceLengthMean": 18.06, "dialogueRate": 0.3159, "paragraphLengthMean": 29.29, "repeatRate": 0.0115, "transitionMean": 0.2, "closedEndings": 5, "nonTerminalEndings": 0, "wrapperLeakage": 0},
+      {"positions": "6-10", "n": 5, "characterMean": 3323.8, "sentenceLengthMean": 20.05, "dialogueRate": 0.3264, "paragraphLengthMean": 33.59, "repeatRate": 0.0013, "transitionMean": 0.0, "closedEndings": 4, "nonTerminalEndings": 1, "wrapperLeakage": 0},
+      {"positions": "11-15", "n": 5, "characterMean": 3535.8, "sentenceLengthMean": 21.03, "dialogueRate": 0.2452, "paragraphLengthMean": 220.59, "repeatRate": 0.0095, "transitionMean": 0.2, "closedEndings": 4, "nonTerminalEndings": 1, "wrapperLeakage": 1, "validParagraphLengthMeanExcludingWrapper": 40.23},
+      {"positions": "16-20", "n": 5, "characterMean": 3752.0, "sentenceLengthMean": 19.87, "dialogueRate": 0.2711, "paragraphLengthMean": 41.48, "repeatRate": 0.0062, "transitionMean": 0.2, "closedEndings": 4, "nonTerminalEndings": 1, "wrapperLeakage": 0}
+    ],
+    "all20": {"characterMean": 3392.45, "paragraphLengthMeanRaw": 81.24, "paragraphLengthMeanExcludingWrapper": 35.93, "wrapperLeakage": 1, "titleFirstLineDuplicate": 1, "adjacentDuplicateCount": 2}
+  },
+  "persistenceAudit": {
+    "generationRuns": 20,
+    "oneRunPerTarget": true,
+    "allRunsCompleted": true,
+    "allRunsAdopted": true,
+    "finalizedChapters": 20,
+    "finalEligibleArtifacts": 20,
+    "draftArtifacts": 20,
+    "revision1Artifacts": 3,
+    "storyMemorySnapshots": 20,
+    "stateSyncOutboxCompleted": 20,
+    "stateSyncOutboxAttemptCount": 1,
+    "stateProposals": 0,
+    "stateEvents": 0,
+    "unresolvedQaFindings": 0,
+    "transientQaFindings": 4,
+    "receiptFinishStop": 41,
+    "receiptFinishLength": 2,
+    "receiptReasoningOnly": 8,
+    "receiptVisibleOutputTokensMissing": 43,
+    "crashOrAnrObserved": 0
+  },
+  "anomalies": [
+    {"severity": "gate_blocking", "run": "B", "position": 11, "type": "json_like_wrapper_persisted", "qaDecision": "clean_pass", "autoResent": false},
+    {"severity": "minor_format", "run": "A", "position": 9, "type": "title_first_line_duplicate", "revisionWriterRequest": false},
+    {"severity": "telemetry", "type": "qa_stage_skipped_record", "count": 1, "autoResent": false},
+    {"severity": "telemetry", "type": "finish_length", "count": 2, "autoResent": false},
+    {"severity": "telemetry", "type": "reasoning_only_empty_reason", "count": 8, "autoResent": false},
+    {"severity": "observability", "type": "planner_raw_null_effective_active_model", "rawValue": null, "effectiveConfigId": 3}
+  ],
+  "evidenceFiles": {
+    "directory": "test-logs/continuation-20chapter-longrun-20260831",
+    "dbSnapshots": [
+      "after-canon4.db",
+      "after-standard-config-20260831-1615.db",
+      "after-balanced-config-20260831-1610.db",
+      "after-strict-config-20260831-1625.db",
+      "after-runA-completed-20260831-1618.db",
+      "after-runB-completed-20260831-1633.db"
+    ],
+    "summaries": ["db-schema-after-runB.txt", "db-summary-after-runB.txt", "run-stage-check-summary.txt", "canon-state-summary.txt"],
+    "screenshots": ["screen-batch-report-runA-20260831-1618.png", "screen-batch-report-runB-20260831-1633.png"],
+    "rawBodiesEmbedded": false,
+    "largeDbEmbedded": false
+  },
+  "privacy": {
+    "apiKeysIncluded": false,
+    "authorizationIncluded": false,
+    "fullPromptIncluded": false,
+    "fullSourceIncluded": false,
+    "generatedBodyIncluded": false,
+    "rawFailureRecordsDeleted": false
+  },
+  "sourceChanges": {
+    "applicationSourceModified": false,
+    "apkRebuilt": false,
+    "gateOrContextChangedForTest": false,
+    "retryStatisticsReset": false
+  }
+}
