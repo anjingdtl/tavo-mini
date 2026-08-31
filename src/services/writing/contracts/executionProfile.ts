@@ -18,7 +18,7 @@ export interface WritingExecutionProfilePolicy {
   id: WritingExecutionProfile;
   /** Hard cap on paid LLM requests per chapter under this profile. */
   maxPaidLlmCalls: number;
-  /** Whether the thinking-disabled Formatter rescue call may run. */
+  /** Whether the Formatter rescue call may run. */
   allowFormatter: boolean;
   /** Whether an automatic Primary retry/replay may run. */
   allowPrimaryRetry: boolean;

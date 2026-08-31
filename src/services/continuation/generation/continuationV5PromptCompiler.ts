@@ -2,6 +2,7 @@
  * Continuation V5 prompt compilers for the five physical nodes.
  */
 import type { ChatMessage } from '../../llm/types';
+import { DRAFT_COMPLETION_BOUNDARY } from '../../writing/prompt/draftCompletionBoundary';
 import { estimateMessagesTokens } from '../../../utils/tokenEstimator';
 import type {
   ContinuationV5ArchitectureEnvelope,
@@ -302,7 +303,7 @@ export function compileContinuationV5DraftWriterMessages(input: {
     '重要人物的行动、阻力、选择、反应和后果需要真正发生在正文中。',
     '不要为每个 Beat 分配固定字数。',
     '不要为了接近目标而重复心理、环境、反应、对白或总结解释。',
-    '如果没有足够内容自然展开，请先调整 plan，增加符合 Canon、人物状态和用户要求的有效推进，而不是提前结束正文。',
+    DRAFT_COMPLETION_BOUNDARY,
     '只输出 JSON object，schemaVersion=1，字段 plan 与 content。content 必须是完整章节正文，禁止 Patch/摘要/提纲。',
   ].join('\n');
   const user = [

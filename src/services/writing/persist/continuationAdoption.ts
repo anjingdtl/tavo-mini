@@ -122,6 +122,7 @@ import {
   type StyleRenderLevel,
 } from '../../continuation/styleProfile/styleProfileRenderer';
 import { resolveFinalBodyStateProposals } from '../prompt/qaStateProposals';
+import { freezeContinuationThinking } from '../../continuation/generation/continuationV5Models';
 
 function traceJsonForRunState(input: {
   run: ContinuationGenerationRun;
@@ -438,15 +439,13 @@ async function defaultStageCaller(input: {
       scenario: `continuation_${input.stage}`,
       responseFormat:
         input.responseFormat === 'json_object' ? 'json_object' : undefined,
-      // DeepSeek V4 defaults to thinking mode. Standard continuation has a
-      // strict no-retry Writer contract, so reserve completion capacity for
-      // business JSON/text. This only applies to frozen standard-run configs;
-      // legacy runs and other model families keep their current behavior.
-      thinking:
-        input.frozenModelConfig &&
-        /^deepseek-v4-(flash|pro)$/i.test(input.frozenModelConfig.modelName)
-          ? { type: 'disabled' }
-          : undefined,
+      // DeepSeek V4 writing stays Thinking Always On. The frozen model helper
+      // is the single model-name boundary; final content and reasoning are
+      // separated by the provider/parser instead of downgrading JSON calls.
+      thinking: freezeContinuationThinking(
+        input.frozenModelConfig?.modelName,
+        input.frozenModelConfig?.thinking,
+      ),
       requestConfig,
     },
     input.signal,

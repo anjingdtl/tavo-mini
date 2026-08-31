@@ -54,17 +54,19 @@ function modelConfigId(config: LLMRequestConfig | null | undefined): number {
 }
 
 /**
- * DeepSeek V4 defaults to thinking ON when the field is omitted. Continuation
- * Writer stages have a JSON body contract; leaving thinking enabled burns the
- * completion budget and yields reasoning_only. Freeze that production contract
- * here so post-Freeze Writer Core never re-derives it from a live model read.
+ * DeepSeek V4 writing requests are Thinking Always On. Freeze an explicit
+ * enabled value even when an old or manually supplied config says disabled so
+ * the post-Freeze Writer Core cannot silently downgrade the writing contract.
+ * The provider/parser keep reasoning_content separate from final content;
+ * structured-output compatibility must be solved there, not by disabling
+ * Thinking at this boundary.
  */
 export function freezeContinuationThinking(
   modelName: string | undefined,
   liveThinking?: { type: 'enabled' | 'disabled' },
 ): { type: 'enabled' | 'disabled' } | undefined {
   if (/^deepseek-v4-(flash|pro)$/i.test(String(modelName || '').trim())) {
-    return { type: 'disabled' };
+    return { type: 'enabled' };
   }
   return liveThinking;
 }

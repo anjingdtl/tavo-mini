@@ -113,16 +113,16 @@ describe('Writing Kernel first-pass contracts', () => {
     expect(table.draft.thinking).toEqual({ type: 'enabled' });
   });
 
-  test('Continuation DeepSeek V4 Freeze still disables thinking for JSON stages', () => {
+  test('Continuation DeepSeek V4 Freeze keeps Thinking Always On for JSON stages', () => {
     const table = compileKernelStageReasoning({
       scenario: 'continuation',
       modelName: 'deepseek-v4-flash',
       requestedEffort: 'high',
       continuationThinking: { type: 'disabled' },
     });
-    expect(table.draft.thinking).toEqual({ type: 'disabled' });
-    expect(table.revision.thinking).toEqual({ type: 'disabled' });
-    expect(table.review.thinking).toEqual({ type: 'disabled' });
+    expect(table.draft.thinking).toEqual({ type: 'enabled' });
+    expect(table.revision.thinking).toEqual({ type: 'enabled' });
+    expect(table.review.thinking).toEqual({ type: 'enabled' });
   });
 
   test('Revision is a Brief compressor, not an unbounded chapter rewrite', () => {

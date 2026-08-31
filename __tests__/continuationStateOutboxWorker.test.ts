@@ -636,9 +636,8 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
   // Regression for the reasoning-only extraction failure: the thinking
   // control must ride on the CALL config (callLLMResult arg 3), not on the
   // requestConfig — callLLMResult only forwards config.thinking from the
-  // per-call options, so a requestConfig-level field used to be silently
-  // dropped and DeepSeek (thinking enabled by default) burned the whole
-  // completion budget on chain-of-thought.
+  // per-call options. DeepSeek extraction keeps Thinking enabled and relies
+  // on strict reasoning/final-channel separation plus fail-closed parsing.
   const callLLMMock = callLLMResult as jest.Mock;
   const resolveActiveConfigMock = resolveLLMRequestConfig as jest.Mock;
   const resolveConfigMock = resolveLLMRequestConfigById as jest.Mock;
@@ -688,7 +687,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     resolveConfigMock.mockReset();
   });
 
-  test('deepseek-v4-flash: thinking disabled at CALL level, elastic budget, raw requestConfig', async () => {
+  test('deepseek-v4-flash: thinking enabled at CALL level, elastic budget, raw requestConfig', async () => {
     seedForExtraction();
     resolveConfigMock.mockResolvedValue({
       id: 7,
@@ -709,7 +708,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     expect(maxTokens).toBe(200000);
     expect(Array.isArray(messages)).toBe(true);
     // THE regression assertion: thinking lives on the call config itself.
-    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+    expect(callConfig.thinking).toEqual({ type: 'enabled' });
     // The requestConfig passes through untouched (no historical mutation).
     expect(callConfig.requestConfig.model_name).toBe('deepseek-v4-flash');
     expect(callConfig.requestConfig.thinking).toBeUndefined();
@@ -731,10 +730,10 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     await processContinuationOutbox({ limit: 5 });
     const [, maxTokens, callConfig] = callLLMMock.mock.calls[0];
     expect(maxTokens).toBe(1638);
-    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+    expect(callConfig.thinking).toEqual({ type: 'enabled' });
   });
 
-  test('deepseek-chat also disables thinking (DeepSeek default is enabled)', async () => {
+  test('deepseek-chat also keeps thinking enabled (DeepSeek default is enabled)', async () => {
     seedForExtraction();
     resolveConfigMock.mockResolvedValue({
       id: 7,
@@ -749,7 +748,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
 
     await processContinuationOutbox({ limit: 5 });
     const [, , callConfig] = callLLMMock.mock.calls[0];
-    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+    expect(callConfig.thinking).toEqual({ type: 'enabled' });
   });
 
   test('non-DeepSeek models keep provider defaults (no thinking field)', async () => {
@@ -787,7 +786,7 @@ describe('processContinuationOutbox: real-path thinking placement (regression)',
     expect(resolveActiveConfigMock).toHaveBeenCalledTimes(1);
     const [, maxTokens, callConfig] = callLLMMock.mock.calls[0];
     expect(maxTokens).toBe(200000);
-    expect(callConfig.thinking).toEqual({ type: 'disabled' });
+    expect(callConfig.thinking).toEqual({ type: 'enabled' });
   });
 
   test('fails closed without capability metadata and derives from context when available', () => {

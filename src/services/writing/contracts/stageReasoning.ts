@@ -38,8 +38,9 @@ function normalizeRequestedEffort(
  * first-pass contract, not a post-Freeze live model read.
  *
  * Outline: thinking stays enabled; FactCheck/Audit stay low.
- * Continuation: honor the frozen continuation thinking (DeepSeek V4 JSON
- * draft is disabled so the body is not eaten by reasoning).
+ * Continuation: honor the frozen continuation thinking. DeepSeek V4 is
+ * normalized to Thinking Always On; JSON body/reasoning separation belongs to
+ * the provider/parser contract, not to this freeze-time policy.
  */
 export function compileKernelStageReasoning(input: {
   scenario: 'outline' | 'continuation';
@@ -67,18 +68,29 @@ export function compileKernelStageReasoning(input: {
         typeof snapshot.thinking === 'string'
           ? snapshot.thinking
           : snapshot.thinking?.type;
+      const snapshotThinking = {
+        type: thinkingType === 'disabled' ? ('disabled' as const) : ('enabled' as const),
+      };
+      // A legacy outlineStageReasoning snapshot may have been produced before
+      // the DeepSeek V4 Thinking Always On contract. Normalize that stale
+      // value at the same Freeze boundary instead of letting it downgrade a
+      // new continuation request after the live model has been selected.
+      const thinking =
+        input.scenario === 'continuation'
+          ? freezeContinuationThinking(input.modelName, snapshotThinking) ||
+            snapshotThinking
+          : snapshotThinking;
       table[stage] = {
-        thinking: { type: thinkingType === 'disabled' ? 'disabled' : 'enabled' },
+        thinking,
         reasoningEffort:
           snapshot.effort || snapshot.effectiveTier || requested,
       };
       continue;
     }
     if (input.scenario === 'continuation') {
+      const liveThinking = input.continuationThinking || { type: 'enabled' as const };
       const thinking =
-        input.continuationThinking ||
-        freezeContinuationThinking(input.modelName, { type: 'enabled' }) ||
-        { type: 'disabled' as const };
+        freezeContinuationThinking(input.modelName, liveThinking) || liveThinking;
       table[stage] = {
         thinking,
         reasoningEffort: thinking.type === 'enabled' ? requested : undefined,

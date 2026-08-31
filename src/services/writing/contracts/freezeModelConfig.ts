@@ -7,6 +7,7 @@ import {
   requireModelContextWindow,
   requireModelMaxOutputTokens,
 } from '../../llm/providerCapabilities';
+import { freezeContinuationThinking } from '../../continuation/generation/continuationV5Models';
 
 export function writingCredentialRef(
   configId: number | null | undefined,
@@ -45,7 +46,7 @@ export function freezeWritingModelConfig(input: {
     contextWindow,
     maxOutputTokens,
     allowInsecureLanHttp: Boolean(input.allowInsecureLanHttp),
-    thinking: input.thinking,
+    thinking: freezeContinuationThinking(input.modelName, input.thinking),
     reasoningEffort: input.reasoningEffort,
     credentialRef,
   };

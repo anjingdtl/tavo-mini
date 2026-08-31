@@ -76,6 +76,7 @@ import {
 } from '../writing/scenario/outlineWritingAdapter';
 import { buildWritingKernelFreezeTrace } from '../writing/unifiedWritingKernel';
 import { freezeWritingModelConfig } from '../writing/contracts/freezeModelConfig';
+import { freezeContinuationThinking } from '../continuation/generation/continuationV5Models';
 import { PHASE4_GATE_POLICY_VERSION } from '../writing/gates/phase4GatePolicy';
 import { resolveWritingCredential } from '../writing/stages/resolveFrozenCredential';
 import type {
@@ -421,7 +422,10 @@ function buildExecutionSnapshot(params: {
       contextWindow,
       maxOutputTokens: modelMaxOutputTokens,
       allowInsecureLanHttp: params.requestConfig.allow_insecure_lan_http,
-      thinking: params.requestConfig.thinking,
+      thinking: freezeContinuationThinking(
+        params.requestConfig.model_name,
+        params.requestConfig.thinking,
+      ),
     },
     createdAt: Date.now(),
   };

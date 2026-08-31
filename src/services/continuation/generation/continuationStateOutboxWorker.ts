@@ -43,27 +43,23 @@ import { mergeWritingTokenLedger } from '../../writing/observability/writingToke
 import type { ProposalType } from './types';
 
 /**
- * DeepSeek enables thinking by default (deepseek-chat and the V4 families per
- * the official Thinking Mode guide). Background continuation extraction has a
- * JSON-only contract and a deliberately bounded completion budget, so leaving
- * thinking enabled can consume the whole budget without a JSON body.
- *
- * The option MUST be returned at the CALL level (the second `callLLMResult`
- * argument): `callLLMResult` only forwards `config.thinking` from the per-call
- * options. A `thinking` field attached to the requestConfig object used to be
- * silently dropped — that misplacement is exactly how extraction ended up
- * reasoning-only with finish_reason=length.
+ * DeepSeek background extraction also keeps Thinking enabled. It is a
+ * structured-output request, but the provider returns reasoning_content and
+ * final content as separate channels; a reasoning-only response therefore
+ * remains a normal fail-closed parse result instead of a reason to downgrade
+ * the request. The option is deliberately placed at CALL level because that
+ * is the authoritative path into the provider envelope.
  */
-function thinkingDisabledForModel(
+function thinkingEnabledForModel(
   config: { model_name?: string | null } | null | undefined,
-): { type: 'disabled' } | undefined {
+): { type: 'enabled' } | undefined {
   if (
     !config ||
     !/^deepseek-(chat|v4-(flash|pro))$/i.test(String(config.model_name ?? ''))
   ) {
     return undefined;
   }
-  return { type: 'disabled' };
+  return { type: 'enabled' };
 }
 
 type StateExtractionRequestConfig = {
@@ -377,7 +373,7 @@ async function handleExtractState(
         taskId: `extract_${payload.chapterId}`,
         scenario: 'continuation_state_extraction',
         responseFormat: 'json_object',
-        thinking: thinkingDisabledForModel(requestConfig),
+        thinking: thinkingEnabledForModel(requestConfig),
         requestConfig,
       },
     );

@@ -63,6 +63,7 @@ import {
 import { deriveGenerationQualityProfile } from '../contracts/generationQualityProfile';
 import { resolveExecutionProfileFromValues } from '../contracts/executionProfile';
 import { isPhase4GatePolicy } from '../gates/phase4GatePolicy';
+import { freezeContinuationThinking } from '../../continuation/generation/continuationV5Models';
 
 /**
  * B6/B7 failure telemetry carried from the Shared Writer to the durable
@@ -656,6 +657,24 @@ export async function executeSharedWriterStage(input: {
       outputContract: compiled.outputContract,
       candidate: String(primary.text || primary.reasoningText || ''),
     });
+    // A Formatter is an existing, user-confirmed rescue path, not a new
+    // request. DeepSeek writing keeps Thinking Always On even for JSON;
+    // non-DeepSeek models retain the historical disabled Formatter contract.
+    const formatterThinking = /^deepseek-(chat|v4-(flash|pro))$/i.test(
+      String(stageInput.modelConfig.modelName || ''),
+    )
+      ? freezeContinuationThinking(
+          stageInput.modelConfig.modelName,
+          stageReasoning.thinking,
+        ) || stageReasoning.thinking
+      : { type: 'disabled' as const };
+    const formatterReasoning = {
+      thinking: formatterThinking,
+      reasoningEffort:
+        formatterThinking.type === 'enabled'
+          ? stageReasoning.reasoningEffort
+          : undefined,
+    };
     const formatterStartedAt = Date.now();
     const formatted = await invokePhysicalWriterCall({
       stage,
@@ -668,7 +687,7 @@ export async function executeSharedWriterStage(input: {
             ? 'json_object'
             : 'text',
       },
-      reasoning: { thinking: { type: 'disabled' } },
+      reasoning: formatterReasoning,
       governorShadow: buildWritingGovernorShadow({
         stage,
         stageInput,
@@ -678,7 +697,7 @@ export async function executeSharedWriterStage(input: {
           compiled.outputContract === 'json_envelope'
             ? 'json_object'
             : 'text',
-        reasoning: { thinking: { type: 'disabled' } },
+        reasoning: formatterReasoning,
       }),
       kind: 'formatter',
       receipts,
@@ -696,8 +715,8 @@ export async function executeSharedWriterStage(input: {
               compiled.outputContract === 'json_envelope'
                 ? 'json_object'
                 : undefined,
-            thinking: { type: 'disabled' },
-            reasoningEffort: undefined,
+            thinking: formatterReasoning.thinking,
+            reasoningEffort: formatterReasoning.reasoningEffort,
             temperature: 0.2,
             top_p: 1,
             requestConfig,
@@ -1671,7 +1690,7 @@ async function resolveFrozenRequestConfig(
     context_window: frozen.contextWindow,
     max_output_tokens: frozen.maxOutputTokens,
     allow_insecure_lan_http: frozen.allowInsecureLanHttp,
-    thinking: frozen.thinking,
+    thinking: freezeContinuationThinking(frozen.modelName, frozen.thinking),
   };
 }
 

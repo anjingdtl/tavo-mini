@@ -202,7 +202,7 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
     }
   });
 
-  test('Continuation DeepSeek V4 Freeze disables thinking for the JSON draft contract', () => {
+  test('Continuation DeepSeek V4 Freeze keeps thinking enabled for the JSON draft contract', () => {
     const frozen = freezeV5ModelConfig({
       id: 7,
       name: 'deepseek-live',
@@ -215,7 +215,7 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
       allow_insecure_lan_http: false,
       thinking: { type: 'enabled' },
     });
-    expect(frozen.thinking).toEqual({ type: 'disabled' });
+    expect(frozen.thinking).toEqual({ type: 'enabled' });
     expect(frozen).not.toHaveProperty('api_key');
     expect(frozen.url).toBe('https://api.deepseek.com/chat/completions');
     expect(frozen.allowInsecureLanHttp).toBe(false);
@@ -223,7 +223,7 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
     const kernelModel = buildContinuationKernelFrozenModel({
       frozenModel: frozen,
     });
-    expect(kernelModel.thinking).toEqual({ type: 'disabled' });
+    expect(kernelModel.thinking).toEqual({ type: 'enabled' });
     expect(kernelModel.url).toBe('https://api.deepseek.com/chat/completions');
     expect(kernelModel.modelName).toBe('deepseek-v4-flash');
     expect(kernelModel.credentialRef).toEqual({
@@ -232,7 +232,7 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
     });
   });
 
-  test('Continuation Draft request honors frozen thinking:disabled without a live model read', async () => {
+  test('Continuation Draft request enforces Thinking Always On without a live model read', async () => {
     await setSecureLLMApiKey('sk-frozen-secret', 7);
     const liveRead = jest
       .spyOn(llm, 'resolveLLMRequestConfigById')
@@ -278,9 +278,9 @@ describe('Writing Kernel final seal — Draft compile and frozen model behavior'
       expect(liveRead).not.toHaveBeenCalled();
       expect(transport).toHaveBeenCalledTimes(1);
       const callConfig = transport.mock.calls[0]?.[2];
-      expect(callConfig?.thinking).toEqual({ type: 'disabled' });
+      expect(callConfig?.thinking).toEqual({ type: 'enabled' });
       expect(callConfig?.requestConfig?.thinking).toEqual({
-        type: 'disabled',
+        type: 'enabled',
       });
       expect(callConfig?.requestConfig?.model_name).toBe('deepseek-v4-flash');
     } finally {

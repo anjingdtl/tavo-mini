@@ -30,6 +30,7 @@ import {
   buildAnchoredSegmentRepairPlan,
   formatAnchoredSegmentRepairPlan,
 } from '../revision/anchoredSegmentRepair';
+import { DRAFT_COMPLETION_BOUNDARY } from './draftCompletionBoundary';
 
 export const SHARED_PROMPT_COMPILER_VERSION = 'shared-prompt-compiler-v1';
 
@@ -60,6 +61,7 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
     '请写从章节开头到自然结尾的完整正文。',
     '主要行动、阻力、选择、反应和后果必须真正发生。',
     '不要输出分析过程，不要只写提纲或补丁。',
+    DRAFT_COMPLETION_BOUNDARY,
   ].join('\n'),
   qa: [
     // Phase 4 (二 §7.2 ONE QA. The single QA stage for the compact Standard
@@ -114,7 +116,7 @@ const STAGE_PROTOCOL: Record<SharedWritingStageName, string> = {
 };
 
 const JSON_CONTRACT =
-  '【输出契约】只输出 JSON object，schemaVersion=1。必须包含 content（完整章节正文或完整结构化报告）。可选 plan、findings、appliedObligationIds、appliedCanonRequirementIds、appliedStyleRequirementIds、validNoOpRequirementIds、validNoOpReasons。禁止输出 Markdown 围栏。';
+  '【输出契约】只输出 JSON object，schemaVersion=1。必须包含 content（完整章节正文或完整结构化报告）；写作阶段的最终正文必须放在 content 字段中。即使已启用 Thinking，reasoning_content 仅作内部推理，不计入正文，不能替代 content。可选 plan、findings、appliedObligationIds、appliedCanonRequirementIds、appliedStyleRequirementIds、validNoOpRequirementIds、validNoOpReasons。禁止输出 Markdown 围栏。';
 
 const REVISION_BRIEF_CONTRACT = [
   '【输出契约】只输出一个 JSON object，schemaVersion=1，这是修订合同而不是从零重写。',
@@ -180,7 +182,7 @@ const PHASE4_REVISION_CONTRACT = [
 ].join('\n');
 
 const PROSE_CONTRACT =
-  '【输出契约】直接输出本章完整正文。不要输出标题、分析、JSON 或过程说明。';
+  '【输出契约】直接输出本章完整正文。即使已启用 Thinking，也必须把最终正文放在最终 content 输出中；reasoning_content 仅作内部推理，不计入正文。不要输出标题、分析、JSON 或过程说明。';
 
 /**
  * One-Shot (极速) profile projection for the Shared Draft. This is a policy

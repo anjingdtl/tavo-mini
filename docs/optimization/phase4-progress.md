@@ -183,6 +183,50 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - Historical A/B：`docs/optimization/phase4-historical-ab.md`
 - Historical C9 and C8/C9 evidence：`test-logs/phase3-c9-cost-latency-20260830-000001/`
 
+## IV-11 DeepSeek Thinking Always On 与质量-稳定性矩阵（2026-08-31）
+
+当前施工仓：`E:\AiWorkSpace\tavo-mini`。本节为当前事实更新；前文 IV-10 旧结算段落作为历史记录保留，不把历史 `Root Cause Closed` 表述直接当作本轮封板结论。
+
+### PDCA
+
+| 环节 | 当前证据与结论 |
+| --- | --- |
+| PLAN | 恢复 DeepSeek Thinking Always On；修复普适章节完成边界；补采文学质量、思考档次和流水线稳定性的批次关联数据；不扩展架构。 |
+| RED | stale DeepSeek disabled frozen contract；结构等价 pathological Bad Plan；Thinking ON 下 reasoning-only final-content 缺失。IV-10 原始“账册的末行”完整 fixture 当前不可得，已明确标记。 |
+| DO | DeepSeek frozen/wire 强制 ON；reasoning/final channel 分离；共享 Draft completion boundary；JSON/prose 最终正文必须进入 `content`；新增只读 `collect-writing-quality-matrix.mjs`。 |
+| CHECK-A | `npm run verify` 通过：533 suites passed / 4 skipped；3,766 tests passed / 9 skipped；lint/typecheck/elastic/version 全通过。 |
+| CHECK-B | 同代码 V2.21.1 debug APK 使用 `adb install -r` 真实 Android 复测：Bad Plan 3/3，Good 5 章 5/5，修复后 Good 10 章 10/10；首次 Good 10 的 7/10 reasoning-only 失败保留。终态 crash buffer 无应用 crash。 |
+| ACT | 数据采集完成；Final Seal 仍 `PHASE IV FINAL SEAL HOLD / NO-GO`。当前准确表述是结构等价 pathological fixture 的 remediation 已验证，exact historical fixture、跨思考档次 A/B 和文学质量标注仍待补齐。 |
+
+### 质量-稳定性矩阵
+
+`test-logs/phase4-iv11-android-20260831/writing-quality-stability-matrix-20260831.json` 记录 4 个批次、28 个章节观察。每个批次/章节通过 `correlationKey` 关联：
+
+`thinking`、`reasoningEffort`、`qualityProfile`、`model`、`literaryQualityProxy`、`pipelineStability`
+
+文学质量当前只记录确定性代理指标（句段形态、对白比例、重复信号、标点/结尾/转场等），不自动生成主观文学总分；人工/评测模型字段为 `not_collected`。本轮四个样本均为 `thinking=enabled / reasoningEffort=low`，因此不能宣称不同思考档次的因果差异。
+
+### 真实批次
+
+- `batch_mtgl6rps_0llu1q`：结构等价 Bad Plan，3/3 full_pipeline、first-pass 3/3。
+- `batch_mtglhrce_uuwp6b`：Good 5，5/5 full_pipeline、first-pass 5/5。
+- `batch_mtgm0bjg_ukyy4m`：首次 Good 10，7/10 full_pipeline，1 个 reasoning-only failure；作为失败分母保留。
+- `batch_mtgmub04_rzoyix`：final-channel contract 修复后 Good 10，10/10 full_pipeline、first-pass 10/10。
+
+### 下一实验
+
+1. 找回 IV-10 原始“账册的末行” frozen fixture，Thinking ON 下复测至少 3/3。
+2. 用相同有限计划做 `low / medium / high` reasoning effort 平衡 A/B，沿用同一质量-稳定性矩阵。
+3. 完成人工或独立评测模型的文学质量标注后，再讨论文学质量优化，不用长度或对白比例冒充文学分数。
+
+### IV-11 证据索引
+
+- 测试报告：`docs/optimization/phase4-iv11-test-report-20260831.md`
+- 质量/稳定性矩阵：`test-logs/phase4-iv11-android-20260831/writing-quality-stability-matrix-20260831.json`
+- Thinking contract：`__tests__/continuationThinkingAlwaysOn.test.ts`
+- Plan delta：`__tests__/phase4Iv11PlanDelta.test.ts`
+- Android 终态快照：`test-logs/phase4-iv11-android-20260831/`
+
 ### IV-9 真实 Android 运行结算（凭据恢复后，2026-08-30）
 
 - 设备/包：emulator-5554，debug 签名 `adb install -r`（release 签名与在装 debug 包不兼容，且禁止 uninstall，故本轮真实运行使用同代码的 debug 构建；firstInstallTime=2026-08-23 保持不变，数据零丢失）。模型：GLM-5.3-Flash（UI `保存并测试` 通过）。

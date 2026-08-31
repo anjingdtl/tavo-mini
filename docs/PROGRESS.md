@@ -54,3 +54,20 @@
 - 发版构建遵循 `docs/RELEASE_APK_BUILD.md` 与 `docs/RELEASE_CHECKLIST.md`；
   版本号经 `npm version` 与 `npm run prebuild` 生成元数据，不手改生成文件。
 - B 轮方案细节见 `docs/optimization/TAVO-MINI_Phase3_B_生产闭环与体验提效_20260826.md`（规划文档，不入库）。
+
+## Phase IV IV-11 当前进度（2026-08-31）
+
+Phase IV 当前仍为 **`PHASE IV FINAL SEAL HOLD / NO-GO`**。本轮已完成 DeepSeek Thinking Always On 的 frozen/wire/channel 验证、结构等价 pathological Bad Plan 3/3、Good 5 章 5/5、修复后 Good 10 章 10/10，以及首次 Good 10 章 7/10 失败样本的保留记录。
+
+新增批次级质量数据采集：
+
+- 采集 Thinking、reasoning effort、quality profile、模型和 execution profile；
+- 采集每章句段形态、对白、重复、标点/结尾等文学质量代理指标；
+- 采集 first-pass、失败类型、retry、physical request、fallback、token、reasoning/output 比例和耗时；
+- 通过 `correlationKey` 将思考档次、文学质量和流水线稳定性绑定到同一批次/章节观察；
+- 不输出正文、提示词、推理内容、response body、API key，也不把代理指标伪装成文学评分。
+
+本轮四个真实批次均为 `reasoningEffort=low`，跨思考档次的质量 A/B 尚未形成；IV-10 原始 exact Bad Plan fixture 也尚未找回。下一步仍是补齐 exact fixture、跨档平衡样本和人工/独立评测文学质量标注，不提前把 NO-GO 改成 GO。
+
+详细报告：`docs/optimization/phase4-iv11-test-report-20260831.md`
+质量/稳定性矩阵：`test-logs/phase4-iv11-android-20260831/writing-quality-stability-matrix-20260831.json`

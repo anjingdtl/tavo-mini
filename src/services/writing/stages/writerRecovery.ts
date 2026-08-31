@@ -1,7 +1,7 @@
 /**
  * First-pass recovery that belongs in the Shared Writer.
  *
- * Dual-channel JSON adopt and one thinking-disabled Formatter are production
+ * Dual-channel JSON adopt and one bounded Formatter rescue are production
  * contracts from V3.2. They must not live in a second Outline/Continuation
  * writer core, and they must not become a silent Primary replay.
  */
