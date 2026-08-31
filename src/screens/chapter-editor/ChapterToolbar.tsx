@@ -30,6 +30,8 @@ interface Props {
   onHistory: () => void;
   onManualCheckpoint: () => void;
   onOpenContinuationResult?: () => void;
+  onTargetedRevision?: () => void;
+  onWholeChapterRewrite?: () => void;
   onRunPipeline: () => void;
   onStopPipeline: () => void;
   onToggleTts: () => void;
@@ -52,6 +54,8 @@ export function ChapterToolbar({
   onHistory,
   onManualCheckpoint,
   onOpenContinuationResult,
+  onTargetedRevision,
+  onWholeChapterRewrite,
   onRunPipeline,
   onStopPipeline,
   onToggleTts,
@@ -60,8 +64,8 @@ export function ChapterToolbar({
   const aiLabel = generating
     ? 'AI 生成中…'
     : isContinuation
-      ? 'AI 续写'
-      : 'AI 重新生成';
+    ? 'AI 续写'
+    : 'AI 重新生成';
   return (
     <View style={styles.toolbar}>
       <ScrollView
@@ -90,7 +94,9 @@ export function ChapterToolbar({
             minWidth={72}
           />
         ) : null}
-        {isContinuation && hasPendingContinuationResult && onOpenContinuationResult ? (
+        {isContinuation &&
+        hasPendingContinuationResult &&
+        onOpenContinuationResult ? (
           <Button
             testID="open-continuation-result"
             label="续写结果"
@@ -98,6 +104,30 @@ export function ChapterToolbar({
             variant="secondary"
             onPress={onOpenContinuationResult}
             disabled={generating}
+            compact
+            minWidth={92}
+          />
+        ) : null}
+        {onTargetedRevision ? (
+          <Button
+            testID="chapter-targeted-revision"
+            label="精准修订"
+            icon={FileText}
+            variant="secondary"
+            onPress={onTargetedRevision}
+            disabled={generating || finalizing || clearing}
+            compact
+            minWidth={92}
+          />
+        ) : null}
+        {onWholeChapterRewrite ? (
+          <Button
+            testID="chapter-whole-rewrite"
+            label="整章重写"
+            icon={Bot}
+            variant="secondary"
+            onPress={onWholeChapterRewrite}
+            disabled={generating || finalizing || clearing}
             compact
             minWidth={92}
           />

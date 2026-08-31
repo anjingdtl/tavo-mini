@@ -18,6 +18,10 @@ interface Props {
    * 不传则不渲染（兼容旧调用）。
    */
   nextChapterButton?: React.ReactNode;
+  onContentSelectionChange?: (selection: {
+    start: number;
+    end: number;
+  }) => void;
   onScrollToTop: () => void;
 }
 
@@ -29,6 +33,7 @@ export function ChapterFields({
   saveLabel,
   toolbar,
   nextChapterButton,
+  onContentSelectionChange,
   onScrollToTop,
 }: Props) {
   const { theme } = useThemeStore();
@@ -62,6 +67,9 @@ export function ChapterFields({
         onChangeText={value => changeField('content', value)}
         placeholder="开始写作..."
         multiline
+        onSelectionChange={event =>
+          onContentSelectionChange?.(event.nativeEvent.selection)
+        }
         inputStyle={focusMode ? styles.focusEditor : styles.editor}
       />
       {chapter.memory_summary ? (

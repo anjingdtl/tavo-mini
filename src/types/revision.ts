@@ -7,7 +7,9 @@ export type RevisionSource =
   | 'before_pipeline_accept'
   | 'before_restore'
   | 'before_batch_replace'
-  | 'before_import_replace';
+  | 'before_import_replace'
+  | 'before_targeted_revision'
+  | 'before_whole_chapter_rewrite';
 
 export interface ContentRevision {
   id: number;

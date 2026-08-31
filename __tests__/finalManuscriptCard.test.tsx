@@ -114,4 +114,21 @@ describe('FinalManuscriptCard：查看修改', () => {
     const body = '最终稿正文。';
     expect(sha256Hex(body)).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  it('exposes separate targeted and whole-chapter revision entrances', () => {
+    const onTargetedRevision = jest.fn();
+    const onWholeChapterRewrite = jest.fn();
+    const { getByTestId } = render(
+      <FinalManuscriptCard
+        artifact={makeArtifact()}
+        onTargetedRevision={onTargetedRevision}
+        onWholeChapterRewrite={onWholeChapterRewrite}
+      />,
+    );
+
+    fireEvent.press(getByTestId('final-targeted-revision'));
+    fireEvent.press(getByTestId('final-whole-rewrite'));
+    expect(onTargetedRevision).toHaveBeenCalledTimes(1);
+    expect(onWholeChapterRewrite).toHaveBeenCalledTimes(1);
+  });
 });

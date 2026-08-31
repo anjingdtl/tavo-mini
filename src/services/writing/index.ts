@@ -17,6 +17,7 @@ export {
 export { restartLegacyWritingTask } from './legacyRestart';
 export * from './contracts/frozenWritingContext';
 export * from './contracts/chapterTruthProjection';
+export * from './contracts/plainTextNovelBody';
 export * from './contracts/generationQualityProfile';
 export * from './contracts/writingRequestReceipt';
 export * from './context/collectWritingMaterials';
@@ -35,4 +36,5 @@ export * from './flow';
 export * from './unifiedWritingKernel';
 export * from './replay/writingReplay';
 export * from './productionWritingEntry';
+export * from './userRevision';
 export * from './stages';

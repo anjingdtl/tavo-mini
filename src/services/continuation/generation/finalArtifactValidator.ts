@@ -4,9 +4,9 @@
  * Zero-request technical delivery check only. No Writer-relative retention,
  * no minimal-intervention gate, no length-based rejection.
  *
- * Soft-gate mode (CONTINUATION_V5_SOFT_GATES): only empty / missing content
- * blocks eligibility; all other findings are warnings so the pipeline can
- * still deliver a reviewable final draft.
+ * Soft-gate mode (CONTINUATION_V5_SOFT_GATES) may retain subjective quality
+ * findings as warnings, but technical Final Integrity findings always block
+ * eligibility. A protocol/JSON/patch envelope is never a deliverable body.
  */
 import { runDeterministicChecks } from './continuationChecker';
 import { countHanCharacters } from './continuationLengthContract';
@@ -23,6 +23,7 @@ import type {
   ContinuationV5FinalEnvelope,
 } from './types';
 import { checkSemanticRequirementApplication } from '../../writing/stages/semanticApply';
+import { validatePlainTextNovelBody } from '../../writing/contracts/plainTextNovelBody';
 
 export type FinalArtifactValidationCode =
   | 'final_output_truncated'
@@ -90,7 +91,9 @@ const PROMPT_LEAK_PATTERNS = [
 function looksLikeSummary(content: string): boolean {
   const han = countHanCharacters(content);
   if (han < 80) return true;
-  const hits = SUMMARY_PHRASES.filter(phrase => content.includes(phrase)).length;
+  const hits = SUMMARY_PHRASES.filter(phrase =>
+    content.includes(phrase),
+  ).length;
   if (hits >= 2 && han < 400) return true;
   if (/^(摘要|提纲|大纲|修改说明)[:：]/.test(content.trim())) return true;
   return false;
@@ -203,6 +206,21 @@ export function validateFinalArtifact(input: {
   if (hasProtocolLeakage(content)) {
     codes.push('final_protocol_leakage');
   }
+  const plainText = validatePlainTextNovelBody(content);
+  if (
+    !plainText.valid &&
+    plainText.code !== 'empty' &&
+    !codes.includes('final_protocol_leakage')
+  ) {
+    codes.push(
+      plainText.code === 'prompt_leak' || plainText.code === 'reasoning_leak'
+        ? 'final_prompt_leakage'
+        : plainText.code === 'patch_leak'
+        ? 'final_patch_output'
+        : 'final_protocol_leakage',
+    );
+    details.push(plainText.details || 'final body is not plain text');
+  }
   if (hasPromptLeakage(content)) {
     codes.push('final_prompt_leakage');
   }
@@ -218,7 +236,10 @@ export function validateFinalArtifact(input: {
 
   // Deterministic seam/overlap checks reused from Checker helpers.
   try {
-    const deterministic = runDeterministicChecks(content, input.snapshot as any);
+    const deterministic = runDeterministicChecks(
+      content,
+      input.snapshot as any,
+    );
     for (const issue of deterministic) {
       if (issue.subtype === 'source_overlap') {
         codes.push('final_source_overlap');
@@ -305,8 +326,9 @@ export function validateFinalArtifact(input: {
     );
   }
 
-  // Soft-gate mode: only empty content is blocking; everything else is a warning.
-  // Hard mode (legacy): all codes except length severity block.
+  // Technical Final Integrity is fail-closed even if a historical soft-gate
+  // switch is enabled. Soft mode may relax subjective quality findings, never
+  // a malformed or wrapped body, a broken hash, or a truncated response.
   const uniqueCodes = Array.from(new Set(codes));
   const hardBlocking: FinalArtifactValidationCode[] = uniqueCodes.filter(
     code => code !== 'final_severe_under_target',
@@ -314,14 +336,35 @@ export function validateFinalArtifact(input: {
   const softBlockingOnly: FinalArtifactValidationCode[] = uniqueCodes.filter(
     code => code === 'final_empty_content',
   );
+  const finalIntegrityBlocking = uniqueCodes.filter(code =>
+    new Set<FinalArtifactValidationCode>([
+      'final_output_truncated',
+      'final_invalid_json',
+      'final_invalid_envelope',
+      'final_empty_content',
+      'final_partial_output',
+      'final_patch_output',
+      'final_protocol_leakage',
+      'final_prompt_leakage',
+      'final_anchor_leakage',
+      'final_hash_binding_failed',
+    ]).has(code),
+  );
   // Semantic Apply is always a hard gate. Soft gates must never turn a
   // declared-but-unchanged revision into a deliverable false green.
   const semanticBlocking = uniqueCodes.filter(
     code => code === 'final_semantic_apply_failed',
   );
-  const blockingCodes: FinalArtifactValidationCode[] = CONTINUATION_V5_SOFT_GATES
-    ? Array.from(new Set([...softBlockingOnly, ...semanticBlocking]))
-    : hardBlocking;
+  const blockingCodes: FinalArtifactValidationCode[] =
+    CONTINUATION_V5_SOFT_GATES
+      ? Array.from(
+          new Set([
+            ...softBlockingOnly,
+            ...semanticBlocking,
+            ...finalIntegrityBlocking,
+          ]),
+        )
+      : hardBlocking;
   const blockingSet = new Set(blockingCodes);
 
   // Move non-blocking findings into warnings when soft gates are on.

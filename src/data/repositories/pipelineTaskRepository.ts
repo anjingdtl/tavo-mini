@@ -28,6 +28,7 @@ import {
   type PipelineStageCheckpointRow,
   type PipelineStageCheckpointSummary,
 } from './pipelineStageCheckpointRepository';
+import { assertPlainTextNovelBody } from '../../services/writing/contracts/plainTextNovelBody';
 
 export async function getPipelineConfig(options?: {
   projectId?: number;
@@ -88,9 +89,8 @@ export async function getPipelineConfig(options?: {
   };
   let activeWriterStyleId: number | null = null;
   if (options?.projectId != null) {
-    activeWriterStyleId = (
-      await resolveActiveWriterStyle(options.projectId)
-    ).activeStyleId;
+    activeWriterStyleId = (await resolveActiveWriterStyle(options.projectId))
+      .activeStyleId;
   }
 
   const isV3Profile = ['2', '3', '4', '5'].includes(
@@ -184,7 +184,8 @@ export async function getStoredGenerationQualityProfile(): Promise<GenerationQua
   });
 }
 
-export async function setPipelineConfig(  config: PipelineConfig,
+export async function setPipelineConfig(
+  config: PipelineConfig,
   projectId?: number,
 ): Promise<void> {
   await setSetting('pipeline_mode', 'full');
@@ -298,6 +299,9 @@ export async function savePipelineTask(task: {
   resolvedAt: number | null;
   resolvedAction?: string | null;
 }): Promise<void> {
+  if (task.finalText != null) {
+    assertPlainTextNovelBody(task.finalText);
+  }
   // UPSERT via ON CONFLICT(id) DO UPDATE — NOT INSERT OR REPLACE.
   // REPLACE deletes the conflicting row first, which would cascade through
   // pipeline_stage_checkpoints.task_id ON DELETE CASCADE and wipe every
@@ -595,6 +599,77 @@ export interface PipelineTaskDerivedFinalMetadata {
 }
 
 /**
+ * Locate the newest completed outline task for a chapter without selecting
+ * any large TEXT column.  The caller reads the frozen context through the
+ * dedicated chunked payload reader after it has the id.
+ */
+export async function getLatestCompletedPipelineTaskForTarget(
+  targetType: 'chapter' | 'freeform',
+  targetId: number,
+  options?: { requireResolvedAccept?: boolean },
+): Promise<PipelineTaskDerivedFinalMetadata | null> {
+  const resolvedAcceptClause = options?.requireResolvedAccept
+    ? "AND resolved_action = 'accept'"
+    : '';
+  const row = await one<Row>(
+    `SELECT id, target_type, target_id, status, error,
+            input_fingerprint, pipeline_context_version, pipeline_context_hash,
+            outline_workflow_version, context_budget_version, pipeline_topology_version,
+            parent_task_id, derived_kind, derived_instruction,
+            created_at, updated_at, resolved_at, resolved_action
+       FROM pipeline_tasks
+      WHERE target_type = ? AND target_id = ?
+        AND status = 'completed' AND final_text IS NOT NULL
+        ${resolvedAcceptClause}
+      ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    [targetType, targetId],
+  );
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    targetType: String(row.target_type),
+    targetId: Number(row.target_id),
+    status: String(row.status),
+    error: row.error ?? null,
+    inputFingerprint: row.input_fingerprint ?? null,
+    pipelineContextVersion:
+      row.pipeline_context_version != null
+        ? Number(row.pipeline_context_version)
+        : null,
+    pipelineContextHash: row.pipeline_context_hash ?? null,
+    outlineWorkflowVersion:
+      row.outline_workflow_version != null
+        ? Number(row.outline_workflow_version)
+        : null,
+    contextBudgetVersion:
+      row.context_budget_version != null
+        ? Number(row.context_budget_version)
+        : null,
+    pipelineTopologyVersion:
+      row.pipeline_topology_version != null
+        ? Number(row.pipeline_topology_version)
+        : null,
+    parentTaskId: row.parent_task_id ?? null,
+    derivedKind: row.derived_kind ?? null,
+    derivedInstruction: row.derived_instruction ?? null,
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+    resolvedAt: row.resolved_at != null ? Number(row.resolved_at) : null,
+    resolvedAction: row.resolved_action ?? null,
+  };
+}
+
+/** Locate only an outline task whose final body was actually accepted. */
+export function getLatestAcceptedPipelineTaskForTarget(
+  targetType: 'chapter' | 'freeform',
+  targetId: number,
+): Promise<PipelineTaskDerivedFinalMetadata | null> {
+  return getLatestCompletedPipelineTaskForTarget(targetType, targetId, {
+    requireResolvedAccept: true,
+  });
+}
+
+/**
  * Narrow source-task projection for Derived Final. Never select the task row's
  * stage_results, final_text or pipeline_context_json here: those TEXT columns
  * can collectively exceed Android CursorWindow even when the caller only
@@ -803,8 +878,8 @@ function checkpointSummariesToStageResults(
         row.status === 'succeeded'
           ? ('success' as const)
           : row.status === 'skipped'
-            ? ('skipped' as const)
-            : ('failed' as const),
+          ? ('skipped' as const)
+          : ('failed' as const),
       error: row.errorMessage || undefined,
       errorCode: row.errorCode || undefined,
       tokens:

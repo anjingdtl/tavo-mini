@@ -1,6 +1,21 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, BackHandler, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Button, Field, Header, Screen, spacing } from '../components/ui';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Alert,
+  BackHandler,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { Button, Header, Screen, spacing } from '../components/ui';
 import {
   UnifiedPipelineStageView,
   type UnifiedPipelineStageItem,
@@ -30,11 +45,8 @@ import {
   isCompactPipelineTopology,
   isCurrentOutlinePipelineContextBudgetVersion,
 } from '../services/pipeline/outlineWorkflowVersion';
-import {
-  resetFailedStageCheckpointsForResume,
-} from '../data/repositories/pipelineStageCheckpointRepository';
+import { resetFailedStageCheckpointsForResume } from '../data/repositories/pipelineStageCheckpointRepository';
 import { getOutboxByDedupe } from '../services/continuation/generation/generationRepository';
-import { createDerivedFinalRewriteTask } from '../services/pipeline/derivedFinalRewrite';
 import { FinalManuscriptCard } from '../components/FinalManuscriptCard';
 import { buildFinalArtifactFromOutlineTask } from '../services/writing/finalArtifactData';
 import { navigateToChapterEditor } from '../navigation/navigationRef';
@@ -45,7 +57,10 @@ import type {
   WritingKernelTrace,
 } from '../services/writing/contracts/frozenWritingContext';
 
-type ResultRouteProp = RouteProp<{ PipelineResult: { taskId: string } }, 'PipelineResult'>;
+type ResultRouteProp = RouteProp<
+  { PipelineResult: { taskId: string } },
+  'PipelineResult'
+>;
 
 const STAGE_LABELS: Record<PipelineStageResult['stage'], string> = {
   draft: '初稿',
@@ -93,9 +108,9 @@ export function splitStageWarnings(stage: PipelineStageResult): {
   const warnings: string[] = [];
   for (const message of stage.warnings) {
     const isImmutableOverride = [...BRIEF_IMMUTABLE_KEYS].some(key =>
-      new RegExp(
-        `^Brief ${key} 已由本地不可变(?:信封|封套)覆盖$`,
-      ).test(message),
+      new RegExp(`^Brief ${key} 已由本地不可变(?:信封|封套)覆盖$`).test(
+        message,
+      ),
     );
     const isCoverageDiagnostic = message.startsWith(
       'Brief coveredRequiredIds 仅作为诊断；最终覆盖集合已由 mustFix.sourceIds 本地计算',
@@ -302,7 +317,11 @@ export function isUnifiedOutlinePipelineTask(
   }
 }
 
-export type OutlineMemoryOutboxState = 'pending' | 'running' | 'completed' | 'failed';
+export type OutlineMemoryOutboxState =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed';
 
 function outlineMemoryOutboxDedupeKey(
   trace: WritingKernelTrace | null,
@@ -324,7 +343,7 @@ export function buildUnifiedOutlineStageItems(
     | 'error'
   >,
   options: { memoryOutboxState?: OutlineMemoryOutboxState | null } = {},
-  ): UnifiedPipelineStageItem[] {
+): UnifiedPipelineStageItem[] {
   const trace = parseOutlineKernelTrace(task.pipelineContextJson);
   const resultFor = (stage: PipelineStageResult['stage']) =>
     uniqueStageResults(task.stageResults).find(row => row.stage === stage) ||
@@ -335,7 +354,9 @@ export function buildUnifiedOutlineStageItems(
     eventStage: WritingKernelStage,
   ): UnifiedPipelineStageItem => {
     const event = latestKernelEvent(trace, eventStage);
-    const status = result ? mapPipelineStageStatus(result) : mapKernelStatus(event);
+    const status = result
+      ? mapPipelineStageStatus(result)
+      : mapKernelStatus(event);
     const observed = trace?.observability?.stages.find(
       row => row.stage === eventStage,
     );
@@ -346,12 +367,20 @@ export function buildUnifiedOutlineStageItems(
       event?.detail ||
       (status === 'pending' ? '尚未进入该阶段。' : undefined);
     const meta = observed
-      ? `逻辑 ${observed.logicalStageCallCount} · Formatter ${observed.formatterCallCount} · 物理 ${observed.physicalRequestCount} · Fallback ${observed.protocolFallbackCount} · ${(observed.inputTokens + observed.outputTokens).toLocaleString()} tokens`
+      ? `逻辑 ${observed.logicalStageCallCount} · Formatter ${
+          observed.formatterCallCount
+        } · 物理 ${observed.physicalRequestCount} · Fallback ${
+          observed.protocolFallbackCount
+        } · ${(
+          observed.inputTokens + observed.outputTokens
+        ).toLocaleString()} tokens`
       : result?.tokens
-      ? `逻辑调用 ${result.status === 'skipped' ? 0 : 1} 次 · ${result.tokens.total.toLocaleString()} tokens`
+      ? `逻辑调用 ${
+          result.status === 'skipped' ? 0 : 1
+        } 次 · ${result.tokens.total.toLocaleString()} tokens`
       : event?.status === 'skipped'
-        ? '0 次付费调用'
-        : undefined;
+      ? '0 次付费调用'
+      : undefined;
     return {
       id,
       status,
@@ -377,36 +406,40 @@ export function buildUnifiedOutlineStageItems(
       detail:
         freezeEvent?.detail ||
         (freezeEvent ? undefined : '等待共享 Context Freeze。'),
-      meta: freezeEvent?.status === 'completed' ? 'Frozen Context 已绑定' : undefined,
+      meta:
+        freezeEvent?.status === 'completed'
+          ? 'Frozen Context 已绑定'
+          : undefined,
     },
     resultItem('draft', resultFor('draft'), 'draft'),
     resultItem('qa', resultFor('qa'), 'qa'),
     resultItem('revision', resultFor('brief'), 'revision'),
     {
       id: 'finalValidate',
-      status:
-        finalValidateEvent
-          ? mapKernelStatus(finalValidateEvent)
-          : task.status === 'completed' && finalTextAvailable
-            ? 'success'
-            : task.status === 'failed'
-              ? 'failed'
-              : 'pending',
+      status: finalValidateEvent
+        ? mapKernelStatus(finalValidateEvent)
+        : task.status === 'completed' && finalTextAvailable
+        ? 'success'
+        : task.status === 'failed'
+        ? 'failed'
+        : 'pending',
       detail:
         finalValidateEvent?.detail ||
-        (task.status === 'failed' ? task.error || 'FinalValidate 未通过。' : undefined),
-      meta: finalValidateEvent?.status === 'completed' ? 'Local Gate' : undefined,
+        (task.status === 'failed'
+          ? task.error || 'FinalValidate 未通过。'
+          : undefined),
+      meta:
+        finalValidateEvent?.status === 'completed' ? 'Local Gate' : undefined,
     },
     {
       id: 'persist',
-      status:
-        persistEvent
-          ? mapKernelStatus(persistEvent)
-          : task.status === 'completed' && finalTextAvailable
-            ? 'success'
-            : task.status === 'failed'
-              ? 'failed'
-              : 'pending',
+      status: persistEvent
+        ? mapKernelStatus(persistEvent)
+        : task.status === 'completed' && finalTextAvailable
+        ? 'success'
+        : task.status === 'failed'
+        ? 'failed'
+        : 'pending',
       detail:
         persistEvent?.detail ||
         (adopted
@@ -416,9 +449,7 @@ export function buildUnifiedOutlineStageItems(
     },
     {
       id: 'postWriting',
-      status: postWritingEvent
-        ? mapKernelStatus(postWritingEvent)
-        : 'pending',
+      status: postWritingEvent ? mapKernelStatus(postWritingEvent) : 'pending',
       detail:
         postWritingEvent?.detail ||
         (adopted
@@ -431,36 +462,39 @@ export function buildUnifiedOutlineStageItems(
       status: !postWritingClosed
         ? 'pending'
         : memoryOutboxState === 'completed'
-          ? 'success'
-          : memoryOutboxState === 'failed'
-            ? 'failed'
-            : 'running',
+        ? 'success'
+        : memoryOutboxState === 'failed'
+        ? 'failed'
+        : 'running',
       detail: !postWritingClosed
         ? adopted
           ? '正文仍为草稿；定稿后的 PostWriting 才会创建 ONE Memory outbox。'
           : '采纳并定稿后由唯一 ONE Memory outbox 接续。'
         : memoryOutboxState === 'completed'
-          ? 'ONE Memory outbox 已完成；最终 through_chapter 以只读 DB 为准。'
-          : memoryOutboxState === 'failed'
-            ? 'ONE Memory outbox 失败；可通过冷启动/显式重试恢复，未伪报完成。'
-            : memoryOutboxState === 'pending'
-              ? 'WritingPersistedEvent 已闭合，ONE Memory outbox 等待消费。'
-              : memoryOutboxState === 'running'
-                ? 'ONE Memory outbox 正在消费。'
-                : 'PostWriting 已闭合，正在读取唯一 ONE Memory outbox 状态。',
+        ? 'ONE Memory outbox 已完成；最终 through_chapter 以只读 DB 为准。'
+        : memoryOutboxState === 'failed'
+        ? 'ONE Memory outbox 失败；可通过冷启动/显式重试恢复，未伪报完成。'
+        : memoryOutboxState === 'pending'
+        ? 'WritingPersistedEvent 已闭合，ONE Memory outbox 等待消费。'
+        : memoryOutboxState === 'running'
+        ? 'ONE Memory outbox 正在消费。'
+        : 'PostWriting 已闭合，正在读取唯一 ONE Memory outbox 状态。',
       meta:
         memoryOutboxState === 'completed'
           ? '已完成'
           : memoryOutboxState === 'failed'
-            ? '失败'
-            : postWritingClosed
-              ? '等待结算'
-              : undefined,
+          ? '失败'
+          : postWritingClosed
+          ? '等待结算'
+          : undefined,
     },
   ];
 }
 
-export function summarizePipelineTokens(stageResults: PipelineStageResult[]): { inputTokens: number; totalTokens: number } {
+export function summarizePipelineTokens(stageResults: PipelineStageResult[]): {
+  inputTokens: number;
+  totalTokens: number;
+} {
   return stageResults.reduce(
     (summary, stage) => ({
       inputTokens: summary.inputTokens + (stage.tokens?.input || 0),
@@ -477,7 +511,10 @@ export interface PipelineResultScreenProps {
 }
 
 export function closePipelineResult(
-  navigation: Pick<NavigationProp<ParamListBase>, 'dispatch' | 'getState' | 'goBack'>,
+  navigation: Pick<
+    NavigationProp<ParamListBase>,
+    'dispatch' | 'getState' | 'goBack'
+  >,
   onClose?: () => void,
 ): void {
   if (onClose) {
@@ -494,25 +531,33 @@ export function closePipelineResult(
   const fallbackRoute = state.routeNames.includes('SettingsMain')
     ? 'SettingsMain'
     : state.routeNames.includes('EditorMain')
-      ? 'EditorMain'
-      : null;
+    ? 'EditorMain'
+    : null;
   if (fallbackRoute) {
-    navigation.dispatch(CommonActions.reset({
-      index: 0,
-      routes: [{ name: fallbackRoute }],
-    }));
+    navigation.dispatch(
+      CommonActions.reset({
+        index: 0,
+        routes: [{ name: fallbackRoute }],
+      }),
+    );
     return;
   }
 
   navigation.goBack();
 }
 
-export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ taskId: propTaskId, onClose, onAdopted }) => {
+export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
+  taskId: propTaskId,
+  onClose,
+  onAdopted,
+}) => {
   const { theme } = useThemeStore();
   const navigation = useNavigation<NavigationProp<ParamListBase>>();
   // Hook 必须在顶层调用：直接读取 NavigationRouteContext，避免 useRoute 在
   // 非导航上下文（Modal 模式）中抛错。用可选链安全访问 params。
-  const route = useContext(NavigationRouteContext) as ResultRouteProp | undefined;
+  const route = useContext(NavigationRouteContext) as
+    | ResultRouteProp
+    | undefined;
   const routeTaskId: string | undefined = route?.params?.taskId;
   const taskId = propTaskId ?? routeTaskId;
   const { tasks, resolveTask, loadTaskDetails } = usePipelineTaskStore();
@@ -521,8 +566,6 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const [chapterTitle, setChapterTitle] = useState<string | null>(null);
   // 10.2: 采纳进行中状态，disable 采纳/放弃按钮防止重复点击触发多次 updateChapter
   const [adopting, setAdopting] = useState(false);
-  const [rewriteVisible, setRewriteVisible] = useState(false);
-  const [rewriteInstruction, setRewriteInstruction] = useState('');
   const [outlineMemoryOutboxState, setOutlineMemoryOutboxState] =
     useState<OutlineMemoryOutboxState | null>(null);
   const detailLoadAttemptedRef = useRef<Set<string>>(new Set());
@@ -536,10 +579,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   );
 
   useEffect(() => {
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      handleClose();
-      return true;
-    });
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        handleClose();
+        return true;
+      },
+    );
     return () => subscription.remove();
   }, [handleClose]);
 
@@ -561,7 +607,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
 
   useEffect(() => {
     const current = tasks.find(item => item.id === taskId);
-    const trace = current ? parseOutlineKernelTrace(current.pipelineContextJson) : null;
+    const trace = current
+      ? parseOutlineKernelTrace(current.pipelineContextJson)
+      : null;
     const postWritingEvent = latestKernelEvent(trace, 'postWritingUpdate');
     const dedupeKey = outlineMemoryOutboxDedupeKey(trace);
     if (
@@ -599,7 +647,7 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     };
   }, [taskId, tasks]);
 
-  const task = tasks.find((t) => t.id === taskId);
+  const task = tasks.find(t => t.id === taskId);
 
   const finalArtifact = useMemo(
     () =>
@@ -635,8 +683,15 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   if (!task) {
     return (
       <Screen>
-        <Header title="流水线结果" action={<Button label="返回" variant="ghost" onPress={handleClose} />} />
-        <Text style={{ padding: spacing.lg, color: theme.colors.textSecondary }}>任务不存在或已被清除。</Text>
+        <Header
+          title="流水线结果"
+          action={<Button label="返回" variant="ghost" onPress={handleClose} />}
+        />
+        <Text
+          style={{ padding: spacing.lg, color: theme.colors.textSecondary }}
+        >
+          任务不存在或已被清除。
+        </Text>
       </Screen>
     );
   }
@@ -660,9 +715,11 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const unifiedCallSummary = observedLlm
     ? `逻辑 ${observedLlm.logicalStageCallCount} · Formatter ${observedLlm.formatterCallCount} · 物理 ${observedLlm.physicalRequestCount} · Fallback ${observedLlm.protocolFallbackCount} · Retry 0`
     : null;
-  const skippedCount = task.stageResults.filter((stage) => stage.status === 'skipped').length;
+  const skippedCount = task.stageResults.filter(
+    stage => stage.status === 'skipped',
+  ).length;
   const failedAuditCount = task.stageResults.filter(
-    (stage) =>
+    stage =>
       (stage.stage === 'review' || stage.stage === 'factCheck') &&
       stage.status === 'failed',
   ).length;
@@ -670,11 +727,15 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     stage => stage.stage === 'proof',
   );
   const duration = task.updatedAt - task.createdAt;
-  const durationText = duration > 60000
-    ? `${Math.floor(duration / 60000)}m ${Math.round((duration % 60000) / 1000)}s`
-    : `${Math.round(duration / 1000)}s`;
+  const durationText =
+    duration > 60000
+      ? `${Math.floor(duration / 60000)}m ${Math.round(
+          (duration % 60000) / 1000,
+        )}s`
+      : `${Math.round(duration / 1000)}s`;
   const retainedDraft =
-    task.status === 'failed' && Boolean(task.finalText && task.finalText.trim());
+    task.status === 'failed' &&
+    Boolean(task.finalText && task.finalText.trim());
   // 任务仍在后台运行（idle/排队/初稿/审阅/核查/终审）：结果页只展示
   // 历史阶段卡，不允许采纳/放弃（finalText 是旧初稿），也不显示重启。
   const RUNNING_STATUSES = new Set([
@@ -702,20 +763,20 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         ? `已完成（${failedAuditCount} 项审核失败）`
         : '已完成'
       : isRunning
-        ? `进行中 · ${RUNNING_STAGE_LABEL[task.status] || '运行中'}`
-        : task.status === 'failed'
-          ? retainedDraft
-            ? '未完整完成（已保留初稿）'
-            : proofStage?.status === 'failed'
-              ? '终稿失败，可从失败节点重试'
-              : '异常终止'
-          : task.status === 'interrupted'
-            ? retainedDraft
-              ? '已中断（已保留初稿）'
-              : '已中断，可从失败阶段继续'
-            : task.status === 'cancelled'
-              ? '已取消'
-              : '进行中';
+      ? `进行中 · ${RUNNING_STAGE_LABEL[task.status] || '运行中'}`
+      : task.status === 'failed'
+      ? retainedDraft
+        ? '未完整完成（已保留初稿）'
+        : proofStage?.status === 'failed'
+        ? '终稿失败，可从失败节点重试'
+        : '异常终止'
+      : task.status === 'interrupted'
+      ? retainedDraft
+        ? '已中断（已保留初稿）'
+        : '已中断，可从失败阶段继续'
+      : task.status === 'cancelled'
+      ? '已取消'
+      : '进行中';
 
   const toggleExpanded = (stage: string) => {
     const next = new Set(expanded);
@@ -757,8 +818,16 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
                 '资料已变化',
                 '本结果基于任务启动时的大纲/章节版本。当前大纲或章节资料已变化，采纳前请确认结果仍然合适。',
                 [
-                  { text: '取消', style: 'cancel', onPress: () => resolve(false) },
-                  { text: '仍然采纳', style: 'destructive', onPress: () => resolve(true) },
+                  {
+                    text: '取消',
+                    style: 'cancel',
+                    onPress: () => resolve(false),
+                  },
+                  {
+                    text: '仍然采纳',
+                    style: 'destructive',
+                    onPress: () => resolve(true),
+                  },
                 ],
               );
             });
@@ -826,28 +895,8 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
   const resumeLabel =
     succeededStages.length > 0 ? '从失败节点重试' : '重新尝试';
 
-  const isCurrentStructuredTask = (() => {
-    if (
-      Number(task.outlineWorkflowVersion) !== CURRENT_OUTLINE_WORKFLOW_VERSION ||
-      !isCurrentOutlinePipelineContextBudgetVersion(
-        task.contextBudgetVersion,
-      ) ||
-      !task.pipelineContextJson
-    ) {
-      return false;
-    }
-    try {
-      const parsed = JSON.parse(task.pipelineContextJson);
-      return Number(parsed?.execution?.reasoningProfileVersion) === 5;
-    } catch {
-      return false;
-    }
-  })();
-  const canRewriteFinal =
-    task.targetType === 'chapter' &&
-    task.status === 'completed' &&
-    Boolean(task.finalText?.trim()) &&
-    isCurrentStructuredTask;
+  const revisionReady =
+    task.status === 'completed' && task.resolvedAction === 'accept';
 
   const handleResumeFailed = async () => {
     if (adopting) return;
@@ -858,11 +907,15 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     const proceedCopy =
       succeededStages.length > 0
         ? isUnifiedTask
-          ? `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的生成/检查/修订/校验阶段将直接复用，不会重复计费。确定继续？`
-          : `仅重试未完成阶段（${failedLabels || '剩余阶段'}），已成功的阶段（初稿/审阅/核查/Brief）将直接复用，不会重复计费。确定继续？`
+          ? `仅重试未完成阶段（${
+              failedLabels || '剩余阶段'
+            }），已成功的生成/检查/修订/校验阶段将直接复用，不会重复计费。确定继续？`
+          : `仅重试未完成阶段（${
+              failedLabels || '剩余阶段'
+            }），已成功的阶段（初稿/审阅/核查/Brief）将直接复用，不会重复计费。确定继续？`
         : isUnifiedTask
-          ? '从共享 Freeze 后的生成阶段重新运行，不会重复计费已完成的请求。确定继续？'
-          : '从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？';
+        ? '从共享 Freeze 后的生成阶段重新运行，不会重复计费已完成的请求。确定继续？'
+        : '从初稿阶段重新运行完整流水线，不会重复计费未完成的请求。确定继续？';
     const proceed = await new Promise<boolean>(resolve => {
       Alert.alert(
         succeededStages.length > 0 ? '从失败节点重试' : '重新尝试',
@@ -888,16 +941,14 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       // task 转 interrupted（resume 路径）；若旧任务已有 finalText 也保留，
       // 但 V3 失败路径不会把初稿写成可采纳终稿。
       await db.updatePipelineTaskResumeState(task.id, resumedAt);
-      usePipelineTaskStore
-        .getState()
-        .registerPersistedTask({
-          ...task,
-          status: 'interrupted',
-          error: null,
-          updatedAt: resumedAt,
-          resolvedAt: null,
-          resolvedAction: null,
-        });
+      usePipelineTaskStore.getState().registerPersistedTask({
+        ...task,
+        status: 'interrupted',
+        error: null,
+        updatedAt: resumedAt,
+        resolvedAt: null,
+        resolvedAction: null,
+      });
       await runWritingKernel(
         createOutlineResumeWritingKernelExecution({
           taskId: task.id,
@@ -929,14 +980,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     try {
       const chapter = await db.getChapterById(task.targetId);
       if (!chapter) throw new Error('章节不存在');
-      const newTaskId = await usePipelineTaskStore.getState().createTask(
-        'chapter',
-        task.targetId,
-        {
+      const newTaskId = await usePipelineTaskStore
+        .getState()
+        .createTask('chapter', task.targetId, {
           outlineWorkflowVersion: CURRENT_OUTLINE_WORKFLOW_VERSION,
           contextBudgetVersion: PHASE2_CONTEXT_BUDGET_VERSION,
-        },
-      );
+        });
       Alert.alert('新版任务已创建', '完整流水线已开始，可在任务中心查看进度。');
       runWritingKernel(
         createOutlineWritingKernelExecution({
@@ -953,58 +1002,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
     }
   };
 
-  const handleCreateFinalRewrite = async () => {
-    if (adopting) return;
-    const instruction = rewriteInstruction.trim();
-    if (!instruction) {
-      Alert.alert('需要修订要求', '请补充一条希望终稿调整的要求。');
-      return;
-    }
-    const proceed = await new Promise<boolean>(resolve => {
-      Alert.alert(
-        '确认仅重写终稿',
-        '将复用原任务冻结的 Draft、审阅、核查、Brief 和连续性证据，只新增一次 Final API 调用并产生费用。Brief 硬约束、人物/世界观事实和大纲边界优先于这条要求。继续吗？',
-        [
-          { text: '取消', style: 'cancel', onPress: () => resolve(false) },
-          { text: '确认并执行', onPress: () => resolve(true) },
-        ],
-      );
-    });
-    if (!proceed) return;
-    setAdopting(true);
-    try {
-      const chapter = await db.getChapterById(task.targetId);
-      if (!chapter) {
-        Alert.alert('章节不存在');
-        setAdopting(false);
-        return;
-      }
-      const derived = await createDerivedFinalRewriteTask(task.id, instruction);
-      setRewriteVisible(false);
-      setRewriteInstruction('');
-      setAdopting(false);
-      runWritingKernel(
-        createOutlineResumeWritingKernelExecution({
-          taskId: derived.id,
-          chapter,
-        }),
-      ).catch(error => {
-        console.warn('[pipeline] derived Final rewrite failed:', error);
-      });
-      Alert.alert('已创建派生任务', '仅重写终稿已开始，可在任务中心查看新结果。');
-      handleClose();
-    } catch (error: any) {
-      Alert.alert('无法创建派生任务', error?.message || '未知错误');
-      setAdopting(false);
-    }
-  };
-
   const renderStageCard = (stage: PipelineStageResult) => {
     const isExpanded = expanded.has(stage.stage);
     const textLength = stage.text?.length || 0;
-    const statusColor = stage.status === 'failed'
-      ? theme.colors.danger
-      : stage.status === 'skipped'
+    const statusColor =
+      stage.status === 'failed'
+        ? theme.colors.danger
+        : stage.status === 'skipped'
         ? theme.colors.textMuted
         : theme.colors.accent;
     const lengthLabel =
@@ -1013,17 +1017,22 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
         : `${textLength} 字`;
 
     return (
-      <View key={stage.stage} style={[styles.card, { backgroundColor: theme.colors.card }]}>
+      <View
+        key={stage.stage}
+        style={[styles.card, { backgroundColor: theme.colors.card }]}
+      >
         <Button
-          label={`${STAGE_LABELS[stage.stage]} · ${STATUS_LABELS[stage.status]} (${lengthLabel})`}
+          label={`${STAGE_LABELS[stage.stage]} · ${
+            STATUS_LABELS[stage.status]
+          } (${lengthLabel})`}
           variant="ghost"
           onPress={() => toggleExpanded(stage.stage)}
         />
-        <Text
-          style={[styles.stageMeta, { color: statusColor }]}
-        >
+        <Text style={[styles.stageMeta, { color: statusColor }]}>
           耗时 {Math.round(stage.durationMs / 1000)}s
-          {stage.tokens ? ` · ${stage.tokens.total.toLocaleString()} tokens` : ''}
+          {stage.tokens
+            ? ` · ${stage.tokens.total.toLocaleString()} tokens`
+            : ''}
           {stage.tokens?.visible != null
             ? ` · 可见 ${stage.tokens.visible.toLocaleString()}`
             : ''}
@@ -1037,12 +1046,19 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           return (
             <>
               {notices.length ? (
-                <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.stageMeta,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
                   说明：{notices.join('；')}
                 </Text>
               ) : null}
               {warnings.length ? (
-                <Text style={[styles.stageMeta, { color: theme.colors.warning }]}>
+                <Text
+                  style={[styles.stageMeta, { color: theme.colors.warning }]}
+                >
                   提示：{warnings.join('；')}
                 </Text>
               ) : null}
@@ -1069,7 +1085,9 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
       />
       <ScrollView contentContainerStyle={styles.content}>
         {chapterTitle ? (
-          <Text style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}>
+          <Text
+            style={[styles.chapterTitle, { color: theme.colors.textPrimary }]}
+          >
             {chapterTitle}
           </Text>
         ) : null}
@@ -1078,12 +1096,37 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             <FinalManuscriptCard
               artifact={finalArtifact}
               onEdit={() =>
-                navigateToChapterEditor(task.targetId, { resultTaskId: task.id })
+                navigateToChapterEditor(task.targetId, {
+                  resultTaskId: task.id,
+                })
+              }
+              onTargetedRevision={
+                revisionReady
+                  ? () => {
+                      navigateToChapterEditor(task.targetId, {
+                        resultTaskId: task.id,
+                        revisionMode: 'targeted',
+                      });
+                    }
+                  : undefined
+              }
+              onWholeChapterRewrite={
+                revisionReady
+                  ? () => {
+                      navigateToChapterEditor(task.targetId, {
+                        resultTaskId: task.id,
+                        revisionMode: 'whole',
+                      });
+                    }
+                  : undefined
               }
             />
           </View>
         ) : null}
-        {!isUnifiedTask && !isRunning && proofStage?.status === 'skipped' && failedAuditCount > 0 ? (
+        {!isUnifiedTask &&
+        !isRunning &&
+        proofStage?.status === 'skipped' &&
+        failedAuditCount > 0 ? (
           <Text style={[styles.summary, { color: theme.colors.danger }]}>
             审核未通过，未执行终审，已保留初稿
           </Text>
@@ -1099,8 +1142,13 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             可在此查看最终结果并采纳。
           </Text>
         ) : null}
-        {(task.finalText && !isRunning) || canResumeFailed || legacyIncomplete ? (
-          <View testID="pipeline-result-actions" style={[styles.actions, styles.topActions]}>
+        {(task.finalText && !isRunning) ||
+        canResumeFailed ||
+        legacyIncomplete ? (
+          <View
+            testID="pipeline-result-actions"
+            style={[styles.actions, styles.topActions]}
+          >
             {legacyIncomplete ? (
               <Button
                 label="按新版重新生成"
@@ -1121,8 +1169,19 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
             ) : null}
             {task.finalText && !isRunning ? (
               <>
-                <Button label="放弃" variant="ghost" compact onPress={handleReject} disabled={adopting} />
-                <Button label={adopting ? '采纳中…' : '采纳'} compact onPress={handleAccept} disabled={adopting} />
+                <Button
+                  label="放弃"
+                  variant="ghost"
+                  compact
+                  onPress={handleReject}
+                  disabled={adopting}
+                />
+                <Button
+                  label={adopting ? '采纳中…' : '采纳'}
+                  compact
+                  onPress={handleAccept}
+                  disabled={adopting}
+                />
               </>
             ) : null}
           </View>
@@ -1132,32 +1191,52 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
           style={styles.detailsToggle}
           onPress={() => setShowDetails(prev => !prev)}
         >
-          <Text style={[styles.detailsToggleText, { color: theme.colors.textSecondary }]}>
+          <Text
+            style={[
+              styles.detailsToggleText,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
             {showDetails ? '▼' : '▶'} 生成详情（Token / 调用 / 阶段）
           </Text>
         </Pressable>
         {showDetails ? (
           <View style={styles.detailsBody}>
-            <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
-              {statusSummary} · 耗时 {durationText} · {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
+            <Text
+              style={[styles.summary, { color: theme.colors.textSecondary }]}
+            >
+              {statusSummary} · 耗时 {durationText} ·{' '}
+              {totalTokens.toLocaleString()} tokens · 跳过 {skippedCount} 阶段
             </Text>
-            <Text style={[styles.summary, { color: theme.colors.textSecondary }]}>
+            <Text
+              style={[styles.summary, { color: theme.colors.textSecondary }]}
+            >
               本次输入上下文 tokens：{inputTokens.toLocaleString()}
             </Text>
             {!isUnifiedTask
               ? (() => {
-                  const assessment = parseOutlineAssessmentFromReview(task.stageResults);
+                  const assessment = parseOutlineAssessmentFromReview(
+                    task.stageResults,
+                  );
                   if (!assessment) return null;
                   const list = (title: string, items: string[]) =>
                     items.length > 0 ? (
                       <View key={title} style={{ marginTop: spacing.sm }}>
-                        <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
+                        <Text
+                          style={[
+                            styles.stageMeta,
+                            { color: theme.colors.textSecondary },
+                          ]}
+                        >
                           {title}
                         </Text>
                         {items.map((item, idx) => (
                           <Text
                             key={`${title}-${idx}`}
-                            style={[styles.stageText, { color: theme.colors.textPrimary }]}
+                            style={[
+                              styles.stageText,
+                              { color: theme.colors.textPrimary },
+                            ]}
                           >
                             · {item}
                           </Text>
@@ -1165,10 +1244,22 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
                       </View>
                     ) : null;
                   return (
-                    <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-                      <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
+                    <View
+                      style={[
+                        styles.card,
+                        { backgroundColor: theme.colors.card },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.summary,
+                          { color: theme.colors.textPrimary },
+                        ]}
+                      >
                         大纲执行报告 ·{' '}
-                        {OUTLINE_STATUS_LABELS[assessment.status] || assessment.status || '未知'}
+                        {OUTLINE_STATUS_LABELS[assessment.status] ||
+                          assessment.status ||
+                          '未知'}
                       </Text>
                       {list('已完成节点', assessment.fulfilledBeats)}
                       {list('遗漏节点', assessment.missingBeats)}
@@ -1180,7 +1271,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
                       !assessment.deviations.length &&
                       !assessment.prematureBeats.length &&
                       !assessment.factRollbackRisks.length ? (
-                        <Text style={[styles.stageText, { color: theme.colors.textMuted }]}>
+                        <Text
+                          style={[
+                            styles.stageText,
+                            { color: theme.colors.textMuted },
+                          ]}
+                        >
                           未发现额外的大纲节点问题。
                         </Text>
                       ) : null}
@@ -1193,53 +1289,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({ task
                 profile={unifiedProfile}
                 compact
                 items={unifiedStageItems}
-                summary={`${statusSummary} · ${unifiedCallSummary || `${totalTokens.toLocaleString()} tokens`} · 正式跳过 ${skippedCount} 阶段`}
+                summary={`${statusSummary} · ${
+                  unifiedCallSummary || `${totalTokens.toLocaleString()} tokens`
+                } · 正式跳过 ${skippedCount} 阶段`}
               />
             ) : (
               uniqueStageResults(task.stageResults).map(renderStageCard)
-            )}
-          </View>
-        ) : null}
-        {canRewriteFinal ? (
-          <View style={[styles.card, { backgroundColor: theme.colors.card }]}>
-            <Text style={[styles.summary, { color: theme.colors.textPrimary }]}>
-              仅重写终稿
-            </Text>
-            <Text style={[styles.stageMeta, { color: theme.colors.textSecondary }]}>
-              复用全部前置证据，只执行一次新的 Final；原任务与原终稿保持不变。
-            </Text>
-            {rewriteVisible ? (
-              <>
-                <Field
-                  label="补充一条修订要求"
-                  value={rewriteInstruction}
-                  onChangeText={setRewriteInstruction}
-                  multiline
-                  maxLength={2000}
-                  placeholder="例如：放慢对话节奏，增加环境感官描写，但不要改变事实和结尾边界。"
-                  inputStyle={styles.rewriteInput}
-                />
-                <View style={styles.rewriteActions}>
-                  <Button
-                    label="取消"
-                    variant="ghost"
-                    onPress={() => setRewriteVisible(false)}
-                    disabled={adopting}
-                  />
-                  <Button
-                    label={adopting ? '创建中…' : '确认并执行'}
-                    onPress={handleCreateFinalRewrite}
-                    disabled={adopting}
-                  />
-                </View>
-              </>
-            ) : (
-              <Button
-                label="仅重写终稿"
-                variant="ghost"
-                onPress={() => setRewriteVisible(true)}
-                disabled={adopting}
-              />
             )}
           </View>
         ) : null}
@@ -1267,8 +1322,16 @@ const styles = StyleSheet.create({
   card: { borderRadius: 8, padding: spacing.md, gap: spacing.sm },
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm, marginTop: spacing.sm },
-  topActions: { justifyContent: 'flex-start', marginTop: 0, marginBottom: spacing.xs, flexWrap: 'wrap' },
-  rewriteInput: { minHeight: 96, textAlignVertical: 'top' },
-  rewriteActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.md },
+  actions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  topActions: {
+    justifyContent: 'flex-start',
+    marginTop: 0,
+    marginBottom: spacing.xs,
+    flexWrap: 'wrap',
+  },
 });

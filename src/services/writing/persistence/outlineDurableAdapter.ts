@@ -12,6 +12,7 @@ import {
   finalCandidateModeForPolicy,
   resolvePersistenceBoundaryCandidate,
 } from '../stages/finalCandidate';
+import { assertPlainTextNovelBody } from '../contracts/plainTextNovelBody';
 
 function pipelineStageName(stage: SharedWritingStageName): string {
   if (stage === 'revision') return 'brief';
@@ -80,15 +81,18 @@ export function createOutlineDurableAdapter(input: {
         // Otherwise a successful B7 repair can be overwritten by the Draft
         // when finalValidate asks the adapter to load an existing body.
         const revision = task?.stageResults?.find(
-          item => item.stage === 'brief' && item.status === 'success' && item.text,
+          item =>
+            item.stage === 'brief' && item.status === 'success' && item.text,
         );
         if (revision?.text) return { stage, body: revision.text };
         const proof = task?.stageResults?.find(
-          item => item.stage === 'proof' && item.status === 'success' && item.text,
+          item =>
+            item.stage === 'proof' && item.status === 'success' && item.text,
         );
         if (proof?.text) return { stage, body: proof.text };
         const draft = task?.stageResults?.find(
-          item => item.stage === 'draft' && item.status === 'success' && item.text,
+          item =>
+            item.stage === 'draft' && item.status === 'success' && item.text,
         );
         if (draft?.text) return { stage, body: draft.text };
       }
@@ -99,7 +103,8 @@ export function createOutlineDurableAdapter(input: {
       // Phase 4 §7.2: the unified `qa` stage is the compact Standard's QA
       // artifact. Empty body is still skipped so adoption doesn't pick up
       // an empty revision-trigger source.
-      if ((stage === 'qa' || stage === 'audit') && !artifact.body.trim()) return;
+      if ((stage === 'qa' || stage === 'audit') && !artifact.body.trim())
+        return;
       const store = usePipelineTaskStore.getState();
       const text = persistedStageText(stage, artifact);
       const result = {
@@ -202,6 +207,7 @@ export function createOutlineDurableAdapter(input: {
           },
         }),
       }).body;
+      assertPlainTextNovelBody(body);
       if (!shouldPersistFinalBody(existing?.finalText, body)) return;
       if (store.persistTaskFinalText) {
         await store.persistTaskFinalText(input.taskId, body);

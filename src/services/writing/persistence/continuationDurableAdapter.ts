@@ -27,6 +27,7 @@ import {
   completeWritingRequestReceipt,
   type WritingRequestReceipt,
 } from '../contracts/writingRequestReceipt';
+import { assertPlainTextNovelBody } from '../contracts/plainTextNovelBody';
 
 function ledgerStage(
   stage: SharedWritingStageName,
@@ -84,8 +85,8 @@ function stampPersistTiming(
       previousTotal != null
         ? Math.max(0, Number(previousTotal) || 0) + persistMs
         : receipt.timings.queuedAt != null
-          ? Math.max(0, completedAt - receipt.timings.queuedAt)
-          : null;
+        ? Math.max(0, completedAt - receipt.timings.queuedAt)
+        : null;
     receiptsValue[index] = completeWritingRequestReceipt(receipt, {
       outcome: receipt.outcome,
       timings: {
@@ -157,8 +158,7 @@ function summarizeReceiptAccounting(
     logicalStageCallCount:
       usage?.logicalStageCallCount ?? logicalStageCallCount,
     formatterCallCount: usage?.formatterCallCount ?? formatterCallCount,
-    physicalRequestCount:
-      usage?.physicalRequestCount ?? physicalRequestCount,
+    physicalRequestCount: usage?.physicalRequestCount ?? physicalRequestCount,
     protocolFallbackCount:
       usage?.protocolFallbackCount ?? protocolFallbackCount,
   };
@@ -240,7 +240,8 @@ export function createContinuationDurableAdapter(input: {
         await updateStageResult({
           runId: input.run.id,
           stage: node,
-          status: artifact.body.trim() || artifact.structured ? 'success' : 'skipped',
+          status:
+            artifact.body.trim() || artifact.structured ? 'success' : 'skipped',
           outputJson: JSON.stringify({
             schemaVersion: 1,
             envelope: artifact.structured || { content: artifact.body },
@@ -269,12 +270,14 @@ export function createContinuationDurableAdapter(input: {
       const receipts = (error as { requestReceipts?: unknown }).requestReceipts;
       stampPersistTiming(receipts, persistStartedAt, Date.now());
       const accounting = summarizeReceiptAccounting(receipts, undefined);
-      const diagnostic = (error as {
-        writerDiagnostics?: {
-          inputTokens?: number | null;
-          outputTokens?: number | null;
-        };
-      }).writerDiagnostics;
+      const diagnostic = (
+        error as {
+          writerDiagnostics?: {
+            inputTokens?: number | null;
+            outputTokens?: number | null;
+          };
+        }
+      ).writerDiagnostics;
       const inputTokens =
         receiptUsageTotal(accounting.receipts, 'inputTokens') ??
         (Number.isFinite(Number(diagnostic?.inputTokens))
@@ -332,6 +335,7 @@ export function createContinuationDurableAdapter(input: {
           input.snapshot.frozenWritingContext?.stagePolicy || { values: {} },
         ),
       }).body;
+      assertPlainTextNovelBody(body);
       if (body.trim()) {
         const existing = await getLatestArtifactForStage(input.run.id, 'final');
         if (!existing) {
@@ -405,12 +409,12 @@ export async function loadContinuationArtifact(
         typeof envelope?.content === 'string'
           ? envelope.content
           : typeof envelope?.body === 'string'
-            ? envelope.body
-            : typeof envelope?.report === 'string'
-              ? envelope.report
-              : envelope && typeof envelope === 'object'
-                ? JSON.stringify(envelope)
-                : '';
+          ? envelope.body
+          : typeof envelope?.report === 'string'
+          ? envelope.report
+          : envelope && typeof envelope === 'object'
+          ? JSON.stringify(envelope)
+          : '';
       return {
         stage,
         body,
@@ -422,5 +426,9 @@ export async function loadContinuationArtifact(
   }
   const existing = await getLatestArtifactForStage(runId, mapped);
   if (!existing) return null;
-  return { stage, body: existing.content, structured: { contentHash: existing.contentHash } };
+  return {
+    stage,
+    body: existing.content,
+    structured: { contentHash: existing.contentHash },
+  };
 }

@@ -104,31 +104,37 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
     // Default threshold (5 min) should not mark a 30s-old task
     expect(usePipelineTaskStore.getState().markStaleTasksAsFailed()).toBe(0);
     // 10s threshold should mark it
-    expect(usePipelineTaskStore.getState().markStaleTasksAsFailed(10 * 1000)).toBe(1);
+    expect(
+      usePipelineTaskStore.getState().markStaleTasksAsFailed(10 * 1000),
+    ).toBe(1);
     expect(usePipelineTaskStore.getState().tasks[0].status).toBe('failed');
   });
 
   it('keeps a proofing task recoverable when summary omitted the snapshot blob', () => {
     const now = Date.now();
     usePipelineTaskStore.setState({
-      tasks: [{
-        id: 'proofing-lazy',
-        targetType: 'chapter',
-        targetId: 70,
-        status: 'proofing',
-        stageResults: [{ stage: 'draft', status: 'success' }],
-        finalText: null,
-        error: null,
-        pipelineContextJson: null,
-        pipelineContextHash: '4684f04609ec1ec0a627b6494f766988',
-        pipelineContextVersion: 4,
-        createdAt: now,
-        updatedAt: now,
-        resolvedAt: null,
-      } as any],
+      tasks: [
+        {
+          id: 'proofing-lazy',
+          targetType: 'chapter',
+          targetId: 70,
+          status: 'proofing',
+          stageResults: [{ stage: 'draft', status: 'success' }],
+          finalText: null,
+          error: null,
+          pipelineContextJson: null,
+          pipelineContextHash: '4684f04609ec1ec0a627b6494f766988',
+          pipelineContextVersion: 4,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
     });
 
-    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(1);
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(
+      1,
+    );
     const task = usePipelineTaskStore.getState().tasks[0];
     expect(task.status).toBe('interrupted');
     expect(task.recoverable).toBe(true);
@@ -138,12 +144,26 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
 
   it('marks even a recent active task as interrupted on a fresh app process', () => {
     const now = Date.now();
-    usePipelineTaskStore.setState({ tasks: [{
-      id: 'just-stopped', targetType: 'chapter', targetId: 1, status: 'drafting',
-      stageResults: [], finalText: null, error: null, createdAt: now, updatedAt: now, resolvedAt: null,
-    } as any] });
+    usePipelineTaskStore.setState({
+      tasks: [
+        {
+          id: 'just-stopped',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'drafting',
+          stageResults: [],
+          finalText: null,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
+    });
 
-    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(1);
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(
+      1,
+    );
     const task = usePipelineTaskStore.getState().tasks[0];
     // No successful draft → failed, but keep unresolved so user can see it.
     expect(task.status).toBe('failed');
@@ -154,16 +174,27 @@ describe('pipelineTaskStore.markStaleTasksAsFailed', () => {
   it('does not publish a store update when no active task needs interruption', () => {
     const now = Date.now();
     usePipelineTaskStore.setState({
-      tasks: [{
-        id: 'already-done', targetType: 'chapter', targetId: 1,
-        status: 'completed', stageResults: [], finalText: 'done', error: null,
-        createdAt: now, updatedAt: now, resolvedAt: null,
-      } as any],
+      tasks: [
+        {
+          id: 'already-done',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'completed',
+          stageResults: [],
+          finalText: 'done',
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
     });
     const listener = jest.fn();
     const unsubscribe = usePipelineTaskStore.subscribe(listener);
 
-    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(0);
+    expect(usePipelineTaskStore.getState().markActiveTasksAsInterrupted()).toBe(
+      0,
+    );
     expect(listener).not.toHaveBeenCalled();
     unsubscribe();
   });
@@ -194,7 +225,9 @@ describe('pipelineTaskStore.setTaskFinalText', () => {
       ],
     });
 
-    usePipelineTaskStore.getState().setTaskFinalText('degraded-1', 'draft body');
+    usePipelineTaskStore
+      .getState()
+      .setTaskFinalText('degraded-1', 'draft body');
 
     const task = usePipelineTaskStore.getState().tasks[0];
     expect(task.status).toBe('failed');
@@ -230,18 +263,20 @@ describe('pipelineTaskStore.setTaskFinalText', () => {
   it('clears a stale retry error when a task completes successfully', () => {
     const now = Date.now();
     usePipelineTaskStore.setState({
-      tasks: [{
-        id: 'retry-ok-1',
-        targetType: 'chapter',
-        targetId: 1,
-        status: 'proofing',
-        stageResults: [],
-        finalText: null,
-        error: '请求可能已执行但结果未知，请确认后重新执行或更换模型',
-        createdAt: now,
-        updatedAt: now,
-        resolvedAt: null,
-      } as any],
+      tasks: [
+        {
+          id: 'retry-ok-1',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'proofing',
+          stageResults: [],
+          finalText: null,
+          error: '请求可能已执行但结果未知，请确认后重新执行或更换模型',
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
     });
 
     usePipelineTaskStore.getState().completeTask('retry-ok-1', 'final text');
@@ -250,6 +285,33 @@ describe('pipelineTaskStore.setTaskFinalText', () => {
     expect(task.status).toBe('completed');
     expect(task.error).toBeNull();
     expect(task.finalText).toBe('final text');
+  });
+
+  it('fail-closes finalText mutation when the candidate is a protocol wrapper', () => {
+    const now = Date.now();
+    usePipelineTaskStore.setState({
+      tasks: [
+        {
+          id: 'integrity-1',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'drafting',
+          stageResults: [],
+          finalText: null,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        } as any,
+      ],
+    });
+
+    expect(() =>
+      usePipelineTaskStore
+        .getState()
+        .setTaskFinalText('integrity-1', '{"content":"正文"}'),
+    ).toThrow(/JSON/);
+    expect(usePipelineTaskStore.getState().tasks[0].finalText).toBeNull();
   });
 });
 
@@ -261,21 +323,24 @@ describe('pipelineTaskStore.syncTaskPipelineContext', () => {
 
   it('keeps a post-Freeze trace when resolveTask later persists the task projection', async () => {
     usePipelineTaskStore.setState({
-      tasks: [{
-        id: 'trace-task',
-        targetType: 'chapter',
-        targetId: 1,
-        status: 'completed',
-        stageResults: [],
-        finalText: 'final text',
-        error: null,
-        pipelineContextJson: '{"writingKernelTrace":{"events":[{"stage":"freeze"}]}}',
-        pipelineContextVersion: 4,
-        pipelineContextHash: 'old-hash',
-        createdAt: 1,
-        updatedAt: 1,
-        resolvedAt: null,
-      } as any],
+      tasks: [
+        {
+          id: 'trace-task',
+          targetType: 'chapter',
+          targetId: 1,
+          status: 'completed',
+          stageResults: [],
+          finalText: 'final text',
+          error: null,
+          pipelineContextJson:
+            '{"writingKernelTrace":{"events":[{"stage":"freeze"}]}}',
+          pipelineContextVersion: 4,
+          pipelineContextHash: 'old-hash',
+          createdAt: 1,
+          updatedAt: 1,
+          resolvedAt: null,
+        } as any,
+      ],
     });
 
     usePipelineTaskStore.getState().syncTaskPipelineContext('trace-task', {

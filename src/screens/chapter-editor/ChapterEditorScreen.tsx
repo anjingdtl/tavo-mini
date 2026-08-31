@@ -1,4 +1,10 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { ChevronRight, Focus } from 'lucide-react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -18,6 +24,8 @@ import { useProjectStore } from '../../store/projectStore';
 import { ChapterFields } from './ChapterFields';
 import { ChapterPipelinePanel } from './ChapterPipelinePanel';
 import { ChapterToolbar } from './ChapterToolbar';
+import { UserRevisionModal } from '../../components/UserRevisionModal';
+import type { UserRevisionKind } from '../../services/writing/userRevision';
 import { ChapterTtsControls } from './ChapterTtsControls';
 import { useChapterAutoSave } from './hooks/useChapterAutoSave';
 import { useChapterDocument } from './hooks/useChapterDocument';
@@ -32,10 +40,15 @@ type ChapterNavigation = NativeStackNavigationProp<
 
 interface Props {
   chapterId: number;
+  revisionMode?: 'targeted' | 'whole';
   onClose: () => void;
 }
 
-export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
+export const ChapterEditor: React.FC<Props> = ({
+  chapterId,
+  revisionMode,
+  onClose,
+}) => {
   const navigation = useNavigation<ChapterNavigation>();
   const { chapter, loadChapter, setChapter } = useChapterDocument(chapterId);
   const { autoSaveRef, changeField, saveStatus, setSaveStatus } =
@@ -77,6 +90,18 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
   const [pendingContinuationRunId, setPendingContinuationRunId] = useState<
     string | null
   >(null);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const lastNonEmptySelectionRef = useRef({ start: 0, end: 0 });
+  const [revisionKind, setRevisionKind] = useState<UserRevisionKind | null>(
+    null,
+  );
+  const [revisionVisible, setRevisionVisible] = useState(false);
+  const initialWholeRewriteOpenedRef = useRef(false);
+
+  useEffect(() => {
+    lastNonEmptySelectionRef.current = { start: 0, end: 0 };
+    setSelection({ start: 0, end: 0 });
+  }, [chapterId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -101,6 +126,21 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       };
     }, [loadChapter, chapterId]),
   );
+
+  // A result-page whole-rewrite entry opens the same preview/confirm surface
+  // in the editor. Targeted revision waits for a fresh user selection.
+  useEffect(() => {
+    if (
+      revisionMode !== 'whole' ||
+      !chapter ||
+      initialWholeRewriteOpenedRef.current
+    ) {
+      return;
+    }
+    initialWholeRewriteOpenedRef.current = true;
+    setRevisionKind('whole_chapter_rewrite');
+    setRevisionVisible(true);
+  }, [chapter, revisionMode]);
 
   const finalizeChapter = useCallback(async () => {
     const currentChapter = latestChapterRef.current;
@@ -233,6 +273,54 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
     [changeField],
   );
 
+  const openTargetedRevision = useCallback(() => {
+    const activeSelection =
+      selection.end > selection.start
+        ? selection
+        : lastNonEmptySelectionRef.current;
+    if (activeSelection.end <= activeSelection.start) {
+      Toast.show({
+        type: 'info',
+        text1: '请先选择正文',
+        text2: '精准修订只允许修改你选中的范围。',
+      });
+      return;
+    }
+    // Android's native selection action mode may collapse the TextInput
+    // selection before delivering a toolbar tap. Keep the last non-empty
+    // UTF-16 range as the user-selected revision scope.
+    setSelection(activeSelection);
+    setRevisionKind('targeted_revision');
+    setRevisionVisible(true);
+  }, [selection]);
+
+  const handleContentSelectionChange = useCallback(
+    (nextSelection: { start: number; end: number }) => {
+      setSelection(nextSelection);
+      if (nextSelection.end > nextSelection.start) {
+        lastNonEmptySelectionRef.current = nextSelection;
+      }
+    },
+    [],
+  );
+
+  const openWholeChapterRewrite = useCallback(() => {
+    setRevisionKind('whole_chapter_rewrite');
+    setRevisionVisible(true);
+  }, []);
+
+  const handleRevisionApplied = useCallback(
+    (content: string) => {
+      const current = latestChapterRef.current;
+      if (!current) return;
+      const updated = { ...current, content };
+      latestChapterRef.current = updated;
+      setChapter(updated);
+      setSaveStatus('saved');
+    },
+    [setChapter, setSaveStatus],
+  );
+
   const manualCheckpoint = useCallback(async () => {
     if (!chapter) return;
     try {
@@ -299,7 +387,14 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       <Screen>
         <Header
           title="章节编辑"
-          action={<Button testID="chapter-back" label="返回" variant="ghost" onPress={onClose} />}
+          action={
+            <Button
+              testID="chapter-back"
+              label="返回"
+              variant="ghost"
+              onPress={onClose}
+            />
+          }
         />
       </Screen>
     );
@@ -317,6 +412,8 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
       isSynthesizing={isSynthesizing}
       isContinuation={isContinuation}
       hasPendingContinuationResult={Boolean(pendingContinuationRunId)}
+      onTargetedRevision={openTargetedRevision}
+      onWholeChapterRewrite={openWholeChapterRewrite}
       onClear={clearContent}
       onContext={() =>
         navigation.navigate('ContextPreview', { chapterId: chapter.id })
@@ -412,6 +509,7 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
           saveLabel={saveLabel}
           toolbar={toolbar}
           nextChapterButton={nextChapterButton}
+          onContentSelectionChange={handleContentSelectionChange}
           onScrollToTop={() =>
             scrollRef.current?.scrollTo({ y: 0, animated: true })
           }
@@ -421,6 +519,20 @@ export const ChapterEditor: React.FC<Props> = ({ chapterId, onClose }) => {
         visible={rangePickerVisible}
         onClose={() => setRangePickerVisible(false)}
         onSelect={handleRangeSelected}
+      />
+      <UserRevisionModal
+        visible={revisionVisible && revisionKind != null}
+        kind={revisionKind}
+        chapter={chapter}
+        scenario={isContinuation ? 'continuation' : 'outline'}
+        selectionStart={selection.start}
+        selectionEnd={selection.end}
+        flushBeforeAction={() => autoSaveRef.current.flush()}
+        onClose={() => {
+          setRevisionVisible(false);
+          setRevisionKind(null);
+        }}
+        onApplied={handleRevisionApplied}
       />
     </Screen>
   );

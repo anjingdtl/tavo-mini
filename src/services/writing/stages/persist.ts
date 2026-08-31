@@ -10,6 +10,7 @@ import {
   finalCandidateModeForPolicy,
   resolvePersistenceBoundaryCandidate,
 } from './finalCandidate';
+import { validatePlainTextNovelBody } from '../contracts/plainTextNovelBody';
 
 export async function runPersistStage(
   input: SharedWritingStageInput,
@@ -39,6 +40,21 @@ export async function runPersistStage(
       stage: 'persist',
       status: 'failed',
       diagnostics: ['PERSIST_BODY_MISSING'],
+      requirementResult: evaluateWritingRequirements({
+        requirements: input.requirements,
+        satisfiedIds: [],
+      }),
+    };
+  }
+  const plainText = validatePlainTextNovelBody(candidateBody);
+  if (!plainText.valid) {
+    return {
+      stage: 'persist',
+      status: 'failed',
+      diagnostics: [
+        `PERSIST_FINAL_PLAIN_TEXT_${plainText.code.toUpperCase()}`,
+        plainText.details || '最终正文不是纯文本',
+      ],
       requirementResult: evaluateWritingRequirements({
         requirements: input.requirements,
         satisfiedIds: [],

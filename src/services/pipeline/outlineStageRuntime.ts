@@ -8,10 +8,7 @@
  */
 import * as db from '../database';
 import { one } from '../../data/connection/query';
-import {
-  resolveLLMRequestConfig,
-  type LLMRequestConfig,
-} from '../llm';
+import { resolveLLMRequestConfig, type LLMRequestConfig } from '../llm';
 import {
   requireModelContextWindow,
   requireModelMaxOutputTokens,
@@ -85,6 +82,7 @@ import type {
 } from '../writing/contracts/frozenWritingContext';
 import type { WritingRequest } from '../writing/contracts/writingSource';
 import { isOneShotStagePolicy } from '../writing/contracts/executionProfile';
+import { assertPlainTextNovelBody } from '../writing/contracts/plainTextNovelBody';
 import { mapOutlineErrorToPipelineError } from './errors';
 import type { PipelineAction } from './types';
 import {
@@ -95,9 +93,7 @@ import {
   pipelineTopologyLabel,
   shouldIncludeBriefCheckpoint,
 } from './outlineWorkflowVersion';
-import {
-  getStageAttempts,
-} from '../../data/repositories/pipelineStageAttemptRepository';
+import { getStageAttempts } from '../../data/repositories/pipelineStageAttemptRepository';
 import { setBatchUsageFromRuns } from '../../data/repositories/multiChapterBatchRepository';
 import { getContextAutomationPolicyV3 } from '../../data/repositories/contextAutoRepository';
 import {
@@ -105,9 +101,7 @@ import {
   hashContextAutomationPolicyV3,
   type ContextAutomationPolicyV3,
 } from '../contextAutomationPolicy';
-import {
-  MAX_AUTO_RETRY_ATTEMPTS,
-} from '../llm/requestPolicy';
+import { MAX_AUTO_RETRY_ATTEMPTS } from '../llm/requestPolicy';
 import { shouldPersistFinalBody } from '../writing/persistence/outlineDurableAdapter';
 
 export type StageInfo = {
@@ -659,7 +653,6 @@ export async function settleInterruptedTask(
   }
 }
 
-
 export function oneShotOutlineSkipStages(options?: {
   compact?: boolean;
 }): Array<{
@@ -823,13 +816,29 @@ function assertProtectedWriterStyleFits(
     assertWriterStyleProjectionFits(
       snapshot,
       stage,
-      Math.max(0, contextWindow - reservedOutputTokens - deriveDefaultSafetyMargin(contextWindow)),
+      Math.max(
+        0,
+        contextWindow -
+          reservedOutputTokens -
+          deriveDefaultSafetyMargin(contextWindow),
+      ),
     );
     return;
   }
   const projection = runtime.writerStyle?.stageProjections[stage];
-  if (projection && projection.estimatedTokens > Math.max(0, contextWindow - reservedOutputTokens - deriveDefaultSafetyMargin(contextWindow))) {
-    const error = new Error(`WRITER_STYLE_OVER_BUDGET：${stage} 作家风格超出 Protected 输入预算。`);
+  if (
+    projection &&
+    projection.estimatedTokens >
+      Math.max(
+        0,
+        contextWindow -
+          reservedOutputTokens -
+          deriveDefaultSafetyMargin(contextWindow),
+      )
+  ) {
+    const error = new Error(
+      `WRITER_STYLE_OVER_BUDGET：${stage} 作家风格超出 Protected 输入预算。`,
+    );
     (error as Error & { code?: string }).code = 'WRITER_STYLE_OVER_BUDGET';
     throw error;
   }
@@ -912,14 +921,17 @@ async function actionPersistInitialSnapshot(
   // snapshot; never replace it with a newly edited live setting. Batch-owned
   // callers may provide the batch header snapshot as the final fallback for
   // historical V6 rows that predate execution-policy persistence.
-  const persistedExecutionPolicy = existingExecution?.contextAutomationPolicySnapshot;
+  const persistedExecutionPolicy =
+    existingExecution?.contextAutomationPolicySnapshot;
   const persistedContextPolicy =
     runtime.parsed?.draftContext?.contextBudgetV3Summary
       ?.contextAutomationPolicySnapshot;
   let frozenV3Policy: ContextAutomationPolicyV3 | undefined =
-    persistedExecutionPolicy && isContextAutomationPolicyV3(persistedExecutionPolicy)
+    persistedExecutionPolicy &&
+    isContextAutomationPolicyV3(persistedExecutionPolicy)
       ? persistedExecutionPolicy
-      : persistedContextPolicy && isContextAutomationPolicyV3(persistedContextPolicy)
+      : persistedContextPolicy &&
+        isContextAutomationPolicyV3(persistedContextPolicy)
       ? persistedContextPolicy
       : options.contextAutomationPolicyV3 &&
         isContextAutomationPolicyV3(options.contextAutomationPolicyV3)
@@ -1082,14 +1094,12 @@ async function actionPersistInitialSnapshot(
         // §5.2: freeze the topology label into the kernel freeze from the
         // TASK ROW (frozen at creation); never the live default.
         pipelineTopologyVersion: pipelineTopologyLabel(
-          usePipelineTaskStore
-            .getState()
-            .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
+          usePipelineTaskStore.getState().tasks.find(task => task.id === taskId)
+            ?.pipelineTopologyVersion,
         ),
         ...(pipelineTopologyLabel(
-          usePipelineTaskStore
-            .getState()
-            .tasks.find(task => task.id === taskId)?.pipelineTopologyVersion,
+          usePipelineTaskStore.getState().tasks.find(task => task.id === taskId)
+            ?.pipelineTopologyVersion,
         ) === 'compact_standard'
           ? { phase4GatePolicyVersion: PHASE4_GATE_POLICY_VERSION }
           : {}),
@@ -1132,7 +1142,8 @@ async function actionPersistInitialSnapshot(
       frozenAuditCandidates,
       trace: {
         version: 1,
-        generationTraceId: options.generationTraceId ?? createGenerationTraceId(),
+        generationTraceId:
+          options.generationTraceId ?? createGenerationTraceId(),
         createdAt: Date.now(),
       },
     }),
@@ -1282,8 +1293,10 @@ async function actionFinalizeFromDraft(
   // as `finalize_from_draft` for historical state-machine compatibility, but
   // it must not write the Draft over the already validated Revision.  A
   // degraded path intentionally retains Draft as its explicit fallback.
-  const finalText =
-    !degraded ? (await getStageText(taskId, 'brief')) || draftText : draftText;
+  const finalText = !degraded
+    ? (await getStageText(taskId, 'brief')) || draftText
+    : draftText;
+  assertPlainTextNovelBody(finalText);
   const runtime = await loadRuntime(taskId, chapter);
   const mode = runtime.config.pipelineMode;
   // The One-Shot (极速) profile froze its stage skips at Freeze time. The
@@ -1401,7 +1414,8 @@ async function actionFinalizeFromProof(
   emitForeground = true,
 ): Promise<void> {
   const store = usePipelineTaskStore.getState();
-  const existing = store.tasks.find(item => item.id === taskId)?.stageResults || [];
+  const existing =
+    store.tasks.find(item => item.id === taskId)?.stageResults || [];
   const has = (stage: PipelineStageName) =>
     existing.some(item => item.stage === stage);
   if (!has('factCheck')) {
@@ -1415,6 +1429,7 @@ async function actionFinalizeFromProof(
   }
   const proofText = await getStageText(taskId, 'proof');
   const text = proofText || (await getDraftText(taskId));
+  assertPlainTextNovelBody(text);
   await saveDraftBody(taskId, chapter, text);
   const current = usePipelineTaskStore
     .getState()
@@ -1447,6 +1462,7 @@ async function actionComplete(
     (await getStageText(taskId, 'proof')) ||
     (await getDraftText(taskId)) ||
     '';
+  assertPlainTextNovelBody(text);
   if (store.persistCompleteTask) {
     await store.persistCompleteTask(taskId, text);
   } else {
@@ -1478,9 +1494,7 @@ function isOneShotReconcileTask(
       return true;
     }
   }
-  const task = usePipelineTaskStore
-    .getState()
-    .tasks.find(t => t.id === taskId);
+  const task = usePipelineTaskStore.getState().tasks.find(t => t.id === taskId);
   if (!task?.pipelineContextJson) return false;
   try {
     const envelope = JSON.parse(task.pipelineContextJson);
@@ -2041,7 +2055,6 @@ export async function runOutlineDurableOperation(params: {
       return 'stop';
   }
 }
-
 
 export function isReconcileActive(taskId: string): boolean {
   return reconciling.has(taskId);

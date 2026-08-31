@@ -158,13 +158,15 @@ function chooseContinuationStageResult(
     failed: 10,
     interrupted: 10,
   };
-  return rows
-    .filter(row => row.stage === stage)
-    .sort(
-      (left, right) =>
-        (priority[right.status] ?? 0) - (priority[left.status] ?? 0) ||
-        String(right.updatedAt).localeCompare(String(left.updatedAt)),
-    )[0] ?? null;
+  return (
+    rows
+      .filter(row => row.stage === stage)
+      .sort(
+        (left, right) =>
+          (priority[right.status] ?? 0) - (priority[left.status] ?? 0) ||
+          String(right.updatedAt).localeCompare(String(left.updatedAt)),
+      )[0] ?? null
+  );
 }
 
 function continuationStageDetail(
@@ -191,12 +193,12 @@ function continuationStageMeta(
     stage === 'draft'
       ? 'draft'
       : stage === 'qa'
-        ? 'qa'
-        : stage === 'revision'
-          ? 'revision'
-          : stage === 'finalValidate'
-            ? 'finalValidate'
-            : null;
+      ? 'qa'
+      : stage === 'revision'
+      ? 'revision'
+      : stage === 'finalValidate'
+      ? 'finalValidate'
+      : null;
   const observed = kernelStage
     ? trace?.observability?.stages.find(row => row.stage === kernelStage)
     : null;
@@ -266,9 +268,17 @@ export function buildUnifiedContinuationStageItems(input: {
       id: 'freeze',
       status: mapKernelStatus(eventFor('freeze')),
       detail: eventFor('freeze')?.detail || 'Frozen Context 已绑定。',
-      meta: eventFor('freeze')?.status === 'completed' ? 'Context immutable' : undefined,
+      meta:
+        eventFor('freeze')?.status === 'completed'
+          ? 'Context immutable'
+          : undefined,
     },
-    resultItem('draft', resultFor('draft_writer'), 'draft', input.draftArtifact),
+    resultItem(
+      'draft',
+      resultFor('draft_writer'),
+      'draft',
+      input.draftArtifact,
+    ),
     resultItem('qa', resultFor('unified_qa'), 'qa'),
     resultItem(
       'revision',
@@ -280,17 +290,24 @@ export function buildUnifiedContinuationStageItems(input: {
     {
       id: 'persist',
       status: mapKernelStatus(eventFor('persist')),
-      detail: eventFor('persist')?.detail || '统一 Persist 只保存 Final Candidate。',
-      meta: eventFor('persist')?.status === 'completed' ? '已写入生成账本' : undefined,
-      body: continuationStageBody(resultFor('final_validate'), input.finalArtifact),
+      detail:
+        eventFor('persist')?.detail || '统一 Persist 只保存 Final Candidate。',
+      meta:
+        eventFor('persist')?.status === 'completed'
+          ? '已写入生成账本'
+          : undefined,
+      body: continuationStageBody(
+        resultFor('final_validate'),
+        input.finalArtifact,
+      ),
     },
     {
       id: 'postWriting',
       status: postWriting
         ? mapKernelStatus(postWriting)
         : adopted
-          ? 'running'
-          : 'pending',
+        ? 'running'
+        : 'pending',
       detail:
         postWriting?.detail ||
         (adopted
@@ -318,7 +335,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [loading, setLoading] = useState(true);
   const [run, setRun] = useState<ContinuationGenerationRun | null>(null);
   const [plan, setPlan] = useState<ContinuationPlan | null>(null);
-  const [planConfirmationStatus, setPlanConfirmationStatus] = useState<string | null>(null);
+  const [planConfirmationStatus, setPlanConfirmationStatus] = useState<
+    string | null
+  >(null);
   const [body, setBody] = useState('');
   const [repairRound, setRepairRound] = useState(0);
   const [checks, setChecks] = useState<ContinuationCheckResult[]>([]);
@@ -329,16 +348,20 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   const [kernelTrace, setKernelTrace] = useState<WritingKernelTrace | null>(
     null,
   );
-  const [stageResults, setStageResults] = useState<ContinuationGenerationStageResult[]>([]);
+  const [stageResults, setStageResults] = useState<
+    ContinuationGenerationStageResult[]
+  >([]);
   const [v5DraftArtifact, setV5DraftArtifact] =
     useState<ContinuationArtifact | null>(null);
   const [v5RevisionArtifact, setV5RevisionArtifact] =
     useState<ContinuationArtifact | null>(null);
   const [v5FinalArtifact, setV5FinalArtifact] =
     useState<ContinuationArtifact | null>(null);
-  const [rejectedRepair, setRejectedRepair] = useState<RejectedRepairAudit | null>(null);
+  const [rejectedRepair, setRejectedRepair] =
+    useState<RejectedRepairAudit | null>(null);
   const [showRejectedRepair, setShowRejectedRepair] = useState(false);
-  const [finalArtifact, setFinalArtifact] = useState<FinalWritingArtifact | null>(null);
+  const [finalArtifact, setFinalArtifact] =
+    useState<FinalWritingArtifact | null>(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showDetails, setShowDetails] = useState(false);
@@ -400,12 +423,15 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           setV5DraftArtifact(draftArt);
           setV5RevisionArtifact(revisionArt);
           // Prefer eligible final for display body; fall back to any final row.
-          const displayFinalArt = art?.stage === 'final' ? art : finalArt ?? art ?? null;
+          const displayFinalArt =
+            art?.stage === 'final' ? art : finalArt ?? art ?? null;
           setV5FinalArtifact(displayFinalArt);
           setFinalArtifact(
             buildFinalArtifactFromContinuationArtifacts({
               runId: r.id,
-              chapterId: Number((r as any).chapterId ?? (r as any).chapter_id ?? 0),
+              chapterId: Number(
+                (r as any).chapterId ?? (r as any).chapter_id ?? 0,
+              ),
               draftRow: draftArt,
               finalRow: displayFinalArt,
               kernelTrace: parsedSnapshot?.writingKernelTrace ?? null,
@@ -580,6 +606,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     );
   }
 
+  const revisionReady =
+    run.state === 'completed' &&
+    (run.completionReason === 'adopted' || Boolean(run.finalizedRevisionHash));
+
   const isV4LengthAdvisoryCheck = (check: ContinuationCheckResult) =>
     run.workflowVersion === 4 &&
     (String(check.subtype).startsWith('chapter_length_') ||
@@ -643,13 +673,19 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         )}
         {plan.risks.length > 0 && (
           <View style={{ marginTop: 6 }}>
-            <Text style={[styles.h, { color: colors.textPrimary, fontSize: 13 }]}>
+            <Text
+              style={[styles.h, { color: colors.textPrimary, fontSize: 13 }]}
+            >
               风险项
             </Text>
             {plan.risks.map((r, i) => (
               <Text
                 key={i}
-                style={{ color: colors.textSecondary, fontSize: 13, marginBottom: 2 }}
+                style={{
+                  color: colors.textSecondary,
+                  fontSize: 13,
+                  marginBottom: 2,
+                }}
               >
                 [{r.severity}] {r.description}
               </Text>
@@ -679,8 +715,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           {c.evidenceIds.length
             ? ` · 证据#${c.evidenceIds.join(',')}`
             : c.subtype === 'source_overlap' ||
-                c.subtype === 'continuation_anchor_overlap'
-              ? ' · 本地确定性命中（连续原文）'
+              c.subtype === 'continuation_anchor_overlap'
+            ? ' · 本地确定性命中（连续原文）'
             : ' · 无证据(推测)'}
         </Text>
       ))}
@@ -732,7 +768,14 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         const parsed = result.outputJson ? JSON.parse(result.outputJson) : null;
         const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
         return issues.length
-          ? issues.map((issue: any) => `[${issue.severity || 'warning'}] ${issue.description || '语义问题'}`).join('\n')
+          ? issues
+              .map(
+                (issue: any) =>
+                  `[${issue.severity || 'warning'}] ${
+                    issue.description || '语义问题'
+                  }`,
+              )
+              .join('\n')
           : '未发现可操作的冻结 Canon/状态语义问题。';
       } catch {
         return result.errorMessage || 'Checker 结果不可解析。';
@@ -752,13 +795,13 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         const readyList: any[] = Array.isArray(parsed?.styleIssues)
           ? parsed.styleIssues
           : Array.isArray(parsed?.findings)
-            ? parsed.findings.filter((f: any) => f?.repairReady)
-            : [];
+          ? parsed.findings.filter((f: any) => f?.repairReady)
+          : [];
         const warningList: any[] = Array.isArray(parsed?.styleWarnings)
           ? parsed.styleWarnings
           : Array.isArray(parsed?.findings)
-            ? parsed.findings.filter((f: any) => !f?.repairReady)
-            : [];
+          ? parsed.findings.filter((f: any) => !f?.repairReady)
+          : [];
 
         const renderStyleRow = (item: any, tag: string) => {
           const dim =
@@ -801,9 +844,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           mode =
             '原著文风审查已完成：未发现可定位、可修订的局部文风问题。因此没有文风任务进入 Repair（0 项 style finding）。';
         } else {
-          mode = `原著文风审查：可执行 ${readyList.length} 项，audit warning ${warningList.length} 项。\n${detailLines.join(
-            '\n',
-          )}`;
+          mode = `原著文风审查：可执行 ${readyList.length} 项，audit warning ${
+            warningList.length
+          } 项。\n${detailLines.join('\n')}`;
         }
         return `${metrics}\n${mode}`;
       } catch {
@@ -819,14 +862,17 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       }
       if (
         result.errorCode === 'repair_prompt_budget_exceeded' ||
-        parseStageJson(result.outputJson)?.reason === 'repair_prompt_budget_exceeded'
+        parseStageJson(result.outputJson)?.reason ===
+          'repair_prompt_budget_exceeded'
       ) {
         return 'Repair 未发出请求：真实 Repair Prompt 超出冻结上下文窗口，系统已保留 Writer 初稿；当前默认可采纳的是 Writer 初稿。';
       }
       if (rejectedRepair) {
         const code = rejectedRepair.rejectionCode || 'local_final_gate_failed';
         const repairOutput = parseStageJson(rejectedRepair.repairOutputJson);
-        const localVerifyOutput = parseStageJson(rejectedRepair.localVerifyOutputJson);
+        const localVerifyOutput = parseStageJson(
+          rejectedRepair.localVerifyOutputJson,
+        );
         const diagnostics = repairOutput?.failureDiagnostics ?? {};
         const taskDetails = Array.isArray(diagnostics.unappliedIssueDetails)
           ? diagnostics.unappliedIssueDetails.map((item: any) => {
@@ -834,7 +880,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               const excerpt = item.generatedExcerpt
                 ? `；摘录：「${String(item.generatedExcerpt).slice(0, 64)}」`
                 : '';
-              return `${item.id || '—'}（${source}/${item.subtype || 'unknown'}）：${item.description || '未提供描述'}${excerpt}`;
+              return `${item.id || '—'}（${source}/${
+                item.subtype || 'unknown'
+              }）：${item.description || '未提供描述'}${excerpt}`;
             })
           : [];
         const qualityDetails = [
@@ -846,7 +894,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             : []),
         ].map(
           (item: any) =>
-            `${item.subtype || 'unknown'} [${item.severity || 'error'}]：${item.description || '未提供描述'}`,
+            `${item.subtype || 'unknown'} [${item.severity || 'error'}]：${
+              item.description || '未提供描述'
+            }`,
         );
         const currentSource =
           diagnostics.currentCandidateSource ||
@@ -874,8 +924,14 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         }
         const injectedChecker = parsed.injectedCheckerIssueCount ?? null;
         const appliedChecker = parsed.appliedCheckerIssueIds?.length ?? 0;
-        const injectedStyle = parsed.injectedControlFindingCount ?? parsed.styleActionableIssueCount ?? null;
-        const appliedStyle = parsed.appliedControlFindingIds?.length ?? parsed.appliedStyleFindingCount ?? 0;
+        const injectedStyle =
+          parsed.injectedControlFindingCount ??
+          parsed.styleActionableIssueCount ??
+          null;
+        const appliedStyle =
+          parsed.appliedControlFindingIds?.length ??
+          parsed.appliedStyleFindingCount ??
+          0;
         const writerHan = parsed.writerHan ?? null;
         const candidateHan = parsed.candidateHan ?? null;
         const parts: string[] = [
@@ -896,12 +952,16 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           const delta = candidateHan - writerHan;
           const sign = delta >= 0 ? '+' : '';
           parts.push(
-            `用户参考篇幅 / 实际汉字：参考 ${parsed.referenceTargetHan ?? '—'}，Writer ${writerHan} → Repair ${candidateHan}（${sign}${delta}）；篇幅仅作提示，不影响候选资格。`,
+            `用户参考篇幅 / 实际汉字：参考 ${
+              parsed.referenceTargetHan ?? '—'
+            }，Writer ${writerHan} → Repair ${candidateHan}（${sign}${delta}）；篇幅仅作提示，不影响候选资格。`,
           );
         }
         if (parsed.unaffectedRetentionRatio != null) {
           parts.push(
-            `完整性：未涉及段落保留率 ${Math.round(parsed.unaffectedRetentionRatio * 100)}%；相对 Writer 比例 ${
+            `完整性：未涉及段落保留率 ${Math.round(
+              parsed.unaffectedRetentionRatio * 100,
+            )}%；相对 Writer 比例 ${
               parsed.candidateToWriterHanRatio != null
                 ? `${Math.round(parsed.candidateToWriterHanRatio * 100)}%`
                 : '—'
@@ -918,10 +978,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       const checkSubtypes = Array.isArray(parsed?.checkSubtypes)
         ? parsed.checkSubtypes
         : [];
-      const lengthWarnings = checkSubtypes.filter((subtype: unknown) =>
-        typeof subtype === 'string' &&
-        (subtype.startsWith('chapter_length_') ||
-          subtype.startsWith('repair_length_')),
+      const lengthWarnings = checkSubtypes.filter(
+        (subtype: unknown) =>
+          typeof subtype === 'string' &&
+          (subtype.startsWith('chapter_length_') ||
+            subtype.startsWith('repair_length_')),
       );
       const hardSubtypes = checkSubtypes.filter(
         (subtype: unknown) =>
@@ -930,10 +991,14 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             !subtype.startsWith('repair_length_')),
       );
       if (parsed?.passed === false && hardSubtypes.length > 0) {
-        return `完整性与确定性安全检查未通过：${checkSubtypes.join('、') || '存在硬门禁问题'}。当前默认候选为 Writer。`;
+        return `完整性与确定性安全检查未通过：${
+          checkSubtypes.join('、') || '存在硬门禁问题'
+        }。当前默认候选为 Writer。`;
       }
       if (lengthWarnings.length > 0) {
-        return `已完成完整性与确定性安全检查；${V4_LENGTH_ADVISORY_TEXT}（${lengthWarnings.join('、')}）未影响候选资格；未进行第二次 LLM 语义复核。`;
+        return `已完成完整性与确定性安全检查；${V4_LENGTH_ADVISORY_TEXT}（${lengthWarnings.join(
+          '、',
+        )}）未影响候选资格；未进行第二次 LLM 语义复核。`;
       }
       return '已完成完整性与确定性安全检查；未进行第二次 LLM 语义复核。';
     } catch {
@@ -951,30 +1016,52 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       label: string;
       meta: string;
     }> = [
-      { id: 'writer', label: 'Writer', meta: '完整初稿；参考篇幅弱提示；默认文学基线候选' },
+      {
+        id: 'writer',
+        label: 'Writer',
+        meta: '完整初稿；参考篇幅弱提示；默认文学基线候选',
+      },
       { id: 'checker', label: 'Checker', meta: '原著五维资料一致性审查' },
       { id: 'control', label: 'Control', meta: '原著文风一致性审查' },
       { id: 'repair', label: 'Repair', meta: '精准最小干预修订，输出完整章节' },
-      { id: 'local_verify', label: 'Local Final Gate', meta: '完整性与确定性安全检查' },
+      {
+        id: 'local_verify',
+        label: 'Local Final Gate',
+        meta: '完整性与确定性安全检查',
+      },
     ];
     return (
       <>
         <Text style={[styles.summary, { color: colors.textSecondary }]}>
-          V4 FULL-Control · 物理请求 {stageResults.reduce((sum, item) => sum + item.requestCount, 0)}/4 · 默认可采纳：{rejectedRepair ? 'Writer' : repairEligible ? 'Repair' : body ? 'Writer' : '—'}
+          V4 FULL-Control · 物理请求{' '}
+          {stageResults.reduce((sum, item) => sum + item.requestCount, 0)}/4 ·
+          默认可采纳：
+          {rejectedRepair
+            ? 'Writer'
+            : repairEligible
+            ? 'Repair'
+            : body
+            ? 'Writer'
+            : '—'}
         </Text>
         {stageDefinitions.map(stage => {
           const result = v4Stage(stage.id);
           const requestText = result?.requestCount
             ? ` · ${result.requestCount} 次请求`
             : '';
-          const tokenText = result &&
-              (result.inputTokens != null || result.outputTokens != null)
-            ? ` · token ${result.inputTokens ?? '—'}→${result.outputTokens ?? '—'}`
-            : '';
+          const tokenText =
+            result &&
+            (result.inputTokens != null || result.outputTokens != null)
+              ? ` · token ${result.inputTokens ?? '—'}→${
+                  result.outputTokens ?? '—'
+                }`
+              : '';
           const durationText = result
             ? ` · ${formatStageDuration(result.startedAt, result.completedAt)}`
             : '';
-          const label = `${stage.label} · ${v4StageStatus(stage.id)}${requestText}${tokenText}${durationText}`;
+          const label = `${stage.label} · ${v4StageStatus(
+            stage.id,
+          )}${requestText}${tokenText}${durationText}`;
           return (
             <View
               key={stage.id}
@@ -990,7 +1077,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
                 {result?.errorCode ? ` · ${result.errorCode}` : ''}
               </Text>
               {expanded.has(`v4_${stage.id}`) && (
-                <Text selectable style={[styles.stageText, { color: colors.textPrimary }]}>
+                <Text
+                  selectable
+                  style={[styles.stageText, { color: colors.textPrimary }]}
+                >
                   {v4StageText(stage.id)}
                 </Text>
               )}
@@ -1005,15 +1095,37 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     if (run.state === 'failed' || run.state === 'interrupted') {
       return (
         <Card>
-          <Text style={[styles.h, { color: run.state === 'failed' ? colors.danger : colors.textPrimary }]}>
+          <Text
+            style={[
+              styles.h,
+              {
+                color:
+                  run.state === 'failed' ? colors.danger : colors.textPrimary,
+              },
+            ]}
+          >
             {run.state === 'failed' ? 'V4 生成未完成' : 'V4 生成已中断'}
           </Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-            {run.errorMessage || `当前阶段：${stageLabel(run.stage)}。已 reservation 的节点不会自动重发。`}
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            {run.errorMessage ||
+              `当前阶段：${stageLabel(
+                run.stage,
+              )}。已 reservation 的节点不会自动重发。`}
           </Text>
           <View style={styles.actions}>
-            <Button label={busy ? '处理中…' : '按新版 Kernel 重启'} onPress={doResume} disabled={busy} />
-            <Button label="放弃" variant="secondary" onPress={doAbandon} disabled={busy} />
+            <Button
+              label={busy ? '处理中…' : '按新版 Kernel 重启'}
+              onPress={doResume}
+              disabled={busy}
+            />
+            <Button
+              label="放弃"
+              variant="secondary"
+              onPress={doAbandon}
+              disabled={busy}
+            />
           </View>
         </Card>
       );
@@ -1026,25 +1138,43 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       v4Stage('local_verify')?.status === 'success';
     return (
       <Card>
-        <Text style={[styles.h, { color: risk ? colors.danger : colors.textPrimary }]}>
-          {rejectedRepair ? 'Repair 被本地门禁拒绝' : risk ? '默认候选仍有待人工确认问题' : 'V4 终稿已待采纳'}
+        <Text
+          style={[
+            styles.h,
+            { color: risk ? colors.danger : colors.textPrimary },
+          ]}
+        >
+          {rejectedRepair
+            ? 'Repair 被本地门禁拒绝'
+            : risk
+            ? '默认候选仍有待人工确认问题'
+            : 'V4 终稿已待采纳'}
         </Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-            {rejectedRepair
+        <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+          {rejectedRepair
             ? 'Repair 已返回候选正文，但未通过完整性、协议或安全检查。当前展示和默认可采纳的是 Writer 初稿。被拒 Repair 仅供审计。'
             : repairEligible
-              ? 'Repair 已完成精准修订，并通过完整章节与本地安全检查。未进行第二次 LLM 语义复核，请在采纳前人工审阅。'
-              : '未发现需要自动修订的五维资料或文风问题，或仅有篇幅/audit 提示；当前默认候选为 Writer 原稿。'}
-          </Text>
+            ? 'Repair 已完成精准修订，并通过完整章节与本地安全检查。未进行第二次 LLM 语义复核，请在采纳前人工审阅。'
+            : '未发现需要自动修订的五维资料或文风问题，或仅有篇幅/audit 提示；当前默认候选为 Writer 原稿。'}
+        </Text>
         {rejectedRepair && (
-          <View style={[styles.resultCard, { backgroundColor: colors.background }]}>
+          <View
+            style={[styles.resultCard, { backgroundColor: colors.background }]}
+          >
             <Button
-              label={showRejectedRepair ? '收起被拒 Repair 候选' : '查看被拒 Repair 候选'}
+              label={
+                showRejectedRepair
+                  ? '收起被拒 Repair 候选'
+                  : '查看被拒 Repair 候选'
+              }
               variant="secondary"
               onPress={() => setShowRejectedRepair(value => !value)}
             />
             {showRejectedRepair && (
-              <Text selectable style={[styles.stageText, { color: colors.textPrimary }]}>
+              <Text
+                selectable
+                style={[styles.stageText, { color: colors.textPrimary }]}
+              >
                 {rejectedRepair.content}
               </Text>
             )}
@@ -1052,11 +1182,22 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         )}
         <View style={styles.actions}>
           <Button
-            label={risk ? '采纳当前 eligible 候选（风险自负）' : busy ? '采纳中…' : '采纳'}
+            label={
+              risk
+                ? '采纳当前 eligible 候选（风险自负）'
+                : busy
+                ? '采纳中…'
+                : '采纳'
+            }
             onPress={() => doAdopt({ allowOpenChecks: risk })}
             disabled={busy || !body}
           />
-          <Button label="放弃并返回" variant="ghost" onPress={doAbandon} disabled={busy} />
+          <Button
+            label="放弃并返回"
+            variant="ghost"
+            onPress={doAbandon}
+            disabled={busy}
+          />
         </View>
       </Card>
     );
@@ -1170,10 +1311,10 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     if (run.state === 'outdated') {
       return (
         <Card>
-          <Text style={[styles.h, { color: colors.danger }]}>
-            续写已过期
-          </Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+          <Text style={[styles.h, { color: colors.danger }]}>续写已过期</Text>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
             原著源或 Canon 快照已更新，本次生成的上下文不再有效，无法采纳。
             请按最新的原著与 Canon 重新发起续写；旧执行不会被恢复或重复计费。
           </Text>
@@ -1201,20 +1342,28 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       return (
         <Card>
           <Text style={[styles.h, { color: colors.danger }]}>生成失败</Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.sm }}>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.sm }}
+          >
             {run.errorMessage || `错误码：${run.errorCode ?? '未知'}`}
           </Text>
           {run.errorCode === 'continuation_capability_blocked' && (
-            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            <Text
+              style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+            >
               Canon 快照不一致或未就绪，请重新分析原著后再发起。
             </Text>
           )}
           {run.errorCode === 'cold_start' ? (
-            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            <Text
+              style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+            >
               应用重启中断了生成；旧执行态不继续复用，将按新版 Kernel 重新开始。
             </Text>
           ) : (
-            <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+            <Text
+              style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+            >
               请检查模型配置与网络后重新发起。
             </Text>
           )}
@@ -1243,8 +1392,11 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           <Text style={[styles.h, { color: colors.textPrimary }]}>
             生成已中断
           </Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
-            应用上次退出时停留在「{stageLabel(run.stage)}」阶段，可从此处继续，或放弃本次续写。
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
+            应用上次退出时停留在「{stageLabel(run.stage)}
+            」阶段，可从此处继续，或放弃本次续写。
           </Text>
           <View style={styles.actions}>
             <Button
@@ -1275,7 +1427,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           <Text style={[styles.h, { color: colors.textPrimary }]}>
             等待确认规划
           </Text>
-          <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+          <Text
+            style={{ color: colors.textSecondary, marginBottom: spacing.md }}
+          >
             请查看下方规划与风险，确认后将进入正文生成。
           </Text>
           {renderPlan()}
@@ -1302,8 +1456,15 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         return (
           <>
             <Card>
-              <Text style={[styles.h, { color: colors.danger }]}>本地复核仍有待处理问题</Text>
-              <Text style={{ color: colors.textSecondary, marginBottom: spacing.md }}>
+              <Text style={[styles.h, { color: colors.danger }]}>
+                本地复核仍有待处理问题
+              </Text>
+              <Text
+                style={{
+                  color: colors.textSecondary,
+                  marginBottom: spacing.md,
+                }}
+              >
                 {overlapBlocked
                   ? 'Repair 后本地复核仍发现正文与接缝存在连续重合。你可以承担风险采纳当前候选，或确认再进行一次额外 Repair；额外 Repair 后只做本地复核，不会再次调用 LLM Checker。'
                   : repairCandidateRejected
@@ -1338,7 +1499,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       }
       return (
         <View style={styles.decisionActions}>
-        <Button
+          <Button
             label="放弃"
             variant="ghost"
             compact
@@ -1360,10 +1521,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
 
   const renderV5StageCards = () => {
     const observed = kernelTrace?.observability?.llm;
-    const physical = observed?.physicalRequestCount ?? stageResults.reduce(
-      (sum, item) => sum + item.requestCount,
-      0,
-    );
+    const physical =
+      observed?.physicalRequestCount ??
+      stageResults.reduce((sum, item) => sum + item.requestCount, 0);
     const logical = observed?.logicalStageCallCount ?? physical;
     const formatter = observed?.formatterCallCount ?? 0;
     const fallback = observed?.protocolFallbackCount ?? 0;
@@ -1371,7 +1531,8 @@ export const ContinuationResultScreen: React.FC<Props> = ({
     const totalTokens = observed
       ? observed.inputTokens + observed.outputTokens
       : stageResults.reduce(
-          (sum, item) => sum + (item.inputTokens ?? 0) + (item.outputTokens ?? 0),
+          (sum, item) =>
+            sum + (item.inputTokens ?? 0) + (item.outputTokens ?? 0),
           0,
         );
     const targetHan = (() => {
@@ -1680,7 +1841,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
             style={{ color: colors.textSecondary, marginBottom: spacing.md }}
           >
             {run.errorMessage ||
-              `当前阶段：${continuationRunStageLabel(run)}。可从已保存进度继续，或放弃。`}
+              `当前阶段：${continuationRunStageLabel(
+                run,
+              )}。可从已保存进度继续，或放弃。`}
           </Text>
           <View style={styles.actions}>
             <Button
@@ -1711,11 +1874,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               '请重新生成，或放弃本次结果。上方可展开已有过程稿对照。'}
           </Text>
           <View style={styles.actions}>
-            <Button
-              label="重新生成"
-              onPress={onClose}
-              disabled={busy}
-            />
+            <Button label="重新生成" onPress={onClose} disabled={busy} />
             <Button
               label="放弃"
               variant="secondary"
@@ -1758,9 +1917,50 @@ export const ContinuationResultScreen: React.FC<Props> = ({
                   artifact={finalArtifact}
                   onEdit={() =>
                     navigateToChapterEditor(
-                      Number((run as any).chapterId ?? (run as any).chapter_id ?? 0),
-                      { resultTaskId: run.id, resultScreen: 'ContinuationResult' },
+                      Number(
+                        (run as any).chapterId ?? (run as any).chapter_id ?? 0,
+                      ),
+                      {
+                        resultTaskId: run.id,
+                        resultScreen: 'ContinuationResult',
+                      },
                     )
+                  }
+                  onTargetedRevision={
+                    revisionReady
+                      ? () => {
+                          navigateToChapterEditor(
+                            Number(
+                              (run as any).chapterId ??
+                                (run as any).chapter_id ??
+                                0,
+                            ),
+                            {
+                              resultTaskId: run.id,
+                              resultScreen: 'ContinuationResult',
+                              revisionMode: 'targeted',
+                            },
+                          );
+                        }
+                      : undefined
+                  }
+                  onWholeChapterRewrite={
+                    revisionReady
+                      ? () => {
+                          navigateToChapterEditor(
+                            Number(
+                              (run as any).chapterId ??
+                                (run as any).chapter_id ??
+                                0,
+                            ),
+                            {
+                              resultTaskId: run.id,
+                              resultScreen: 'ContinuationResult',
+                              revisionMode: 'whole',
+                            },
+                          );
+                        }
+                      : undefined
                   }
                 />
               </View>
@@ -1771,11 +1971,18 @@ export const ContinuationResultScreen: React.FC<Props> = ({
               style={styles.detailsToggle}
               onPress={() => setShowDetails(prev => !prev)}
             >
-              <Text style={[styles.detailsToggleText, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[
+                  styles.detailsToggleText,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
                 {showDetails ? '▼' : '▶'} 生成详情（Token / 调用 / 阶段）
               </Text>
             </Pressable>
-            {showDetails ? <View style={styles.detailsBody}>{renderV5StageCards()}</View> : null}
+            {showDetails ? (
+              <View style={styles.detailsBody}>{renderV5StageCards()}</View>
+            ) : null}
           </>
         ) : run.workflowVersion === 4 ? (
           <>
@@ -1814,7 +2021,9 @@ export const ContinuationResultScreen: React.FC<Props> = ({
   );
 };
 
-function continuationRunStageLabel(run: Pick<ContinuationGenerationRun, 'workflowVersion' | 'stage'>): string {
+function continuationRunStageLabel(
+  run: Pick<ContinuationGenerationRun, 'workflowVersion' | 'stage'>,
+): string {
   if (run.workflowVersion === 5) {
     switch (run.stage) {
       case 'round1':
@@ -1904,7 +2113,12 @@ const styles = StyleSheet.create({
   detailsToggleText: { fontSize: 13, fontWeight: '600' },
   detailsBody: { marginBottom: spacing.md },
   summary: { fontSize: 13, fontWeight: '700', marginBottom: spacing.md },
-  resultCard: { borderRadius: 8, padding: spacing.md, gap: spacing.sm, marginBottom: spacing.md },
+  resultCard: {
+    borderRadius: 8,
+    padding: spacing.md,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
   stageMeta: { fontSize: 12, fontWeight: '700' },
   stageText: { fontSize: 14, lineHeight: 22, marginTop: spacing.sm },
   block: { marginBottom: 16 },

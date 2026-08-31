@@ -56,7 +56,10 @@ import { StyleProfileDetailScreen } from '../screens/continuation/StyleProfileDe
 
 export type EditorStackParamList = {
   EditorMain: undefined;
-  ChapterEditor: { chapterId: number };
+  ChapterEditor: {
+    chapterId: number;
+    revisionMode?: 'targeted' | 'whole';
+  };
   ChapterSummary: { chapterId: number };
   PlotlineManager: undefined;
   StoryOverview: undefined;
@@ -169,8 +172,9 @@ const ChapterEditorRoute = ({
   navigation,
 }: NativeStackScreenProps<EditorStackParamList, 'ChapterEditor'>) => (
   <ChapterEditor
-    key={route.params.chapterId}
+    key={`${route.params.chapterId}-${route.params.revisionMode || 'edit'}`}
     chapterId={route.params.chapterId}
+    revisionMode={route.params.revisionMode}
     onClose={() => navigation.goBack()}
   />
 );

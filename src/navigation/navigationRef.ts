@@ -1,5 +1,11 @@
-import { CommonActions, createNavigationContainerRef } from '@react-navigation/native';
-import type { EditorStackParamList, SettingsStackParamList } from './TabNavigator';
+import {
+  CommonActions,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
+import type {
+  EditorStackParamList,
+  SettingsStackParamList,
+} from './TabNavigator';
 import { suppressAutoResultJumpForChapter } from './chapterResultJumpSuppression';
 
 type RootStackParamList = EditorStackParamList & SettingsStackParamList;
@@ -67,7 +73,11 @@ function doNavigateToPipelineResult(taskId: string): void {
     navigationRef.dispatch(
       CommonActions.navigate({
         name: 'Settings',
-        params: { screen: 'PipelineResult', params: { taskId }, initial: false },
+        params: {
+          screen: 'PipelineResult',
+          params: { taskId },
+          initial: false,
+        },
       } as never),
     );
     return;
@@ -79,7 +89,11 @@ function doNavigateToPipelineResult(taskId: string): void {
     navigationRef.dispatch(
       CommonActions.navigate({
         name: 'Editor',
-        params: { screen: 'PipelineResult', params: { taskId }, initial: false },
+        params: {
+          screen: 'PipelineResult',
+          params: { taskId },
+          initial: false,
+        },
       } as never),
     );
     return;
@@ -162,11 +176,18 @@ export function navigateToPipelineTaskCenter(): void {
  */
 export function navigateToChapterEditor(
   chapterId: number,
-  options?: { resultTaskId?: string; resultScreen?: 'PipelineResult' | 'ContinuationResult' },
+  options?: {
+    resultTaskId?: string;
+    resultScreen?: 'PipelineResult' | 'ContinuationResult';
+    revisionMode?: 'targeted' | 'whole';
+  },
 ): void {
   if (!navigationRef.isReady()) return;
   suppressAutoResultJumpForChapter(chapterId, 60_000);
-  const nested = (screen: 'PipelineResult' | 'ContinuationResult' | 'ChapterEditor', params: Record<string, unknown>) => {
+  const nested = (
+    screen: 'PipelineResult' | 'ContinuationResult' | 'ChapterEditor',
+    params: Record<string, unknown>,
+  ) => {
     try {
       navigationRef.dispatch(
         CommonActions.navigate({
@@ -187,10 +208,18 @@ export function navigateToChapterEditor(
         : { taskId: options.resultTaskId },
     );
   }
-  const timer = setTimeout(() => {
-    if (!navigationRef.isReady()) return;
-    nested('ChapterEditor', { chapterId });
-  }, options?.resultTaskId ? 120 : 0);
+  const timer = setTimeout(
+    () => {
+      if (!navigationRef.isReady()) return;
+      nested('ChapterEditor', {
+        chapterId,
+        ...(options?.revisionMode
+          ? { revisionMode: options.revisionMode }
+          : {}),
+      });
+    },
+    options?.resultTaskId ? 120 : 0,
+  );
   if (options?.resultTaskId) {
     (timer as unknown as { unref?: () => void }).unref?.();
   }

@@ -18,6 +18,7 @@
  */
 import * as db from '../database';
 import { openDatabase } from '../../data/connection/openDatabase';
+import { assertPlainTextNovelBody } from '../writing/contracts/plainTextNovelBody';
 import {
   createContentRevision,
   getLatestContentRevision,
@@ -112,6 +113,7 @@ export async function adoptPipelineTaskResult(
       '任务没有可采用的正文',
     );
   }
+  assertPlainTextNovelBody(finalText);
   const chapter = await db.getChapterById(input.chapterId);
   if (!chapter) {
     throw new MultiChapterBatchError(

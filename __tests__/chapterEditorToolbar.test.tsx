@@ -17,7 +17,10 @@ let mockTasks: any[] = [];
 jest.mock('../src/services/database', () => ({
   updateChapter: (...args: any[]) => mockUpdateChapter(...args),
   getChapterById: (...args: any[]) => mockGetChapterById(...args),
-  buildChapterReadingText: jest.fn(async (_projectId: number, _chapterId: number, range: string) => `朗读范围:${range}`),
+  buildChapterReadingText: jest.fn(
+    async (_projectId: number, _chapterId: number, range: string) =>
+      `朗读范围:${range}`,
+  ),
   getVoiceConfig: jest.fn(async () => ({
     model: 'speech-2.8-hd',
     voiceId: 'male-qn-qingse',
@@ -67,8 +70,7 @@ jest.mock('../src/services/writing/execution/outlineStageDriver', () => ({
             await impl(input.taskId, input.chapter, input.onStageUpdate, {
               ...(input.options || {}),
               generationTraceId:
-                input.options?.generationTraceId ||
-                'gt_kernel_test_driver',
+                input.options?.generationTraceId || 'gt_kernel_test_driver',
             });
           }
           return { kind: 'terminal', reason: 'completed' };
@@ -79,7 +81,6 @@ jest.mock('../src/services/writing/execution/outlineStageDriver', () => ({
     };
   }),
 }));
-
 
 jest.mock('../src/services/revisionService', () => ({
   createRevision: jest.fn(async () => undefined),
@@ -178,7 +179,12 @@ describe('ChapterEditor toolbar', () => {
     mockRunChapterPipeline.mockImplementation(async (taskId: string) => {
       mockTasks = mockTasks.map(task =>
         task.id === taskId
-          ? { ...task, status: 'completed', finalText: '生成后的正文', updatedAt: Date.now() }
+          ? {
+              ...task,
+              status: 'completed',
+              finalText: '生成后的正文',
+              updatedAt: Date.now(),
+            }
           : task,
       );
     });
@@ -192,14 +198,37 @@ describe('ChapterEditor toolbar', () => {
     const { findByText, getByTestId } = render(
       <ChapterEditor chapterId={1} onClose={onClose} />,
     );
-    for (const label of ['AI 重新生成', '定稿', '版本', '清空', '摘要', '历史', '上下文', '草稿', '朗读']) {
+    for (const label of [
+      'AI 重新生成',
+      '定稿',
+      '版本',
+      '清空',
+      '摘要',
+      '历史',
+      '上下文',
+      '草稿',
+      '朗读',
+    ]) {
       expect(await findByText(label)).toBeTruthy();
     }
     expect(getByTestId('chapter-toolbar-scroll').props.horizontal).toBe(true);
   });
 
+  it('renders the two independent user revision buttons', async () => {
+    const { findByText, getByTestId } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+    expect(await findByText('精准修订')).toBeTruthy();
+    expect(await findByText('整章重写')).toBeTruthy();
+    expect(getByTestId('chapter-targeted-revision')).toBeTruthy();
+    expect(getByTestId('chapter-whole-rewrite')).toBeTruthy();
+  });
+
   it('opens a range picker for reading and reads the whole book selection', async () => {
-    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    mockGetChapterById.mockResolvedValueOnce({
+      ...sampleChapter,
+      content: '本章正文',
+    } as any);
     const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
     const { findByText, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
@@ -221,7 +250,10 @@ describe('ChapterEditor toolbar', () => {
     });
 
     expect(db.buildChapterReadingText).toHaveBeenCalledWith(10, 1, 'all');
-    expect(speakSpy).toHaveBeenCalledWith('朗读范围:all', expect.objectContaining({ sessionId: expect.any(String) }));
+    expect(speakSpy).toHaveBeenCalledWith(
+      '朗读范围:all',
+      expect.objectContaining({ sessionId: expect.any(String) }),
+    );
 
     // 选完之后 Modal 关闭
     expect(queryByText('选择朗读范围')).toBeNull();
@@ -229,7 +261,10 @@ describe('ChapterEditor toolbar', () => {
   });
 
   it('range picker can be dismissed by pressing the cancel button', async () => {
-    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    mockGetChapterById.mockResolvedValueOnce({
+      ...sampleChapter,
+      content: '本章正文',
+    } as any);
     const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
     const { findByText, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
@@ -252,7 +287,10 @@ describe('ChapterEditor toolbar', () => {
   });
 
   it('does not reopen the range picker when the reading button is pressed right after playback ends', async () => {
-    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    mockGetChapterById.mockResolvedValueOnce({
+      ...sampleChapter,
+      content: '本章正文',
+    } as any);
     const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
     const { findByText, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
@@ -268,8 +306,11 @@ describe('ChapterEditor toolbar', () => {
     expect(speakSpy).toHaveBeenCalledTimes(1);
 
     // 2) 模拟系统 TTS 正常播完：fire ttsDone 给 voiceStore
-    const TtsAudioEmitter = require('../src/native/TtsAudioModule').TtsAudioEmitter;
-    const sessionId = (require('../src/store/voiceStore').useVoiceStore.getState().activeTtsSessionId) || 'unknown';
+    const TtsAudioEmitter =
+      require('../src/native/TtsAudioModule').TtsAudioEmitter;
+    const sessionId =
+      require('../src/store/voiceStore').useVoiceStore.getState()
+        .activeTtsSessionId || 'unknown';
     await act(async () => {
       TtsAudioEmitter.emit('ttsDone', {
         sessionId,
@@ -292,7 +333,10 @@ describe('ChapterEditor toolbar', () => {
   });
 
   it('range picker can be dismissed by tapping the backdrop', async () => {
-    mockGetChapterById.mockResolvedValueOnce({ ...sampleChapter, content: '本章正文' } as any);
+    mockGetChapterById.mockResolvedValueOnce({
+      ...sampleChapter,
+      content: '本章正文',
+    } as any);
     const speakSpy = jest.spyOn(TtsAudio, 'speak').mockResolvedValue(undefined);
     const { findByText, getByTestId, queryByText } = render(
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
@@ -363,7 +407,9 @@ describe('ChapterEditor toolbar', () => {
       fireEvent.press(continueButton);
     });
 
-    expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', { taskId: 'task-1' });
+    expect(mockNavigate).toHaveBeenCalledWith('PipelineResult', {
+      taskId: 'task-1',
+    });
     expect(mockRunChapterPipeline).toHaveBeenCalledWith(
       'task-1',
       expect.objectContaining({ id: 1 }),
@@ -373,18 +419,20 @@ describe('ChapterEditor toolbar', () => {
   });
 
   it('shows fact-check progress when returning to a chapter with an active fact-check task', async () => {
-    mockTasks = [{
-      id: 'task-running',
-      targetType: 'chapter',
-      targetId: 1,
-      status: 'factChecking',
-      stageResults: [],
-      finalText: null,
-      error: null,
-      createdAt: Date.now() - 3000,
-      updatedAt: Date.now() - 1000,
-      resolvedAt: null,
-    }];
+    mockTasks = [
+      {
+        id: 'task-running',
+        targetType: 'chapter',
+        targetId: 1,
+        status: 'factChecking',
+        stageResults: [],
+        finalText: null,
+        error: null,
+        createdAt: Date.now() - 3000,
+        updatedAt: Date.now() - 1000,
+        resolvedAt: null,
+      },
+    ];
 
     const onClose = jest.fn();
     const { findByText } = render(
@@ -398,7 +446,10 @@ describe('ChapterEditor toolbar', () => {
     // 让 runChapterPipeline 永远不 resolve，保持 generating 状态
     let releasePipeline!: () => void;
     mockRunChapterPipeline.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { releasePipeline = resolve; }),
+      () =>
+        new Promise<void>(resolve => {
+          releasePipeline = resolve;
+        }),
     );
     mockCancelPipeline.mockClear();
 
@@ -406,12 +457,16 @@ describe('ChapterEditor toolbar', () => {
       <ChapterEditor chapterId={1} onClose={jest.fn()} />,
     );
     const continueButton = await findByText('AI 重新生成');
-    await act(async () => { fireEvent.press(continueButton); });
+    await act(async () => {
+      fireEvent.press(continueButton);
+    });
 
     const stopButton = await findByText('停止');
     expect(stopButton).toBeTruthy();
 
-    await act(async () => { fireEvent.press(stopButton); });
+    await act(async () => {
+      fireEvent.press(stopButton);
+    });
     expect(mockCancelPipeline).toHaveBeenCalledWith('task-1');
 
     releasePipeline();

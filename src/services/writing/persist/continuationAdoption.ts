@@ -123,6 +123,7 @@ import {
 } from '../../continuation/styleProfile/styleProfileRenderer';
 import { resolveFinalBodyStateProposals } from '../prompt/qaStateProposals';
 import { freezeContinuationThinking } from '../../continuation/generation/continuationV5Models';
+import { assertPlainTextNovelBody } from '../contracts/plainTextNovelBody';
 
 function traceJsonForRunState(input: {
   run: ContinuationGenerationRun;
@@ -1412,6 +1413,16 @@ export async function adoptArtifactAsDraft(input: {
       input.artifactId
         ? '指定的正文不属于本次续写，无法采纳'
         : '没有可采纳的正文',
+    );
+  }
+
+  try {
+    assertPlainTextNovelBody(artifact.content);
+  } catch (error) {
+    throw new Error(
+      `FINAL_PLAIN_TEXT_INTEGRITY_FAILED: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   }
 

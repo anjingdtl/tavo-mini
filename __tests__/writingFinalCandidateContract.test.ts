@@ -18,11 +18,13 @@ import type { SharedWritingStageInput } from '../src/services/writing/contracts/
 import type { SharedWritingStageName } from '../src/services/writing/contracts/writingPolicy';
 import { continuationRequest } from './helpers/oneShotFixtures';
 
-function makeStageInput(overrides: {
-  artifacts?: SharedWritingStageInput['artifacts'];
-  semanticApply?: SharedWritingStageInput['semanticApply'];
-  lifecycle?: { finalValidate?: boolean; persist?: boolean };
-} = {}): {
+function makeStageInput(
+  overrides: {
+    artifacts?: SharedWritingStageInput['artifacts'];
+    semanticApply?: SharedWritingStageInput['semanticApply'];
+    lifecycle?: { finalValidate?: boolean; persist?: boolean };
+  } = {},
+): {
   input: SharedWritingStageInput;
   persistFinal: jest.Mock;
   persistStage: jest.Mock;
@@ -212,9 +214,42 @@ describe('Phase 2 Phase 1 — Final Candidate Contract', () => {
     // Because finalValidate is absent in artifacts and the candidate derives
     // from draft, persist may still have a body — but it must consume the
     // SAME single candidate truth, never run its own split path.
-    expect(persist.status === 'completed' || persist.status === 'failed').toBe(true);
+    expect(persist.status === 'completed' || persist.status === 'failed').toBe(
+      true,
+    );
     void persistFinal;
     void persistStage;
+  });
+
+  test('FinalValidate rejects a JSON/protocol wrapper before its adapter is called', async () => {
+    const { input, persistStage } = makeStageInput({
+      artifacts: {
+        draft: draftArtifact({ body: '结果如下：\n{"content":"正文"}' }),
+      },
+    });
+    const result = await runFinalValidateStage(input);
+    expect(result.status).toBe('failed');
+    expect(result.diagnostics.join('|')).toContain(
+      'FINAL_PLAIN_TEXT_JSON_WRAPPER',
+    );
+    expect(persistStage).not.toHaveBeenCalled();
+  });
+
+  test('Persist rechecks the same boundary and never persists an unresolved wrapper', async () => {
+    const { input, persistFinal } = makeStageInput({
+      artifacts: {
+        finalValidate: {
+          stage: 'finalValidate',
+          body: "{'content':'正文'}",
+        },
+      },
+    });
+    const result = await runPersistStage(input);
+    expect(result.status).toBe('failed');
+    expect(result.diagnostics.join('|')).toContain(
+      'PERSIST_FINAL_PLAIN_TEXT_PROTOCOL_LEAK',
+    );
+    expect(persistFinal).not.toHaveBeenCalled();
   });
 
   test('compact mode carries no proof candidate (proof dependency = 0)', () => {
@@ -241,10 +276,14 @@ describe('Phase 2 Phase 1 — Final Candidate Contract', () => {
 
   test('policy topology flag selects compact candidate mode', () => {
     expect(
-      finalCandidateModeForPolicy({ values: { pipelineTopologyVersion: 'compact_standard' } }),
+      finalCandidateModeForPolicy({
+        values: { pipelineTopologyVersion: 'compact_standard' },
+      }),
     ).toBe('compact');
     expect(
-      finalCandidateModeForPolicy({ values: { pipelineTopologyVersion: 'legacy_standard' } }),
+      finalCandidateModeForPolicy({
+        values: { pipelineTopologyVersion: 'legacy_standard' },
+      }),
     ).toBe('legacy');
     expect(finalCandidateModeForPolicy({ values: {} })).toBe('legacy');
   });

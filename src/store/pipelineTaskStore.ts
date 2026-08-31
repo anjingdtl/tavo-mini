@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import * as db from '../services/database';
-import type { PipelineTask, PipelineStageResult, PipelineTaskStatus } from '../types/pipeline';
+import type {
+  PipelineTask,
+  PipelineStageResult,
+  PipelineTaskStatus,
+} from '../types/pipeline';
 import { classifyInterruptedTask } from '../services/pipelineTaskContext';
 import { OutlineContextError } from '../services/outlineContextBuilder';
 import {
@@ -9,6 +13,7 @@ import {
 } from '../services/pipeline/outlineWorkflowVersion';
 import { stageNamesForPipelineTopology } from '../services/pipeline/taskView';
 import type { PipelineCheckpointStage } from '../services/pipeline/types';
+import { assertPlainTextNovelBody } from '../services/writing/contracts/plainTextNovelBody';
 
 function mergeStageResult(
   existing: PipelineStageResult[],
@@ -122,7 +127,10 @@ interface PipelineTaskState {
   ) => Promise<void>;
   resolveTask: (taskId: string, action: 'accept' | 'reject') => void;
   clearResolved: () => void;
-  getActiveTaskForTarget: (targetType: 'chapter' | 'freeform', targetId: number) => PipelineTask | undefined;
+  getActiveTaskForTarget: (
+    targetType: 'chapter' | 'freeform',
+    targetId: number,
+  ) => PipelineTask | undefined;
   getLatestResumableFailedTask: (
     targetType: 'chapter' | 'freeform',
     targetId: number,
@@ -358,24 +366,35 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     } catch (err: any) {
       console.warn(
         '[pipelineTaskStore] PIPELINE_TASK_CREATE_FAILED',
-        'taskId=', id,
-        'targetType=', targetType,
-        'targetId=', targetId,
-        'code=', err?.code,
-        'message=', err?.message,
+        'taskId=',
+        id,
+        'targetType=',
+        targetType,
+        'targetId=',
+        targetId,
+        'code=',
+        err?.code,
+        'message=',
+        err?.message,
       );
       throw err;
     }
     // Transaction committed: safe to expose the task to the rest of the app.
-    set((state) => ({ tasks: [...state.tasks, task] }));
+    set(state => ({ tasks: [...state.tasks, task] }));
     return id;
   },
 
   updateTaskStage: (taskId, result) => {
     // Legacy non-await path: still dual-write via queue, replace per stage.
-    void get().persistTaskStage(taskId, result).catch(err => {
-      console.warn('[pipelineTaskStore] updateTaskStage persist failed:', taskId, err);
-    });
+    void get()
+      .persistTaskStage(taskId, result)
+      .catch(err => {
+        console.warn(
+          '[pipelineTaskStore] updateTaskStage persist failed:',
+          taskId,
+          err,
+        );
+      });
   },
 
   persistTaskStage: async (taskId, result) => {
@@ -399,7 +418,11 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
         durationMs: result.durationMs ?? null,
       });
     } catch (err) {
-      console.warn('[pipelineTaskStore] upsertStageCheckpoint failed:', taskId, err);
+      console.warn(
+        '[pipelineTaskStore] upsertStageCheckpoint failed:',
+        taskId,
+        err,
+      );
       throw err;
     }
 
@@ -487,6 +510,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   completeTask: (taskId, finalText) => {
     const existing = get().tasks.find(t => t.id === taskId);
     if (existing) {
+      assertPlainTextNovelBody(finalText);
       const next: PipelineTask = {
         ...existing,
         status: 'completed',
@@ -505,6 +529,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     await awaitTaskPersistenceQueue(taskId);
     const existing = get().tasks.find(t => t.id === taskId);
     if (!existing) return;
+    assertPlainTextNovelBody(finalText);
     const next: PipelineTask = {
       ...existing,
       status: 'completed',
@@ -543,6 +568,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   setTaskFinalText: (taskId, finalText) => {
     const existing = get().tasks.find(t => t.id === taskId);
     if (existing) {
+      assertPlainTextNovelBody(finalText);
       const next: PipelineTask = {
         ...existing,
         finalText,
@@ -559,6 +585,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     await awaitTaskPersistenceQueue(taskId);
     const existing = get().tasks.find(t => t.id === taskId);
     if (!existing) return;
+    assertPlainTextNovelBody(finalText);
     // Durable Final/Persist may be replayed after a process restart.  The
     // task status transition is owned by persistCompleteTask; this helper
     // only writes the final body, so an identical body is a true no-op.
@@ -654,9 +681,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     }));
   },
 
-  cancelTask: (taskId) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
+  cancelTask: taskId => {
+    set(state => {
+      const tasks = state.tasks.map(t =>
         t.id === taskId
           ? {
               ...t,
@@ -664,20 +691,20 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
               recoverable: false,
               updatedAt: Date.now(),
             }
-          : t
+          : t,
       );
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasks.find(t => t.id === taskId);
       if (task) persistTask(task);
       return { tasks };
     });
   },
 
   setTaskInputFingerprint: (taskId, fingerprint) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, inputFingerprint: fingerprint } : t
+    set(state => {
+      const tasks = state.tasks.map(t =>
+        t.id === taskId ? { ...t, inputFingerprint: fingerprint } : t,
       );
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasks.find(t => t.id === taskId);
       if (task) persistTask(task);
       return { tasks };
     });
@@ -741,7 +768,9 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     } catch (error: any) {
       throw new OutlineContextError(
         'OUTLINE_SNAPSHOT_PERSIST_FAILED',
-        `冻结上下文保存失败：${error?.message ? String(error.message) : '数据库写入错误'}。已阻止调用模型。`,
+        `冻结上下文保存失败：${
+          error?.message ? String(error.message) : '数据库写入错误'
+        }。已阻止调用模型。`,
         'restart_task',
       );
     }
@@ -764,11 +793,18 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   },
 
   resolveTask: (taskId, action) => {
-    set((state) => {
-      const tasks = state.tasks.map((t) =>
-        t.id === taskId ? { ...t, resolvedAt: Date.now(), resolvedAction: action, updatedAt: Date.now() } : t
+    set(state => {
+      const tasks = state.tasks.map(t =>
+        t.id === taskId
+          ? {
+              ...t,
+              resolvedAt: Date.now(),
+              resolvedAction: action,
+              updatedAt: Date.now(),
+            }
+          : t,
       );
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasks.find(t => t.id === taskId);
       if (task) persistTask(task);
       return { tasks };
     });
@@ -777,8 +813,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   clearResolved: async () => {
     try {
       await db.deleteResolvedPipelineTasks();
-      set((state) => ({
-        tasks: state.tasks.filter((t) => t.resolvedAt === null),
+      set(state => ({
+        tasks: state.tasks.filter(t => t.resolvedAt === null),
       }));
     } catch (err) {
       console.warn('[pipelineTaskStore] clearResolved DB delete failed:', err);
@@ -787,11 +823,16 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
 
   getActiveTaskForTarget: (targetType, targetId) => {
     return get().tasks.find(
-      (t) =>
+      t =>
         t.targetType === targetType &&
         t.targetId === targetId &&
         t.resolvedAt === null &&
-        (t.status === 'idle' || t.status === 'queued' || t.status === 'drafting' || t.status === 'reviewing' || t.status === 'factChecking' || t.status === 'proofing')
+        (t.status === 'idle' ||
+          t.status === 'queued' ||
+          t.status === 'drafting' ||
+          t.status === 'reviewing' ||
+          t.status === 'factChecking' ||
+          t.status === 'proofing'),
     );
   },
 
@@ -819,7 +860,7 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     return candidates[0];
   },
 
-  registerPersistedTask: (task) => {
+  registerPersistedTask: task => {
     set(state => {
       const exists = state.tasks.some(t => t.id === task.id);
       return {
@@ -835,8 +876,8 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     // 超时后仍按可恢复性分类，不把有 Draft + 合法快照的任务永久判死。
     const now = Date.now();
     let marked = 0;
-    set((state) => {
-      const tasks = state.tasks.map((t) => {
+    set(state => {
+      const tasks = state.tasks.map(t => {
         if (
           !t.resolvedAt &&
           interruptibleStatuses.includes(t.status) &&
@@ -859,12 +900,15 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
     let marked = 0;
     // Best-effort: flip any running stage checkpoints to interrupted (Schema 39+).
     void db.interruptAllRunningStages?.().catch(() => undefined);
-    set((state) => {
-      const tasks = state.tasks.map((task) => {
+    set(state => {
+      const tasks = state.tasks.map(task => {
         // Cold start: only tasks that actually started (queued..proofing)
         // mean the previous process died mid-run. idle tasks (e.g. batch
         // pre-created ones) must stay idle so they can safely run/resume.
-        if (task.resolvedAt === null && interruptibleStatuses.includes(task.status)) {
+        if (
+          task.resolvedAt === null &&
+          interruptibleStatuses.includes(task.status)
+        ) {
           marked += 1;
           const updated = interruptTask(task, now);
           persistTask(updated);
@@ -883,6 +927,6 @@ export const usePipelineTaskStore = create<PipelineTaskState>((set, get) => ({
   },
 
   getUnresolvedCount: () => {
-    return get().tasks.filter((t) => t.resolvedAt === null).length;
+    return get().tasks.filter(t => t.resolvedAt === null).length;
   },
 }));

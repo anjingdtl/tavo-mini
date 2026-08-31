@@ -16,6 +16,8 @@
  * subjective quality, plain length ratio) NEVER block delivery (§12.3).
  */
 
+import { validatePlainTextNovelBody } from '../writing/contracts/plainTextNovelBody';
+
 export type FinalValidatorCode =
   | 'ok'
   | 'empty'
@@ -26,6 +28,11 @@ export type FinalValidatorCode =
   | 'contract_json_leak'
   | 'patch_leak'
   | 'anchor_marker_leak'
+  | 'json_wrapper'
+  | 'markdown_fence'
+  | 'protocol_leak'
+  | 'model_explanation_leak'
+  | 'duplicate_title_wrapper'
   | 'whole_paragraph_duplicate'
   | 'catastrophic_collapse';
 
@@ -66,7 +73,8 @@ function detectWholeParagraphDuplicate(body: string): boolean {
 /** Sentence/clause terminators that legitimately close a body tail. */
 const TERMINAL_PUNCT_RE = /[。！？…!?.。"」』"'）)]$/;
 
-const OMISSION_MARKER_RE = /(未完待续|以下省略|内容省略|其余省略|后略|余略|以此类推|中略)/;
+const OMISSION_MARKER_RE =
+  /(未完待续|以下省略|内容省略|其余省略|后略|余略|以此类推|中略)/;
 
 /** Whether the body tail ends on an unclosed technical separator. */
 function isUnclosedTechnicalTail(body: string): boolean {
@@ -102,8 +110,8 @@ function hasUnclosedOpeningTail(body: string): boolean {
     ['[', ']'],
   ];
   for (const [open, close] of pairs) {
-    const opens = (tail.split(open).length - 1);
-    const closes = (tail.split(close).length - 1);
+    const opens = tail.split(open).length - 1;
+    const closes = tail.split(close).length - 1;
     if (opens > closes) return true;
   }
   return false;
@@ -129,13 +137,18 @@ export function validateFinalArtifact(params: {
 }): FinalValidatorResult {
   const text = typeof params.text === 'string' ? params.text : '';
   const reasoning =
-    typeof params.reasoningText === 'string' && params.reasoningText.trim().length > 0
+    typeof params.reasoningText === 'string' &&
+    params.reasoningText.trim().length > 0
       ? params.reasoningText
       : null;
   const body = text.trim();
 
   if (!body && reasoning) {
-    return { valid: false, code: 'reasoning_only', details: '仅返回推理，无正文' };
+    return {
+      valid: false,
+      code: 'reasoning_only',
+      details: '仅返回推理，无正文',
+    };
   }
   if (!body) {
     return { valid: false, code: 'empty', details: '终稿为空' };
@@ -143,22 +156,37 @@ export function validateFinalArtifact(params: {
 
   // Technical leakage checks.
   if (/<think[\s\S]*?<\/think>/i.test(body) || /^<think\b/i.test(body)) {
-    return { valid: false, code: 'think_leak', details: '正文含 <think> 推理泄漏' };
+    return {
+      valid: false,
+      code: 'think_leak',
+      details: '正文含 <think> 推理泄漏',
+    };
   }
   for (const fp of PROMPT_LEAK_FINGERPRINTS) {
     if (body.includes(fp)) {
-      return { valid: false, code: 'prompt_leak', details: `泄漏提示词片段: ${fp}` };
+      return {
+        valid: false,
+        code: 'prompt_leak',
+        details: `泄漏提示词片段: ${fp}`,
+      };
     }
   }
   if (ANCHOR_MARKER_RE.test(body)) {
-    return { valid: false, code: 'anchor_marker_leak', details: '正文含锚点标记' };
+    return {
+      valid: false,
+      code: 'anchor_marker_leak',
+      details: '正文含锚点标记',
+    };
   }
   if (params.contractJson && params.contractJson.trim().length > 0) {
     const contractSample = params.contractJson
       .slice(0, Math.min(params.contractJson.length, 400))
       .replace(/\s+/g, '');
     const bodyCompact = body.replace(/\s+/g, '');
-    if (bodyCompact.includes(contractSample.slice(0, 80)) && bodyCompact.length < contractSample.length * 2 + 200) {
+    if (
+      bodyCompact.includes(contractSample.slice(0, 80)) &&
+      bodyCompact.length < contractSample.length * 2 + 200
+    ) {
       return {
         valid: false,
         code: 'contract_json_leak',
@@ -175,7 +203,41 @@ export function validateFinalArtifact(params: {
     body.startsWith('diff') ||
     body.startsWith('```diff')
   ) {
-    return { valid: false, code: 'patch_leak', details: '输出疑似 patch/diff/修改说明' };
+    return {
+      valid: false,
+      code: 'patch_leak',
+      details: '输出疑似 patch/diff/修改说明',
+    };
+  }
+
+  const plainText = validatePlainTextNovelBody(body);
+  if (!plainText.valid) {
+    // Preserve the historical diagnostic for an output that visibly stops at
+    // an unfinished fence/technical tail; callers already treat that code as
+    // a truncation failure. All other protocol wrappers fail closed with the
+    // more precise shared contract code.
+    if (plainText.code === 'markdown_fence' && body.trim().endsWith('```')) {
+      return {
+        valid: false,
+        code: 'finish_length_incomplete',
+        details: '尾部停在未闭合的 Markdown 代码围栏',
+      };
+    }
+    const codeMap: Record<string, FinalValidatorCode> = {
+      json_wrapper: 'json_wrapper',
+      markdown_fence: 'markdown_fence',
+      protocol_leak: 'protocol_leak',
+      prompt_leak: 'model_explanation_leak',
+      patch_leak: 'patch_leak',
+      duplicate_title_wrapper: 'duplicate_title_wrapper',
+      reasoning_leak: 'think_leak',
+      unclosed_protocol: 'finish_length_incomplete',
+    };
+    return {
+      valid: false,
+      code: codeMap[plainText.code] || 'protocol_leak',
+      details: plainText.details,
+    };
   }
 
   const warnings: FinalValidatorCode[] = [];
@@ -201,7 +263,9 @@ export function validateFinalArtifact(params: {
       return {
         valid: false,
         code: 'finish_length_incomplete',
-        details: `finishReason=length 且输出明显未完成（${signals.join('、')}）`,
+        details: `finishReason=length 且输出明显未完成（${signals.join(
+          '、',
+        )}）`,
       };
     }
     // Length + complete body → pass (no draft fallback).
@@ -211,7 +275,10 @@ export function validateFinalArtifact(params: {
   // Conservative: ratio must be extreme AND the text must be dominated by
   // explicit summary/omission/continuation markers. Plain novel words like
   // 总结 / 最终 / 摘要 in a normal sentence never block (§12.3).
-  const draft = typeof params.canonicalDraft === 'string' ? params.canonicalDraft.trim() : '';
+  const draft =
+    typeof params.canonicalDraft === 'string'
+      ? params.canonicalDraft.trim()
+      : '';
   if (draft.length > 300) {
     const ratio = body.length / draft.length;
     const summaryDominated =
@@ -232,5 +299,9 @@ export function validateFinalArtifact(params: {
     };
   }
 
-  return { valid: true, code: 'ok', warnings: warnings.length ? warnings : undefined };
+  return {
+    valid: true,
+    code: 'ok',
+    warnings: warnings.length ? warnings : undefined,
+  };
 }

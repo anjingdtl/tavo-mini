@@ -11,6 +11,7 @@ import {
   finalCandidateModeForPolicy,
   resolveFinalWritingCandidate,
 } from './finalCandidate';
+import { validatePlainTextNovelBody } from '../contracts/plainTextNovelBody';
 
 function readBody(value: unknown): string {
   if (!value) return '';
@@ -59,6 +60,25 @@ export async function runFinalValidateStage(
     };
   }
 
+  // FinalValidate is the first hard delivery gate.  The adapters may
+  // normalize an explicitly owned model envelope before this point, but an
+  // unresolved JSON/protocol wrapper is never a manuscript body.
+  const plainText = validatePlainTextNovelBody(finalBody);
+  if (!plainText.valid) {
+    return {
+      stage: 'finalValidate',
+      status: 'failed',
+      diagnostics: [
+        `FINAL_PLAIN_TEXT_${plainText.code.toUpperCase()}`,
+        plainText.details || '最终正文不是纯文本',
+      ],
+      requirementResult: evaluateWritingRequirements({
+        requirements: input.requirements,
+        satisfiedIds: [],
+      }),
+    };
+  }
+
   const artifact: SharedWritingArtifact = {
     stage: 'finalValidate',
     sourceStage: candidate.sourceStage,
@@ -75,9 +95,9 @@ export async function runFinalValidateStage(
         ? await input.semanticApply()
         : input.semanticApply || {
             beforeRevisionBody:
-              (readBody(input.artifacts.revision) ||
-                input.frozenContext.instruction.currentContent ||
-                ''),
+              readBody(input.artifacts.revision) ||
+              input.frozenContext.instruction.currentContent ||
+              '',
             finalBody,
             appliedRequirementIds: artifact.appliedRequirementIds || [],
             validNoOpRequirementIds: artifact.validNoOpRequirementIds,

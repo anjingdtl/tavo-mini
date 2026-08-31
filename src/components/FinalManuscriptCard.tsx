@@ -9,7 +9,15 @@
  * 数据来自 FinalWritingArtifact（由现有持久化真相重建，本组件不写库）。
  */
 import React, { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, spacing } from './ui';
 import { useThemeStore } from '../store/themeStore';
@@ -21,6 +29,10 @@ export interface FinalManuscriptCardProps {
   actions?: React.ReactNode;
   /** 编辑最终稿（进入章节编辑器）。 */
   onEdit?: () => void;
+  /** 进入章节编辑器后选择范围并执行一次精准修订。 */
+  onTargetedRevision?: () => void;
+  /** 进入章节编辑器并执行一次待确认的整章重写。 */
+  onWholeChapterRewrite?: () => void;
   /** 继续写下一章。 */
   onNext?: () => void;
 }
@@ -41,6 +53,8 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
   artifact,
   actions,
   onEdit,
+  onTargetedRevision,
+  onWholeChapterRewrite,
   onNext,
 }) => {
   const { theme } = useThemeStore();
@@ -51,7 +65,10 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
   const changeCount = artifact?.changes.changes.length ?? 0;
   const charCount = artifact?.summary.charStats.nonWhitespaceCharCount ?? 0;
   const paragraphCount = artifact?.summary.charStats.paragraphCount ?? 0;
-  const delta = useMemo(() => (artifact ? deltaText(artifact) : null), [artifact]);
+  const delta = useMemo(
+    () => (artifact ? deltaText(artifact) : null),
+    [artifact],
+  );
 
   if (!artifact) {
     return (
@@ -95,14 +112,20 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
           最终稿
         </Text>
         {revised ? (
-          <View style={[styles.badge, { backgroundColor: theme.colors.accentSoft }]}>
+          <View
+            style={[styles.badge, { backgroundColor: theme.colors.accentSoft }]}
+          >
             <Text style={[styles.badgeText, { color: theme.colors.accent }]}>
               {statusText}
             </Text>
           </View>
         ) : (
-          <View style={[styles.badge, { backgroundColor: theme.colors.accentSoft }]}>
-            <Text style={[styles.badgeText, { color: theme.colors.textSecondary }]}>
+          <View
+            style={[styles.badge, { backgroundColor: theme.colors.accentSoft }]}
+          >
+            <Text
+              style={[styles.badgeText, { color: theme.colors.textSecondary }]}
+            >
               {statusText}
             </Text>
           </View>
@@ -156,6 +179,26 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
             onPress={onEdit}
           />
         ) : null}
+        {onTargetedRevision ? (
+          <Button
+            testID="final-targeted-revision"
+            label="精准修订"
+            compact
+            icon={undefined as any}
+            variant="secondary"
+            onPress={onTargetedRevision}
+          />
+        ) : null}
+        {onWholeChapterRewrite ? (
+          <Button
+            testID="final-whole-rewrite"
+            label="整章重写"
+            compact
+            icon={undefined as any}
+            variant="secondary"
+            onPress={onWholeChapterRewrite}
+          />
+        ) : null}
         {onNext ? (
           <Button
             label="继续下一章"
@@ -174,16 +217,29 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
         animationType="fade"
         onRequestClose={() => setReading(false)}
       >
-        <Pressable style={styles.readerOverlay} onPress={() => setReading(false)}>
+        <Pressable
+          style={styles.readerOverlay}
+          onPress={() => setReading(false)}
+        >
           <Pressable
             style={[styles.reader, { backgroundColor: theme.colors.surface }]}
             onPress={event => event.stopPropagation()}
           >
             <View style={styles.readerHead}>
-              <Text style={[styles.readerTitle, { color: theme.colors.textPrimary }]}>
+              <Text
+                style={[
+                  styles.readerTitle,
+                  { color: theme.colors.textPrimary },
+                ]}
+              >
                 最终稿
               </Text>
-              <Text style={[styles.readerChars, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[
+                  styles.readerChars,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
                 {formatCount(charCount)} 字
               </Text>
               <TouchableOpacity
@@ -193,35 +249,55 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={styles.readerClose}
               >
-                <Text style={[styles.readerCloseText, { color: theme.colors.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.readerCloseText,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
                   ✕
                 </Text>
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.readerBody}>
-              <Text style={[styles.readerText, { color: theme.colors.textPrimary }]}>
+              <Text
+                style={[styles.readerText, { color: theme.colors.textPrimary }]}
+              >
                 {artifact.body}
               </Text>
             </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
-    <Modal
+      <Modal
         visible={diffIndex !== null && artifact != null}
         transparent
         animationType="fade"
         onRequestClose={() => setDiffIndex(null)}
       >
-        <Pressable style={styles.readerOverlay} onPress={() => setDiffIndex(null)}>
+        <Pressable
+          style={styles.readerOverlay}
+          onPress={() => setDiffIndex(null)}
+        >
           <Pressable
             style={[styles.reader, { backgroundColor: theme.colors.surface }]}
             onPress={event => event.stopPropagation()}
           >
             <View style={styles.readerHead}>
-              <Text style={[styles.readerTitle, { color: theme.colors.textPrimary }]}>
+              <Text
+                style={[
+                  styles.readerTitle,
+                  { color: theme.colors.textPrimary },
+                ]}
+              >
                 查看修改
               </Text>
-              <Text style={[styles.readerChars, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[
+                  styles.readerChars,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
                 {diffIndex !== null && artifact
                   ? `修改 ${diffIndex + 1} / ${artifact.changes.changes.length}`
                   : ''}
@@ -233,43 +309,84 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={styles.readerClose}
               >
-                <Text style={[styles.readerCloseText, { color: theme.colors.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.readerCloseText,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
                   ✕
                 </Text>
               </TouchableOpacity>
             </View>
-            {diffIndex !== null && artifact && artifact.changes.changes[diffIndex] ? (
+            {diffIndex !== null &&
+            artifact &&
+            artifact.changes.changes[diffIndex] ? (
               <ScrollView style={styles.readerBody}>
                 <View style={styles.diffRow}>
-                  <Text style={[styles.diffTag, { backgroundColor: theme.colors.accentSoft, color: theme.colors.accent }]}>
-                    {changeTypeLabel(artifact.changes.changes[diffIndex].changeType)}
+                  <Text
+                    style={[
+                      styles.diffTag,
+                      {
+                        backgroundColor: theme.colors.accentSoft,
+                        color: theme.colors.accent,
+                      },
+                    ]}
+                  >
+                    {changeTypeLabel(
+                      artifact.changes.changes[diffIndex].changeType,
+                    )}
                   </Text>
                 </View>
                 {artifact.changes.changes[diffIndex].beforeText.trim() ? (
                   <View style={styles.diffBlock}>
-                    <Text style={[styles.diffLabel, { color: theme.colors.danger }]}>
+                    <Text
+                      style={[styles.diffLabel, { color: theme.colors.danger }]}
+                    >
                       修改前
                     </Text>
-                    <Text style={[styles.diffText, { color: theme.colors.textPrimary }]}>
+                    <Text
+                      style={[
+                        styles.diffText,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
                       {artifact.changes.changes[diffIndex].beforeText}
                     </Text>
                   </View>
                 ) : null}
                 {artifact.changes.changes[diffIndex].afterText.trim() ? (
                   <View style={styles.diffBlock}>
-                    <Text style={[styles.diffLabel, { color: theme.colors.accent }]}>
+                    <Text
+                      style={[styles.diffLabel, { color: theme.colors.accent }]}
+                    >
                       修改后
                     </Text>
-                    <Text style={[styles.diffText, { color: theme.colors.textPrimary }]}>
+                    <Text
+                      style={[
+                        styles.diffText,
+                        { color: theme.colors.textPrimary },
+                      ]}
+                    >
                       {artifact.changes.changes[diffIndex].afterText}
                     </Text>
                   </View>
                 ) : null}
                 <View style={styles.diffBlock}>
-                  <Text style={[styles.diffLabel, { color: theme.colors.textSecondary }]}>
+                  <Text
+                    style={[
+                      styles.diffLabel,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
                     原因
                   </Text>
-                  <Text style={[styles.diffReason, { color: theme.colors.textSecondary }]}>
+                  <Text
+                    style={[
+                      styles.diffReason,
+                      { color: theme.colors.textSecondary },
+                    ]}
+                  >
                     {artifact.changes.changes[diffIndex].reason}
                   </Text>
                 </View>
@@ -335,7 +452,12 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
-  readerTitle: { fontSize: 18, fontFamily: 'serif', fontWeight: '700', flex: 1 },
+  readerTitle: {
+    fontSize: 18,
+    fontFamily: 'serif',
+    fontWeight: '700',
+    flex: 1,
+  },
   readerChars: { fontSize: 12 },
   readerClose: { padding: 4 },
   readerCloseText: { fontSize: 16 },
