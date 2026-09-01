@@ -82,6 +82,7 @@
     "version": "2.30.0",
     "versionName": "V2.30.0",
     "versionCode": 2300000,
+    "releaseCommit": "e9c7f7dc311eb7ae241aa35cc02c5061651b6341",
     "apkPath": "dist/apk/release/ShineWriter-V2.30.0-release.apk",
     "apkSizeBytes": 37170658,
     "apkSha256": "B9FEFE7DA107D35ED91821C333410F4069F3FB7C4D9079BEDBC960C336041460",
