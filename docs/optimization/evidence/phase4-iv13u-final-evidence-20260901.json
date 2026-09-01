@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "evidenceId": "phase4-iv13u-follow-up-20260901",
-  "generatedAt": "2026-09-01T13:09:58.6267537+08:00",
-  "scope": "User Revision durable receipt cold-start closure and direct provenance",
+  "generatedAt": "2026-09-01T14:04:40.997+08:00",
+  "scope": "User Revision durable receipt cold-start closure, direct provenance, and V2.30.0 release verification",
   "verificationBaseCommit": "35b3d7b58d960a4bcffa05a45ad9ee406e0d5c8",
   "implementationCommit": "cf5c5f8f95e0abe0973a8cb80bbcb2bd8695ece4",
   "rerunPolicy": {
@@ -77,6 +77,59 @@
     "uiHierarchyCaptured": true,
     "appFatalOrAndroidRuntimeMarkers": 0,
     "nonFatalReactSoftExceptionMarkers": 1
+  },
+  "releaseVerification": {
+    "version": "2.30.0",
+    "versionName": "V2.30.0",
+    "versionCode": 2300000,
+    "apkPath": "dist/apk/release/ShineWriter-V2.30.0-release.apk",
+    "apkSizeBytes": 37170658,
+    "apkSha256": "B9FEFE7DA107D35ED91821C333410F4069F3FB7C4D9079BEDBC960C336041460",
+    "hardVerification": {
+      "status": "passed",
+      "certificateSha256": "017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a",
+      "signerCount": 1,
+      "signatureScheme": "v2",
+      "zipalign": "passed",
+      "packageName": "com.shinewriter"
+    },
+    "deviceVerification": {
+      "serial": "emulator-5556",
+      "avd": "Release_Verification",
+      "installStatus": "success",
+      "launchStatus": "ok",
+      "launchState": "COLD",
+      "activity": "com.shinewriter/.MainActivity",
+      "activityResumed": true,
+      "uiHierarchyCaptured": true,
+      "screenshotCaptured": true,
+      "appFatalOrAndroidRuntimeMarkers": 0,
+      "crashBufferAppMarkers": 0,
+      "knownWarning": "Android 16 KB native-library compatibility dialog shown and dismissed; main UI rendered"
+    },
+    "originalDevice": {
+      "serial": "emulator-5554",
+      "installStatus": "blocked_existing_debug_signature",
+      "dataPreservation": "not_modified"
+    },
+    "localEvidence": [
+      {
+        "path": "test-logs/release-v2.30.0-20260901/ui-cold-start-verified.xml",
+        "sha256": "AA61D9BC7DF6F504B164381D3AF263612639E883459534A0C3EB3985571CBE68"
+      },
+      {
+        "path": "test-logs/release-v2.30.0-20260901/screen-cold-start-verified.png",
+        "sha256": "115F6BF876EF43B6739EBA1B59E5D041FA66440AAF8C4D7A9D9F8076B85A8A89"
+      },
+      {
+        "path": "test-logs/release-v2.30.0-20260901/logcat-cold-start-verified.log",
+        "sha256": "EBA4D9BBC9D29B5DA3CD5281694A11C5BCE06C612C50B94BF7CDBD338DE1945C"
+      },
+      {
+        "path": "test-logs/release-v2.30.0-20260901/logcat-crash-buffer.log",
+        "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+      }
+    ]
   },
   "existingBodyFreeSources": [
     {

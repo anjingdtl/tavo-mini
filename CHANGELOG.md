@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-09-01
+
+### Fixed — Preview 生命周期与 User Revision Receipt provenance
+
+- 冷启动时确定性关闭 Preview → force-stop 遗留的 `succeeded + pending` candidate；保留 receipt 的 `outcome=succeeded`，不再永久 pending。
+- direct User Revision receipt 使用 `direct-user-revision-v1` provenance，不再误标为 `SHARED_PROMPT_COMPILER_VERSION`；共享 Writing Pipeline 继续使用 shared compiler provenance。
+- 补齐对应 targeted RED→GREEN 回归测试，并完成 full verify。
+
 ## [2.21.1] - 2026-08-23
 
 ### Fixed — Revision 结构化报告恢复

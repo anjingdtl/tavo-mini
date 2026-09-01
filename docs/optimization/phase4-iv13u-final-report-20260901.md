@@ -121,7 +121,18 @@ UI 证据 `ui-b3-complete.xml` / `screen-b3-complete.png` 确实显示“批次�
 - 冷启动语义：`pending` candidate 只存在内存，force-stop 后无法安全恢复 Apply/Discard；启动将 durable `preview_state` 改为 `failed`，不改写 receipt `outcome=succeeded`，再次 reconciliation 更新 0 行。
 - provenance 语义：direct User Revision 记录 `direct-user-revision-v1`，与 `shared-prompt-compiler-v1` 不相等；共享 Writing Pipeline 继续使用 shared compiler provenance。
 - Android 窄复验：新 APK `adb install -r` 成功；force-stop 后 `LaunchState=COLD`、`Status=ok`、`MainActivity` resumed；UI hierarchy 已通过设备文件 dump 获取；应用进程无 FATAL/AndroidRuntime marker。出现 1 条非致命 React Native soft exception 记录，未导致崩溃或启动失败。
-- 证据索引：[`phase4-iv13u-final-evidence-20260901.json`](evidence/phase4-iv13u-final-evidence-20260901.json)，SHA-256=`F57C23D7F3155ECE6EE7A3C3AA0ADDFAFC68966C16E051AE22BD091E3CF223BA`。该提交物只索引标量/哈希证据，不包含 SQLite、正文、Prompt 或 model thinking text。
+- 证据索引：[`phase4-iv13u-final-evidence-20260901.json`](evidence/phase4-iv13u-final-evidence-20260901.json)，SHA-256=`810A5E925054B9FA6E9582C6F4EA62EEEA120DB968E580CE2F6D0F651C6A1171`。该提交物只索引标量/哈希证据，不包含 SQLite、正文、Prompt 或 model thinking text。
+
+### 5.2 V2.30.0 正式发版验收
+
+- 规范版本：`2.30.0`；展示版本：`V2.30.0`；`versionCode=2300000`。
+- `npm.cmd run verify`：PASS；Jest 543 passed / 4 skipped，3824 passed / 9 skipped；lint 0 error，typecheck、elastic capability、version consistency 均 PASS。
+- 正式 APK：`dist/apk/release/ShineWriter-V2.30.0-release.apk`；大小 `37,170,658` bytes；SHA-256=`B9FEFE7DA107D35ED91821C333410F4069F3FB7C4D9079BEDBC960C336041460`。
+- release APK 硬验收 PASS：v2 签名、单 signer、证书 SHA-256=`017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a`、zipalign、包名和版本元数据全部一致。
+- 独立临时 AVD `emulator-5556`：`adb install -r` 成功；`LaunchState=COLD`；`com.shinewriter/.MainActivity` resumed；UI hierarchy/截图已采集；精确应用崩溃/ANR marker=0。
+- 原 `emulator-5554` 保留用户数据未改动；因已安装旧 Debug 签名包，`adb install -r` 按 Android 签名规则返回 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，未执行卸载或清数据。
+- 本次版本/文档变更未影响调用链，因此按指示未重跑 B3、R1、R2；功能证据继续引用既有 body-free 索引。
+- 更新后的 body-free 证据索引：[`phase4-iv13u-final-evidence-20260901.json`](evidence/phase4-iv13u-final-evidence-20260901.json)，SHA-256=`810A5E925054B9FA6E9582C6F4EA62EEEA120DB968E580CE2F6D0F651C6A1171`；只包含标量、路径和 SHA-256，不包含 SQLite、正文、Prompt 或 reasoning。
 
 ## 6. Final GO / NO-GO
 
