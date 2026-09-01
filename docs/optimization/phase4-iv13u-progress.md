@@ -15,7 +15,7 @@ U1～U6 的一致性/唯一性工程门禁、R1 大纲精准修订、R2 原著�
 ## 0. PLAN 基线与保护
 
 - 已执行 `git fetch origin --prune`。
-- `origin/main == HEAD == 0b1f6c87a8bd767a057cc39c1ff9bf572cb419df`；分支为 `main`。
+- 本次 follow-up 起点 `origin/main == HEAD == 35b3d7b58d960a4bcffa05a45ad9ee406e0d5c8`；分支为 `main`。
 - 开工时仅发现并保留用户已有未跟踪文件：主方案文件与 `scripts/qa/__pycache__/run-a5-outline-quality.cpython-314.pyc`。
 - 全程未执行 `git reset --hard`、`git clean`、`adb uninstall` 或 `pm clear`；Android 仅使用 `adb install -r`，用户数据库未清除。
 - 设备：`emulator-5554`；最终 debug APK：`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`。
