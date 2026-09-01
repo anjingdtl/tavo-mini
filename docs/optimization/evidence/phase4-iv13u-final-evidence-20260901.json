@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "evidenceId": "phase4-iv13u-follow-up-20260901",
+  "generatedAt": "2026-09-01T13:09:58.6267537+08:00",
+  "scope": "User Revision durable receipt cold-start closure and direct provenance",
+  "verificationBaseCommit": "35b3d7b58d960a4bcffa05a45ad9ee406e0d5c8",
+  "implementationCommit": "cf5c5f8f95e0abe0973a8cb80bbcb2bd8695ece4",
+  "rerunPolicy": {
+    "B3": "not rerun by instruction",
+    "R1": "not rerun by instruction",
+    "R2": "not rerun by instruction"
+  },
+  "targetedTests": {
+    "red": {
+      "status": "failed_as_expected",
+      "suitesFailed": 2,
+      "testsFailed": 2,
+      "testsPassed": 6,
+      "testsTotal": 8,
+      "testFiles": [
+        "__tests__/phase4Iv13uPersistence.test.ts",
+        "__tests__/userRevisionReceiptModel.test.ts"
+      ]
+    },
+    "green": {
+      "status": "passed",
+      "suitesPassed": 3,
+      "testsPassed": 12,
+      "testFiles": [
+        "__tests__/phase4Iv13uPersistence.test.ts",
+        "__tests__/userRevisionReceiptModel.test.ts",
+        "__tests__/writingRequestReceipt.test.ts"
+      ]
+    }
+  },
+  "fullVerify": {
+    "status": "passed",
+    "command": "npm.cmd run verify",
+    "lintErrors": 0,
+    "typecheck": "passed",
+    "elasticCapabilityCheck": "passed",
+    "versionConsistencyCheck": "passed",
+    "jest": {
+      "suitesPassed": 543,
+      "suitesSkipped": 4,
+      "testsPassed": 3824,
+      "testsSkipped": 9
+    }
+  },
+  "behavioralAssertions": {
+    "successfulPendingColdStart": {
+      "inputReceiptOutcome": "succeeded",
+      "inputDurablePreviewState": "pending",
+      "durablePreviewStateAfterColdStart": "failed",
+      "receiptOutcomeAfterColdStart": "succeeded",
+      "physicalRequestCount": 1,
+      "requestMayHaveExecuted": true,
+      "secondReconciliationUpdatedRows": 0
+    },
+    "directUserRevisionProvenance": {
+      "stage": "user_revision_whole_chapter",
+      "promptCompilerVersion": "direct-user-revision-v1",
+      "sharedPromptCompilerVersion": "shared-prompt-compiler-v1",
+      "matchesSharedPromptCompiler": false
+    }
+  },
+  "androidColdStart": {
+    "buildStatus": "passed",
+    "apkPath": "dist/apk/debug/ShineWriter-V2.21.1-debug.apk",
+    "apkSha256": "36474F37A80EE8F4F413DD0D687D57E1756D84717431C368EF2313D823213DC6",
+    "installStatus": "success",
+    "packageName": "com.shinewriter",
+    "launchStatus": "ok",
+    "launchState": "COLD",
+    "activity": "com.shinewriter/.MainActivity",
+    "activityResumed": true,
+    "uiHierarchyCaptured": true,
+    "appFatalOrAndroidRuntimeMarkers": 0,
+    "nonFatalReactSoftExceptionMarkers": 1
+  },
+  "existingBodyFreeSources": [
+    {
+      "path": "test-logs/phase4-iv13u-20260901/check-b-invariant-audit-final.json",
+      "sha256": "5B680D96FED0291DC766E1F82FA04ED85E97B528161B41E966B5067351A06903",
+      "role": "existing local body-free invariant audit"
+    }
+  ],
+  "codeAndTestReferences": [
+    "src/data/repositories/writingRequestReceiptRepository.ts",
+    "src/data/schema/initializeDatabase.ts",
+    "src/services/writing/contracts/writingRequestReceipt.ts",
+    "__tests__/phase4Iv13uPersistence.test.ts",
+    "__tests__/userRevisionReceiptModel.test.ts"
+  ],
+  "notIncluded": [
+    "SQLite database files",
+    "manuscript text",
+    "prompt text",
+    "model thinking text"
+  ]
+}

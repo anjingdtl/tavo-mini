@@ -10,7 +10,7 @@
 
 **`PHASE IV FINAL SEALED / GO`**
 
-U1～U6 的一致性/唯一性工程门禁、R1 大纲精准修订、R2 原著续写整章重写，以及本次在最终 APK 模拟器上直接重跑的原著续写固定 3 章 B3 均已通过真机闭环。B3 的唯一实体为 `batch_mti4bayt_zhh5gp`，DB 明确为 `writing_mode=continuation`、`chapter_count=3`、`completed_count=3`，不再使用此前误命中的 outline A3 作为替代。
+U1～U6 的一致性/唯一性工程门禁、R1 大纲精准修订、R2 原著续写整章重写，以及本次在最终 APK 模拟器上直接重跑的原著续写固定 3 章 B3 均已通过真机闭环。B3 的唯一实体为 `batch_mti4bayt_zhh5gp`，DB 明确为 `writing_mode=continuation`、`chapter_count=3`、`completed_count=3`，不再使用此前误命中的 outline A3 作为替代。本次 follow-up 只补 receipt 冷启动收口与 direct User Revision provenance，不重跑 B3/R1/R2。
 
 ## 0. PLAN 基线与保护
 
@@ -109,11 +109,11 @@ R1 evidence 显示精确 chapter 9262 的 targeted action；R2 evidence 显示�
 
 ### DO
 
-新增 `writing_request_receipts` 与启动期 reconciliation；User Revision 先写 `started`，再更新 succeeded/failed/outcome_unknown/cancelled；Receipt JSON 仅存 bounded metadata/fingerprint，不存 prompt、正文、key 或 reasoning blob。
+新增 `writing_request_receipts` 与启动期 reconciliation；User Revision 先写 `started`，再更新 succeeded/failed/outcome_unknown/cancelled；Receipt JSON 仅存 bounded metadata/fingerprint，不存 prompt、正文、key 或 reasoning blob。冷启动对 `succeeded + pending` 只关闭 durable preview ledger，不改写 provider outcome，避免 force-stop 后永久 pending。
 
 ### CHECK-A
 
-`phase4Iv13uPersistence.test.ts`、`userRevisionReceiptModel.test.ts`、`userRevisionPersistence.test.ts` 通过；full verify 通过。
+`phase4Iv13uPersistence.test.ts`、`userRevisionReceiptModel.test.ts`、`userRevisionPersistence.test.ts` 通过；本次新增的冷启动收口与 direct User Revision provenance assertions 通过；full verify 通过。
 
 ### CHECK-B
 
@@ -265,11 +265,11 @@ U1～U6 通过后只执行：大纲精准修订×1、原著续写整章重写×1
 
 ### CHECK-A
 
-full `npm.cmd run verify`：Jest 543 passed / 4 skipped，3822 passed / 9 skipped；typecheck、lint、elastic、version 全通过。
+full `npm.cmd run verify`：Jest 543 passed / 4 skipped，3824 passed / 9 skipped；typecheck、lint、elastic、version 全通过。
 
 ### CHECK-B
 
-- APK build：PASS；SHA-256=`37D342C36C825379B768C24CC41A564188F1B29584057E3BA82980FE8E4BA9E7`。
+- APK build：PASS；SHA-256=`36474F37A80EE8F4F413DD0D687D57E1756D84717431C368EF2313D823213DC6`。
 - `adb -s emulator-5554 install -r dist/apk/debug/ShineWriter-V2.21.1-debug.apk`：`Success`；package `com.shinewriter`，versionName `V2.21.1`，versionCode `2210100`。
 - 冷启动、写作页、R1、R2、B3 批次 UI hierarchy/screenshot/logcat 均留证；最终 DB `settings.schema_version=61`，integrity=`ok`，FK check 为空，pipeline context 最大长度约 954596，未再出现修复前的 no-such-table/Row-too-big 应用错误。
 - B3 body-free final audit：23 个 current Final pointer 对应 23 个 distinct run，23 个 Final history，缺失/非 eligible pointer 为 0；B3 三章正文 fingerprint 均同时匹配章节正文、run `finalized_revision_hash` 与当前 Final artifact；三条 PostWriting outbox 均 completed 且按当前 fingerprint 去重，project Story Memory 为 `clean`。
@@ -282,6 +282,40 @@ full `npm.cmd run verify`：Jest 543 passed / 4 skipped，3822 passed / 9 skippe
 ### VERDICT
 
 **GO（B3 continuation 3/3、唯一性与一致性均形成可审计分母）**。
+
+## IV-13U-8 Follow-up Receipt Cold-start / Provenance
+
+- 实现提交 SHA：`cf5c5f8f95e0abe0973a8cb80bbcb2bd8695ece4`。
+
+### PLAN
+
+修复成功 Preview 后 force-stop 造成的 `succeeded + pending` 幽灵 ledger；direct User Revision 使用独立 provenance。按用户指示不重跑 B3、R1、R2，仅执行受影响的 targeted tests、full verify 和窄范围 Android 冷启动复验。
+
+### RED
+
+新增断言先复现两处旧行为：`succeeded + pending` 启动 reconciliation 返回 0；direct User Revision receipt 仍为 `shared-prompt-compiler-v1`。
+
+### DO
+
+启动 reconciliation 对 `pending` 且 receipt `outcome=succeeded` 的行以 CAS 方式改为 durable `failed`，保留 receipt 的 `succeeded`、physical dispatch 和 execution boundary 事实；standalone User Revision receipt 改用 `direct-user-revision-v1`，共享 Writing Pipeline 保持 shared compiler provenance。
+
+### CHECK-A
+
+targeted GREEN：`phase4Iv13uPersistence.test.ts`、`userRevisionReceiptModel.test.ts`、`writingRequestReceipt.test.ts` 共 3 suites / 12 tests 通过；full `npm.cmd run verify` 通过，Jest 543 passed / 4 skipped，3824 passed / 9 skipped。
+
+### CHECK-B
+
+- debug APK build PASS，SHA-256=`36474F37A80EE8F4F413DD0D687D57E1756D84717431C368EF2313D823213DC6`；`adb install -r` PASS。
+- force-stop 后冷启动 `Status=ok`、`LaunchState=COLD`、`MainActivity` resumed，UI hierarchy 通过设备文件 dump 获取；应用进程无 FATAL/AndroidRuntime marker。
+- body-free evidence index：[`evidence/phase4-iv13u-final-evidence-20260901.json`](evidence/phase4-iv13u-final-evidence-20260901.json)，SHA-256=`F57C23D7F3155ECE6EE7A3C3AA0ADDFAFC68966C16E051AE22BD091E3CF223BA`。
+
+### ACT
+
+不引入 schema 迁移、不持久化候选正文；通过 fail-closed 关闭不可恢复的 pending action audit，避免重复 provider call。保留既有 B3/R1/R2 真机证据，不重新消耗样本。
+
+### VERDICT
+
+**GO（follow-up receipt cold-start closure and direct provenance）**。
 
 ## Final GO / NO-GO
 

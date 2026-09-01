@@ -13,10 +13,12 @@
 
 此前误命中的 `batch_mtgkk3dc_j6pp07` 已按 DB 身份归入 outline A3；本次 B3 使用唯一实体 `batch_mti4bayt_zhh5gp`，其 `writing_mode=continuation`、`chapter_count=3`、`completed_count=3`，因此不再存在 B3 分母缺失阻断。
 
+本次 follow-up 仅修复 User Revision receipt 的冷启动收口与 provenance：成功请求若在 Preview 阶段被 force-stop，冷启动会确定性关闭 durable `pending` ledger，同时保留 receipt 的 `succeeded` provider 事实；direct User Revision 不再冒用 `SHARED_PROMPT_COMPILER_VERSION`。按用户指示，本次不重跑 B3、R1、R2；既有真机闭环继续作为历史证据，本次只做 targeted RED→GREEN、full verify、debug APK 冷启动复验。
+
 ## 1. 基线与保护
 
 - `git fetch origin --prune` 已执行。
-- `origin/main == HEAD == 0b1f6c87a8bd767a057cc39c1ff9bf572cb419df`，分支 `main`。
+- 本次 follow-up 起点 `origin/main == HEAD == 35b3d7b58d960a4bcffa05a45ad9ee406e0d5c8`，分支 `main`。
 - 用户已有未跟踪主方案和 QA `.pyc` 文件保持原样；未执行删除、覆盖或清理用户文件。
 - Android 只执行 `adb install -r`，未 uninstall/pm clear；最终设备数据库从 `run-as` 只读导出。
 
@@ -25,7 +27,7 @@
 | 阶段 | 判定 | 证据摘要 |
 | --- | --- | --- |
 | U1 Candidate Identity | GO | Result 直传 exact taskId/runId；candidate CAS 不再以 chapter 猜 latest；targeted/persistence/screen 回归通过 |
-| U2 Durable Receipt | GO | schema 61 Receipt 表、启动 reconciliation、R1/R2 各一条 durable receipt；physical=1、fallback=0、unknown 不自动 retry |
+| U2 Durable Receipt | GO | schema 61 Receipt 表、启动 reconciliation、R1/R2 各一条 durable receipt；physical=1、fallback=0、unknown 不自动 retry；本次补齐 `succeeded + pending` 的确定性冷启动关闭 |
 | U3 Shared Body Contract | GO | Outline/Continuation/User Revision 共用 `plainTextNovelBody.ts`；结构泄漏 fail-closed，自然小说负例通过 |
 | U4 Current Final Authority | GO | 23 个 current pointer 对应 23 个 run；Final history 保留；所有 pointer 指向 eligible final；CAS/迁移回归通过 |
 | U5 Current Revision/PostWriting | GO | R2 chapter 9272 当前 hash=`9ad4282a...` 与 run finalized hash 相等；新 hash 对应 rebuild outbox completed；memory clean |
@@ -103,12 +105,23 @@ UI 证据 `ui-b3-complete.xml` / `screen-b3-complete.png` 确实显示“批次�
 
 ## 5. CHECK-A / CHECK-B 工程证据
 
-- full verify：`npm.cmd run verify` PASS；Jest 543 passed / 4 skipped，3822 passed / 9 skipped；typecheck、lint、`verify:elastic`、`verify:version` PASS。
-- APK：`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `37D342C36C825379B768C24CC41A564188F1B29584057E3BA82980FE8E4BA9E7`。
+- full verify：`npm.cmd run verify` PASS；Jest 543 passed / 4 skipped，3824 passed / 9 skipped；typecheck、lint、`verify:elastic`、`verify:version` PASS。
+- APK：`dist/apk/debug/ShineWriter-V2.21.1-debug.apk`，SHA-256 `36474F37A80EE8F4F413DD0D687D57E1756D84717431C368EF2313D823213DC6`。
 - 安装：`adb -s emulator-5554 install -r` → `Success`；包名 `com.shinewriter`，versionName `V2.21.1`，versionCode `2210100`。
 - DB：schema 61，`PRAGMA integrity_check=ok`，`PRAGMA foreign_key_check` 为空；Receipt open preview=0；Current Final pointer 无缺失/非 eligible 行。
 - UI/logcat：冷启动、写作页、R1、R2、批次完成状态均有 XML/PNG；最终关键日志无 FATAL、SQLiteException、no-such-table、Row-too-big、OOM、ANR 或应用级 ReactNativeJS error。
 - body-free final 审计：`test-logs/phase4-iv13u-20260901/check-b-invariant-audit-final.json`，`overallPass=true`；23 个 current Final pointer / 23 个 Final history，B3 三章正文 fingerprint、Final artifact、run finalized hash、PostWriting 和 Story Memory 均一致；logcat 错误模式命中 0。
+
+### 5.1 本次 follow-up：Receipt 冷启动与 provenance
+
+- 实现提交 SHA：`cf5c5f8f95e0abe0973a8cb80bbcb2bd8695ece4`。
+
+- targeted RED：2 suites / 8 tests 中 2 个新断言失败，分别暴露 `succeeded + pending` 未收口和 direct User Revision 误标 shared compiler。
+- targeted GREEN：`phase4Iv13uPersistence.test.ts`、`userRevisionReceiptModel.test.ts`、`writingRequestReceipt.test.ts`，3 suites / 12 tests 全部通过。
+- 冷启动语义：`pending` candidate 只存在内存，force-stop 后无法安全恢复 Apply/Discard；启动将 durable `preview_state` 改为 `failed`，不改写 receipt `outcome=succeeded`，再次 reconciliation 更新 0 行。
+- provenance 语义：direct User Revision 记录 `direct-user-revision-v1`，与 `shared-prompt-compiler-v1` 不相等；共享 Writing Pipeline 继续使用 shared compiler provenance。
+- Android 窄复验：新 APK `adb install -r` 成功；force-stop 后 `LaunchState=COLD`、`Status=ok`、`MainActivity` resumed；UI hierarchy 已通过设备文件 dump 获取；应用进程无 FATAL/AndroidRuntime marker。出现 1 条非致命 React Native soft exception 记录，未导致崩溃或启动失败。
+- 证据索引：[`phase4-iv13u-final-evidence-20260901.json`](evidence/phase4-iv13u-final-evidence-20260901.json)，SHA-256=`F57C23D7F3155ECE6EE7A3C3AA0ADDFAFC68966C16E051AE22BD091E3CF223BA`。该提交物只索引标量/哈希证据，不包含 SQLite、正文、Prompt 或 model thinking text。
 
 ## 6. Final GO / NO-GO
 
@@ -118,6 +131,7 @@ UI 证据 `ui-b3-complete.xml` / `screen-b3-complete.png` 确实显示“批次�
 | R1 / R2 | 2/2 PASS |
 | A3 大纲 3/3 | PASS |
 | B3 原著续写固定 3 章 | **3/3 PASS** |
+| Follow-up Receipt 冷启动 / provenance | **PASS** |
 | Final Seal | **PHASE IV FINAL SEALED / GO** |
 
 本轮未重跑 20 章、未扩大样本、未修改正常 Writing Pipeline；A3 与 B3 通过 `writing_mode` 和唯一 `batch_id` 分离计数。
