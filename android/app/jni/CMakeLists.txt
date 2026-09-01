@@ -17,3 +17,10 @@ project(appmodules CXX)
 # `TurboModuleRegistry.getEnforcing('PlatformConstants')` depends on.
 add_subdirectory(${REACT_ANDROID_DIR}/cmake-utils/default-app-setup
                  ${CMAKE_CURRENT_BINARY_DIR}/default-app-setup-build)
+
+# NDK r27 defaults to a 4 KB linker page size. These flags make the app-owned
+# shared library 16 KB ELF/RELRO compatible while remaining loadable on 4 KB
+# devices. Prebuilt dependencies are pinned in app/build.gradle above.
+target_link_options(appmodules PRIVATE
+                    "-Wl,-z,max-page-size=16384"
+                    "-Wl,-z,common-page-size=16384")

@@ -41,7 +41,8 @@ jobs:
           __tests__/pipelineTaskStore.test.ts
           __tests__/writingSemanticApply.test.ts
           __tests__/continuationV5Contracts.test.ts
-          __tests__/goldenJourneysV2.test.ts
+          __tests__/goldenJourneys.test.ts
+          __tests__/goldenJourneysMultiChapter.test.ts
           __tests__/replayHarness.test.ts
           __tests__/writingSharedStageSet.test.ts
           __tests__/writingRequirement.test.ts

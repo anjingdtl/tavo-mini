@@ -69,6 +69,25 @@ react {
  */
 def enableReleaseMinification = project.findProperty("enableReleaseMinification")?.toString()?.toBoolean() ?: false
 
+// The AndroidX native prebuilts pulled by AsyncStorage and Keychain must stay
+// on versions whose ELF RELRO layout is compatible with 16 KB page-size
+// devices. Keep the whole module families coherent instead of mixing a fixed
+// native artifact with older transitive API artifacts.
+def androidX16kVersions = [
+    "androidx.sqlite": "2.7.0",
+    "androidx.datastore": "1.2.1",
+]
+
+configurations.configureEach {
+    resolutionStrategy.eachDependency { details ->
+        def alignedVersion = androidX16kVersions[details.requested.group]
+        if (alignedVersion != null) {
+            details.useVersion(alignedVersion)
+            details.because("Use 16 KB-compatible AndroidX native prebuilts")
+        }
+    }
+}
+
 def releaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.toLowerCase().contains("release")
 }
@@ -187,14 +206,11 @@ android {
         }
     }
 
-    // AGP 9.x 严格化检查：AndroidManifest 显式声明 `android:extractNativeLibs="true"`
-    // 时，必须同步声明 packagingOptions.jniLibs.useLegacyPackaging = true，
-    // 否则 :app:packageDebug 直接失败。保留 extractNativeLibs=true 是为了避免
-    // 安装时把 .so 从 APK 抽出到 /data 造成 IO 与首启延迟（TurboModule + llama.cpp
-    // JNI 路径相对较长），native libs 随 APK 直接映射更省。
+    // AGP 8.5.1+ can emit uncompressed, 16 KB zip-aligned native libraries.
+    // Keep this explicit so APK and AAB packaging use the same safe contract.
     packagingOptions {
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
     }
 }
