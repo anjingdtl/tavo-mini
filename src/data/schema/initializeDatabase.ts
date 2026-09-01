@@ -501,8 +501,9 @@ export async function initializeDatabase(
   attachWritingGovernorProfilePersistence(database);
 
   // IV-13U-2: a User Revision receipt is durable before the provider boundary
-  // is crossed. Reconcile a process-killed started row now; never create an
-  // automatic retry for an outcome that may already have been billed.
+  // is crossed. Reconcile process-killed started rows and close successful
+  // in-memory previews whose Apply/Discard candidate cannot be restored;
+  // never create an automatic retry for an outcome that may be billed.
   await markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(database);
 
   // 9. After-repair recall snapshot + comparison. When we captured a before

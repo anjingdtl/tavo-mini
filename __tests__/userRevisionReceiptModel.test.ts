@@ -141,6 +141,22 @@ describe('user revision receipt model identity (P1-3)', () => {
     expect(preview.receipt.physicalRequestCount).toBe(1);
   });
 
+  it('records direct User Revision provenance instead of the shared prompt compiler', async () => {
+    const preview = await createWholeChapterRewritePreview({
+      chapter,
+      scenario: 'outline',
+      instruction: '润色。',
+      frozenTruth: truth,
+    });
+
+    expect(preview.receipt.promptCompilerVersion).toBe(
+      'direct-user-revision-v1',
+    );
+    expect(preview.receipt.promptCompilerVersion).not.toBe(
+      'shared-prompt-compiler-v1',
+    );
+  });
+
   it('never writes the credential into the receipt chain', async () => {
     const preview = await createWholeChapterRewritePreview({
       chapter,

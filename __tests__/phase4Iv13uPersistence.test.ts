@@ -182,6 +182,60 @@ describe('IV-13U durable uniqueness boundaries', () => {
     expect(Number(count.rows.item(0).count)).toBe(1);
   });
 
+  it('closes a successful in-memory preview after cold start without rewriting the provider outcome', async () => {
+    await seedRun(db, 'ct_iv13u_successful_preview');
+    const receipt = buildStandaloneWritingRequestReceipt({
+      requestId: 'req_iv13u_successful_preview',
+      generationTraceId: 'trace_iv13u_successful_preview',
+      writingRunId: 'ct_iv13u_successful_preview',
+      scenario: 'outline',
+      stage: 'user_revision_whole_chapter',
+      provider: 'openai_compatible',
+      model: 'model-a',
+      messages: [{ role: 'user', content: 'preview body is not persisted' }],
+      responseFormat: 'text',
+      thinking: { type: 'enabled' },
+    });
+    const succeeded = completeWritingRequestReceipt(receipt, {
+      outcome: 'succeeded',
+      requestMayHaveExecuted: true,
+      physicalRequestCount: 1,
+    });
+    await upsertWritingRequestReceipt({
+      receipt: succeeded,
+      projectId: 1,
+      actionId: 'ur_iv13u_successful_preview',
+      previewId: 'ur_iv13u_successful_preview',
+      candidateKind: 'chapter',
+      candidateId: '1',
+      candidateProjectId: 1,
+      candidateChapterId: 1,
+      actionKind: 'whole_chapter_rewrite',
+      instructionFingerprint: 'instruction-hash',
+      baseBodyFingerprint: 'base-hash',
+      previewState: 'pending',
+    });
+
+    expect(
+      await markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(db),
+    ).toBe(1);
+    const [settled] = await db.executeSql(
+      `SELECT preview_state, receipt_json
+         FROM writing_request_receipts
+        WHERE request_id = ?`,
+      ['req_iv13u_successful_preview'],
+    );
+    expect(settled.rows.item(0).preview_state).toBe('failed');
+    expect(JSON.parse(settled.rows.item(0).receipt_json)).toMatchObject({
+      outcome: 'succeeded',
+      physicalRequestCount: 1,
+      requestMayHaveExecuted: true,
+    });
+    expect(
+      await markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(db),
+    ).toBe(0);
+  });
+
   it('backfills one current pointer from legacy eligible history without deleting history', async () => {
     await seedRun(db, 'ct_iv13u_migration');
     const runId = 'ct_iv13u_migration';

@@ -99,30 +99,55 @@ export async function upsertWritingRequestReceipt(
 }
 
 /**
- * A process can be killed after the provider boundary was crossed. On the
- * next startup, settle only receipts still at `started`; no retry is created.
- * A started row with a recorded physical dispatch becomes outcome_unknown.
+ * A process can be killed at any point around a User Revision request. On the
+ * next startup, settle started rows without creating a retry. A started row
+ * with a recorded physical dispatch becomes outcome_unknown. A successful
+ * pending row represents an in-memory preview whose candidate cannot be
+ * reconstructed after process death, so close only its preview ledger state
+ * while preserving the recorded provider outcome.
  */
 export async function markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(
   database?: SQLite.SQLiteDatabase,
 ): Promise<number> {
   const db = database ?? (await openDatabase());
   const [result] = await db.executeSql(
-    `SELECT request_id, receipt_json
+    `SELECT request_id, preview_state, receipt_json
        FROM writing_request_receipts
       WHERE preview_state IN ('started', 'pending')`,
   );
   let updated = 0;
   for (let index = 0; index < result.rows.length; index += 1) {
     const row = result.rows.item(index);
+    const requestId = String(row.request_id);
+    const receiptJson = String(row.receipt_json || '');
     let receipt: WritingRequestReceipt;
     try {
-      receipt = JSON.parse(String(row.receipt_json || '')) as WritingRequestReceipt;
+      receipt = JSON.parse(receiptJson) as WritingRequestReceipt;
     } catch {
       // A malformed receipt is itself a durable failure. Do not overwrite it
       // with guessed call facts; startup validation/reporting can surface it.
       continue;
     }
+
+    if (
+      String(row.preview_state || '') === 'pending' &&
+      receipt.outcome === 'succeeded'
+    ) {
+      // The candidate body is intentionally memory-only. A force-stop after
+      // provider success cannot safely resume Apply/Discard, so fail closed
+      // instead of leaving an action permanently pending or retrying it.
+      const [write] = await db.executeSql(
+        `UPDATE writing_request_receipts
+            SET preview_state = 'failed', updated_at = ?
+          WHERE request_id = ?
+            AND preview_state = 'pending'
+            AND receipt_json = ?`,
+        [Date.now(), requestId, receiptJson],
+      );
+      updated += write.rowsAffected ?? 0;
+      continue;
+    }
+
     if (receipt.outcome !== 'started') continue;
     const crossedProviderBoundary =
       Number(receipt.physicalRequestCount || 0) > 0 ||
@@ -139,8 +164,8 @@ export async function markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(
       [
         JSON.stringify(compactWritingRequestReceipt(settled)),
         Date.now(),
-        String(row.request_id),
-        String(row.receipt_json || ''),
+        requestId,
+        receiptJson,
       ],
     );
     updated += write.rowsAffected ?? 0;

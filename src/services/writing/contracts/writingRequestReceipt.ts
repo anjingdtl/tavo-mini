@@ -1,9 +1,11 @@
 /**
  * Reconstructable identity of one model-visible request.
  *
- * Stores fingerprints and metadata, never the full prompt blob. The messages
- * can be rebuilt from FrozenWritingContext + SHARED_PROMPT_COMPILER_VERSION
- * + stage + artifacts, then compared to messagesFingerprint.
+ * Stores fingerprints and metadata, never the full prompt blob. Shared-stage
+ * messages can be rebuilt from FrozenWritingContext +
+ * SHARED_PROMPT_COMPILER_VERSION + stage + artifacts, then compared to
+ * messagesFingerprint. Direct User Revision requests use their own explicit
+ * provenance because they are assembled outside the shared Prompt Compiler.
  */
 import { sha256Hex } from '../../continuation/hashUtils';
 import type {
@@ -34,6 +36,10 @@ import type { WritingGovernorShadow } from '../governor/writingGovernor';
 import type { FrozenWritingContext } from './frozenWritingContext';
 import type { SharedWritingStageName } from './writingPolicy';
 import type { WritingScenario } from './writingSource';
+
+/** Provenance for direct User Revision requests assembled outside the shared compiler. */
+export const DIRECT_USER_REVISION_REQUEST_VERSION =
+  'direct-user-revision-v1' as const;
 
 export type WritingRequestReceiptOutcome =
   | 'succeeded'
@@ -332,7 +338,7 @@ export function buildStandaloneWritingRequestReceipt(input: {
     model: input.model,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
-    promptCompilerVersion: SHARED_PROMPT_COMPILER_VERSION,
+    promptCompilerVersion: DIRECT_USER_REVISION_REQUEST_VERSION,
     freezeFingerprint: input.freezeFingerprint || '',
     truthProjectionFingerprint: input.truthProjectionFingerprint || '',
     stageProjectionFingerprint,
