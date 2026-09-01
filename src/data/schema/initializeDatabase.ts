@@ -35,6 +35,7 @@ import {
 } from '../../services/schemaRecoveryBackup';
 import {
   makeSchemaRecoveryError,
+  classifySchemaRecoveryFailure,
   type SchemaRecoveryError,
 } from './schemaRecoveryError';
 import type { StartupPhase } from '../../services/startupProgress';
@@ -399,6 +400,9 @@ export async function initializeDatabase(
           backupError instanceof Error
             ? backupError.message
             : String(backupError),
+          {
+            failureClass: classifySchemaRecoveryFailure(backupError),
+          },
         );
         lastSchemaRecovery = {
           backupCreated: false,

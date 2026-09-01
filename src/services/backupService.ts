@@ -258,7 +258,7 @@ function isPlainRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isSensitiveKey(key: string): boolean {
+export function isSensitiveKey(key: string): boolean {
   const normalized = key
     .trim()
     .toLowerCase()
@@ -291,7 +291,7 @@ function sanitizeNestedValue(value: unknown): unknown {
 }
 
 /** Remove secrets before the JSON string is ever assembled. */
-function sanitizeBackupRow(table: string, row: Record<string, any>): Record<string, any> | null {
+export function sanitizeBackupRow(table: string, row: Record<string, any>): Record<string, any> | null {
   if (table === 'settings' && isSensitiveKey(String(row.key || ''))) return null;
 
   const clean: Record<string, any> = {};
@@ -335,7 +335,7 @@ function countRows(tables: Record<string, any[]>): number {
  * pending 缓冲 + 8-word hash state，digest 与原 one-shot 等价（已由
  * __tests__/continuationHashStream.test.ts 覆盖等价性）。
  */
-class BackupPayloadHasher {
+export class BackupPayloadHasher {
   private readonly stream = new Sha256Stream();
   private leftover = '';
   private static readonly CHUNK_CHAR_SIZE = 65536;
@@ -566,8 +566,9 @@ async function allRows(db: SQLite.SQLiteDatabase, table: string): Promise<Record
 /**
  * Read every manifest table into the serialization shape. Core tables missing
  * on a pre-manifest database throw (fail-closed); optional tables are skipped
- * as empty arrays. Exported for the CL-09 schema-recovery writer so it can
- * build the payload with a single read pass.
+ * as empty arrays. Schema Recovery deliberately does not call this helper:
+ * its startup path uses a dedicated bounded row/text stream instead of
+ * materializing this complete table set.
  */
 export async function readBackupTables(
   db: SQLite.SQLiteDatabase,

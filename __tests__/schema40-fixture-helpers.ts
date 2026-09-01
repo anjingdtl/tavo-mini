@@ -174,6 +174,13 @@ export function setupInMemoryFs(): Map<string, string> {
   (RNFS.writeFile as jest.Mock).mockImplementation(async (p: string, c: string) => {
     files.set(p, c);
   });
+  (RNFS.appendFile as jest.Mock).mockImplementation(async (p: string, c: string) => {
+    files.set(p, `${files.get(p) || ''}${c}`);
+  });
+  (RNFS.write as jest.Mock).mockImplementation(async (p: string, c: string, position = 0) => {
+    const current = files.get(p) || '';
+    files.set(p, `${current.slice(0, position)}${c}${current.slice(position + c.length)}`);
+  });
   (RNFS.moveFile as jest.Mock).mockImplementation(async (f: string, t: string) => {
     files.set(t, files.get(f) || '');
     files.delete(f);

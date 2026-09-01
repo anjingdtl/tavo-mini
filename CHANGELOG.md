@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [2.30.1] - 2026-09-01
+
+### P0 热修复 — Schema Recovery 有界内存
+
+- V2.21.1 → V2.30.x 大资料库覆盖升级 Schema Recovery 内存/字符串上限 P0 热修复。
+- 启动前恢复备份改为 bounded-memory 流式写入与增量 SHA-256；保留不可替代创作资料，排除可重建 runtime 大表，失败继续 fail-closed 阻止迁移。
+
 ## [2.30.0] - 2026-09-01
 
 ### Fixed — Preview 生命周期与 User Revision Receipt provenance

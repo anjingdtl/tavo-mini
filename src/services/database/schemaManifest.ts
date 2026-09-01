@@ -5,6 +5,8 @@ export interface TableManifest {
   backup: boolean;
   restoreOrder: number;
   backupExcludedColumns?: readonly string[];
+  /** Columns omitted only from the pre-migration schema-recovery snapshot. */
+  schemaRecoveryExcludedColumns?: readonly string[];
 }
 
 /**
@@ -789,6 +791,10 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'completed_at',
     ],
     indexes: ['idx_analysis_runs_project_state'],
+    // Canon rows retain this table as their FK parent. The checkpoint is an
+    // execution scratchpad, not user-authored data, and may contain a large
+    // resumable request snapshot, so it is not part of migration safety data.
+    schemaRecoveryExcludedColumns: ['checkpoint_json'],
     backup: true,
     restoreOrder: 270,
   },
@@ -1762,3 +1768,70 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 154,
   },
 ];
+
+/**
+ * Tables which are safe to rebuild or replay from the retained project,
+ * chapter, source, and Canon data. This set applies only to the startup
+ * pre_migration/schema_recovery snapshot; normal user backups keep the
+ * existing `backup` contract unchanged.
+ *
+ * New manifest tables are retained by default. A table may enter this set only
+ * after its contents are proven to be derived/runtime state, so an omission
+ * from this audit cannot silently drop user-created material.
+ */
+export const SCHEMA_RECOVERY_EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  // Derived counters and Story Memory projections are rebuilt from chapters.
+  'project_writing_stats',
+  'project_story_memory',
+  'chapter_memory_patches',
+  'story_memory_snapshots',
+  'story_memory_batches',
+
+  // Bounded learning/action telemetry contains no manuscript or source data.
+  'writing_governor_profiles',
+  'writing_request_receipts',
+  'llm_usage_logs',
+  'story_memory_request_attempts',
+
+  // Freeform pipeline and batch execution state is replayable runtime data;
+  // its context, stage output, attempts, and planner snapshots are the large
+  // rows which caused the migration safety backup to exceed device memory.
+  'pipeline_tasks',
+  'pipeline_stage_checkpoints',
+  'pipeline_stage_attempts',
+  'multi_chapter_batches',
+  'multi_chapter_batch_items',
+  'multi_chapter_batch_item_runs',
+
+  // Canon analysis work/checkpoint material is regenerated from retained
+  // source text and materialized Canon rows; only the run metadata needed by
+  // Canon foreign keys remains in the recovery snapshot.
+  'continuation_analysis_batches',
+  'continuation_analysis_work_items',
+  'continuation_historical_digests',
+  'continuation_historical_digest_chapters',
+  'continuation_historical_index_terms',
+
+  // Continuation generation artifacts and state proposals are runtime output
+  // around adopted chapters, not the source or user-authored manuscript.
+  'continuation_generation_runs',
+  'continuation_current_final_authorities',
+  'continuation_generation_artifacts',
+  'continuation_generation_stage_results',
+  'continuation_plans',
+  'continuation_check_results',
+  'continuation_state_proposals',
+  'continuation_entities',
+  'continuation_entity_aliases',
+  'continuation_state_events',
+  'continuation_state_sync_outbox',
+]);
+
+/** Manifest used exclusively by the bounded schema-recovery writer. */
+export const SCHEMA_RECOVERY_MANIFEST: readonly TableManifest[] = SCHEMA_MANIFEST
+  .filter(
+    table =>
+      table.backup && !SCHEMA_RECOVERY_EXCLUDED_TABLES.has(table.name),
+  )
+  .slice()
+  .sort((a, b) => a.restoreOrder - b.restoreOrder);

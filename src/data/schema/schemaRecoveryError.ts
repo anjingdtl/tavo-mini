@@ -45,6 +45,26 @@ export function isSchemaRecoveryError(
   );
 }
 
+/**
+ * Classify the known JS/Hermes/Java allocation failures for diagnostics only.
+ * Classification never changes the fail-closed startup decision: a writer
+ * failure still blocks all schema mutation regardless of this result.
+ */
+export type SchemaRecoveryFailureClass =
+  | 'memory_or_string_limit'
+  | 'io_or_integrity';
+
+export function classifySchemaRecoveryFailure(
+  error: unknown,
+): SchemaRecoveryFailureClass {
+  const message = error instanceof Error ? error.message : String(error);
+  return /String length exceeds limit|Requested an array size that fails to allocate|Requested elements\s*=|OutOfMemoryError|Failed to allocate|Java heap space|out of memory|\bOOM\b|allocation failed/i.test(
+    message,
+  )
+    ? 'memory_or_string_limit'
+    : 'io_or_integrity';
+}
+
 export function makeSchemaRecoveryError(
   code: SchemaRecoveryErrorCode,
   message: string,
