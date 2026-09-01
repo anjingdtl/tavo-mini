@@ -78,6 +78,33 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     restoreOrder: 27,
   },
   {
+    name: 'writing_request_receipts',
+    columns: [
+      'request_id',
+      'project_id',
+      'action_id',
+      'preview_id',
+      'candidate_kind',
+      'candidate_id',
+      'candidate_project_id',
+      'candidate_chapter_id',
+      'action_kind',
+      'instruction_fingerprint',
+      'base_body_fingerprint',
+      'candidate_body_fingerprint',
+      'preview_state',
+      'receipt_json',
+      'created_at',
+      'updated_at',
+    ],
+    indexes: [
+      'idx_writing_request_receipts_project_updated',
+      'idx_writing_request_receipts_preview_state',
+    ],
+    backup: true,
+    restoreOrder: 28,
+  },
+  {
     name: 'fragments',
     columns: ['id', 'project_id', 'position', 'type', 'content', 'created_at'],
     backup: true,
@@ -1359,6 +1386,15 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
     ],
     backup: true,
     restoreOrder: 420,
+  },
+  {
+    name: 'continuation_current_final_authorities',
+    columns: ['run_id', 'active_final_artifact_id', 'updated_at'],
+    indexes: ['idx_continuation_current_final_artifact'],
+    backup: true,
+    // The pointer references immutable artifact rows, so restore it after
+    // the artifact table and before stage-result rows that may refer to it.
+    restoreOrder: 432,
   },
   {
     name: 'continuation_generation_artifacts',

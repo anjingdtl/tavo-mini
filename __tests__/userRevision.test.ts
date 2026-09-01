@@ -8,6 +8,14 @@ import {
   type UserRevisionFrozenTruth,
 } from '../src/services/writing/userRevision';
 
+import { upsertWritingRequestReceipt } from '../src/data/repositories/writingRequestReceiptRepository';
+
+jest.mock('../src/data/repositories/writingRequestReceiptRepository', () => ({
+  upsertWritingRequestReceipt: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockUpsertWritingRequestReceipt = upsertWritingRequestReceipt as jest.Mock;
+
 const truth: UserRevisionFrozenTruth = {
   version: 1,
   scenario: 'outline',
@@ -40,6 +48,10 @@ function result(text: string) {
 }
 
 describe('user revision safety', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('uses Continuation Patch and preserves text outside a multi-paragraph selection', () => {
     const body = '前文。\n\n旧句一。\n\n旧句二。\n\n后文。';
     const start = body.indexOf('旧句一');
@@ -143,6 +155,11 @@ describe('user revision safety', () => {
     expect(call).toHaveBeenCalledTimes(1);
     expect(call.mock.calls[0][2].thinking).toEqual({ type: 'enabled' });
     expect(call.mock.calls[0][2].responseFormat).toBeUndefined();
+    expect(
+      mockUpsertWritingRequestReceipt.mock.calls.map(
+        callArgs => callArgs[0].previewState,
+      ),
+    ).toEqual(['started', 'pending', 'failed']);
   });
 
   it('rejects tolerant-parser wrappers for targeted revision', async () => {
@@ -235,6 +252,8 @@ describe('user revision safety', () => {
     expect(preview.state).toBe('pending');
     expect(preview.candidateBody).toBe('雨声压住了屋檐，门外的脚步越来越近。');
     expect(call).toHaveBeenCalledTimes(3);
-    expect(discardUserRevisionPreview(preview).state).toBe('discarded');
+    await expect(discardUserRevisionPreview(preview)).resolves.toMatchObject({
+      state: 'discarded',
+    });
   });
 });

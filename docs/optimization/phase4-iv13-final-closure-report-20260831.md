@@ -1,5 +1,7 @@
 # TAVO-MINI Phase IV-13 Final Closure Report（最后一轮收尾与最终封板报告）
 
+> Historical Evidence（2026-08-31）：本报告已由 IV-13U 重新审计；其中的结论与分母不代表当前 Phase IV 状态。
+
 日期：2026-08-31（Asia/Shanghai）
 施工仓：`F:\ClaudeWorkSpace\projects\TAVO-MINI`
 基线：`origin/main == HEAD == 8e27a87e7d6e86d8071087573b38145ceebc2b62`（开工时同步，无 ahead/behind）

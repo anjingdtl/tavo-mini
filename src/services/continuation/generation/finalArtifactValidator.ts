@@ -63,12 +63,6 @@ const SUMMARY_PHRASES = [
   '随后众人',
   '经过一番',
   '最终他们',
-  '以上为修订',
-  '其余内容不变',
-  '以下为修改部分',
-  '其余内容保持不变',
-  '以下是修改',
-  '修改说明',
   '此处省略',
   '内容略',
   '（略）',
@@ -78,16 +72,6 @@ const SUMMARY_PHRASES = [
   '全文从略',
 ];
 
-const PROMPT_LEAK_PATTERNS = [
-  /你是 Continuation V5/i,
-  /【输出契约】/,
-  /schemaVersion\s*[:=]\s*1/,
-  /finalObligations/,
-  /appliedObligationIds/,
-  /system prompt/i,
-  /<\/?think>/i,
-];
-
 function looksLikeSummary(content: string): boolean {
   const han = countHanCharacters(content);
   if (han < 80) return true;
@@ -95,21 +79,8 @@ function looksLikeSummary(content: string): boolean {
     content.includes(phrase),
   ).length;
   if (hits >= 2 && han < 400) return true;
-  if (/^(摘要|提纲|大纲|修改说明)[:：]/.test(content.trim())) return true;
+  if (/^(摘要|提纲|大纲)[:：]/.test(content.trim())) return true;
   return false;
-}
-
-function hasProtocolLeakage(content: string): boolean {
-  if (/```/.test(content)) return true;
-  if (/^\s*\{[\s\S]*"schemaVersion"[\s\S]*\}\s*$/.test(content.trim())) {
-    return true;
-  }
-  if (/<\/?think>/i.test(content)) return true;
-  return false;
-}
-
-function hasPromptLeakage(content: string): boolean {
-  return PROMPT_LEAK_PATTERNS.some(pattern => pattern.test(content));
 }
 
 function hasWholeParagraphSelfDuplicate(content: string): boolean {
@@ -200,12 +171,6 @@ export function validateFinalArtifact(input: {
   if (looksLikeSummary(content)) {
     codes.push('final_summary_output');
   }
-  if (/其余不变|仅修改以下|patch|diff/i.test(content)) {
-    codes.push('final_patch_output');
-  }
-  if (hasProtocolLeakage(content)) {
-    codes.push('final_protocol_leakage');
-  }
   const plainText = validatePlainTextNovelBody(content);
   if (
     !plainText.valid &&
@@ -217,15 +182,11 @@ export function validateFinalArtifact(input: {
         ? 'final_prompt_leakage'
         : plainText.code === 'patch_leak'
         ? 'final_patch_output'
+        : plainText.code === 'anchor_marker_leak'
+        ? 'final_anchor_leakage'
         : 'final_protocol_leakage',
     );
     details.push(plainText.details || 'final body is not plain text');
-  }
-  if (hasPromptLeakage(content)) {
-    codes.push('final_prompt_leakage');
-  }
-  if (/⟦|⟧|<<REPAIR_|ANCHOR_/.test(content)) {
-    codes.push('final_anchor_leakage');
   }
   if (hasWholeParagraphSelfDuplicate(content)) {
     codes.push('final_self_duplicate');

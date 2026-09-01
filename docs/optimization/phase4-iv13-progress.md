@@ -1,5 +1,7 @@
 # TAVO-MINI Phase IV-13 Progress
 
+> Historical Evidence（2026-08-31）：本文件是旧 IV-13 收尾记录，不是当前状态 SSOT。当前状态与分母以 `phase4-iv13u-progress.md` 为准。
+
 施工仓：`E:\\AiWorkSpace\\tavo-mini`  
 日期：2026-08-31（Asia/Shanghai）  
 主方案：`docs/optimization/TAVO-MINI_Phase4_IV-13_FinalIntegrity_DualRevision_FinalSeal_20260831.md`

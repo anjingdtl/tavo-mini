@@ -45,7 +45,7 @@ import type { StageLlmCaller } from '../writing/scenario/continuationWritingType
 import {
   getRunById,
   listRunsForProject,
-  getLatestArtifactForStage,
+  getCurrentEligibleArtifact,
   listChecksForArtifact,
   contentRevisionHash,
 } from '../continuation/generation/generationRepository';
@@ -835,7 +835,7 @@ async function autoAdoptEligibleFinal(params: {
 }): Promise<ContinuationStepResult> {
   const { batchId, item, run, notify } = params;
   const finalArtifact: ContinuationArtifact | null =
-    await getLatestArtifactForStage(run.id, 'final');
+    await getCurrentEligibleArtifact(run.id);
   if (!finalArtifact) {
     return pauseBatchForItem(
       batchId,

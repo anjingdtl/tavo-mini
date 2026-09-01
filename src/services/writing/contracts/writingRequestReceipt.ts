@@ -274,6 +274,117 @@ export function buildWritingRequestReceipt(input: {
 }
 
 /**
+ * Build the same receipt contract for a one-off post-Freeze action that does
+ * not own a full Kernel FrozenWritingContext. User Revision still records the
+ * exact model-visible request and provider identity; unknown capability is
+ * represented by the existing zero/unknown sentinel, never a product-sized
+ * output default.
+ */
+export function buildStandaloneWritingRequestReceipt(input: {
+  requestId: string;
+  generationTraceId?: string | null;
+  writingRunId?: string | null;
+  scenario: WritingScenario;
+  stage: string;
+  provider: string;
+  providerAdapterId?: string | null;
+  llmConfigId?: number | null;
+  model: string;
+  contextWindow?: number | null;
+  maxOutputTokens?: number | null;
+  messages: ChatMessage[];
+  responseFormat: 'json_object' | 'text';
+  thinking: { type: 'enabled' | 'disabled' };
+  reasoningEffort?: ReasoningEffort;
+  freezeFingerprint?: string | null;
+  truthProjectionFingerprint?: string | null;
+  kind?: 'logical_stage' | 'formatter';
+}): WritingRequestReceipt {
+  const maxOutputTokens = readNonNegativeNumber(input.maxOutputTokens) ?? 0;
+  const provider = input.provider || 'openai_compatible';
+  const providerConfig: ProviderCapabilityConfig = {
+    provider_type: provider as 'openai_compatible',
+    model_name: input.model,
+    url: '',
+    context_window: readNonNegativeNumber(input.contextWindow) ?? undefined,
+    max_output_tokens:
+      maxOutputTokens > 0 ? maxOutputTokens : undefined,
+    provider_adapter_id: input.providerAdapterId ?? null,
+  };
+  const capability = resolveProviderCapability(providerConfig);
+  const generationTraceId = input.generationTraceId || input.requestId;
+  const writingRunId = input.writingRunId || input.requestId;
+  const messagesFingerprint = fingerprintWritingMessages(input.messages);
+  const stageProjectionFingerprint = sha256Hex(
+    stableWritingJson({
+      version: 1,
+      stage: input.stage,
+      freezeFingerprint: input.freezeFingerprint || '',
+      truthProjectionFingerprint: input.truthProjectionFingerprint || '',
+    }),
+  );
+  const identity: WritingRequestIdentity = {
+    stage: input.stage,
+    kind: input.kind || 'logical_stage',
+    qualityProfile: null,
+    executionProfile: 'standard',
+    provider,
+    model: input.model,
+    thinking: input.thinking,
+    reasoningEffort: input.reasoningEffort,
+    promptCompilerVersion: SHARED_PROMPT_COMPILER_VERSION,
+    freezeFingerprint: input.freezeFingerprint || '',
+    truthProjectionFingerprint: input.truthProjectionFingerprint || '',
+    stageProjectionFingerprint,
+    messagesFingerprint,
+    maxOutputTokens,
+    responseFormat: input.responseFormat,
+  };
+  return {
+    version: 1,
+    requestId: input.requestId,
+    generationTraceId,
+    writingRunId,
+    scenario: input.scenario,
+    ...identity,
+    providerAdapterId:
+      input.providerAdapterId || capability.adapterId || null,
+    llmConfigId: input.llmConfigId ?? null,
+    requestFingerprint: computeWritingRequestFingerprint(identity),
+    reasoningEffortWire: resolveProviderReasoningEffort({
+      capability,
+      thinking: input.thinking,
+      requestedEffort: input.reasoningEffort,
+    }),
+    reasoningEffortSupport: capability.supportsReasoningEffort,
+    providerReasoningCapability: {
+      supportsThinking: capability.supportsThinking,
+      supportsReasoningEffort: capability.supportsReasoningEffort,
+      reasoningEffortMapping: capability.reasoningEffortMapping,
+      reportsReasoningTokens: capability.reportsReasoningTokens,
+      completionUsageSemantics: capability.completionUsageSemantics,
+    },
+    providerWireMaxOutput: capability.providerWireMaxOutput,
+    completionCapability: maxOutputTokens > 0 ? maxOutputTokens : null,
+    // Zero means that no explicit max_tokens was known for this standalone
+    // action; it is not a hard-coded completion budget.
+    wireMaxTokens: maxOutputTokens,
+    providerCompletionLimit: null,
+    configuredContextWindow: readNonNegativeNumber(input.contextWindow),
+    targetChars: null,
+    actualPromptTokens: null,
+    failureClass: null,
+    failurePhase: null,
+    requestMayHaveExecuted: false,
+    providerRequestId: null,
+    timings: emptyWritingRequestReceiptTimings(),
+    physicalRequestCount: 0,
+    protocolFallbackCount: 0,
+    outcome: 'started',
+  };
+}
+
+/**
  * Exact request identity. Must be a pure function of the model-visible
  * request: never requestId, Date.now, receiptSeq, or generationTraceId.
  */

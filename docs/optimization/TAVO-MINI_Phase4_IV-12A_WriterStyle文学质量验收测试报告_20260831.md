@@ -1,10 +1,12 @@
 # TAVO-MINI Phase IV IV-12A～IV-12E Writer Style 与文学质量验收测试报告
 
+> Historical Evidence（2026-08-31）：本报告中的 `PHASE IV FINAL SEALED / GO` 仅是 IV-12 历史快照，不代表当前 Phase IV 状态；当前状态以 `phase4-iv13u-progress.md` 为准。
+
 日期：2026-08-31（Asia/Shanghai）
 施工仓：`E:\AiWorkSpace\tavo-mini`
 验收主方案：[`TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`](E:/AiWorkSpace/tavo-mini/docs/optimization/TAVO-MINI_Phase4_%E4%BC%98%E5%8C%96%E5%BB%BA%E8%AE%BE%E4%B8%8EWriterStyle%E6%96%87%E5%AD%A6%E8%B4%A8%E9%87%8F%E6%9C%80%E7%BB%88%E5%B0%81%E6%9D%BF%E6%96%B9%E6%A1%88_20260831.md)
 
-## 1. 最终结论
+## 1. 历史结论（不代表当前态）
 
 本轮 IV-12A～IV-12E 的验收范围全部通过：
 
@@ -16,10 +18,10 @@
 | Narrative Quality | PASS | Scene Completion、Beat Realization、Character Consistency、Causal Continuity、Ending Effectiveness 全部逐样本 PASS |
 | Engineering | PASS | `npm run verify`、targeted Jest、typecheck、lint quiet、Elastic、version、APK、`adb install -r`、crash/ANR 检查全部通过 |
 
-因此，当前代码与本轮脱敏证据满足：
+因此，当时绑定的代码与本轮脱敏证据满足：
 
 ```text
-PHASE IV FINAL SEALED / GO
+历史封板语句：PHASE IV FINAL SEALED / GO
 ```
 
 本结论只针对本报告所绑定的 Writer Style 投影、生产代码状态和证据工件。后续如改动生产 Prompt 或 Completion Boundary wording，必须重新执行方案规定的 pathological equivalent 3/3、5 章、10 章验证；本轮没有生产 Prompt 改动，因此该条件未被触发。

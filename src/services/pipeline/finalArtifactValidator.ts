@@ -44,15 +44,6 @@ export interface FinalValidatorResult {
   warnings?: FinalValidatorCode[];
 }
 
-const ANCHOR_MARKER_RE = /\[draft-p-\d{3}/;
-
-const PROMPT_LEAK_FINGERPRINTS = [
-  '你是终稿修订员',
-  '【修订合同（Edit Work Packet）',
-  '【不可违背的项目约束】',
-  '修订合同中的',
-];
-
 /** Whole-text duplicate paragraph detection (≥3 repeats of a large chunk). */
 function detectWholeParagraphDuplicate(body: string): boolean {
   const paragraphs = body
@@ -75,16 +66,6 @@ const TERMINAL_PUNCT_RE = /[。！？…!?.。"」』"'）)]$/;
 
 const OMISSION_MARKER_RE =
   /(未完待续|以下省略|内容省略|其余省略|后略|余略|以此类推|中略)/;
-
-/** Whether the body tail ends on an unclosed technical separator. */
-function isUnclosedTechnicalTail(body: string): boolean {
-  return (
-    /```$/.test(body) ||
-    /<\/?(think|system|user|assistant)$/.test(body) ||
-    body.endsWith('【') ||
-    (body.endsWith('】') === false && /【[^】]*$/.test(body))
-  );
-}
 
 /**
  * Whether the body tail reads as cut mid-clause: the LAST 20 characters
@@ -154,69 +135,20 @@ export function validateFinalArtifact(params: {
     return { valid: false, code: 'empty', details: '终稿为空' };
   }
 
-  // Technical leakage checks.
-  if (/<think[\s\S]*?<\/think>/i.test(body) || /^<think\b/i.test(body)) {
-    return {
-      valid: false,
-      code: 'think_leak',
-      details: '正文含 <think> 推理泄漏',
-    };
-  }
-  for (const fp of PROMPT_LEAK_FINGERPRINTS) {
-    if (body.includes(fp)) {
-      return {
-        valid: false,
-        code: 'prompt_leak',
-        details: `泄漏提示词片段: ${fp}`,
-      };
-    }
-  }
-  if (ANCHOR_MARKER_RE.test(body)) {
-    return {
-      valid: false,
-      code: 'anchor_marker_leak',
-      details: '正文含锚点标记',
-    };
-  }
-  if (params.contractJson && params.contractJson.trim().length > 0) {
-    const contractSample = params.contractJson
-      .slice(0, Math.min(params.contractJson.length, 400))
-      .replace(/\s+/g, '');
-    const bodyCompact = body.replace(/\s+/g, '');
-    if (
-      bodyCompact.includes(contractSample.slice(0, 80)) &&
-      bodyCompact.length < contractSample.length * 2 + 200
-    ) {
-      return {
-        valid: false,
-        code: 'contract_json_leak',
-        details: '输出疑似直接回显修订合同 JSON',
-      };
-    }
-  }
-  // Patch / change-note fingerprints.
-  if (
-    body.includes('其余内容不变') ||
-    body.includes('修改说明') ||
-    body.includes('以上为修改') ||
-    /^[-+]{3}\s/m.test(body) ||
-    body.startsWith('diff') ||
-    body.startsWith('```diff')
-  ) {
-    return {
-      valid: false,
-      code: 'patch_leak',
-      details: '输出疑似 patch/diff/修改说明',
-    };
-  }
-
-  const plainText = validatePlainTextNovelBody(body);
+  // Technical body legality has one authority. This validator only maps the
+  // shared result to the historical Outline diagnostic vocabulary.
+  const plainText = validatePlainTextNovelBody(body, {
+    contractJson: params.contractJson,
+  });
   if (!plainText.valid) {
     // Preserve the historical diagnostic for an output that visibly stops at
     // an unfinished fence/technical tail; callers already treat that code as
     // a truncation failure. All other protocol wrappers fail closed with the
     // more precise shared contract code.
-    if (plainText.code === 'markdown_fence' && body.trim().endsWith('```')) {
+    if (
+      plainText.code === 'markdown_fence' &&
+      body.trim().endsWith('```')
+    ) {
       return {
         valid: false,
         code: 'finish_length_incomplete',
@@ -227,8 +159,10 @@ export function validateFinalArtifact(params: {
       json_wrapper: 'json_wrapper',
       markdown_fence: 'markdown_fence',
       protocol_leak: 'protocol_leak',
-      prompt_leak: 'model_explanation_leak',
+      prompt_leak: 'prompt_leak',
       patch_leak: 'patch_leak',
+      contract_json_leak: 'contract_json_leak',
+      anchor_marker_leak: 'anchor_marker_leak',
       duplicate_title_wrapper: 'duplicate_title_wrapper',
       reasoning_leak: 'think_leak',
       unclosed_protocol: 'finish_length_incomplete',
@@ -255,7 +189,6 @@ export function validateFinalArtifact(params: {
   // blocks a full chapter.
   if (params.finishReason === 'length') {
     const signals: string[] = [];
-    if (isUnclosedTechnicalTail(body)) signals.push('尾部未闭合技术分隔符');
     if (endsMidSentence(body)) signals.push('句尾未闭合');
     if (hasUnclosedOpeningTail(body)) signals.push('引号/括号未闭合');
     if (hasOmissionMarker(body)) signals.push('省略/续写标记');
@@ -288,15 +221,6 @@ export function validateFinalArtifact(params: {
     if (ratio < 0.2 && summaryDominated) {
       warnings.push('catastrophic_collapse');
     }
-  }
-
-  // Unclosed technical separator at tail (independent of finishReason).
-  if (isUnclosedTechnicalTail(body)) {
-    return {
-      valid: false,
-      code: 'finish_length_incomplete',
-      details: '尾部停在未闭合的技术性分隔符',
-    };
   }
 
   return {

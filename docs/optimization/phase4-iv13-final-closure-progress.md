@@ -1,5 +1,7 @@
 # Phase IV-13 Final Closure Progress（最后一轮收尾进度）
 
+> Historical Evidence（2026-08-31）：本文件的 HOLD 与旧分母只保留历史轨迹；当前状态与分母以 `phase4-iv13u-progress.md` 为准。
+
 日期：2026-08-31（Asia/Shanghai）
 主方案：`docs/optimization/TAVO-MINI_Phase4_IV13_Final_Closure_Plan_20260831.md`
 状态：**PHASE IV FINAL SEAL HOLD / NO-GO**（六场景中 A1/A2/A3/B1/B2 全 PASS，

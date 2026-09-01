@@ -1,7 +1,7 @@
 # TAVO-MINI Phase IV Progress
 
 施工仓：`E:\\AiWorkSpace\\tavo-mini`
-唯一主方案：`docs/optimization/TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`
+当前主方案：`docs/optimization/TAVO-MINI_Phase4_IV13U_一致性与唯一性收口修复方案_20260901.md`
 开工日期：2026-08-30（Asia/Shanghai）
 IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 
@@ -26,20 +26,19 @@ IV-12A 开工时 HEAD / origin/main：`24b65486337cf0c45a2a5aa9d82661d0f1644f23`
 | IV-7 真实 5/10 章连续运行 | DONE | DONE（`phase4ContinuousHarness.test.ts` Red-first） | DONE（纯汇总器；无新增生产 Gate/LLM stage） | DONE（full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped；typecheck、lint、elastic、version） | HOLD（signed release `adb install -r`、UI/数据保护通过；真实 provider HTTP 401，未形成 5/10 paid 分母） | `NO-GO/HOLD`：安全证据通过但真实 5/10 样本缺失；进入 IV-8 闭环，不发布虚假 GO |
 | IV-8 Final Seal | DONE | DONE（Required Gate 审计先识别 current paid sample 缺失） | DONE（closure matrix + final report；不新增生产 Gate/LLM stage） | DONE（继承 IV-7 full verify：531 suites passed / 3 skipped；3751 tests passed / 8 skipped） | HOLD（继承 IV-7 signed release/UI/logcat；provider HTTP 401，5/10 real paid sample 缺失） | `PHASE IV FINAL SEAL HOLD / NO-GO`：不发布虚假 `PHASE IV FINAL SEALED / GO` |
 
-## 当前状态指针（IV-12A～E）
+## 当前状态指针（IV-13U）
 
-当前唯一有效阶段结论为下文 `IV-12A～E Writer Style / Literary Quality Final Seal`：
+当前唯一有效阶段结论为 [`phase4-iv13u-progress.md`](phase4-iv13u-progress.md)：
 
 ```text
-Safety PASS
-Throughput PASS
-Writer Style PASS
-Narrative Quality PASS
-Engineering PASS
+U1-U6 consistency/uniqueness PASS
+R1/R2 PASS
+A3 3/3 PASS
+Continuation B3 3/3 (batch_mti4bayt_zhh5gp, writing_mode=continuation)
 PHASE IV FINAL SEALED / GO
 ```
 
-上表 IV-0～IV-8 的 HOLD/NO-GO 是 Historical Evidence 快照，不是当前态；IV-9～IV-11 的旧结算同样只作为历史证据保留。
+上表 IV-0～IV-12 的旧结算均为 Historical Evidence，不是当前态；当前分母不吸收旧 20 章长测或旧 IV-12 GO。
 
 ## Historical Evidence — IV-0 证据索引（封存）
 
@@ -242,7 +241,9 @@ IV-6 已完成可复现的历史 A/B 比较器与审计表：历史稳定结果�
 - Plan delta：`__tests__/phase4Iv11PlanDelta.test.ts`
 - Android 终态快照：`test-logs/phase4-iv11-android-20260831/`
 
-## IV-12A～E Writer Style / Literary Quality Final Seal（2026-08-31）
+## Historical Evidence — IV-12A～E Writer Style / Literary Quality Final Seal（2026-08-31）
+
+> 本节的 GO 是当时的历史快照，不代表当前 Phase IV 状态；当前状态由 IV-13U progress SSOT 维护。
 
 本轮按新主方案从 IV-12A 开始自主完成 PDCA。文学评测严格停留在 Test/Evidence/Acceptance 层，真实项目 Writer Style 作为唯一 SSOT；没有新增生产 Judge LLM、文学 Gate、自动 retry/re-plan、第二 Writer、第二 Context 或固定业务 maxTokens。
 

@@ -1,3 +1,7 @@
+# 历史证据（Historical Evidence）
+
+> 本文档为 2026-08-31 的 IV-13 历史收尾方案，不是当前 Phase IV 状态或验收分母 SSOT。当前口径以 `docs/optimization/phase4-iv13u-progress.md` 及 `docs/optimization/phase4-iv13u-final-report-20260901.md` 为准；其中旧版 GO 语句不得替代当前 HOLD / NO-GO 结论。
+
 # TAVO-MINI Phase IV-13 Final Closure Plan（最后一轮收尾与最终封板方案）
 
 日期：2026-08-31（Asia/Shanghai）

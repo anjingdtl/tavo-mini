@@ -126,6 +126,11 @@ const ARTIFACT_METADATA_SELECT = `
   id, run_id, stage, repair_round, parent_artifact_id,
   NULL AS content, content_hash, eligibility_status, rejection_code, created_at`;
 
+const CURRENT_ARTIFACT_METADATA_SELECT = `
+  a.id, a.run_id, a.stage, a.repair_round, a.parent_artifact_id,
+  NULL AS content, a.content_hash, a.eligibility_status,
+  a.rejection_code, a.created_at`;
+
 const STAGE_RESULT_METADATA_SELECT = `
   id, run_id, stage, status, request_reserved, request_count,
   model_config_id, input_tokens, output_tokens, min_output_tokens,
@@ -1190,6 +1195,162 @@ export async function getLatestEligibleArtifact(
   return materializeArtifactRow(res.rows.item(0));
 }
 
+/**
+ * Read the one explicit Current Final Authority for a run. Historical
+ * eligible artifacts are intentionally not consulted here: if the pointer is
+ * absent or corrupt, the caller must fail closed instead of guessing a latest
+ * row by created_at.
+ */
+export async function getCurrentEligibleArtifact(
+  runId: string,
+): Promise<ContinuationArtifact | null> {
+  const db = await openDatabase();
+  const [res] = await db.executeSql(
+    `SELECT ${CURRENT_ARTIFACT_METADATA_SELECT}
+       FROM continuation_generation_artifacts AS a
+       JOIN continuation_current_final_authorities AS authority
+         ON authority.active_final_artifact_id = a.id
+        AND authority.run_id = a.run_id
+      WHERE authority.run_id = ?
+        AND a.stage IN ('writer', 'repair', 'user_edit', 'final')
+        AND a.eligibility_status = 'eligible'
+      LIMIT 1`,
+    [runId],
+  );
+  if (res.rows.length === 0) return null;
+  return materializeArtifactRow(res.rows.item(0));
+}
+
+/**
+ * Atomically append one Final history row and move the run's single current
+ * pointer with compare-and-set semantics. The expected pointer is part of
+ * the write identity, so a stale User Revision cannot overwrite a newer
+ * result that appeared while its model call was running.
+ */
+export async function insertFinalArtifactAndActivate(input: {
+  runId: string;
+  content: string;
+  parentArtifactId?: string | null;
+  expectedCurrentArtifactId: string | null;
+  repairRound?: number;
+  createdAt?: string;
+}): Promise<ContinuationArtifact> {
+  const db = await openDatabase();
+  const [authority] = await db.executeSql(
+    `SELECT active_final_artifact_id
+       FROM continuation_current_final_authorities
+      WHERE run_id = ?`,
+    [input.runId],
+  );
+  const actualCurrent =
+    authority.rows.length > 0
+      ? String(authority.rows.item(0).active_final_artifact_id || '')
+      : null;
+  if (actualCurrent !== input.expectedCurrentArtifactId) {
+    throw new Error('续写 Current Final Authority 已变化，写入被拒绝');
+  }
+
+  const id = `ca_${v4().replace(/-/g, '')}`;
+  const createdAt = input.createdAt ?? nowIso();
+  const contentHash = sha256Hex(input.content);
+  const statements: Array<{ sql: string; params?: any[] }> = [
+    {
+      sql: `INSERT INTO continuation_generation_artifacts (
+        id, run_id, stage, repair_round, parent_artifact_id, content,
+        content_hash, eligibility_status, rejection_code, created_at
+      ) VALUES (?, ?, 'final', ?, ?, ?, ?, 'eligible', NULL, ?)`,
+      params: [
+        id,
+        input.runId,
+        input.repairRound ?? 0,
+        input.parentArtifactId ?? null,
+        input.content,
+        contentHash,
+        createdAt,
+      ],
+    },
+    {
+      sql: `INSERT INTO continuation_current_final_authorities (
+        run_id, active_final_artifact_id, updated_at
+      ) VALUES (?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        active_final_artifact_id = excluded.active_final_artifact_id,
+        updated_at = excluded.updated_at
+      WHERE continuation_current_final_authorities.active_final_artifact_id = ?`,
+      params: [input.runId, id, createdAt, input.expectedCurrentArtifactId],
+    },
+  ];
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (oneBasedIndex === 2 && rowsAffected !== 1) {
+        throw new Error('续写 Current Final Authority CAS 冲突，事务回滚');
+      }
+    },
+  });
+  const artifact = await getArtifactById(id);
+  if (!artifact) throw new Error('Current Final 写入后读取失败');
+  return artifact;
+}
+
+/** Move only an already-existing eligible Final row under CAS. */
+export async function setCurrentFinalArtifact(input: {
+  runId: string;
+  artifactId: string;
+  expectedCurrentArtifactId: string | null;
+  updatedAt?: string;
+}): Promise<void> {
+  const db = await openDatabase();
+  const ts = input.updatedAt ?? nowIso();
+  const [authority] = await db.executeSql(
+    `SELECT active_final_artifact_id
+       FROM continuation_current_final_authorities
+      WHERE run_id = ?`,
+    [input.runId],
+  );
+  const actualCurrent =
+    authority.rows.length > 0
+      ? String(authority.rows.item(0).active_final_artifact_id || '')
+      : null;
+  if (actualCurrent !== input.expectedCurrentArtifactId) {
+    throw new Error('续写 Current Final Authority CAS 冲突');
+  }
+  const [artifact] = await db.executeSql(
+    `SELECT id
+       FROM continuation_generation_artifacts
+      WHERE id = ? AND run_id = ?
+        AND stage = 'final' AND eligibility_status = 'eligible'`,
+    [input.artifactId, input.runId],
+  );
+  if (artifact.rows.length === 0) {
+    throw new Error('目标 Final artifact 不存在或不可用');
+  }
+  const statement = actualCurrent == null
+    ? {
+        sql: `INSERT INTO continuation_current_final_authorities (
+          run_id, active_final_artifact_id, updated_at
+        ) VALUES (?, ?, ?)`,
+        params: [input.runId, input.artifactId, ts],
+      }
+    : {
+        sql: `UPDATE continuation_current_final_authorities
+                 SET active_final_artifact_id = ?, updated_at = ?
+               WHERE run_id = ? AND active_final_artifact_id = ?`,
+        params: [
+          input.artifactId,
+          ts,
+          input.runId,
+          input.expectedCurrentArtifactId,
+        ],
+      };
+  await executeTransaction(db, [statement], {
+    onStatementComplete: (_oneBasedIndex, rowsAffected) => {
+      if (rowsAffected !== 1) {
+        throw new Error('续写 Current Final Authority CAS 冲突');
+      }
+    },
+  });
+}
+
 /** Read the newest artifact for one producing stage. */
 export async function getLatestArtifactForStage(
   runId: string,
@@ -1580,19 +1741,37 @@ export async function finalizeContinuationV5Final(input: {
 }> {
   const db = await openDatabase();
   const ts = input.ts ?? nowIso();
-  const artifactId = `ca_${v4().replace(/-/g, '')}`;
-  // V3 Final may equal V2 Revision/Draft; Schema 57 keeps that body exact.
-  const uniqueContent = await ensureUniqueArtifactContent(
-    input.runId,
-    input.content,
-    'final',
+  const contentHash = sha256Hex(input.content);
+  const [existingFinalRows] = await db.executeSql(
+    `SELECT ${ARTIFACT_METADATA_SELECT}
+       FROM continuation_generation_artifacts
+      WHERE run_id = ? AND stage = 'final' AND content_hash = ?
+      LIMIT 1`,
+    [input.runId, contentHash],
   );
-  const contentHash = sha256Hex(uniqueContent);
+  const existingFinal =
+    existingFinalRows.rows.length > 0
+      ? await materializeArtifactRow(existingFinalRows.rows.item(0))
+      : null;
+  if (existingFinal && existingFinal.content !== input.content) {
+    throw new Error('续写 Final content_hash 冲突，拒绝篡改正文 fingerprint');
+  }
+  if (
+    existingFinal &&
+    existingFinal.eligibilityStatus !== input.eligibilityStatus
+  ) {
+    throw new Error('续写 Final 历史行状态不一致，拒绝覆盖不可变历史');
+  }
+  // Schema 57 keeps same-stage bodies unique. Reuse an exact historical row
+  // when a retry reaches the same body; never append invisible salt to a Final
+  // body because that would change the shared fingerprint.
+  const artifactId = existingFinal?.id ?? `ca_${v4().replace(/-/g, '')}`;
   const expectedStates = input.expectedRunStates ?? ['running'];
   const statePlaceholders = expectedStates.map(() => '?').join(', ');
   const runState = input.runState ?? 'awaiting_user';
-  const statements: Array<{ sql: string; params?: any[] }> = [
-    {
+  const statements: Array<{ sql: string; params?: any[] }> = [];
+  if (!existingFinal) {
+    statements.push({
       sql: `INSERT INTO continuation_generation_artifacts (
         id, run_id, stage, repair_round, parent_artifact_id, content,
         content_hash, eligibility_status, rejection_code, created_at
@@ -1601,14 +1780,14 @@ export async function finalizeContinuationV5Final(input: {
         artifactId,
         input.runId,
         input.parentArtifactId,
-        uniqueContent,
+        input.content,
         contentHash,
         input.eligibilityStatus,
         input.rejectionCode ?? null,
         ts,
       ],
-    },
-  ];
+    });
+  }
   const reviserUpdateIndex = statements.length + 1;
   statements.push({
     sql: `UPDATE continuation_generation_stage_results SET
@@ -1647,6 +1826,24 @@ export async function finalizeContinuationV5Final(input: {
       input.runId,
     ],
   });
+  const authorityUpdateIndex = statements.length + 1;
+  statements.push(
+    input.eligibilityStatus === 'eligible'
+      ? {
+          sql: `INSERT INTO continuation_current_final_authorities (
+            run_id, active_final_artifact_id, updated_at
+          ) VALUES (?, ?, ?)
+          ON CONFLICT(run_id) DO UPDATE SET
+            active_final_artifact_id = excluded.active_final_artifact_id,
+            updated_at = excluded.updated_at`,
+          params: [input.runId, artifactId, ts],
+        }
+      : {
+          sql: `DELETE FROM continuation_current_final_authorities
+                 WHERE run_id = ? AND active_final_artifact_id = ?`,
+          params: [input.runId, artifactId],
+        },
+  );
   statements.push({
     sql: `UPDATE continuation_generation_runs SET
         state = ?, stage = 'awaiting_user',
@@ -1676,6 +1873,13 @@ export async function finalizeContinuationV5Final(input: {
       }
       if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
         throw new Error('续写 V5 finalize 发现 run 状态已变化，事务回滚');
+      }
+      if (
+        oneBasedIndex === authorityUpdateIndex &&
+        input.eligibilityStatus === 'eligible' &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V5 Final Authority 写入失败，事务回滚');
       }
     },
   });
@@ -1771,7 +1975,39 @@ export async function finalizeContinuationV5ValidatorOnly(input: {
       ],
     },
   ];
-  await executeTransaction(db, statements);
+  // The authority statement is inserted between the artifact and run-state
+  // updates, so it is statement 3 in this three-step settlement.
+  const authorityUpdateIndex = 3;
+  statements.splice(
+    2,
+    0,
+    input.eligibilityStatus === 'eligible'
+      ? {
+          sql: `INSERT INTO continuation_current_final_authorities (
+            run_id, active_final_artifact_id, updated_at
+          ) VALUES (?, ?, ?)
+          ON CONFLICT(run_id) DO UPDATE SET
+            active_final_artifact_id = excluded.active_final_artifact_id,
+            updated_at = excluded.updated_at`,
+          params: [input.runId, input.finalArtifactId, ts],
+        }
+      : {
+          sql: `DELETE FROM continuation_current_final_authorities
+                 WHERE run_id = ? AND active_final_artifact_id = ?`,
+          params: [input.runId, input.finalArtifactId],
+        },
+  );
+  await executeTransaction(db, statements, {
+    onStatementComplete: (oneBasedIndex, rowsAffected) => {
+      if (
+        oneBasedIndex === authorityUpdateIndex &&
+        input.eligibilityStatus === 'eligible' &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V5 Final Authority 写入失败，事务回滚');
+      }
+    },
+  });
   const result = await getStageResult(input.runId, 'final_validate');
   if (!result) throw new Error('续写 V5 validator-only finalize 读取失败');
   return result;
@@ -1880,6 +2116,35 @@ export async function finalizeContinuationV4Repair(
       ],
     },
   ];
+  let authorityUpdateIndex = -1;
+  if (input.eligibilityStatus === 'eligible') {
+    const [authority] = await db.executeSql(
+      `SELECT active_final_artifact_id
+         FROM continuation_current_final_authorities
+        WHERE run_id = ?`,
+      [input.runId],
+    );
+    const expectedCurrent =
+      authority.rows.length > 0
+        ? String(authority.rows.item(0).active_final_artifact_id || '')
+        : null;
+    authorityUpdateIndex = statements.length + 1;
+    statements.push(
+      expectedCurrent == null
+        ? {
+            sql: `INSERT INTO continuation_current_final_authorities (
+              run_id, active_final_artifact_id, updated_at
+            ) VALUES (?, ?, ?)`,
+            params: [input.runId, artifactId, ts],
+          }
+        : {
+            sql: `UPDATE continuation_current_final_authorities
+                     SET active_final_artifact_id = ?, updated_at = ?
+                   WHERE run_id = ? AND active_final_artifact_id = ?`,
+            params: [artifactId, ts, input.runId, expectedCurrent],
+          },
+    );
+  }
 
   for (const check of input.localChecks ?? []) {
     statements.push({
@@ -1980,6 +2245,12 @@ export async function finalizeContinuationV4Repair(
       }
       if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
         throw new Error('续写 V4 finalize 发现 run 状态已变化，事务回滚');
+      }
+      if (
+        oneBasedIndex === authorityUpdateIndex &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V4 Final Authority 写入失败，事务回滚');
       }
     },
   });
@@ -2180,6 +2451,16 @@ export async function finalizeContinuationV4LocalGate(
   const ts = input.ts ?? nowIso();
   const expectedStates = input.expectedRunStates ?? ['running'];
   const statePlaceholders = expectedStates.map(() => '?').join(', ');
+  const [authority] = await db.executeSql(
+    `SELECT active_final_artifact_id
+       FROM continuation_current_final_authorities
+      WHERE run_id = ?`,
+    [input.runId],
+  );
+  const expectedCurrent =
+    authority.rows.length > 0
+      ? String(authority.rows.item(0).active_final_artifact_id || '')
+      : null;
   const statements: Array<{ sql: string; params?: any[] }> = [
     {
       sql: `UPDATE continuation_generation_artifacts SET
@@ -2235,6 +2516,33 @@ export async function finalizeContinuationV4LocalGate(
       params: [ts, input.runId, input.writerArtifactId],
     });
   }
+  const authorityUpdateIndex = statements.length + 1;
+  statements.push(
+    input.eligibilityStatus === 'eligible'
+      ? expectedCurrent == null
+        ? {
+            sql: `INSERT INTO continuation_current_final_authorities (
+              run_id, active_final_artifact_id, updated_at
+            ) VALUES (?, ?, ?)`,
+            params: [input.runId, input.repairArtifactId, ts],
+          }
+        : {
+            sql: `UPDATE continuation_current_final_authorities
+                     SET active_final_artifact_id = ?, updated_at = ?
+                   WHERE run_id = ? AND active_final_artifact_id = ?`,
+            params: [
+              input.repairArtifactId,
+              ts,
+              input.runId,
+              expectedCurrent,
+            ],
+          }
+      : {
+          sql: `DELETE FROM continuation_current_final_authorities
+                 WHERE run_id = ? AND active_final_artifact_id = ?`,
+          params: [input.runId, input.repairArtifactId],
+        },
+  );
   const localVerifyStatus = input.localVerifyStatus ?? 'success';
   const localVerifyUpdateIndex = statements.length + 1;
   statements.push({
@@ -2271,6 +2579,13 @@ export async function finalizeContinuationV4LocalGate(
       }
       if (oneBasedIndex === finalUpdateIndex && rowsAffected !== 1) {
         throw new Error('续写 V4 local gate 发现 run 状态已变化，事务回滚');
+      }
+      if (
+        oneBasedIndex === authorityUpdateIndex &&
+        input.eligibilityStatus === 'eligible' &&
+        rowsAffected !== 1
+      ) {
+        throw new Error('续写 V4 Final Authority 写入失败，事务回滚');
       }
     },
   });

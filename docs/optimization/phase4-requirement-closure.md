@@ -1,16 +1,18 @@
 # TAVO-MINI Phase IV Requirement Closure
 
-日期：2026-08-31（Asia/Shanghai）
+日期：2026-09-01（Asia/Shanghai）
 施工仓：`E:\AiWorkSpace\tavo-mini`
-唯一主方案：[`TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`](E:/AiWorkSpace/tavo-mini/docs/optimization/TAVO-MINI_Phase4_%E4%BC%98%E5%8C%96%E5%BB%BA%E8%AE%BE%E4%B8%8EWriterStyle%E6%96%87%E5%AD%A6%E8%B4%A8%E9%87%8F%E6%9C%80%E7%BB%88%E5%B0%81%E6%9D%BF%E6%96%B9%E6%A1%88_20260831.md)
+当前主方案：`docs/optimization/TAVO-MINI_Phase4_IV13U_一致性与唯一性收口修复方案_20260901.md`
 IV-12A 开工时 `HEAD == origin/main == 24b65486337cf0c45a2a5aa9d82661d0f1644f23`。
-当前状态：`PHASE IV FINAL SEALED / GO`
+当前状态以 [`phase4-iv13u-progress.md`](phase4-iv13u-progress.md) 为唯一 SSOT：`PHASE IV FINAL SEALED / GO`
 
-## 当前结论（IV-12A～E）
+## Historical Evidence — IV-12A～E 结论（不代表当前态）
+
+历史封板语句（不代表当前态）：`PHASE IV FINAL SEALED / GO`
 
 IV-12A～E 完成了以真实 Writer Style 为 SSOT 的 Style Requirement / Adherence 合同、4 类计划 × Fast/Standard/Quality 同题 A/B、Narrative Completion 验收和 Completion Boundary 文学回归。12 个样本全部有效：三档均 4/4 完成与 first-pass；25/25 条 Style Requirement 均完成评测，Adherence=1.0、Hard Style Violation=0、Style Drift=0；Scene Completion、Beat Realization、Character Consistency、Causal Continuity、Ending Effectiveness 及 Boundary 五项均 PASS。
 
-当前 Required Gates：
+Historical Required Gates（IV-12）：
 
 | Required Gate | 结果 | 证据与边界 |
 | --- | --- | --- |
@@ -49,7 +51,7 @@ IV-12A～E 完成了以真实 Writer Style 为 SSOT 的 Style Requirement / Adhe
 9. **P0 安全是否全部保留？** 代码/确定性检查/历史证据层面是；当前真实 5/10 Android 运行仍待凭据恢复后补证。P0 逐项见下表。
 10. **是否回到正常写作链而非工程协议链？** 是（实现方向）。Compact 主链为 `Freeze → Draft → ONE QA → (optional Revision) → local Persistence Boundary`，不新增 LLM stage；最终 E2E 通过率仍需真实样本确认。
 
-## P0 Closure（当前 IV-12）
+## Historical Evidence — P0 Closure（IV-12）
 
 | P0 | 闭环状态 | 证据/说明 |
 | --- | --- | --- |
@@ -67,7 +69,7 @@ IV-12A～E 完成了以真实 Writer Style 为 SSOT 的 Style Requirement / Adhe
 | P0-12 Resume / Idempotency 不退化 | PASS（确定性/历史回归） | Persistence Boundary、continuous harness、C8 证据与本轮 DB 快照恢复均通过 |
 | P0-13 不允许 Canon / Story Memory 污染 | PASS（确定性） | `canon_state_safety` 保持 Hard Block；状态 sidecar 非法可舍弃但不污染正文状态 |
 
-## 当前 Evidence Index（IV-12）
+## Historical Evidence Index（IV-12）
 
 - Writer Style / Narrative / Boundary 报告：`docs/optimization/TAVO-MINI_Phase4_IV-12A_WriterStyle文学质量验收测试报告_20260831.md`
 - 脱敏 annotations：`test-logs/phase4-iv12a-20260831/annotations-v2.json`

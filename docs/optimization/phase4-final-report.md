@@ -1,12 +1,18 @@
 # TAVO-MINI Phase IV Final Report
 
-日期：2026-08-31（Asia/Shanghai）
+日期：2026-09-01（Asia/Shanghai）
 施工仓：`E:\AiWorkSpace\tavo-mini`
-唯一主方案：[`TAVO-MINI_Phase4_优化建设与WriterStyle文学质量最终封板方案_20260831.md`](E:/AiWorkSpace/tavo-mini/docs/optimization/TAVO-MINI_Phase4_%E4%BC%98%E5%8C%96%E5%BB%BA%E8%AE%BE%E4%B8%8EWriterStyle%E6%96%87%E5%AD%A6%E8%B4%A8%E9%87%8F%E6%9C%80%E7%BB%88%E5%B0%81%E6%9D%BF%E6%96%B9%E6%A1%88_20260831.md)
+当前主方案：`docs/optimization/TAVO-MINI_Phase4_IV13U_一致性与唯一性收口修复方案_20260901.md`
 
-## 当前最终判定（IV-12A～E）
+## 当前唯一判定（IV-13U）
 
 **PHASE IV FINAL SEALED / GO**
+
+当前状态与验收分母唯一以 [`phase4-iv13u-progress.md`](phase4-iv13u-progress.md) 为准。U1～U6、R1、R2、A3、B3 `3/3`、full verify、APK、`adb install -r`、DB/Receipt/UI/logcat 均已通过；当前允许封板。
+
+## Historical Evidence — IV-12A～E（不代表当前 Phase IV 状态）
+
+历史封板语句（不代表当前态）：**PHASE IV FINAL SEALED / GO**
 
 IV-12A～E 已完成 Writer Style SSOT 合同、同题三档 A/B、叙事质量验收、Completion Boundary 专项、Safety/Throughput/Android/Engineering 复核：
 
@@ -17,7 +23,7 @@ IV-12A～E 已完成 Writer Style SSOT 合同、同题三档 A/B、叙事质量�
 - Thinking enabled、Mandatory Truth 保持、Governor physical call=0、无 hidden retry/自动 re-plan；三份 SQLite integrity check=ok，Android crash/ANR=0。
 - `npm run verify`、targeted 13/13、typecheck、`lint -- --quiet`、`verify:elastic`、version、APK、`adb install -r` 全部 PASS。
 
-当前有效证据只采用 IV-12 v2 脱敏工件。下文 IV-0～IV-11 中出现的 HOLD、9/10、thinking-off 等均为已封存的 Historical Evidence，不代表当前态。
+IV-12 v2 脱敏工件仅作为 Historical Evidence 保留。下文 IV-0～IV-11 中出现的 HOLD、9/10、thinking-off 等同样不代表当前态。
 
 ## 当前保护边界与范围
 
@@ -26,7 +32,7 @@ IV-12A～E 已完成 Writer Style SSOT 合同、同题三档 A/B、叙事质量�
 - C8 Resume、C9 Observability、历史失败、`finishReason=length`、`outcome_unknown`、provider/network/parse 失败证据均保留。
 - Android 只使用 `adb install -r`；本轮矩阵使用同代码 debug APK（在装包签名约束），没有执行 `adb uninstall` 或 `pm clear`。
 
-## 当前 IV-12 PDCA 结算
+## Historical Evidence — IV-12 PDCA 结算
 
 | 环节 | 结果 |
 | --- | --- |
@@ -94,7 +100,7 @@ Freeze → Draft → ONE QA → (optional Revision) → local Persistence Bounda
 | Context block | C9 无可用分母 | Mandatory/Elastic contract 通过 | 无真实 rate 可报 |
 | Governor physical calls | `0` | `0`（代码/确定性） | 安全目标保持 |
 
-## Current Evidence Index（IV-12）
+## Historical Evidence Index（IV-12）
 
 - IV-12 Writer Style / Narrative / Boundary 报告：`docs/optimization/TAVO-MINI_Phase4_IV-12A_WriterStyle文学质量验收测试报告_20260831.md`
 - IV-12 脱敏 annotations：`test-logs/phase4-iv12a-20260831/annotations-v2.json`
@@ -125,7 +131,7 @@ Freeze → Draft → ONE QA → (optional Revision) → local Persistence Bounda
 3. 保存每章 Receipt/DB/UI/logcat，运行 `phase4ContinuousHarness` 与 `phase4HistoricalAb`。
 4. 只有 First-Pass、A/B、Context/length/unknown、DB/Receipt、Resume、无 hidden retry、Governor=0 全部满足时，才允许把最终状态改成 GO。
 
-历史快照最终状态（IV-10）：`PHASE IV FINAL SEAL HOLD / NO-GO`；当前状态已由 IV-12A～E 更新为 `PHASE IV FINAL SEALED / GO`。
+历史快照最终状态（IV-10）：`PHASE IV FINAL SEAL HOLD / NO-GO`；IV-12A～E 的 GO 只属于 Historical Evidence，当前状态由 IV-13U SSOT 维护。
 
 ## Historical Evidence — 2026-08-30 凭据恢复后真实运行补充（Pre-Seal Correction 轮）
 

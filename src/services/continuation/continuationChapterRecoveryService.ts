@@ -112,6 +112,9 @@ export async function collectRecoverableChapterBodies(
               r.chapter_id, r.target_position, r.completion_reason, r.state
        FROM continuation_generation_artifacts a
        JOIN continuation_generation_runs r ON r.id = a.run_id
+       JOIN continuation_current_final_authorities authority
+         ON authority.run_id = a.run_id
+        AND authority.active_final_artifact_id = a.id
        WHERE r.project_id = ?
          AND a.stage IN ('writer', 'repair', 'user_edit', 'final')
          AND a.eligibility_status = 'eligible'

@@ -1,7 +1,7 @@
 /**
  * P1-1 Pre-Adoption Revision: the Final Candidate Artifact is the revision
  * base. Outline candidates live in pipeline_tasks.final_text; continuation
- * candidates are the awaiting_user run's latest eligible final artifact.
+ * candidates are the awaiting_user run's explicit Current Final Authority.
  * Candidate apply writes the candidate store — never the chapter body — and
  * refuses stale candidates.
  */
@@ -32,6 +32,7 @@ const mockGetContextPayload = jest.fn();
 const mockGetLatestAcceptedTask = jest.fn();
 
 jest.mock('../src/data/repositories/pipelineTaskRepository', () => ({
+  getPipelineTaskById: (...args: unknown[]) => mockGetLatestCompletedTask(...args),
   getLatestCompletedPipelineTaskForTarget: (...args: unknown[]) =>
     mockGetLatestCompletedTask(...args),
   getPipelineTaskAdoptionPayload: (...args: unknown[]) =>
@@ -46,6 +47,7 @@ const mockFindPendingRun = jest.fn();
 const mockGetRunSnapshot = jest.fn();
 
 jest.mock('../src/services/continuation/generation', () => ({
+  getRunById: (...args: unknown[]) => mockFindPendingRun(...args),
   findLatestAdoptedRunForChapter: jest.fn(),
   findLatestPendingReviewRunForChapter: (...args: unknown[]) =>
     mockFindPendingRun(...args),
@@ -55,15 +57,28 @@ jest.mock('../src/services/continuation/generation', () => ({
 
 const mockGetLatestEligibleArtifact = jest.fn();
 const mockInsertArtifact = jest.fn();
+const mockGetCurrentEligibleArtifact = jest.fn();
+const mockGetEligibleArtifactForRun = jest.fn();
+const mockInsertFinalArtifactAndActivate = jest.fn();
 
 jest.mock(
   '../src/services/continuation/generation/generationRepository',
   () => ({
+    getCurrentEligibleArtifact: (...args: unknown[]) =>
+      mockGetCurrentEligibleArtifact(...args),
+    getEligibleArtifactForRun: (...args: unknown[]) =>
+      mockGetEligibleArtifactForRun(...args),
     getLatestEligibleArtifact: (...args: unknown[]) =>
       mockGetLatestEligibleArtifact(...args),
     insertArtifact: (...args: unknown[]) => mockInsertArtifact(...args),
+    insertFinalArtifactAndActivate: (...args: unknown[]) =>
+      mockInsertFinalArtifactAndActivate(...args),
   }),
 );
+
+jest.mock('../src/data/repositories/writingRequestReceiptRepository', () => ({
+  upsertWritingRequestReceipt: jest.fn().mockResolvedValue(undefined),
+}));
 
 const mockPersistTaskFinalText = jest.fn();
 
@@ -162,6 +177,11 @@ describe('candidate revision base (pre-adoption)', () => {
     mockCreateRevision.mockResolvedValue(77);
     mockPersistTaskFinalText.mockResolvedValue(undefined);
     mockInsertArtifact.mockResolvedValue({ id: 'ca-new' });
+    mockInsertFinalArtifactAndActivate.mockResolvedValue({ id: 'ca-new' });
+    mockGetCurrentEligibleArtifact.mockReset();
+    mockGetEligibleArtifactForRun.mockReset();
+    mockInsertFinalArtifactAndActivate.mockReset();
+    mockInsertFinalArtifactAndActivate.mockResolvedValue({ id: 'ca-new' });
   });
 
   it('loads the outline candidate from pipeline_tasks.final_text', async () => {
@@ -180,9 +200,12 @@ describe('candidate revision base (pre-adoption)', () => {
     );
 
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'outline',
+      candidateRef: {
+        kind: 'pipeline_task',
+        taskId: 'task-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
 
     expect(base.baseBody).toBe(CANDIDATE_A);
@@ -190,6 +213,8 @@ describe('candidate revision base (pre-adoption)', () => {
     expect(base.candidateRef).toEqual({
       kind: 'pipeline_task',
       taskId: 'task-1',
+      projectId: 9,
+      chapterId: 8,
     });
     expect(base.frozenTruth.freezeFingerprint).toBe('freeze-candidate');
   });
@@ -217,14 +242,29 @@ describe('candidate revision base (pre-adoption)', () => {
       content: CANDIDATE_A,
     });
 
+    mockGetCurrentEligibleArtifact.mockResolvedValue({
+      id: 'ca-final',
+      stage: 'final',
+      eligibilityStatus: 'eligible',
+      content: CANDIDATE_A,
+    });
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'continuation',
+      candidateRef: {
+        kind: 'continuation_run',
+        runId: 'run-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
 
     expect(base.baseBody).toBe(CANDIDATE_A);
-    expect(base.candidateRef).toEqual({ kind: 'continuation_run', runId: 'run-1' });
+    expect(base.candidateRef).toEqual({
+      kind: 'continuation_run',
+      runId: 'run-1',
+      projectId: 9,
+      chapterId: 8,
+      artifactId: 'ca-final',
+    });
     expect(base.frozenTruth.scenario).toBe('continuation');
   });
 
@@ -243,9 +283,12 @@ describe('candidate revision base (pre-adoption)', () => {
       JSON.stringify({ frozenWritingContext: frozenContext }),
     );
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'outline',
+      candidateRef: {
+        kind: 'pipeline_task',
+        taskId: 'task-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
 
     const preview = await createWholeChapterRewritePreview({
@@ -259,6 +302,8 @@ describe('candidate revision base (pre-adoption)', () => {
     expect(preview.candidateRef).toEqual({
       kind: 'pipeline_task',
       taskId: 'task-1',
+      projectId: 9,
+      chapterId: 8,
     });
 
     const applied = await applyUserRevisionPreviewToCandidate({ preview });
@@ -278,7 +323,8 @@ describe('candidate revision base (pre-adoption)', () => {
     );
     const sourceRef = JSON.parse(mockCreateRevision.mock.calls[0][0].sourceRef);
     expect(sourceRef.scope).toBe('pre_adoption_candidate');
-    expect(sourceRef.receipt).toBeDefined();
+    expect(sourceRef.requestId).toBe(preview.receipt.requestId);
+    expect(sourceRef.receipt).toBeUndefined();
     expect(JSON.stringify(sourceRef)).not.toContain(CANDIDATE_A);
   });
 
@@ -298,7 +344,7 @@ describe('candidate revision base (pre-adoption)', () => {
         },
       }),
     );
-    mockGetLatestEligibleArtifact
+    mockGetCurrentEligibleArtifact
       .mockResolvedValueOnce({
         id: 'ca-final',
         stage: 'final',
@@ -317,10 +363,19 @@ describe('candidate revision base (pre-adoption)', () => {
         eligibilityStatus: 'eligible',
         content: CANDIDATE_B,
       });
+    mockGetEligibleArtifactForRun.mockResolvedValue({
+      id: 'ca-final',
+      stage: 'final',
+      eligibilityStatus: 'eligible',
+      content: CANDIDATE_A,
+    });
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'continuation',
+      candidateRef: {
+        kind: 'continuation_run',
+        runId: 'run-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
     const preview = await createWholeChapterRewritePreview({
       chapter: { ...chapter, content: base.baseBody },
@@ -333,14 +388,12 @@ describe('candidate revision base (pre-adoption)', () => {
 
     await applyUserRevisionPreviewToCandidate({ preview });
 
-    expect(mockInsertArtifact).toHaveBeenCalledWith(
+    expect(mockInsertFinalArtifactAndActivate).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: 'run-1',
-        stage: 'final',
         content: CANDIDATE_B,
         parentArtifactId: 'ca-final',
-        eligibilityStatus: 'eligible',
-        requireStageMatch: true,
+        expectedCurrentArtifactId: 'ca-final',
       }),
     );
     expect(mockUpdateChapter).not.toHaveBeenCalled();
@@ -361,9 +414,12 @@ describe('candidate revision base (pre-adoption)', () => {
       JSON.stringify({ frozenWritingContext: frozenContext }),
     );
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'outline',
+      candidateRef: {
+        kind: 'pipeline_task',
+        taskId: 'task-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
     const preview = await createWholeChapterRewritePreview({
       chapter: { ...chapter, content: base.baseBody },
@@ -396,9 +452,12 @@ describe('candidate revision base (pre-adoption)', () => {
       JSON.stringify({ frozenWritingContext: frozenContext }),
     );
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'outline',
+      candidateRef: {
+        kind: 'pipeline_task',
+        taskId: 'task-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
     const preview = await createWholeChapterRewritePreview({
       chapter: { ...chapter, content: base.baseBody },
@@ -429,9 +488,12 @@ describe('candidate revision base (pre-adoption)', () => {
       JSON.stringify({ frozenWritingContext: frozenContext }),
     );
     const base = await loadUserRevisionCandidateBase({
-      projectId: 9,
-      chapterId: 8,
-      scenario: 'outline',
+      candidateRef: {
+        kind: 'pipeline_task',
+        taskId: 'task-1',
+        projectId: 9,
+        chapterId: 8,
+      },
     });
     const preview = await createWholeChapterRewritePreview({
       chapter: { ...chapter, content: base.baseBody },

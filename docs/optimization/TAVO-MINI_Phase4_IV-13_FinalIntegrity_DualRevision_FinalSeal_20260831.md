@@ -1,3 +1,7 @@
+# 历史证据（Historical Evidence）
+
+> 本文档为 2026-08-31 的 IV-13 历史方案，不是当前 Phase IV 状态或验收分母 SSOT。当前口径以 `docs/optimization/phase4-iv13u-progress.md` 及 `docs/optimization/phase4-iv13u-final-report-20260901.md` 为准；其中旧版 GO 语句不得替代当前 HOLD / NO-GO 结论。
+
 # TAVO-MINI Phase IV-13 建设方案
 ## Final Integrity + Dual Revision Final Seal
 ### 最终稿完整性、精准修订、整章重写与双场景封板

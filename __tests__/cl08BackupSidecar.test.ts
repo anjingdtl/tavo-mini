@@ -42,6 +42,17 @@ function makeFullTables(): Record<string, TableRows> {
 function createMockDb(tables: Record<string, TableRows>): any {
   return {
     executeSql: jest.fn(async (sql: string) => {
+      if (/SELECT name FROM sqlite_master WHERE type = 'table'/i.test(sql)) {
+        return [{
+          insertId: 0,
+          rowsAffected: 0,
+          rows: {
+            length: ALL_TABLES.length,
+            item: (index: number) => ({ name: ALL_TABLES[index] }),
+            raw: () => ALL_TABLES.map(name => ({ name })),
+          },
+        }];
+      }
       const match = sql.match(/SELECT \* FROM (\w+)/i);
       const table = match ? match[1] : '';
       const rows = tables[table] || [];

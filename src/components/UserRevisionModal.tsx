@@ -24,6 +24,7 @@ import {
   loadUserRevisionFrozenTruth,
   UserRevisionError,
   type UserRevisionCandidateBase,
+  type UserRevisionExactCandidateRef,
   type UserRevisionKind,
   type UserRevisionPreview,
   type UserRevisionScenario,
@@ -44,8 +45,7 @@ interface Props {
    * writes the candidate store; adoption later promotes the revised candidate.
    */
   candidate?: {
-    chapterId: number;
-    projectId: number;
+    candidateRef: UserRevisionExactCandidateRef;
     scenario: UserRevisionScenario;
   } | null;
   onClose: () => void;
@@ -103,9 +103,7 @@ export const UserRevisionModal: React.FC<Props> = ({
     if (!candidate) return;
     let cancelled = false;
     loadUserRevisionCandidateBase({
-      projectId: candidate.projectId,
-      chapterId: candidate.chapterId,
-      scenario: candidate.scenario,
+      candidateRef: candidate.candidateRef,
     })
       .then(base => {
         if (!cancelled) setCandidateBase(base);
@@ -122,11 +120,10 @@ export const UserRevisionModal: React.FC<Props> = ({
     abortRef.current?.abort();
     abortRef.current = null;
     if (preview?.state === 'pending') {
-      try {
-        discardUserRevisionPreview(preview);
-      } catch {
-        // The modal is closing; a completed preview has no pending action.
-      }
+      void discardUserRevisionPreview(preview).catch(() => {
+        // The modal is closing; the already durable request receipt remains
+        // available even if the action-state update cannot land immediately.
+      });
     }
     setPreview(null);
     setError(null);
@@ -150,8 +147,8 @@ export const UserRevisionModal: React.FC<Props> = ({
         }
         const baseChapter: Chapter = {
           ...chapter,
-          id: candidate.chapterId,
-          project_id: candidate.projectId,
+          id: candidate.candidateRef.chapterId,
+          project_id: candidate.candidateRef.projectId,
           content: candidateBase.baseBody,
         };
         if (kind === 'targeted_revision') {
@@ -268,9 +265,9 @@ export const UserRevisionModal: React.FC<Props> = ({
     }
   };
 
-  const discard = () => {
+  const discard = async () => {
     if (preview?.state === 'pending') {
-      setPreview(discardUserRevisionPreview(preview));
+      await discardUserRevisionPreview(preview);
     }
     setPreview(null);
     setError(null);

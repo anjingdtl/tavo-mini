@@ -42,6 +42,7 @@ import {
   attachWritingGovernorProfilePersistence,
   hydrateWritingGovernorProfiles,
 } from '../../services/writing/governor/writingGovernorProfileRepository';
+import { markOpenWritingRequestReceiptsOutcomeUnknownOnStartup } from '../repositories/writingRequestReceiptRepository';
 
 const GLOBAL_PROJECT_ID = 0;
 const GLOBAL_PROJECT_NAME = '__tavo_global_workspace__';
@@ -498,6 +499,11 @@ export async function initializeDatabase(
   // prompts, messages, manuscript text, Canon, Memory, or credentials.
   await hydrateWritingGovernorProfiles(database);
   attachWritingGovernorProfilePersistence(database);
+
+  // IV-13U-2: a User Revision receipt is durable before the provider boundary
+  // is crossed. Reconcile a process-killed started row now; never create an
+  // automatic retry for an outcome that may already have been billed.
+  await markOpenWritingRequestReceiptsOutcomeUnknownOnStartup(database);
 
   // 9. After-repair recall snapshot + comparison. When we captured a before
   //    snapshot, assert no user data was lost. A mismatch blocks startup.

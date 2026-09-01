@@ -53,10 +53,9 @@ import {
   buildOutboxInsertStatement,
   casUpdateRunState,
   contentRevisionHash,
-  getEligibleArtifactForRun,
+  getCurrentEligibleArtifact,
   getArtifactForRun,
   getLatestArtifact,
-  getLatestEligibleArtifact,
   getPlan,
   getRunById,
   getRunByIdWithContext,
@@ -1400,13 +1399,18 @@ export async function adoptArtifactAsDraft(input: {
   // never relaxed by forceOverwrite.
   const useEligibleOnly =
     run.workflowVersion === 4 || run.workflowVersion === 5;
+  const currentAuthority = useEligibleOnly
+    ? await getCurrentEligibleArtifact(run.id)
+    : null;
   const artifact =
     (input.artifactId
       ? useEligibleOnly
-        ? await getEligibleArtifactForRun(run.id, input.artifactId)
+        ? currentAuthority?.id === input.artifactId
+          ? currentAuthority
+          : null
         : await getArtifactForRun(run.id, input.artifactId)
       : useEligibleOnly
-      ? await getLatestEligibleArtifact(run.id)
+      ? currentAuthority
       : await getLatestArtifact(run.id)) ?? null;
   if (!artifact) {
     throw new Error(

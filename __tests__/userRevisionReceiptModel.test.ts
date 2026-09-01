@@ -21,6 +21,10 @@ jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
   finalizeContinuationChapter: jest.fn(),
 }));
 
+jest.mock('../src/data/repositories/writingRequestReceiptRepository', () => ({
+  upsertWritingRequestReceipt: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock('../src/data/repositories/pipelineTaskRepository', () => ({
   getLatestCompletedPipelineTaskForTarget: jest.fn(),
   getPipelineTaskAdoptionPayload: jest.fn(),
@@ -127,13 +131,14 @@ describe('user revision receipt model identity (P1-3)', () => {
     });
 
     expect(mockResolveById).toHaveBeenCalledWith(7);
-    expect(preview.receipt.modelName).toBe('live-model-b');
-    expect(preview.receipt.providerType).toBe('deepseek');
+    expect(preview.receipt.model).toBe('live-model-b');
+    expect(preview.receipt.provider).toBe('deepseek');
     expect(preview.receipt.frozenModelName).toBe('frozen-model-a');
-    expect(preview.receipt.modelConfigId).toBe(7);
-    // Thinking stays explicitly on and exactly one logical call is recorded.
+    expect(preview.receipt.llmConfigId).toBe(7);
+    // Thinking stays explicitly on and the common receipt records one
+    // physical dispatch.
     expect(preview.receipt.thinking).toEqual({ type: 'enabled' });
-    expect(preview.receipt.logicalCallCount).toBe(1);
+    expect(preview.receipt.physicalRequestCount).toBe(1);
   });
 
   it('never writes the credential into the receipt chain', async () => {
@@ -167,7 +172,7 @@ describe('user revision receipt model identity (P1-3)', () => {
       } as any),
     });
     expect(mockResolveById).not.toHaveBeenCalled();
-    expect(preview.receipt.modelName).toBe('frozen-model-a');
+    expect(preview.receipt.model).toBe('frozen-model-a');
     expect(preview.receipt.frozenModelName).toBe('frozen-model-a');
   });
 });

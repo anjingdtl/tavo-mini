@@ -1353,8 +1353,12 @@ export const PipelineResultScreen: React.FC<PipelineResultScreenProps> = ({
           selectionStart={0}
           selectionEnd={0}
           candidate={{
-            chapterId: task.targetId,
-            projectId: candidateRevisionProjectId,
+            candidateRef: {
+              kind: 'pipeline_task',
+              taskId: task.id,
+              projectId: candidateRevisionProjectId,
+              chapterId: task.targetId,
+            },
             scenario: 'outline',
           }}
           onClose={() => setCandidateRevisionKind(null)}

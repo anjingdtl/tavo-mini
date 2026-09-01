@@ -160,6 +160,7 @@ interface ArtifactReader {
     runId: string,
     stage: string,
   ): Promise<ArtifactRow | null>;
+  getCurrentEligibleArtifact(runId: string): Promise<ArtifactRow | null>;
 }
 
 export interface ContinuationArtifactReader extends ArtifactReader {}
@@ -174,7 +175,7 @@ export async function buildFinalArtifactFromContinuationRun(
 ): Promise<FinalWritingArtifact | null> {
   const repo = reader ?? defaultContinuationReader();
   const draftRow = await repo.getLatestArtifactForStage(run.id, 'draft');
-  const finalRow = await repo.getLatestArtifactForStage(run.id, 'final');
+  const finalRow = await repo.getCurrentEligibleArtifact(run.id);
   return assembleContinuationFinalArtifact(run, draftRow, finalRow, run.snapshot?.());
 }
 

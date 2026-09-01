@@ -1,9 +1,12 @@
 import {
   casUpdateRunState,
+  getCurrentEligibleArtifact,
   getLatestArtifactForStage,
   getStageResult,
   insertArtifact,
+  insertFinalArtifactAndActivate,
   reserveContinuationStage,
+  setCurrentFinalArtifact,
   updateStageResult,
 } from '../../continuation/generation/generationRepository';
 import { hashContent } from '../../continuation/generation/continuationV5Contracts';
@@ -200,15 +203,43 @@ export function createContinuationDurableAdapter(input: {
       const persistStartedAt = Date.now();
       const mapped = ledgerStage(stage);
       if (mapped && artifact.body.trim()) {
-        const existing = await getLatestArtifactForStage(input.run.id, mapped);
+        const current =
+          mapped === 'final'
+            ? await getCurrentEligibleArtifact(input.run.id)
+            : null;
+        const existing =
+          mapped === 'final'
+            ? current?.stage === 'final'
+              ? current
+              : null
+            : await getLatestArtifactForStage(input.run.id, mapped);
         if (!existing) {
-          await insertArtifact({
-            runId: input.run.id,
-            stage: mapped,
-            content: artifact.body,
-            eligibilityStatus: mapped === 'final' ? 'eligible' : 'intermediate',
-            requireStageMatch: true,
-          });
+          if (mapped === 'final') {
+            await insertFinalArtifactAndActivate({
+              runId: input.run.id,
+              content: artifact.body,
+              expectedCurrentArtifactId: current?.id ?? null,
+            });
+          } else {
+            await insertArtifact({
+              runId: input.run.id,
+              stage: mapped,
+              content: artifact.body,
+              eligibilityStatus: 'intermediate',
+              requireStageMatch: true,
+            });
+          }
+        } else if (
+          mapped === 'final' &&
+          existing.eligibilityStatus === 'eligible'
+        ) {
+          if (current?.id !== existing.id) {
+            await setCurrentFinalArtifact({
+              runId: input.run.id,
+              artifactId: existing.id,
+              expectedCurrentArtifactId: current?.id ?? null,
+            });
+          }
         }
       }
       const node = continuationNode(stage);
@@ -337,15 +368,22 @@ export function createContinuationDurableAdapter(input: {
       }).body;
       assertPlainTextNovelBody(body);
       if (body.trim()) {
-        const existing = await getLatestArtifactForStage(input.run.id, 'final');
+        const current = await getCurrentEligibleArtifact(input.run.id);
+        const existing = current?.stage === 'final' ? current : null;
         if (!existing) {
-          await insertArtifact({
+          await insertFinalArtifactAndActivate({
             runId: input.run.id,
-            stage: 'final',
             content: body,
-            eligibilityStatus: 'eligible',
-            requireStageMatch: true,
+            expectedCurrentArtifactId: current?.id ?? null,
           });
+        } else if (existing.eligibilityStatus === 'eligible') {
+          if (current?.id !== existing.id) {
+            await setCurrentFinalArtifact({
+              runId: input.run.id,
+              artifactId: existing.id,
+              expectedCurrentArtifactId: current?.id ?? null,
+            });
+          }
         }
       }
       await casUpdateRunState(input.run.id, ['running'], {
@@ -424,7 +462,10 @@ export async function loadContinuationArtifact(
       return null;
     }
   }
-  const existing = await getLatestArtifactForStage(runId, mapped);
+  const existing =
+    mapped === 'final'
+      ? await getCurrentEligibleArtifact(runId)
+      : await getLatestArtifactForStage(runId, mapped);
   if (!existing) return null;
   return {
     stage,

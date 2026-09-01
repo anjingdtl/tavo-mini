@@ -26,6 +26,7 @@ import { buildSchema55CreateSqls } from '../../services/migrations/v54-to-v55';
 import { buildV55ToV56Statements } from '../../services/migrations/v55-to-v56';
 import { buildProjectWritingStatsCreateSql } from '../../services/migrations/v58-to-v59';
 import { buildWritingGovernorProfilesCreateSql } from '../../services/migrations/v59-to-v60';
+import { buildV60ToV61CreateSqls } from '../../services/migrations/v60-to-v61';
 
 /**
  * Build the full list of CREATE TABLE / CREATE INDEX SQL statements a fresh
@@ -732,6 +733,9 @@ export function createCurrentSchemaStatements(): string[] {
     ...buildSchema50CreateSqls(),
     // Schema 51 nullable prompt-cache telemetry (DeepSeek prompt cache).
     ...buildSchema51CreateSqls(),
+    // Schema 61 IV-13U: explicit Current Final Authority + the one durable
+    // common request-receipt ledger used by User Revision.
+    ...buildV60ToV61CreateSqls(),
   ];
 }
 

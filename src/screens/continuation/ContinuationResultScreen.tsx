@@ -44,9 +44,9 @@ import {
 } from '../../services/writing/persist/continuationAdoption';
 import {
   getArtifactForRun,
+  getCurrentEligibleArtifact,
   getLatestArtifact,
   getLatestArtifactForStage,
-  getLatestEligibleArtifact,
   getPlan,
   getRunById,
   getRunContextSnapshotJson,
@@ -405,7 +405,7 @@ export const ContinuationResultScreen: React.FC<Props> = ({
       const isV5 = r.workflowVersion === 5;
       const art =
         isV4 || isV5
-          ? await getLatestEligibleArtifact(runId)
+          ? await getCurrentEligibleArtifact(runId)
           : await getLatestArtifact(runId);
       setBody(art?.content ?? '');
       setRepairRound(
@@ -420,16 +420,15 @@ export const ContinuationResultScreen: React.FC<Props> = ({
         const results = await listStageResults(runId);
         setStageResults(results);
         if (isV5) {
-          const [draftArt, revisionArt, finalArt] = await Promise.all([
+          const [draftArt, revisionArt] = await Promise.all([
             getLatestArtifactForStage(runId, 'draft'),
             getLatestArtifactForStage(runId, 'revision_1'),
-            getLatestArtifactForStage(runId, 'final'),
           ]);
           setV5DraftArtifact(draftArt);
           setV5RevisionArtifact(revisionArt);
-          // Prefer eligible final for display body; fall back to any final row.
-          const displayFinalArt =
-            art?.stage === 'final' ? art : finalArt ?? art ?? null;
+          // V5 display is bound to the explicit Current Final Authority. A
+          // historical final row is never promoted by a latest-row fallback.
+          const displayFinalArt = art?.stage === 'final' ? art : null;
           setV5FinalArtifact(displayFinalArt);
           setFinalArtifact(
             buildFinalArtifactFromContinuationArtifacts({
@@ -2048,10 +2047,12 @@ export const ContinuationResultScreen: React.FC<Props> = ({
           selectionStart={0}
           selectionEnd={0}
           candidate={{
-            chapterId: Number(
-              (run as any).chapterId ?? (run as any).chapter_id ?? 0,
-            ),
-            projectId: run.projectId,
+            candidateRef: {
+              kind: 'continuation_run',
+              runId: run.id,
+              projectId: run.projectId,
+              chapterId: run.chapterId,
+            },
             scenario: 'continuation',
           }}
           onClose={() => setCandidateRevisionKind(null)}

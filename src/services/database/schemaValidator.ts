@@ -292,6 +292,16 @@ export async function validateSchema(
         fromColumns: ['artifact_id'],
         expectedTarget: 'continuation_generation_artifacts',
       },
+      {
+        table: 'continuation_current_final_authorities',
+        fromColumns: ['run_id'],
+        expectedTarget: 'continuation_generation_runs',
+      },
+      {
+        table: 'continuation_current_final_authorities',
+        fromColumns: ['active_final_artifact_id'],
+        expectedTarget: 'continuation_generation_artifacts',
+      },
     ];
     for (const check of foreignKeyTargetChecks) {
       if (!tableNames.has(check.table)) continue;
@@ -422,6 +432,36 @@ export async function validateSchema(
           message: 'continuation_settings 的 active Style 指针不是同项目/同 source/boundary 的可用画像。',
           table: 'continuation_settings',
           column: 'active_style_profile_id',
+        });
+      }
+    }
+
+    if (
+      tableNames.has('continuation_current_final_authorities') &&
+      tableNames.has('continuation_generation_runs') &&
+      tableNames.has('continuation_generation_artifacts')
+    ) {
+      const invalidCurrentFinals = await rows<Record<string, unknown>>(
+        database,
+        `SELECT authority.run_id
+           FROM continuation_current_final_authorities authority
+           LEFT JOIN continuation_generation_runs run
+             ON run.id = authority.run_id
+           LEFT JOIN continuation_generation_artifacts artifact
+             ON artifact.id = authority.active_final_artifact_id
+            AND artifact.run_id = authority.run_id
+          WHERE run.id IS NULL
+             OR artifact.id IS NULL
+             OR artifact.eligibility_status <> 'eligible'
+             OR artifact.stage NOT IN ('writer', 'repair', 'user_edit', 'final')
+          LIMIT 1`,
+      );
+      if (invalidCurrentFinals.length > 0) {
+        issues.push({
+          code: 'ACTIVE_POINTER_INVALID',
+          message: 'Continuation Current Final Authority 不是同一 run 下的可交付正文。',
+          table: 'continuation_current_final_authorities',
+          column: 'active_final_artifact_id',
         });
       }
     }

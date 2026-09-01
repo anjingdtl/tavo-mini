@@ -20,14 +20,21 @@ import {
 import {
   getPipelineTaskContextPayload,
   getLatestAcceptedPipelineTaskForTarget,
+  getPipelineTaskById,
+  getPipelineTaskAdoptionPayload,
 } from '../../data/repositories/pipelineTaskRepository';
 import * as db from '../database';
 import {
+  getRunById,
   findLatestAdoptedRunForChapter,
-  findLatestPendingReviewRunForChapter,
   getRunContextSnapshotJson,
 } from '../continuation/generation';
 import type { FrozenWritingContext } from './contracts/frozenWritingContext';
+import {
+  buildStandaloneWritingRequestReceipt,
+  completeWritingRequestReceipt,
+  type WritingRequestReceipt,
+} from './contracts/writingRequestReceipt';
 import { validatePlainTextNovelBody } from './contracts/plainTextNovelBody';
 import {
   applyParsedRepairPatches,
@@ -44,14 +51,14 @@ import { createRevision } from '../revisionService';
 import { finalizeChapterMemory } from '../storyMemory/storyMemoryService';
 import { finalizeContinuationChapter } from './persist/continuationAdoption';
 import {
-  getLatestCompletedPipelineTaskForTarget,
-  getPipelineTaskAdoptionPayload,
-} from '../../data/repositories/pipelineTaskRepository';
-import {
-  getLatestEligibleArtifact,
-  insertArtifact,
+  getCurrentEligibleArtifact,
+  getEligibleArtifactForRun,
+  insertFinalArtifactAndActivate,
 } from '../continuation/generation/generationRepository';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
+import {
+  upsertWritingRequestReceipt,
+} from '../../data/repositories/writingRequestReceiptRepository';
 
 export type UserRevisionKind = 'targeted_revision' | 'whole_chapter_rewrite';
 export type UserRevisionScenario = 'outline' | 'continuation';
@@ -129,56 +136,55 @@ export interface UserRevisionSelectionSnapshot {
  */
 export type UserRevisionCandidateRef =
   | { kind: 'chapter' }
-  | { kind: 'pipeline_task'; taskId: string }
-  | { kind: 'continuation_run'; runId: string };
+  | {
+      kind: 'pipeline_task';
+      taskId: string;
+      /** Optional route binding, required when supplied by a result page. */
+      projectId?: number;
+      chapterId?: number;
+    }
+  | {
+      kind: 'continuation_run';
+      runId: string;
+      /** Optional route binding, required when supplied by a result page. */
+      projectId?: number;
+      chapterId?: number;
+      artifactId?: string;
+    };
 
-export interface UserRevisionReceipt {
-  version: 1;
-  actionId: string;
-  kind: UserRevisionKind;
-  scenario: UserRevisionScenario;
-  chapterId: number;
-  writingRunId: string | null;
-  generationTraceId: string | null;
-  freezeFingerprint: string | null;
-  truthProjectionFingerprint: string | null;
-  modelConfigId: number | null;
-  /**
-   * P1-3 contract (Option B): `modelName`/`providerType` are the RESOLVED
-   * live values actually used on the wire, resolved from the persisted
-   * `modelConfigId` at request time. `frozenModelName` is recorded only as the
-   * frozen generation binding — never as the physical model identity.
-   */
-  modelName: string;
-  providerType: string | null;
-  frozenModelName: string;
-  instructionFingerprint: string;
-  baseBodyFingerprint: string;
-  candidateBodyFingerprint: string;
-  selectedTextFingerprint?: string;
-  thinking: { type: 'enabled' };
-  governorBypassed: true;
-  hiddenRetryCount: 0;
-  plannerCallCount: 0;
-  writerCallCount: 1;
-  qaCallCount: 0;
-  contextBuildCount: 0;
-  memoryCallCount: 0;
-  promptCompilerCallCount: 0;
-  formatterCallCount: 0;
-  logicalCallCount: 1;
-  physicalRequestCount: number;
-  protocolFallbackCount: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  totalTokens: number | null;
-  reasoningTokens: number | null;
-  finishReason: string | null;
-  providerRequestId: string | null;
-  startedAt: number;
-  completedAt: number;
-  durationMs: number;
-}
+/** Result-page candidate identity. All three route bindings are mandatory so
+ * a revision cannot fall back to a chapter-scoped "latest" lookup. */
+export type UserRevisionExactCandidateRef =
+  | {
+      kind: 'pipeline_task';
+      taskId: string;
+      projectId: number;
+      chapterId: number;
+    }
+  | {
+      kind: 'continuation_run';
+      runId: string;
+      projectId: number;
+      chapterId: number;
+      artifactId?: string;
+    };
+
+/**
+ * One common physical-request receipt plus non-call action aliases retained
+ * for old result/audit readers. The aliases are non-enumerable projections;
+ * the durable JSON truth is the shared WritingRequestReceipt itself.
+ */
+export type UserRevisionReceipt = WritingRequestReceipt & {
+  readonly actionId: string;
+  readonly actionKind: UserRevisionKind;
+  readonly chapterId: number;
+  readonly frozenModelName: string;
+  readonly instructionFingerprint: string;
+  readonly baseBodyFingerprint: string;
+  readonly candidateBodyFingerprint: string;
+  readonly selectedTextFingerprint?: string;
+  readonly governorBypassed: true;
+};
 
 export interface UserRevisionPreview {
   version: 1;
@@ -216,6 +222,7 @@ interface RevisionCallInput {
   instruction: string;
   baseBody: string;
   frozenTruth: UserRevisionFrozenTruth;
+  candidateRef?: UserRevisionCandidateRef;
   messages: ChatMessage[];
   call?: UserRevisionLlmCaller;
   abortSignal?: AbortSignal;
@@ -625,25 +632,198 @@ function wholeRewriteMessages(input: {
   ];
 }
 
+interface UserRevisionReceiptBase {
+  receipt: WritingRequestReceipt;
+  actionId: string;
+  actionKind: UserRevisionKind;
+  chapterId: number;
+  scenario: UserRevisionScenario;
+  projectId: number;
+  instructionFingerprint: string;
+  frozenModelName: string;
+  candidateRef: UserRevisionCandidateRef;
+  baseBodyFingerprint: string;
+}
+
+function candidateAuditBinding(
+  candidateRef: UserRevisionCandidateRef | undefined,
+  projectId: number,
+  chapterId: number,
+): {
+  candidateKind: 'chapter' | 'pipeline_task' | 'continuation_run';
+  candidateId: string;
+} {
+  if (!candidateRef || candidateRef.kind === 'chapter') {
+    return { candidateKind: 'chapter', candidateId: String(chapterId) };
+  }
+  return candidateRef.kind === 'pipeline_task'
+    ? { candidateKind: 'pipeline_task', candidateId: candidateRef.taskId }
+    : { candidateKind: 'continuation_run', candidateId: candidateRef.runId };
+}
+
+async function persistUserRevisionReceipt(input: {
+  base: UserRevisionReceiptBase;
+  receipt: WritingRequestReceipt;
+  previewState: 'started' | 'pending' | 'applied' | 'discarded' | 'failed';
+  candidateBodyFingerprint?: string | null;
+}): Promise<void> {
+  const binding = candidateAuditBinding(
+    input.base.candidateRef,
+    input.base.projectId,
+    input.base.chapterId,
+  );
+  await upsertWritingRequestReceipt({
+    receipt: input.receipt,
+    projectId: input.base.projectId,
+    actionId: input.base.actionId,
+    previewId: input.base.actionId,
+    candidateKind: binding.candidateKind,
+    candidateId: binding.candidateId,
+    candidateProjectId: input.base.projectId,
+    candidateChapterId: input.base.chapterId,
+    actionKind: input.base.actionKind,
+    instructionFingerprint: input.base.instructionFingerprint,
+    baseBodyFingerprint: input.base.baseBodyFingerprint,
+    candidateBodyFingerprint: input.candidateBodyFingerprint ?? null,
+    previewState: input.previewState,
+  });
+}
+
+function addUserRevisionAuditAliases(input: {
+  receipt: WritingRequestReceipt;
+  actionId: string;
+  actionKind: UserRevisionKind;
+  chapterId: number;
+  frozenModelName: string;
+  instructionFingerprint: string;
+  baseBodyFingerprint: string;
+  candidateBodyFingerprint: string;
+  selectedTextFingerprint?: string;
+}): UserRevisionReceipt {
+  const receipt = input.receipt as UserRevisionReceipt;
+  const aliases: Record<string, unknown> = {
+    actionId: input.actionId,
+    actionKind: input.actionKind,
+    chapterId: input.chapterId,
+    frozenModelName: input.frozenModelName,
+    instructionFingerprint: input.instructionFingerprint,
+    baseBodyFingerprint: input.baseBodyFingerprint,
+    candidateBodyFingerprint: input.candidateBodyFingerprint,
+    governorBypassed: true,
+  };
+  if (input.selectedTextFingerprint) {
+    aliases.selectedTextFingerprint = input.selectedTextFingerprint;
+  }
+  Object.defineProperties(
+    receipt,
+    Object.fromEntries(
+      Object.entries(aliases).map(([key, value]) => [key, {
+        configurable: true,
+        enumerable: false,
+        value,
+      }]),
+    ),
+  );
+  return receipt;
+}
+
 async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
   actionId: string;
   result: LLMResult;
-  receiptBase: Omit<
-    UserRevisionReceipt,
-    | 'baseBodyFingerprint'
-    | 'candidateBodyFingerprint'
-    | 'selectedTextFingerprint'
-  >;
+  receiptBase: UserRevisionReceiptBase;
 }> {
   const actionId = nextActionId(input.kind, input.chapterId);
   const startedAt = Date.now();
   const physicalKinds: string[] = [];
   let requestConfig: LLMRequestConfig | undefined;
+  let requestConfigError: unknown = null;
   if (!input.call && input.frozenTruth.modelConfigId != null) {
-    requestConfig = await resolveLLMRequestConfigById(
-      input.frozenTruth.modelConfigId,
+    try {
+      requestConfig = await resolveLLMRequestConfigById(
+        input.frozenTruth.modelConfigId,
+      );
+    } catch (error) {
+      requestConfigError = error;
+    }
+  }
+  const stage =
+    input.kind === 'targeted_revision'
+      ? 'user_revision_targeted'
+      : 'user_revision_whole_chapter';
+  const receiptBase: UserRevisionReceiptBase = {
+    receipt: buildStandaloneWritingRequestReceipt({
+      requestId: `req_${actionId}`,
+      generationTraceId: input.frozenTruth.generationTraceId,
+      writingRunId: input.frozenTruth.writingRunId,
+      scenario: input.scenario,
+      stage,
+      provider: requestConfig?.provider_type || 'openai_compatible',
+      providerAdapterId: requestConfig?.provider_adapter_id,
+      llmConfigId:
+        requestConfig?.id ?? input.frozenTruth.modelConfigId ?? null,
+      model: requestConfig?.model_name || input.frozenTruth.modelName,
+      contextWindow: requestConfig?.context_window,
+      maxOutputTokens: requestConfig?.max_output_tokens,
+      messages: input.messages,
+      responseFormat: 'text',
+      thinking: { type: 'enabled' },
+      freezeFingerprint: input.frozenTruth.freezeFingerprint,
+      truthProjectionFingerprint:
+        input.frozenTruth.truthProjectionFingerprint,
+    }),
+    actionId,
+    actionKind: input.kind,
+    chapterId: input.chapterId,
+    scenario: input.scenario,
+    projectId: input.projectId,
+    instructionFingerprint: hashContent(input.instruction),
+    frozenModelName: input.frozenTruth.modelName,
+    candidateRef: input.candidateRef ?? { kind: 'chapter' },
+    baseBodyFingerprint: hashContent(input.baseBody),
+  };
+
+  // Durable before-send record. If this write cannot land, fail closed and do
+  // not issue a physical request that would have no durable receipt.
+  try {
+    await persistUserRevisionReceipt({
+      base: receiptBase,
+      receipt: receiptBase.receipt,
+      previewState: 'started',
+    });
+  } catch (error) {
+    throw new UserRevisionError(
+      'USER_REVISION_LLM_FAILED',
+      `修订请求未发送：无法持久化 Durable Receipt（${
+        error instanceof Error ? error.message : String(error)
+      }）。`,
     );
   }
+
+  if (requestConfigError) {
+    const failedReceipt = completeWritingRequestReceipt(receiptBase.receipt, {
+      outcome: 'failed',
+      failureClass: 'fatal',
+      failurePhase: 'provider',
+      requestMayHaveExecuted: false,
+      physicalRequestCount: 0,
+      protocolFallbackCount: 0,
+    });
+    await persistUserRevisionReceipt({
+      base: receiptBase,
+      receipt: failedReceipt,
+      previewState: 'failed',
+    });
+    throw new UserRevisionError(
+      'USER_REVISION_LLM_FAILED',
+      `修订请求未发送：LLM 配置不可用（${
+        requestConfigError instanceof Error
+          ? requestConfigError.message
+          : String(requestConfigError)
+      }）。`,
+    );
+  }
+
+  let receipt = receiptBase.receipt;
   const config: LLMCallConfig = {
     // Deliberately omit responseFormat: targeted output is parsed locally and
     // whole rewrite must remain a plain-text response. Thinking is explicit
@@ -658,8 +838,49 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
     queueClass: 'normal',
     queuePriority: 'manual',
     physicalRequestHooks: {
-      beforeRequest: event => {
+      beforeRequest: async event => {
         physicalKinds.push(String(event.kind || 'primary'));
+        receipt = completeWritingRequestReceipt(receipt, {
+          outcome: receipt.outcome,
+          requestMayHaveExecuted: true,
+          physicalRequestCount: physicalKinds.length,
+          protocolFallbackCount: physicalKinds.filter(
+            kind => kind === 'protocol_fallback',
+          ).length,
+          timings: {
+            requestSentAt: Date.now(),
+          },
+        });
+        await persistUserRevisionReceipt({
+          base: receiptBase,
+          receipt,
+          previewState: 'started',
+        });
+      },
+      afterRequest: async event => {
+        receipt = completeWritingRequestReceipt(receipt, {
+          outcome: receipt.outcome,
+          requestMayHaveExecuted:
+            event.outcome === 'response' || physicalKinds.length > 0,
+          providerRequestId: event.providerRequestId ?? receipt.providerRequestId,
+          failureClass:
+            event.outcome === 'transport_error'
+              ? 'outcome_unknown'
+              : receipt.failureClass,
+          failurePhase:
+            event.outcome === 'transport_error'
+              ? 'outcome_unknown'
+              : receipt.failurePhase,
+          physicalRequestCount: physicalKinds.length,
+          protocolFallbackCount: physicalKinds.filter(
+            kind => kind === 'protocol_fallback',
+          ).length,
+        });
+        await persistUserRevisionReceipt({
+          base: receiptBase,
+          receipt,
+          previewState: 'started',
+        });
       },
     },
     ...(requestConfig ? { requestConfig } : {}),
@@ -673,6 +894,35 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
       input.abortSignal,
     );
   } catch (error) {
+    const requestMayHaveExecuted =
+      physicalKinds.length > 0 || Boolean((error as any)?.requestMayHaveExecuted);
+    receipt = completeWritingRequestReceipt(receipt, {
+      outcome:
+        requestMayHaveExecuted
+          ? 'outcome_unknown'
+          : (error as any)?.code === 'cancelled'
+          ? 'cancelled'
+          : 'failed',
+      failureClass: requestMayHaveExecuted
+        ? 'outcome_unknown'
+        : ((error as any)?.failureClass || 'fatal'),
+      failurePhase:
+        (error as any)?.failurePhase ||
+        (requestMayHaveExecuted ? 'outcome_unknown' : 'provider'),
+      requestMayHaveExecuted,
+      providerRequestId:
+        (error as any)?.providerRequestId ?? receipt.providerRequestId,
+      metrics: (error as any)?.metrics ?? null,
+      physicalRequestCount: physicalKinds.length,
+      protocolFallbackCount: physicalKinds.filter(
+        kind => kind === 'protocol_fallback',
+      ).length,
+    });
+    await persistUserRevisionReceipt({
+      base: receiptBase,
+      receipt,
+      previewState: 'failed',
+    });
     throw new UserRevisionError(
       'USER_REVISION_LLM_FAILED',
       error instanceof Error ? error.message : '修订请求失败。',
@@ -683,94 +933,139 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
     kind => kind === 'protocol_fallback',
   ).length;
   if (physicalRequestCount !== 1 || protocolFallbackCount !== 0) {
+    receipt = completeWritingRequestReceipt(receipt, {
+      outcome: 'failed',
+      failureClass: 'fatal',
+      failurePhase: 'provider',
+      requestMayHaveExecuted: physicalRequestCount > 0,
+      physicalRequestCount,
+      protocolFallbackCount,
+    });
+    await persistUserRevisionReceipt({
+      base: receiptBase,
+      receipt,
+      previewState: 'failed',
+    });
     throw new UserRevisionError(
       'USER_REVISION_MULTIPLE_REQUESTS',
       '修订请求出现第二次物理调用，已 fail-closed。',
     );
   }
   const completedAt = Date.now();
-  // P1-3 Option B: the receipt explains the real physical call. When the
-  // config was resolved live, the resolved model identity is what the wire
-  // used; an injected test caller is itself the observed call.
-  const wireModelName = requestConfig
-    ? requestConfig.model_name
-    : input.frozenTruth.modelName;
-  const wireProviderType = requestConfig
-    ? requestConfig.provider_type
-    : null;
-  const receiptBase: Omit<
-    UserRevisionReceipt,
-    | 'baseBodyFingerprint'
-    | 'candidateBodyFingerprint'
-    | 'selectedTextFingerprint'
-  > = {
-    version: 1,
-    actionId,
-    kind: input.kind,
-    scenario: input.scenario,
-    chapterId: input.chapterId,
-    writingRunId: input.frozenTruth.writingRunId,
-    generationTraceId: input.frozenTruth.generationTraceId,
-    freezeFingerprint: input.frozenTruth.freezeFingerprint,
-    truthProjectionFingerprint: input.frozenTruth.truthProjectionFingerprint,
-    modelConfigId: input.frozenTruth.modelConfigId,
-    modelName: wireModelName,
-    providerType: wireProviderType,
-    frozenModelName: input.frozenTruth.modelName,
-    instructionFingerprint: hashContent(input.instruction),
-    thinking: { type: 'enabled' },
-    governorBypassed: true,
-    hiddenRetryCount: 0,
-    plannerCallCount: 0,
-    writerCallCount: 1,
-    qaCallCount: 0,
-    contextBuildCount: 0,
-    memoryCallCount: 0,
-    promptCompilerCallCount: 0,
-    formatterCallCount: 0,
-    logicalCallCount: 1,
+  receipt = completeWritingRequestReceipt(receipt, {
+    outcome: 'succeeded',
+    usage: {
+      inputTokens: Number.isFinite(Number(result.inputTokens))
+        ? Number(result.inputTokens)
+        : null,
+      outputTokens: Number.isFinite(Number(result.outputTokens))
+        ? Number(result.outputTokens)
+        : null,
+      totalTokens: Number.isFinite(Number(result.totalTokens))
+        ? Number(result.totalTokens)
+        : null,
+      reasoningTokens: Number.isFinite(Number(result.reasoningTokens))
+        ? Number(result.reasoningTokens)
+        : null,
+      visibleOutputTokens: Number.isFinite(Number(result.visibleOutputTokens))
+        ? Number(result.visibleOutputTokens)
+        : null,
+    },
+    finishReason: result.finishReason ?? null,
+    emptyReason: result.emptyReason ?? null,
+    failurePhase: result.failurePhase ?? null,
+    requestMayHaveExecuted: true,
+    providerRequestId: result.providerRequestId ?? receipt.providerRequestId,
+    actualPromptTokens: Number.isFinite(Number(result.rawUsage?.prompt_tokens))
+      ? Number(result.rawUsage?.prompt_tokens)
+      : null,
+    outputBudget: result.outputBudget ?? null,
+    metrics: result.metrics ?? null,
+    timings: {
+      parseCompletedAt: completedAt,
+      parseMs: Math.max(0, completedAt - startedAt),
+      totalMs: Math.max(0, completedAt - startedAt),
+    },
     physicalRequestCount,
     protocolFallbackCount,
-    inputTokens: Number.isFinite(Number(result.inputTokens))
-      ? Number(result.inputTokens)
-      : null,
-    outputTokens: Number.isFinite(Number(result.outputTokens))
-      ? Number(result.outputTokens)
-      : null,
-    totalTokens: Number.isFinite(Number(result.totalTokens))
-      ? Number(result.totalTokens)
-      : null,
-    reasoningTokens: Number.isFinite(Number(result.reasoningTokens))
-      ? Number(result.reasoningTokens)
-      : null,
-    finishReason: result.finishReason ?? null,
-    providerRequestId: result.providerRequestId ?? null,
-    startedAt,
-    completedAt,
-    durationMs: Math.max(0, completedAt - startedAt),
+  });
+  await persistUserRevisionReceipt({
+    base: receiptBase,
+    receipt,
+    previewState: 'pending',
+  });
+  return {
+    actionId,
+    result,
+    receiptBase: {
+      ...receiptBase,
+      receipt,
+    },
   };
-  return { actionId, result, receiptBase };
 }
 
 function completeReceipt(input: {
-  base: Omit<
-    UserRevisionReceipt,
-    | 'baseBodyFingerprint'
-    | 'candidateBodyFingerprint'
-    | 'selectedTextFingerprint'
-  >;
+  base: UserRevisionReceiptBase;
   baseBody: string;
   candidateBody: string;
   selectedText?: string;
 }): UserRevisionReceipt {
-  return {
-    ...input.base,
+  const completed = addUserRevisionAuditAliases({
+    receipt: input.base.receipt,
+    actionId: input.base.actionId,
+    actionKind: input.base.actionKind,
+    chapterId: input.base.chapterId,
+    frozenModelName: input.base.frozenModelName,
+    instructionFingerprint: input.base.instructionFingerprint,
     baseBodyFingerprint: hashContent(input.baseBody),
     candidateBodyFingerprint: hashContent(input.candidateBody),
     ...(input.selectedText != null
       ? { selectedTextFingerprint: hashContent(input.selectedText) }
       : {}),
+  });
+  return completed;
+}
+
+function receiptBaseFromPreview(
+  preview: UserRevisionPreview,
+): UserRevisionReceiptBase {
+  return {
+    receipt: preview.receipt,
+    actionId: preview.receipt.actionId || preview.previewId,
+    actionKind: preview.kind,
+    chapterId: preview.chapterId,
+    scenario: preview.scenario,
+    projectId: preview.frozenTruth.projectId,
+    instructionFingerprint: preview.receipt.instructionFingerprint,
+    frozenModelName: preview.receipt.frozenModelName,
+    candidateRef: preview.candidateRef,
+    baseBodyFingerprint: preview.baseBodyFingerprint,
   };
+}
+
+async function persistPreviewState(
+  preview: UserRevisionPreview,
+  previewState: 'applied' | 'discarded' | 'failed',
+): Promise<void> {
+  await persistUserRevisionReceipt({
+    base: receiptBaseFromPreview(preview),
+    receipt: preview.receipt,
+    previewState,
+    candidateBodyFingerprint: preview.candidateBodyFingerprint,
+  });
+}
+
+async function persistInvalidUserRevisionResponse(input: {
+  base: UserRevisionReceiptBase;
+}): Promise<void> {
+  // The provider call succeeded, but the local revision contract rejected its
+  // response. Keep that physical receipt immutable and close the action audit
+  // so a force-stop/restart cannot leave an unresumable pending preview.
+  await persistUserRevisionReceipt({
+    base: input.base,
+    receipt: input.base.receipt,
+    previewState: 'failed',
+  }).catch(() => {});
 }
 
 function assertFinalBody(candidateBody: string): void {
@@ -858,6 +1153,7 @@ export async function createTargetedRevisionPreview(input: {
     instruction,
     baseBody: body,
     frozenTruth: input.frozenTruth,
+    candidateRef: input.candidateRef,
     messages: targetedMessages({
       body,
       snapshot,
@@ -866,64 +1162,69 @@ export async function createTargetedRevisionPreview(input: {
     call: input.call,
     abortSignal: input.abortSignal,
   });
-  const raw = typeof call.result.text === 'string' ? call.result.text : '';
-  if (!raw.trim() && call.result.reasoningText) {
-    throw new UserRevisionError(
-      'USER_REVISION_TARGETED_FULL_TEXT',
-      '模型只返回了 reasoning，没有返回 JSON Patch。',
-    );
-  }
-  const patches = parseStrictUserRepairPatches(raw);
-  if (!patches) {
-    if (validatePlainTextNovelBody(raw).valid) {
+  try {
+    const raw = typeof call.result.text === 'string' ? call.result.text : '';
+    if (!raw.trim() && call.result.reasoningText) {
       throw new UserRevisionError(
         'USER_REVISION_TARGETED_FULL_TEXT',
-        '精准修订返回了完整正文而不是 JSON Patch。',
+        '模型只返回了 reasoning，没有返回 JSON Patch。',
       );
     }
-    throw new UserRevisionError(
-      'USER_REVISION_PATCH_INVALID',
-      '精准修订未返回合法 JSON Patch。',
-    );
+    const patches = parseStrictUserRepairPatches(raw);
+    if (!patches) {
+      if (validatePlainTextNovelBody(raw).valid) {
+        throw new UserRevisionError(
+          'USER_REVISION_TARGETED_FULL_TEXT',
+          '精准修订返回了完整正文而不是 JSON Patch。',
+        );
+      }
+      throw new UserRevisionError(
+        'USER_REVISION_PATCH_INVALID',
+        '精准修订未返回合法 JSON Patch。',
+      );
+    }
+    const candidate = applyScopedRepairPatches({
+      original: body,
+      snapshot,
+      patches,
+    });
+    if (candidate === body) {
+      throw new UserRevisionError(
+        'USER_REVISION_NO_CHANGE',
+        '精准修订没有产生变化。',
+      );
+    }
+    assertFinalBody(candidate);
+    const selected = body.slice(snapshot.selectionStart, snapshot.selectionEnd);
+    const receipt = completeReceipt({
+      base: call.receiptBase,
+      baseBody: body,
+      candidateBody: candidate,
+      selectedText: selected,
+    });
+    return {
+      version: 1,
+      previewId: call.actionId,
+      state: 'pending',
+      kind: 'targeted_revision',
+      scenario: input.scenario,
+      chapterId: input.chapter.id,
+      baseBody: body,
+      candidateBody: candidate,
+      baseBodyFingerprint: hashContent(body),
+      candidateBodyFingerprint: hashContent(candidate),
+      selection: snapshot,
+      patches,
+      diff: computeRevisionChangeSet(body, candidate, []),
+      frozenTruth: input.frozenTruth,
+      candidateRef: input.candidateRef ?? { kind: 'chapter' },
+      receipt,
+      createdAt: Date.now(),
+    };
+  } catch (error) {
+    await persistInvalidUserRevisionResponse({ base: call.receiptBase });
+    throw error;
   }
-  const candidate = applyScopedRepairPatches({
-    original: body,
-    snapshot,
-    patches,
-  });
-  if (candidate === body) {
-    throw new UserRevisionError(
-      'USER_REVISION_NO_CHANGE',
-      '精准修订没有产生变化。',
-    );
-  }
-  assertFinalBody(candidate);
-  const selected = body.slice(snapshot.selectionStart, snapshot.selectionEnd);
-  const receipt = completeReceipt({
-    base: call.receiptBase,
-    baseBody: body,
-    candidateBody: candidate,
-    selectedText: selected,
-  });
-  return {
-    version: 1,
-    previewId: call.actionId,
-    state: 'pending',
-    kind: 'targeted_revision',
-    scenario: input.scenario,
-    chapterId: input.chapter.id,
-    baseBody: body,
-    candidateBody: candidate,
-    baseBodyFingerprint: hashContent(body),
-    candidateBodyFingerprint: hashContent(candidate),
-    selection: snapshot,
-    patches,
-    diff: computeRevisionChangeSet(body, candidate, []),
-    frozenTruth: input.frozenTruth,
-    candidateRef: input.candidateRef ?? { kind: 'chapter' },
-    receipt,
-    createdAt: Date.now(),
-  };
 }
 
 export async function createWholeChapterRewritePreview(input: {
@@ -953,6 +1254,7 @@ export async function createWholeChapterRewritePreview(input: {
     instruction,
     baseBody: body,
     frozenTruth: input.frozenTruth,
+    candidateRef: input.candidateRef,
     messages: wholeRewriteMessages({
       body,
       instruction,
@@ -961,66 +1263,72 @@ export async function createWholeChapterRewritePreview(input: {
     call: input.call,
     abortSignal: input.abortSignal,
   });
-  const raw = typeof call.result.text === 'string' ? call.result.text : '';
-  if (!raw.trim() && call.result.reasoningText) {
-    throw new UserRevisionError(
-      'USER_REVISION_WHOLE_BODY_INVALID',
-      '模型只返回了 reasoning，没有返回完整纯正文。',
-    );
+  try {
+    const raw = typeof call.result.text === 'string' ? call.result.text : '';
+    if (!raw.trim() && call.result.reasoningText) {
+      throw new UserRevisionError(
+        'USER_REVISION_WHOLE_BODY_INVALID',
+        '模型只返回了 reasoning，没有返回完整纯正文。',
+      );
+    }
+    const candidate = raw.trim();
+    if (!candidate) {
+      throw new UserRevisionError(
+        'USER_REVISION_WHOLE_BODY_INVALID',
+        '整章重写没有返回正文。',
+      );
+    }
+    const validation = validatePlainTextNovelBody(candidate);
+    if (!validation.valid) {
+      throw new UserRevisionError(
+        'USER_REVISION_WHOLE_BODY_INVALID',
+        validation.details || '整章重写结果不是纯正文。',
+      );
+    }
+    if (candidate === body) {
+      throw new UserRevisionError(
+        'USER_REVISION_NO_CHANGE',
+        '整章重写没有产生变化。',
+      );
+    }
+    const receipt = completeReceipt({
+      base: call.receiptBase,
+      baseBody: body,
+      candidateBody: candidate,
+    });
+    return {
+      version: 1,
+      previewId: call.actionId,
+      state: 'pending',
+      kind: 'whole_chapter_rewrite',
+      scenario: input.scenario,
+      chapterId: input.chapter.id,
+      baseBody: body,
+      candidateBody: candidate,
+      baseBodyFingerprint: hashContent(body),
+      candidateBodyFingerprint: hashContent(candidate),
+      diff: computeRevisionChangeSet(body, candidate, []),
+      frozenTruth: input.frozenTruth,
+      candidateRef: input.candidateRef ?? { kind: 'chapter' },
+      receipt,
+      createdAt: Date.now(),
+    };
+  } catch (error) {
+    await persistInvalidUserRevisionResponse({ base: call.receiptBase });
+    throw error;
   }
-  const candidate = raw.trim();
-  if (!candidate) {
-    throw new UserRevisionError(
-      'USER_REVISION_WHOLE_BODY_INVALID',
-      '整章重写没有返回正文。',
-    );
-  }
-  const validation = validatePlainTextNovelBody(candidate);
-  if (!validation.valid) {
-    throw new UserRevisionError(
-      'USER_REVISION_WHOLE_BODY_INVALID',
-      validation.details || '整章重写结果不是纯正文。',
-    );
-  }
-  if (candidate === body) {
-    throw new UserRevisionError(
-      'USER_REVISION_NO_CHANGE',
-      '整章重写没有产生变化。',
-    );
-  }
-  const receipt = completeReceipt({
-    base: call.receiptBase,
-    baseBody: body,
-    candidateBody: candidate,
-  });
-  return {
-    version: 1,
-    previewId: call.actionId,
-    state: 'pending',
-    kind: 'whole_chapter_rewrite',
-    scenario: input.scenario,
-    chapterId: input.chapter.id,
-    baseBody: body,
-    candidateBody: candidate,
-    baseBodyFingerprint: hashContent(body),
-    candidateBodyFingerprint: hashContent(candidate),
-    diff: computeRevisionChangeSet(body, candidate, []),
-    frozenTruth: input.frozenTruth,
-    candidateRef: input.candidateRef ?? { kind: 'chapter' },
-    receipt,
-    createdAt: Date.now(),
-  };
 }
 
-export function discardUserRevisionPreview(
+export async function discardUserRevisionPreview(
   preview: UserRevisionPreview,
-): UserRevisionPreview {
+): Promise<UserRevisionPreview> {
   if (preview.state !== 'pending') {
     throw new UserRevisionError(
       'USER_REVISION_PREVIEW_NOT_PENDING',
       '该修订预览已经结束。',
     );
   }
+  await persistPreviewState(preview, 'discarded');
   return { ...preview, state: 'discarded' };
 }
 
@@ -1051,6 +1359,16 @@ export async function applyUserRevisionPreview(input: {
     chapter,
     scenario: preview.scenario,
   });
+  if (
+    preview.candidateRef.kind !== 'chapter' &&
+    (preview.candidateRef.projectId !== chapter.project_id ||
+      preview.candidateRef.chapterId !== chapter.id)
+  ) {
+    throw new UserRevisionError(
+      'USER_REVISION_CANDIDATE_STALE',
+      '修订候选与当前章节身份不一致，请重新打开结果页。',
+    );
+  }
   const persistedBody = chapter.content;
   if (hashContent(persistedBody) !== preview.baseBodyFingerprint) {
     throw new UserRevisionError(
@@ -1089,7 +1407,7 @@ export async function applyUserRevisionPreview(input: {
       sourceRef: JSON.stringify({
         version: 1,
         previewId: preview.previewId,
-        receipt: preview.receipt,
+        requestId: preview.receipt.requestId,
         selection: preview.selection
           ? {
               start: preview.selection.selectionStart,
@@ -1128,6 +1446,7 @@ export async function applyUserRevisionPreview(input: {
     await db
       .updateChapter(chapter.id, { content: persistedBody })
       .catch(() => {});
+    await persistPreviewState(preview, 'failed').catch(() => {});
     throw new UserRevisionError(
       'USER_REVISION_POST_WRITING_FAILED',
       `修订未应用：PostWriting/Memory 闭环失败（${
@@ -1135,6 +1454,7 @@ export async function applyUserRevisionPreview(input: {
       }）。正文已恢复原状，请重试。`,
     );
   }
+  await persistPreviewState(preview, 'applied');
   const updated: Chapter = { ...chapter, content: preview.candidateBody };
   return {
     revisionId,
@@ -1153,22 +1473,23 @@ export interface UserRevisionCandidateBase {
 /**
  * P1-1 Pre-Adoption Revision base: the Final Candidate Artifact, not the
  * chapter body. Outline candidates live in `pipeline_tasks.final_text`;
- * continuation candidates are the run's latest eligible `final` artifact.
+ * continuation candidates are the run's explicit Current Final Authority.
  */
 export async function loadUserRevisionCandidateBase(input: {
-  projectId: number;
-  chapterId: number;
-  scenario: UserRevisionScenario;
+  candidateRef: UserRevisionExactCandidateRef;
 }): Promise<UserRevisionCandidateBase> {
-  if (input.scenario === 'continuation') {
-    const run = await findLatestPendingReviewRunForChapter(
-      input.projectId,
-      input.chapterId,
-    );
-    if (!run) {
+  if (input.candidateRef.kind === 'continuation_run') {
+    const ref = input.candidateRef;
+    const run = await getRunById(ref.runId);
+    if (
+      !run ||
+      run.projectId !== ref.projectId ||
+      run.chapterId !== ref.chapterId ||
+      run.state !== 'awaiting_user'
+    ) {
       throw new UserRevisionError(
         'USER_REVISION_CANDIDATE_MISSING',
-        '找不到待采纳的续写结果，无法修订候选正文。',
+        '当前结果已不是可修订的续写候选，无法继续。',
       );
     }
     const snapshot = await getRunContextSnapshotJson(run.id);
@@ -1179,11 +1500,26 @@ export async function loadUserRevisionCandidateBase(input: {
         '找不到本次续写的冻结上下文，无法修订候选正文。',
       );
     }
-    const artifact = await getLatestEligibleArtifact(run.id);
-    if (!artifact || !String(artifact.content || '').trim()) {
+    if (
+      frozen.projectId !== ref.projectId ||
+      frozen.chapterId !== ref.chapterId
+    ) {
       throw new UserRevisionError(
-        'USER_REVISION_CANDIDATE_MISSING',
-        '本次续写没有可修订的候选正文。',
+        'USER_REVISION_FROZEN_TRUTH_MISSING',
+        '续写结果与当前章节的冻结身份不一致，无法修订候选正文。',
+      );
+    }
+    const artifact = await getCurrentEligibleArtifact(run.id);
+    if (
+      !artifact ||
+      (ref.artifactId && artifact.id !== ref.artifactId) ||
+      !String(artifact.content || '').trim()
+    ) {
+      throw new UserRevisionError(
+        ref.artifactId ? 'USER_REVISION_CANDIDATE_STALE' : 'USER_REVISION_CANDIDATE_MISSING',
+        ref.artifactId
+          ? '当前续写候选已发生变化，请重新打开结果页。'
+          : '本次续写没有可修订的当前候选正文。',
       );
     }
     if (run.workflowVersion === 5 && artifact.stage !== 'final') {
@@ -1200,23 +1536,39 @@ export async function loadUserRevisionCandidateBase(input: {
         scenario: 'continuation',
         writingRunId: run.id,
       }),
-      candidateRef: { kind: 'continuation_run', runId: run.id },
+      candidateRef: {
+        kind: 'continuation_run',
+        runId: run.id,
+        projectId: ref.projectId,
+        chapterId: ref.chapterId,
+        artifactId: artifact.id,
+      },
     };
   }
 
-  const task = await getLatestCompletedPipelineTaskForTarget(
-    'chapter',
-    input.chapterId,
-  );
-  if (!task) {
+  const ref = input.candidateRef;
+  const task = await getPipelineTaskById(ref.taskId);
+  const targetType = task?.targetType ?? task?.target_type;
+  const targetId = Number(task?.targetId ?? task?.target_id);
+  const taskStatus = task?.status;
+  const chapter = await db.getChapterById(ref.chapterId);
+  if (
+    !task ||
+    String(task.id) !== ref.taskId ||
+    targetType !== 'chapter' ||
+    targetId !== ref.chapterId ||
+    taskStatus !== 'completed' ||
+    !chapter ||
+    chapter.project_id !== ref.projectId
+  ) {
     throw new UserRevisionError(
       'USER_REVISION_CANDIDATE_MISSING',
-      '找不到已完成的大纲生成结果，无法修订候选正文。',
+      '当前结果已不是可修订的大纲候选，无法继续。',
     );
   }
   const [payload, contextPayload] = await Promise.all([
-    getPipelineTaskAdoptionPayload(task.id),
-    getPipelineTaskContextPayload(task.id),
+    getPipelineTaskAdoptionPayload(ref.taskId),
+    getPipelineTaskContextPayload(ref.taskId),
   ]);
   const finalText = String(payload?.finalText || '');
   if (!finalText.trim()) {
@@ -1228,8 +1580,14 @@ export async function loadUserRevisionCandidateBase(input: {
   const frozen = readFrozenFromSnapshot(contextPayload);
   if (!frozen) {
     throw new UserRevisionError(
+        'USER_REVISION_FROZEN_TRUTH_MISSING',
+        '找不到本次生成的冻结上下文，无法修订候选正文。',
+      );
+  }
+  if (frozen.projectId !== ref.projectId || frozen.chapterId !== ref.chapterId) {
+    throw new UserRevisionError(
       'USER_REVISION_FROZEN_TRUTH_MISSING',
-      '找不到本次生成的冻结上下文，无法修订候选正文。',
+      '大纲结果与当前章节的冻结身份不一致，无法修订候选正文。',
     );
   }
   return {
@@ -1240,7 +1598,12 @@ export async function loadUserRevisionCandidateBase(input: {
       scenario: 'outline',
       writingRunId: frozen.writingRunId,
     }),
-    candidateRef: { kind: 'pipeline_task', taskId: task.id },
+    candidateRef: {
+      kind: 'pipeline_task',
+      taskId: ref.taskId,
+      projectId: ref.projectId,
+      chapterId: ref.chapterId,
+    },
   };
 }
 
@@ -1288,9 +1651,25 @@ export async function applyUserRevisionPreviewToCandidate(input: {
     );
     currentCandidate = String(payload?.finalText || '');
   } else {
-    const artifact = await getLatestEligibleArtifact(
+    if (!preview.candidateRef.artifactId) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_MISSING',
+        '续写候选缺少精确 Final 身份，无法应用修订。',
+      );
+    }
+    const artifact = await getEligibleArtifactForRun(
+      preview.candidateRef.runId,
+      preview.candidateRef.artifactId,
+    );
+    const authority = await getCurrentEligibleArtifact(
       preview.candidateRef.runId,
     );
+    if (!authority || authority.id !== artifact?.id) {
+      throw new UserRevisionError(
+        'USER_REVISION_CANDIDATE_STALE',
+        '续写 Current Final Authority 已变化，请重新发起修订。',
+      );
+    }
     currentCandidate = String(artifact?.content || '');
     currentArtifactId = artifact?.id ?? null;
   }
@@ -1326,7 +1705,7 @@ export async function applyUserRevisionPreviewToCandidate(input: {
         scope: 'pre_adoption_candidate',
         previewId: preview.previewId,
         candidate: preview.candidateRef,
-        receipt: preview.receipt,
+        requestId: preview.receipt.requestId,
         selection: preview.selection
           ? {
               start: preview.selection.selectionStart,
@@ -1365,17 +1744,18 @@ export async function applyUserRevisionPreviewToCandidate(input: {
         '候选正文已不存在，无法应用修订。',
       );
     }
-    await insertArtifact({
+    await insertFinalArtifactAndActivate({
       runId: preview.candidateRef.runId,
-      stage: 'final',
       content: preview.candidateBody,
       parentArtifactId: currentArtifactId,
-      eligibilityStatus: 'eligible',
-      requireStageMatch: true,
+      expectedCurrentArtifactId: currentArtifactId,
     });
-    const verify = await getLatestEligibleArtifact(preview.candidateRef.runId);
+    const verify = await getCurrentEligibleArtifact(
+      preview.candidateRef.runId,
+    );
     if (
       !verify ||
+      verify.id === currentArtifactId ||
       hashContent(String(verify.content || '')) !==
         preview.candidateBodyFingerprint
     ) {
@@ -1385,6 +1765,8 @@ export async function applyUserRevisionPreviewToCandidate(input: {
       );
     }
   }
+
+  await persistPreviewState(preview, 'applied');
 
   return { revisionId, preview: { ...preview, state: 'applied' } };
 }

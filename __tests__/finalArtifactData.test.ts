@@ -8,15 +8,20 @@ import { sha256Hex } from '../src/services/continuation/hashUtils';
 
 jest.mock('../src/services/continuation/generation/generationRepository', () => ({
   getLatestArtifactForStage: jest.fn(),
+  getCurrentEligibleArtifact: jest.fn(),
 }));
 
 import {
   buildFinalArtifactFromOutlineTask,
   buildFinalArtifactFromContinuationRun,
 } from '../src/services/writing/finalArtifactData';
-import { getLatestArtifactForStage } from '../src/services/continuation/generation/generationRepository';
+import {
+  getCurrentEligibleArtifact,
+  getLatestArtifactForStage,
+} from '../src/services/continuation/generation/generationRepository';
 
 const mockGetLatestArtifactForStage = getLatestArtifactForStage as jest.Mock;
+const mockGetCurrentEligibleArtifact = getCurrentEligibleArtifact as jest.Mock;
 
 interface OutlineTaskLike {
   id: string;
@@ -137,6 +142,7 @@ describe('buildFinalArtifactFromOutlineTask：大纲重建', () => {
 describe('buildFinalArtifactFromContinuationRun：续写重建', () => {
   beforeEach(() => {
     mockGetLatestArtifactForStage.mockReset();
+    mockGetCurrentEligibleArtifact.mockReset();
   });
 
   const runLike = {
@@ -156,9 +162,14 @@ describe('buildFinalArtifactFromContinuationRun：续写重建', () => {
 
   it('final artifact 与 draft artifact 一致 → sourceKind=draft', async () => {
     const body = '续写正文甲。';
-    mockGetLatestArtifactForStage
-      .mockResolvedValueOnce({ content: body, content_hash: sha256Hex(body) }) // draft
-      .mockResolvedValueOnce({ content: body, content_hash: sha256Hex(body) }); // final
+    mockGetLatestArtifactForStage.mockResolvedValueOnce({
+      content: body,
+      content_hash: sha256Hex(body),
+    }); // draft
+    mockGetCurrentEligibleArtifact.mockResolvedValueOnce({
+      content: body,
+      content_hash: sha256Hex(body),
+    }); // current final
     const artifact = await buildFinalArtifactFromContinuationRun(runLike as any);
     expect(artifact).not.toBeNull();
     expect(artifact!.body).toBe(body);
@@ -169,9 +180,14 @@ describe('buildFinalArtifactFromContinuationRun：续写重建', () => {
   it('final != draft → sourceKind=revision，指纹不一致', async () => {
     const draft = '续写草稿。';
     const final = '续写草稿，补充设定。';
-    mockGetLatestArtifactForStage
-      .mockResolvedValueOnce({ content: draft, content_hash: sha256Hex(draft) })
-      .mockResolvedValueOnce({ content: final, content_hash: sha256Hex(final) });
+    mockGetLatestArtifactForStage.mockResolvedValueOnce({
+      content: draft,
+      content_hash: sha256Hex(draft),
+    });
+    mockGetCurrentEligibleArtifact.mockResolvedValueOnce({
+      content: final,
+      content_hash: sha256Hex(final),
+    });
     const artifact = await buildFinalArtifactFromContinuationRun(runLike as any);
     expect(artifact!.summary.sourceKind).toBe('revision');
     expect(artifact!.summary.revisionApplied).toBe(true);
@@ -179,18 +195,25 @@ describe('buildFinalArtifactFromContinuationRun：续写重建', () => {
   });
 
   it('final artifact 缺失时返回 null', async () => {
-    mockGetLatestArtifactForStage
-      .mockResolvedValueOnce({ content: 'd', content_hash: 'h' })
-      .mockResolvedValueOnce(null);
+    mockGetLatestArtifactForStage.mockResolvedValueOnce({
+      content: 'd',
+      content_hash: 'h',
+    });
+    mockGetCurrentEligibleArtifact.mockResolvedValueOnce(null);
     const artifact = await buildFinalArtifactFromContinuationRun(runLike as any);
     expect(artifact).toBeNull();
   });
 
   it('历史 run 无 summary 时仍按现有真相兜底重建', async () => {
     const body = '旧版最终稿。';
-    mockGetLatestArtifactForStage
-      .mockResolvedValueOnce({ content: body, content_hash: sha256Hex(body) })
-      .mockResolvedValueOnce({ content: body, content_hash: sha256Hex(body) });
+    mockGetLatestArtifactForStage.mockResolvedValueOnce({
+      content: body,
+      content_hash: sha256Hex(body),
+    });
+    mockGetCurrentEligibleArtifact.mockResolvedValueOnce({
+      content: body,
+      content_hash: sha256Hex(body),
+    });
     const legacyRun = { id: 'r2', chapterId: 22, snapshot: () => null };
     const artifact = await buildFinalArtifactFromContinuationRun(legacyRun as any);
     expect(artifact).not.toBeNull();

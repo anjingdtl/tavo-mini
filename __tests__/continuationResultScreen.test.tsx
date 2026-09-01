@@ -19,6 +19,7 @@ jest.mock('../src/store/themeStore', () => ({
 
 jest.mock('../src/services/continuation/generation', () => ({
   getArtifactForRun: jest.fn(async () => null),
+  getCurrentEligibleArtifact: jest.fn(async () => ({ id: 'artifact-1', stage: 'writer', content: '续写正文' })),
   getLatestArtifact: jest.fn(async () => ({ id: 'artifact-1', content: '续写正文' })),
   getLatestArtifactForStage: jest.fn(async () => null),
   getLatestEligibleArtifact: jest.fn(async () => ({ id: 'artifact-1', stage: 'writer', content: '续写正文' })),
@@ -74,6 +75,7 @@ jest.mock('@react-navigation/native', () => ({
 import { ContinuationResultScreen } from '../src/screens/continuation/ContinuationResultScreen';
 import {
   getArtifactForRun,
+  getCurrentEligibleArtifact,
   getLatestArtifact,
   getLatestArtifactForStage,
   getLatestEligibleArtifact,
@@ -90,6 +92,7 @@ import {
 const mockListChecksForArtifact = listChecksForArtifact as jest.Mock;
 const mockGetLatestArtifact = getLatestArtifact as jest.Mock;
 const mockGetArtifactForRun = getArtifactForRun as jest.Mock;
+const mockGetCurrentEligibleArtifact = getCurrentEligibleArtifact as jest.Mock;
 const mockGetLatestArtifactForStage = getLatestArtifactForStage as jest.Mock;
 const mockGetLatestEligibleArtifact = getLatestEligibleArtifact as jest.Mock;
 const mockGetRunById = getRunById as jest.Mock;
@@ -116,6 +119,7 @@ describe('ContinuationResultScreen adoption decision', () => {
     });
     mockGetRunContextSnapshotJson.mockResolvedValue(null);
     mockGetLatestArtifact.mockResolvedValue({ id: 'artifact-1', content: '续写正文' });
+    mockGetCurrentEligibleArtifact.mockResolvedValue({ id: 'artifact-1', stage: 'writer', content: '续写正文' });
     mockGetLatestEligibleArtifact.mockResolvedValue({ id: 'artifact-1', stage: 'writer', content: '续写正文' });
     mockGetArtifactForRun.mockResolvedValue(null);
     mockListChecksForArtifact.mockResolvedValue([]);

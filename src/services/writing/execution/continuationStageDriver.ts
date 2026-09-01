@@ -14,6 +14,7 @@
  * after Freeze.
  */
 import {
+  getCurrentEligibleArtifact,
   getRunById,
   insertRun,
   newContinuationRunId,
@@ -410,10 +411,7 @@ export async function createContinuationStageDriver(
             callStage: options.callStage,
             abortSignal: options.signal,
             semanticApply: async () => {
-              const finalArtifact = await getLatestArtifactForStage(
-                run.id,
-                'final',
-              );
+              const finalArtifact = await getCurrentEligibleArtifact(run.id);
               if (compactTopology) {
                 // Phase 4R P0-2: Compact continuation does NOT run Proof, so a
                 // `final_reviser` row never exists. Semantic Apply must consume

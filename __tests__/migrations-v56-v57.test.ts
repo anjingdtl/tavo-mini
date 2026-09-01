@@ -7,7 +7,7 @@ import {
 
 describe('Schema 56 → 57 Final-body artifact hash binding', () => {
   it('keeps uniqueness within a stage while allowing exact cross-stage bodies', () => {
-    expect(SCHEMA_VERSION).toBe(60);
+    expect(SCHEMA_VERSION).toBe(61);
     const ddl = buildSchema57ArtifactsCreateSql();
     expect(ddl).toContain(ARTIFACT_CONTENT_UNIQUE_V57);
     expect(ddl).not.toContain('UNIQUE(run_id, content_hash),');

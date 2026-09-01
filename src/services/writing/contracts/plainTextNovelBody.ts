@@ -16,6 +16,8 @@ export type PlainTextNovelBodyCode =
   | 'reasoning_leak'
   | 'prompt_leak'
   | 'patch_leak'
+  | 'contract_json_leak'
+  | 'anchor_marker_leak'
   | 'duplicate_title_wrapper'
   | 'unclosed_protocol';
 
@@ -23,6 +25,11 @@ export interface PlainTextNovelBodyResult {
   valid: boolean;
   code: PlainTextNovelBodyCode;
   details?: string;
+}
+
+export interface PlainTextNovelBodyOptions {
+  /** Serialized request contract used only to detect direct response echo. */
+  contractJson?: string | null;
 }
 
 const PROTOCOL_KEYS =
@@ -54,7 +61,16 @@ const JSON_WRAPPER_PREFIX_RE =
  * must not be rejected — this gate blocks protocol pollution, not vocabulary.
  */
 const PATCH_MARKER_RE =
-  /JSON\s*Patch|diff\s+--git|^@@\s|^[ \t]*(?:[-*•][ \t]*)?(?:【修改说明】|修改说明\s*[：:]|以上为修改[^。！？\r\n]{0,16}[。！？]?\s*$|仅修改以下\s*[：:]?|以下为修改部分|其余内容(?:不变|保持不变)[。！]?\s*$)/im;
+  /JSON\s*Patch|diff\s+--git|^@@\s|^[ \t]*(?:[-*•][ \t]*)?(?:【修改说明】|修改说明\s*[：:]|以上为修改[^。！？\r\n]{0,16}[。！？]|仅修改以下\s*[：:]?|以下为修改部分|其余内容(?:不变|保持不变)(?:[。！]|$))/im;
+
+/** Prompt scaffolds are structural protocol, not ordinary novel vocabulary. */
+const PROMPT_SCAFFOLD_RE =
+  /你是\s*(?:终稿修订员|Continuation\s+V5|TAVO-MINI(?:的)?用户(?:精准|整章)修订执行器)|(?:修订合同\s*[（(]Edit\s*Work\s*Packet|不可违背的项目约束|输出契约)|Edit\s*Work\s*Packet|system\s+prompt|finalObligations|applied(?:Obligation|CanonRequirement|StyleRequirement)Ids|FROZEN_CONTEXT_(?:BEGIN|END)/i;
+
+/** Generated anchors are stripped before persistence; any remaining marker is
+ * technical leakage. Natural bracket/quote prose remains valid. */
+const ANCHOR_MARKER_RE =
+  /\[draft-p-\d{3}(?:-[a-z]\d{3})?\b|⟦ISSUE_\d+_(?:START|END)⟧|<<REPAIR_[A-Z0-9_]+>>|\bANCHOR_[A-Z0-9_]+\b/i;
 
 function isTitleLine(line: string): boolean {
   return /^(?:第\s*[0-9０-９一二三四五六七八九十百千]+\s*章|Chapter\s+\d+|卷\s*[0-9０-９一二三四五六七八九十百千]+)(?:\s|[:：.。\-—]|$)/i.test(
@@ -120,9 +136,25 @@ function isJsonAfterGenericLabel(body: string): boolean {
   return remainder !== body && isWholeJsonWrapper(remainder);
 }
 
+function isContractJsonEcho(
+  body: string,
+  contractJson: string | null | undefined,
+): boolean {
+  const compactContract = String(contractJson || '').replace(/\s+/g, '');
+  if (!compactContract) return false;
+  const compactBody = body.replace(/\s+/g, '');
+  const sample = compactContract.slice(0, 400);
+  return (
+    sample.length >= 24 &&
+    compactBody.includes(sample.slice(0, 80)) &&
+    compactBody.length < compactContract.length * 2 + 200
+  );
+}
+
 /** Validate a candidate body at the final persistence boundary. */
 export function validatePlainTextNovelBody(
   value: unknown,
+  options?: PlainTextNovelBodyOptions,
 ): PlainTextNovelBodyResult {
   const body = typeof value === 'string' ? value.trim() : '';
   if (!body) return { valid: false, code: 'empty', details: '正文为空' };
@@ -140,6 +172,14 @@ export function validatePlainTextNovelBody(
       valid: false,
       code: 'markdown_fence',
       details: '正文含 Markdown 代码围栏',
+    };
+  }
+
+  if (isContractJsonEcho(body, options?.contractJson)) {
+    return {
+      valid: false,
+      code: 'contract_json_leak',
+      details: '输出疑似直接回显修订合同 JSON',
     };
   }
 
@@ -183,11 +223,27 @@ export function validatePlainTextNovelBody(
     };
   }
 
+  if (PROMPT_SCAFFOLD_RE.test(body)) {
+    return {
+      valid: false,
+      code: 'prompt_leak',
+      details: '正文含模型提示词脚手架',
+    };
+  }
+
   if (PATCH_MARKER_RE.test(body)) {
     return {
       valid: false,
       code: 'patch_leak',
       details: '正文含 Patch/Diff/修改说明',
+    };
+  }
+
+  if (ANCHOR_MARKER_RE.test(body)) {
+    return {
+      valid: false,
+      code: 'anchor_marker_leak',
+      details: '正文含生成锚点标记',
     };
   }
 

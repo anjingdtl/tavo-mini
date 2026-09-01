@@ -5,11 +5,13 @@ type Row = Record<string, any>;
 const mockStore: {
   runs: Row[];
   artifacts: Row[];
+  currentAuthorities: Row[];
   checks: Row[];
   stageResults: Row[];
 } = {
   runs: [],
   artifacts: [],
+  currentAuthorities: [],
   checks: [],
   stageResults: [],
 };
@@ -118,6 +120,50 @@ const mockExecuteSql = jest.fn(async (sql: string, params: any[] = []) => {
       row.updated_at = params[7];
     }
     return mockResult([], 1);
+  }
+
+  if (/FROM continuation_current_final_authorities/i.test(normalized)) {
+    return mockResult(
+      mockStore.currentAuthorities.filter(row => row.run_id === params[0]),
+    );
+  }
+
+  if (/INSERT INTO continuation_current_final_authorities/i.test(normalized)) {
+    const row = {
+      run_id: params[0],
+      active_final_artifact_id: params[1],
+      updated_at: params[2],
+    };
+    const existing = mockStore.currentAuthorities.find(
+      item => item.run_id === row.run_id,
+    );
+    if (existing) Object.assign(existing, row);
+    else mockStore.currentAuthorities.push(row);
+    return mockResult([], 1);
+  }
+
+  if (/UPDATE continuation_current_final_authorities SET/i.test(normalized)) {
+    const row = mockStore.currentAuthorities.find(
+      item =>
+        item.run_id === params[2] &&
+        item.active_final_artifact_id === params[3],
+    );
+    if (!row) return mockResult([], 0);
+    row.active_final_artifact_id = params[0];
+    row.updated_at = params[1];
+    return mockResult([], 1);
+  }
+
+  if (/DELETE FROM continuation_current_final_authorities/i.test(normalized)) {
+    const before = mockStore.currentAuthorities.length;
+    mockStore.currentAuthorities = mockStore.currentAuthorities.filter(
+      row =>
+        !(
+          row.run_id === params[0] &&
+          (params.length < 2 || row.active_final_artifact_id === params[1])
+        ),
+    );
+    return mockResult([], before - mockStore.currentAuthorities.length);
   }
 
   if (/FROM continuation_generation_artifacts/i.test(normalized)) {
@@ -254,6 +300,13 @@ function seedRun(state: string = 'running') {
       eligibility_status: 'eligible',
       rejection_code: null,
       created_at: '2026-08-03T00:00:00.000Z',
+    },
+  ];
+  mockStore.currentAuthorities = [
+    {
+      run_id: 'ct_v4_repository',
+      active_final_artifact_id: 'writer_artifact',
+      updated_at: '2026-08-03T00:00:00.000Z',
     },
   ];
   mockStore.checks = [

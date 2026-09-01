@@ -23,6 +23,10 @@ jest.mock('../src/services/writing/persist/continuationAdoption', () => ({
     mockFinalizeContinuationChapter(...args),
 }));
 
+jest.mock('../src/data/repositories/writingRequestReceiptRepository', () => ({
+  upsertWritingRequestReceipt: jest.fn().mockResolvedValue(undefined),
+}));
+
 import {
   applyUserRevisionPreview,
   createWholeChapterRewritePreview,
@@ -85,7 +89,7 @@ describe('user revision persistence boundary', () => {
     mockFinalizeContinuationChapter.mockResolvedValue({ ok: true });
   });
 
-  it('writes a recoverable before-snapshot and body-free receipt on apply', async () => {
+  it('writes a recoverable before-snapshot and durable receipt reference on apply', async () => {
     const preview = await createWholeChapterRewritePreview({
       chapter,
       scenario: 'outline',
@@ -107,9 +111,8 @@ describe('user revision persistence boundary', () => {
       { skipContentDedupe: true },
     );
     const sourceRef = JSON.parse(mockCreateRevision.mock.calls[0][0].sourceRef);
-    expect(sourceRef.receipt).toBeDefined();
-    expect(sourceRef.receipt).not.toHaveProperty('baseBody');
-    expect(sourceRef.receipt).not.toHaveProperty('candidateBody');
+    expect(sourceRef.requestId).toBe(preview.receipt.requestId);
+    expect(sourceRef.receipt).toBeUndefined();
     expect(JSON.stringify(sourceRef)).not.toContain('原稿。');
     expect(mockUpdateChapter).toHaveBeenCalledWith(8, { content: '新稿。' });
     expect(applied.preview.state).toBe('applied');

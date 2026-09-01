@@ -1,6 +1,8 @@
 # TAVO-MINI Phase IV 优化建设与最终封板方案
 ## 写作通过率恢复、Writer Style 遵循验收与文学质量闭环
 
+> Historical Evidence（2026-08-31）：本方案及其中的 IV-12 GO 只保留历史决策轨迹；当前 Phase IV 状态与分母以 `TAVO-MINI_Phase4_IV13U_一致性与唯一性收口修复方案_20260901.md` 与 `phase4-iv13u-progress.md` 为准。
+
 > 方案版本：Phase IV v2.0
 > 编制日期：2026-08-31
 > 当前施工仓：`E:\AiWorkSpace\tavo-mini`

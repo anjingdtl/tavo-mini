@@ -449,7 +449,112 @@ async function execute(
   return result;
 }
 
+async function existingTableNames(
+  db: SQLite.SQLiteDatabase,
+): Promise<Set<string>> {
+  const result = await execute(
+    db,
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  );
+  const names = new Set<string>();
+  for (let index = 0; index < result.rows.length; index += 1) {
+    names.add(String(result.rows.item(index).name || ''));
+  }
+  return names;
+}
+
+const PIPELINE_TASK_CHUNK_SIZE_CHARS = 200_000;
+const PIPELINE_TASK_CHUNK_THRESHOLD_CHARS = 500_000;
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function readPipelineTasksWithChunkedContext(
+  db: SQLite.SQLiteDatabase,
+): Promise<Record<string, any>[] | null> {
+  let sizeResult;
+  try {
+    sizeResult = await execute(
+      db,
+      'SELECT COALESCE(MAX(LENGTH(CAST(pipeline_context_json AS TEXT))), 0) AS max_chars FROM pipeline_tasks',
+    );
+  } catch {
+    // Older pipeline_tasks schemas may not have this column yet. Fall back to
+    // the ordinary SELECT * path, which remains schema-version agnostic.
+    return null;
+  }
+
+  const maxChars = Number(sizeResult.rows.length > 0 ? sizeResult.rows.item(0).max_chars : 0);
+  if (!Number.isFinite(maxChars) || maxChars <= PIPELINE_TASK_CHUNK_THRESHOLD_CHARS) {
+    return null;
+  }
+
+  let columnResult;
+  try {
+    columnResult = await execute(db, 'PRAGMA table_info(pipeline_tasks)');
+  } catch {
+    return null;
+  }
+  const columns: string[] = [];
+  for (let index = 0; index < columnResult.rows.length; index += 1) {
+    const name = String(columnResult.rows.item(index).name || '');
+    if (name) columns.push(name);
+  }
+  if (!columns.includes('id') || !columns.includes('pipeline_context_json')) {
+    return null;
+  }
+
+  const contextColumn = quoteIdentifier('pipeline_context_json');
+  const tableName = quoteIdentifier('pipeline_tasks');
+  const baseColumns = columns
+    .filter(column => column !== 'pipeline_context_json')
+    .map(quoteIdentifier)
+    .join(', ');
+  const baseResult = await execute(db, `SELECT ${baseColumns} FROM ${tableName}`);
+  const rows: Record<string, any>[] = [];
+  for (let index = 0; index < baseResult.rows.length; index += 1) {
+    rows.push(baseResult.rows.item(index));
+  }
+
+  for (const row of rows) {
+    const id = row.id;
+    const lengthResult = await execute(
+      db,
+      `SELECT CASE WHEN ${contextColumn} IS NULL THEN NULL ELSE LENGTH(CAST(${contextColumn} AS TEXT)) END AS char_length FROM ${tableName} WHERE ${quoteIdentifier('id')} = ?`,
+      [id],
+    );
+    if (lengthResult.rows.length === 0 || lengthResult.rows.item(0).char_length === null) {
+      row.pipeline_context_json = null;
+      continue;
+    }
+
+    const charLength = Number(lengthResult.rows.item(0).char_length);
+    if (!Number.isFinite(charLength) || charLength < 0) {
+      throw new Error('pipeline_tasks.pipeline_context_json 长度无效');
+    }
+    const chunks: string[] = [];
+    for (let offset = 1; offset <= charLength; offset += PIPELINE_TASK_CHUNK_SIZE_CHARS) {
+      const chunkResult = await execute(
+        db,
+        `SELECT substr(CAST(${contextColumn} AS TEXT), ?, ?) AS ${quoteIdentifier('chunk')} FROM ${tableName} WHERE ${quoteIdentifier('id')} = ?`,
+        [offset, PIPELINE_TASK_CHUNK_SIZE_CHARS, id],
+      );
+      if (chunkResult.rows.length === 0) {
+        throw new Error(`pipeline_tasks 读取失败：${String(id)}`);
+      }
+      chunks.push(String(chunkResult.rows.item(0).chunk || ''));
+    }
+    row.pipeline_context_json = chunks.join('');
+  }
+  return rows;
+}
+
 async function allRows(db: SQLite.SQLiteDatabase, table: string): Promise<Record<string, any>[]> {
+  if (table === 'pipeline_tasks') {
+    const chunkedRows = await readPipelineTasksWithChunkedContext(db);
+    if (chunkedRows) return chunkedRows;
+  }
   const result = await execute(db, `SELECT * FROM ${table}`);
   const rows: Record<string, any>[] = [];
   for (let index = 0; index < result.rows.length; index += 1) {
@@ -469,7 +574,18 @@ export async function readBackupTables(
   options: { redactSensitive?: boolean } = {},
 ): Promise<Record<string, Record<string, any>[]>> {
   const tables: Record<string, Record<string, any>[]> = {};
+  const availableTables = await existingTableNames(db);
   for (const table of BACKUP_MANIFEST) {
+    if (!availableTables.has(table.name)) {
+      if (CORE_TABLE_NAMES.has(table.name)) {
+        throw new Error(`核心备份表缺失：${table.name}`);
+      }
+      // Avoid issuing a guaranteed-failing SELECT against an older schema.
+      // This is particularly important during a pre-migration recovery backup:
+      // the manifest already describes the target schema, while the live DB
+      // still has the source schema.
+      continue;
+    }
     try {
       const rows = await allRows(db, table.name);
       tables[table.name] = options.redactSensitive
@@ -705,9 +821,18 @@ export async function createBackup(
   // SELECT 失败时跳过（空数组）而非中断整个备份——与 readBackupTables 的
   // 容错策略一致。核心表缺失才视为致命错误。
   const tables: Record<string, Record<string, any>[]> = {};
+  const availableTables = await existingTableNames(db);
   const totalTables = BACKUP_MANIFEST.length;
   for (let i = 0; i < totalTables; i += 1) {
     const table = BACKUP_MANIFEST[i];
+    if (!availableTables.has(table.name)) {
+      if (CORE_TABLE_NAMES.has(table.name)) {
+        throw new Error(`核心备份表缺失：${table.name}`);
+      }
+      tables[table.name] = [];
+      report(((i + 1) / totalTables) * 50, `读取数据表 (${i + 1}/${totalTables})`);
+      continue;
+    }
     try {
       const rows = await allRows(db, table.name);
       tables[table.name] = rows

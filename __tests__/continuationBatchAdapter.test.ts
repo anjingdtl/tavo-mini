@@ -19,6 +19,8 @@ jest.mock('../src/services/continuation/generation/generationRepository', () => 
       (mockRepo.listRunsForProject as any)(...args),
     getLatestArtifactForStage: (...args: any[]) =>
       (mockRepo.getLatestArtifactForStage as any)(...args),
+    getCurrentEligibleArtifact: (...args: any[]) =>
+      (mockRepo.getCurrentEligibleArtifact as any)(...args),
     listChecksForArtifact: (...args: any[]) =>
       (mockRepo.listChecksForArtifact as any)(...args),
     getOutboxByDedupe: (...args: any[]) => (mockRepo.getOutboxByDedupe as any)(...args),
@@ -414,6 +416,17 @@ const mockRepo = {
     const found = [...mockWorld.artifacts]
       .reverse()
       .find(a => a.runId === runId && a.stage === stage);
+    return found ? { ...found } : null;
+  },
+  async getCurrentEligibleArtifact(runId: string) {
+    const found = [...mockWorld.artifacts]
+      .reverse()
+      .find(
+        a =>
+          a.runId === runId &&
+          ['writer', 'repair', 'user_edit', 'final'].includes(a.stage) &&
+          a.eligibilityStatus === 'eligible',
+      );
     return found ? { ...found } : null;
   },
   async listChecksForArtifact(_runId: string, artifactId: string) {
