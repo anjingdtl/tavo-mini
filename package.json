@@ -41,7 +41,7 @@
     "react-native-sqlite-storage": "^6.0.1",
     "react-native-svg": "^15.15.5",
     "react-native-toast-message": "^2.3.3",
-    "zustand": "^5.0.13"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
