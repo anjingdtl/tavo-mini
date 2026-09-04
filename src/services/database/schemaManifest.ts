@@ -1793,12 +1793,14 @@ export const SCHEMA_RECOVERY_EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'llm_usage_logs',
   'story_memory_request_attempts',
 
-  // Freeform pipeline and batch execution state is replayable runtime data;
-  // its context, stage output, attempts, and planner snapshots are the large
+  // Most freeform pipeline and batch execution state is replayable runtime
+  // data; its checkpoints, planner snapshots, and batch rows are the large
   // rows which caused the migration safety backup to exceed device memory.
-  'pipeline_tasks',
+  // Keep the task + durable attempt pair: the latter is the source of truth
+  // for interrupted/retry-safe calls and is streamed with sensitive/temp
+  // columns removed. Keeping the parent avoids producing a recovery file that
+  // cannot be restored with foreign keys enabled.
   'pipeline_stage_checkpoints',
-  'pipeline_stage_attempts',
   'multi_chapter_batches',
   'multi_chapter_batch_items',
   'multi_chapter_batch_item_runs',

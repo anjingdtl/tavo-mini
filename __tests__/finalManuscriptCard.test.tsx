@@ -115,6 +115,55 @@ describe('FinalManuscriptCard：查看修改', () => {
     expect(sha256Hex(body)).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it.each([2_000, 10_000, 50_000])(
+    '阅读器在 %i 字正文下保留独立滚动区域',
+    length => {
+      const marker = `READER_${length}_END`;
+      const paragraph = '雾港的灯火沿着堤岸亮起，潮声把远处的钟鸣揉成细碎的回响。';
+      let body = 'READER_START\n\n';
+      while (body.length < length - marker.length - 2) {
+        body += `${paragraph}\n\n`;
+      }
+      body = `${body.slice(0, length - marker.length - 2)}\n\n${marker}`;
+      expect(body.length).toBe(length);
+
+      const { getByText, getByTestId } = render(
+        <FinalManuscriptCard artifact={makeArtifact({ body })} />,
+      );
+
+      fireEvent.press(getByText('阅读全文'));
+      expect(getByTestId('final-reader-card')).toBeTruthy();
+      expect(getByTestId('final-reader-scroll')).toBeTruthy();
+      expect(getByText(body)).toBeTruthy();
+    },
+  );
+
+  it('阅读器支持正文点击、遮罩关闭与关闭按钮', () => {
+    const body = Array.from(
+      { length: 80 },
+      (_, index) => `第 ${index + 1} 段正文。`,
+    ).join('\n');
+    const { getByText, getByTestId, getByLabelText, queryByTestId } = render(
+      <FinalManuscriptCard artifact={makeArtifact({ body })} />,
+    );
+
+    fireEvent.press(getByText('阅读全文'));
+    getByTestId('final-reader-card');
+    const scroll = getByTestId('final-reader-scroll');
+    expect(getByText(body)).toBeTruthy();
+
+    // 正文/滚动区域是卡片内部的直接内容，不会把点击冒泡成遮罩关闭。
+    fireEvent.press(scroll);
+    expect(getByTestId('final-reader-card')).toBeTruthy();
+
+    fireEvent.press(getByLabelText('关闭最终稿'));
+    expect(queryByTestId('final-reader-card')).toBeNull();
+
+    fireEvent.press(getByText('阅读全文'));
+    fireEvent.press(getByTestId('final-reader-backdrop'));
+    expect(queryByTestId('final-reader-card')).toBeNull();
+  });
+
   it('exposes separate targeted and whole-chapter revision entrances', () => {
     const onTargetedRevision = jest.fn();
     const onWholeChapterRewrite = jest.fn();

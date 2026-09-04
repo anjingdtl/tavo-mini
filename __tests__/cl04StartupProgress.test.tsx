@@ -44,7 +44,7 @@ import {
   __setDatabaseForTest,
 } from '../src/data/connection/openDatabase';
 import { createEmptyInMemoryDb } from './helpers/canonInMemoryDb';
-import { initializeDatabase } from '../src/data/schema/initializeDatabase';
+import { initializeDatabase, lastStartupPath, lastStartupTimings } from '../src/data/schema/initializeDatabase';
 import { setupInMemoryFs } from './schema40-fixture-helpers';
 
 jest.useFakeTimers();
@@ -130,7 +130,7 @@ describe('initializeDatabase onPhase 真实阶段驱动（集成）', () => {
     __resetForTest();
   });
 
-  it('same-version 路径包含内容指纹与内容核验阶段', async () => {
+  it('同版本且状态干净时走 Fast Path，不扫描正文内容', async () => {
     jest.useRealTimers();
     __resetForTest();
     setupInMemoryFs();
@@ -139,7 +139,8 @@ describe('initializeDatabase onPhase 真实阶段驱动（集成）', () => {
 
     // fresh 安装。
     await initializeDatabase(fresh as any);
-    // 植入用户内容 → same-version 启动（upgrade 路径，含指纹捕获/核验）。
+    // 植入用户内容后，第二次同版本启动仍必须保持 Fast Path；正文内容
+    // 不应因为一次普通冷启动而触发全量指纹/召回扫描。
     await fresh.executeSql(
       `INSERT INTO projects (id, name, mode, created_at, updated_at) VALUES (1, 'p', 'outline', 't', 't')`,
     );
@@ -153,11 +154,17 @@ describe('initializeDatabase onPhase 真实阶段驱动（集成）', () => {
       onPhase: phase => phases.push(phase),
     });
 
-    expect(phases).toContain('capturing_fingerprint');
-    expect(phases).toContain('verifying_content');
-    expect(phases.indexOf('capturing_fingerprint')).toBeLessThan(
-      phases.indexOf('verifying_content'),
+    expect(lastStartupPath).toBe('fast');
+    expect(lastStartupTimings).toEqual(
+      expect.objectContaining({
+        fingerprint: 0,
+        recall: 0,
+        deep_validation: 0,
+      }),
     );
+    expect(phases).toContain('checking_schema');
+    expect(phases).not.toContain('capturing_fingerprint');
+    expect(phases).not.toContain('verifying_content');
     try {
       fresh.close();
     } catch {

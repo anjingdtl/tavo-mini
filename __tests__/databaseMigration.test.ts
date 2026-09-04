@@ -152,7 +152,7 @@ function createLifecycleDb(
         },
       ];
     }
-    const tableInfo = normalized.match(/^PRAGMA table_info\((\w+)\)/i);
+    const tableInfo = normalized.match(/^PRAGMA table_info\(["']?(\w+)["']?\)/i);
     if (tableInfo) {
       return [
         {

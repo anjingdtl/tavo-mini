@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed — Android 阅读器滚动与数据库冷启动
+
+- 重构“阅读全文”弹窗的遮罩/正文触摸层级，让正文 `ScrollView` 直接取得 Android 纵向滚动手势。
+- 为同版本数据库启动增加带完整状态标记与物理 schema signature 校验的 Fast Path；迁移、漂移、恢复、中断或未验证状态继续走 Deep Path，并保留 recall / content fingerprint / fail-closed 校验。
+
 ## [2.30.1] - 2026-09-01
 
 ### P0 热修复 — Schema Recovery 有界内存

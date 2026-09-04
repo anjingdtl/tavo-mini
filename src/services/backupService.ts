@@ -7,6 +7,11 @@ import { SCHEMA_MANIFEST, type TableManifest } from './database/schemaManifest';
 import { formatSchemaIssues, validateSchema } from './database/schemaValidator';
 import { executeTransaction, type SqlStatement } from './database/transaction';
 import { Sha256Stream } from './continuation/hashUtils';
+import {
+  buildStartupDatabaseStateStatements,
+  STARTUP_DB_STATE_DEEP_REQUIRED,
+  STARTUP_INTEGRITY_NEEDS_VERIFICATION,
+} from '../data/schema/startupDatabaseState';
 
 const BACKUP_DIR = `${RNFS.ExternalDirectoryPath}/backups`;
 const MAX_AUTOMATIC_BACKUPS = 3;
@@ -252,7 +257,11 @@ interface ReadValidationResult {
   validation: BackupValidation;
 }
 
-interface RestoreTableOptions { redactCredentials: boolean; }
+interface RestoreTableOptions {
+  redactCredentials: boolean;
+  /** False only for restoring the pre-restore snapshot after verification fails. */
+  markStartupDeepRequired?: boolean;
+}
 
 function isPlainRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -1133,6 +1142,24 @@ function buildRestoreStatements(
     });
   }
 
+  // A restore is a database replacement, not a normal clean launch. Persist
+  // the deep-path marker in the same transaction as the restored rows so a
+  // process kill after COMMIT cannot leave a restored database looking safe to
+  // the fast-path probe.
+  if (options.markStartupDeepRequired !== false) {
+    statements.push(
+      ...buildStartupDatabaseStateStatements({
+        state: STARTUP_DB_STATE_DEEP_REQUIRED,
+        integrityMarker: STARTUP_INTEGRITY_NEEDS_VERIFICATION,
+        migrationInProgress: false,
+        recoveryRequired: true,
+        databaseRestorePending: true,
+        databaseImportPending: false,
+        schemaRecoveryPending: true,
+      }),
+    );
+  }
+
   return statements;
 }
 
@@ -1186,6 +1213,7 @@ export async function restoreFromBackup(
     } catch (verificationError) {
       const rollbackStatements = buildRestoreStatements(currentTables, {
         redactCredentials: false,
+        markStartupDeepRequired: false,
       });
       try {
         await executeTransaction(db, rollbackStatements);

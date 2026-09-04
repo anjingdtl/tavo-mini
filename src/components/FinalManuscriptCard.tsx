@@ -217,13 +217,17 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
         animationType="fade"
         onRequestClose={() => setReading(false)}
       >
-        <Pressable
-          style={styles.readerOverlay}
-          onPress={() => setReading(false)}
-        >
+        <View style={styles.readerOverlay}>
           <Pressable
+            testID="final-reader-backdrop"
+            style={styles.readerBackdrop}
+            onPress={() => setReading(false)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭最终稿阅读器"
+          />
+          <View
+            testID="final-reader-card"
             style={[styles.reader, { backgroundColor: theme.colors.surface }]}
-            onPress={event => event.stopPropagation()}
           >
             <View style={styles.readerHead}>
               <Text
@@ -259,15 +263,22 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
                 </Text>
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.readerBody}>
+            <ScrollView
+              testID="final-reader-scroll"
+              style={styles.readerBody}
+              contentContainerStyle={styles.readerContent}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              overScrollMode="auto"
+            >
               <Text
                 style={[styles.readerText, { color: theme.colors.textPrimary }]}
               >
                 {artifact.body}
               </Text>
             </ScrollView>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
       <Modal
         visible={diffIndex !== null && artifact != null}
@@ -275,13 +286,17 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
         animationType="fade"
         onRequestClose={() => setDiffIndex(null)}
       >
-        <Pressable
-          style={styles.readerOverlay}
-          onPress={() => setDiffIndex(null)}
-        >
+        <View style={styles.readerOverlay}>
           <Pressable
+            testID="final-diff-backdrop"
+            style={styles.readerBackdrop}
+            onPress={() => setDiffIndex(null)}
+            accessibilityRole="button"
+            accessibilityLabel="关闭修改查看器"
+          />
+          <View
+            testID="final-diff-card"
             style={[styles.reader, { backgroundColor: theme.colors.surface }]}
-            onPress={event => event.stopPropagation()}
           >
             <View style={styles.readerHead}>
               <Text
@@ -322,7 +337,14 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
             {diffIndex !== null &&
             artifact &&
             artifact.changes.changes[diffIndex] ? (
-              <ScrollView style={styles.readerBody}>
+              <ScrollView
+                testID="final-diff-scroll"
+                style={styles.readerBody}
+                contentContainerStyle={styles.readerContent}
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                overScrollMode="auto"
+              >
                 <View style={styles.diffRow}>
                   <Text
                     style={[
@@ -408,8 +430,8 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
                 </View>
               </ScrollView>
             ) : null}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
     </Card>
   );
@@ -445,7 +467,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.lg,
   },
-  reader: { borderRadius: 10, padding: spacing.lg, maxHeight: '85%' },
+  readerBackdrop: StyleSheet.absoluteFill,
+  reader: {
+    width: '100%',
+    minHeight: 0,
+    flexShrink: 1,
+    borderRadius: 10,
+    padding: spacing.lg,
+    maxHeight: '85%',
+    overflow: 'hidden',
+  },
   readerHead: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -461,7 +492,8 @@ const styles = StyleSheet.create({
   readerChars: { fontSize: 12 },
   readerClose: { padding: 4 },
   readerCloseText: { fontSize: 16 },
-  readerBody: { flexGrow: 0 },
+  readerBody: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
+  readerContent: { paddingBottom: spacing.sm },
   readerText: { fontSize: 15, lineHeight: 26 },
   diffRow: { flexDirection: 'row', marginBottom: spacing.sm },
   diffTag: {

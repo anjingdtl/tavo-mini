@@ -263,10 +263,17 @@ describe('集成：initializeDatabase 升级前后内容指纹（CL-03 fail-clos
        VALUES (1, 0, '第1章', '梗概', '用户正文内容', 'draft', 't', 't')`,
     );
 
-    // 第二次：same-version 启动 —— 内容未变，必须通过。
+    // 第二次：same-version Fast Path —— 内容未变，必须通过且不做全量扫描。
     await initializeDatabase(fresh as any);
 
-    // 第三次：在 before 指纹与 after 指纹之间注入一次内容改写（同 id 同
+    // 第三次显式要求深路径，模拟迁移/修复/恢复后的安全校验窗口。
+    // 普通同版本冷启动不再自动扫描正文，但 fail-closed 指纹校验仍保留
+    // 在所有 deep/safe 路径中。
+    await fresh.executeSql(
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('startup_db_state', 'deep_required')`,
+    );
+
+    // 第三次 deep 启动：在 before 指纹与 after 指纹之间注入一次内容改写（同 id 同
     // count —— 旧 count/sum 校验无法发现），模拟迁移/修复步骤破坏内容。
     // 指纹比较必须发现并阻断启动。
     const originalCapture = fingerprintModule.captureUserContentFingerprint;

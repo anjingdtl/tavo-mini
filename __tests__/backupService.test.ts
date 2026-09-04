@@ -616,6 +616,8 @@ describe('backupService', () => {
     expect(mockDb.tableData.projects).toEqual([{ id: 2, name: '恢复项目' }]);
     expect(mockDb.tableData.llm_config[0]).not.toHaveProperty('api_key');
     expect(mockDb.tableData.settings).toContainEqual({ key: 'schema_version', value: String(SCHEMA_VERSION) });
+    expect(mockDb.tableData.settings).toContainEqual({ key: 'startup_db_state', value: 'deep_required' });
+    expect(mockDb.tableData.settings).toContainEqual({ key: 'database_restore_pending', value: 'true' });
     expect(mockDb.transaction).toHaveBeenCalled();
   });
 
