@@ -1,6 +1,9 @@
 import React from 'react';
 import { act, fireEvent, render } from '@testing-library/react-native';
-import { CharacterEditor } from '../src/components/CharacterEditor';
+import {
+  CharacterEditor,
+  type CharacterEditorHandle,
+} from '../src/components/CharacterEditor';
 
 describe('CharacterEditor novel profile mode', () => {
   beforeEach(() => jest.useFakeTimers());
@@ -85,5 +88,71 @@ describe('CharacterEditor novel profile mode', () => {
     expect(emitted.unknown_outer).toBe('preserved');
     expect(emitted.data.unknown_field).toEqual({ preserved: true });
     expect(emitted.data.first_mes).toBe('新开场');
+  });
+
+  test('flushPending returns the latest JSON before the debounce window', () => {
+    const onChange = jest.fn();
+    const ref = React.createRef<CharacterEditorHandle>();
+    const source = JSON.stringify({
+      spec: 'chara_card_v3',
+      spec_version: '3.0',
+      data: {
+        name: '快存角色',
+        first_mes: '旧开场',
+      },
+    });
+    const screen = render(
+      <CharacterEditor ref={ref} dataJson={source} onChange={onChange} />,
+    );
+
+    fireEvent.changeText(screen.getByDisplayValue('快存角色'), '快存角色-新');
+    fireEvent.changeText(screen.getByDisplayValue('旧开场'), '最后一个字符Z');
+    const latestJson = ref.current?.flushPending();
+
+    expect(latestJson).toBeTruthy();
+    expect(JSON.parse(latestJson || '{}').data.name).toBe('快存角色-新');
+    expect(JSON.parse(latestJson || '{}').data.first_mes).toBe('最后一个字符Z');
+    expect(onChange).toHaveBeenCalledWith(latestJson);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    act(() => jest.advanceTimersByTime(350));
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  test('cancels the pending notification when unmounted', () => {
+    const onChange = jest.fn();
+    const source = JSON.stringify({
+      data: { name: '卸载角色', first_mes: '旧开场' },
+    });
+    const screen = render(
+      <CharacterEditor dataJson={source} onChange={onChange} />,
+    );
+
+    fireEvent.changeText(screen.getByDisplayValue('旧开场'), '不会延迟回调');
+    screen.unmount();
+    act(() => jest.advanceTimersByTime(350));
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test('cancels a pending notification when the data source changes', () => {
+    const onChange = jest.fn();
+    const firstSource = JSON.stringify({
+      data: { name: '旧角色', first_mes: '旧开场' },
+    });
+    const nextSource = JSON.stringify({
+      data: { name: '新角色', first_mes: '新开场' },
+    });
+    const screen = render(
+      <CharacterEditor dataJson={firstSource} onChange={onChange} />,
+    );
+
+    fireEvent.changeText(screen.getByDisplayValue('旧开场'), '旧源待发送');
+    screen.rerender(
+      <CharacterEditor dataJson={nextSource} onChange={onChange} />,
+    );
+    act(() => jest.advanceTimersByTime(350));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('新开场')).toBeTruthy();
   });
 });

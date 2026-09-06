@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import {
   StyleSheet,
   Text,
@@ -14,22 +20,21 @@ import {
   readNovelCharacterDraft,
 } from '../services/construction/characterDraftAdapter';
 
-// ---------------------------------------------------------------------------
-// Simple debounce for serializing card to JSON
-// 8.8 修复：_debounceTimer 从模块级改为实例级 useRef，避免多实例互相 clearTimeout
-function debounceNotifyFactory(timerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) {
-  return (fn: () => void, ms = 300) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(fn, ms);
-  };
-}
-
 // Types
 // ---------------------------------------------------------------------------
 
 interface CharacterEditorProps {
   dataJson: string;
   onChange: (dataJson: string) => void;
+}
+
+export interface CharacterEditorHandle {
+  /** Return the full JSON represented by the current visible editor fields. */
+  getLatestDataJson: () => string;
+  /** Cancel the delayed parent notification and synchronously notify the parent. */
+  flushPending: () => string;
+  /** Cancel a delayed parent notification without emitting it. */
+  cancelPending: () => void;
 }
 
 interface DialogueTurn {
@@ -149,10 +154,23 @@ function serializeMesExample(groups: DialogueGroup[]): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onChange }) => {
+export const CharacterEditor = React.forwardRef<
+  CharacterEditorHandle,
+  CharacterEditorProps
+>(({ dataJson, onChange }, ref) => {
   const { theme } = useThemeStore();
   const [parseError, setParseError] = useState(false);
   const [fallbackJson, setFallbackJson] = useState(dataJson);
+
+  const onChangeRef = useRef(onChange);
+  const mountedRef = useRef(true);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestJsonRef = useRef(dataJson);
+  const pendingJsonRef = useRef<string | null>(null);
+  const notificationGenerationRef = useRef(0);
+  const renderedDataJsonRef = useRef(dataJson);
+  renderedDataJsonRef.current = dataJson;
+  onChangeRef.current = onChange;
 
   // Stable parsed state
   const [hasEnvelope, setHasEnvelope] = useState(false);
@@ -199,11 +217,51 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
   // 初始化为 null 而非 dataJson，确保首次 mount 时 useEffect 一定会执行解析
   const lastParsedJsonRef = useRef<string | null>(null);
 
+  const cancelPending = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    pendingJsonRef.current = null;
+    notificationGenerationRef.current += 1;
+  }, []);
+
+  const flushPending = useCallback(() => {
+    const latestJson = latestJsonRef.current;
+    const hadPendingNotification = pendingJsonRef.current !== null;
+    cancelPending();
+    if (hadPendingNotification && mountedRef.current) {
+      lastParsedJsonRef.current = latestJson;
+      onChangeRef.current(latestJson);
+    }
+    return latestJson;
+  }, [cancelPending]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getLatestDataJson: () => latestJsonRef.current,
+      flushPending,
+      cancelPending,
+    }),
+    [cancelPending, flushPending],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      cancelPending();
+    };
+  }, [cancelPending]);
+
   // Parse dataJson into fields only when it changes externally (not from our own emitChange)
   useEffect(() => {
     // Skip if this is a change we triggered ourselves
     if (lastParsedJsonRef.current === dataJson) return;
+    cancelPending();
     lastParsedJsonRef.current = dataJson;
+    latestJsonRef.current = dataJson;
 
     const parsed = safeParseCard(dataJson);
     if (!parsed) {
@@ -260,12 +318,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
     setAlternateGreetings(Array.isArray(d.alternate_greetings) ? d.alternate_greetings.map(String) : []);
     setCreator(String(d.creator || ''));
     setVersion(String(d.character_version || ''));
-  }, [dataJson]);
+  }, [cancelPending, dataJson]);
 
-  // Debounced serializer — collects latest field values and notifies parent
-  // 8.8 修复：debounce timer 从模块级改为实例 useRef
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const debounceNotify = debounceNotifyFactory(debounceTimerRef);
+  // Debounced serializer — the delay only controls when the parent is notified;
+  // latestJsonRef is updated synchronously so Save can always read the latest UI.
   const fieldsRef = useRef<Record<string, unknown>>({});
   const metaRef = useRef<{ hasEnvelope: boolean; outer: Record<string, unknown> }>({ hasEnvelope: false, outer: {} });
 
@@ -303,19 +359,36 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
 
   const emitChange = useCallback(
     (updates: Partial<Record<string, unknown>>) => {
-      // 仅合并 updates，fieldsRef 已在每帧同步为最新值
+      // Merge the event synchronously. React state and the debounced parent
+      // callback are intentionally not part of the save-time data path.
       Object.assign(fieldsRef.current, updates);
-      const capturedFields = { ...fieldsRef.current };
-      const capturedMeta = { ...metaRef.current };
+      const json = serializeCard(
+        metaRef.current.hasEnvelope,
+        metaRef.current.outer,
+        { ...fieldsRef.current },
+      );
+      latestJsonRef.current = json;
+      pendingJsonRef.current = json;
+      lastParsedJsonRef.current = json;
 
-      debounceNotify(() => {
-        const json = serializeCard(capturedMeta.hasEnvelope, capturedMeta.outer, capturedFields);
-        lastParsedJsonRef.current = json;
-        onChange(json);
-      });
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      const generation = notificationGenerationRef.current;
+      const sourceJson = renderedDataJsonRef.current;
+      debounceTimerRef.current = setTimeout(() => {
+        if (
+          !mountedRef.current ||
+          generation !== notificationGenerationRef.current ||
+          sourceJson !== renderedDataJsonRef.current
+        ) {
+          return;
+        }
+        debounceTimerRef.current = null;
+        const pendingJson = pendingJsonRef.current;
+        pendingJsonRef.current = null;
+        if (pendingJson !== null) onChangeRef.current(pendingJson);
+      }, 300);
     },
-    // 依赖 onChange + debounceNotify（现在 debounceNotify 每帧重建，但引用稳定因 debounceNotifyFactory 闭包）
-    [onChange, debounceNotify],
+    [],
   );
 
   // Field update helpers
@@ -366,7 +439,10 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
           value={fallbackJson}
           onChangeText={(text) => {
             setFallbackJson(text);
-            onChange(text);
+            latestJsonRef.current = text;
+            pendingJsonRef.current = null;
+            lastParsedJsonRef.current = text;
+            onChangeRef.current(text);
           }}
           multiline
           inputStyle={styles.largeInput}
@@ -563,7 +639,9 @@ export const CharacterEditor: React.FC<CharacterEditorProps> = ({ dataJson, onCh
       )}
     </View>
   );
-};
+});
+
+CharacterEditor.displayName = 'CharacterEditor';
 
 // ---------------------------------------------------------------------------
 // Section Title

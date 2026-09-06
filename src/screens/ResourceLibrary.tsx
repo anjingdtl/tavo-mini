@@ -44,7 +44,10 @@ import {
   SegmentedControl,
   spacing,
 } from '../components/ui';
-import { CharacterEditor } from '../components/CharacterEditor';
+import {
+  CharacterEditor,
+  type CharacterEditorHandle,
+} from '../components/CharacterEditor';
 import { useProjectStore } from '../store/projectStore';
 import { useThemeStore } from '../store/themeStore';
 import { useDatabaseRecoveryStore } from '../store/databaseRecoveryStore';
@@ -192,6 +195,7 @@ export const ResourceLibrary: React.FC<{
   const [showNoteChapters, setShowNoteChapters] = useState(false);
   const [noteSelection, setNoteSelection] = useState({ start: 0, end: 0 });
   const noteContentInputRef = useRef<TextInput>(null);
+  const characterEditorRef = useRef<CharacterEditorHandle>(null);
   const [noteMode, setNoteMode] = useState<'none' | 'style' | 'retrieval'>(
     'none',
   );
@@ -874,7 +878,9 @@ export const ResourceLibrary: React.FC<{
     const maxTokens = Number(editor.maxTokens) || defaultMaxTokens(editor.kind);
     try {
       if (editor.kind === 'characters') {
-        const parsed = JSON.parse(editor.dataJson);
+        const latestDataJson =
+          characterEditorRef.current?.flushPending() ?? editor.dataJson;
+        const parsed = JSON.parse(latestDataJson);
         const data = editor.imagePath
           ? withCharacterImageAsset(parsed, editor.imagePath)
           : parsed;
@@ -2136,8 +2142,13 @@ export const ResourceLibrary: React.FC<{
                       onPress={replaceCharacterPng}
                     />
                     <CharacterEditor
+                      ref={characterEditorRef}
                       dataJson={editor.dataJson}
-                      onChange={dataJson => setEditor({ ...editor, dataJson })}
+                      onChange={dataJson =>
+                        setEditor(current =>
+                          current ? { ...current, dataJson } : current,
+                        )
+                      }
                     />
                   </>
                 ) : null}

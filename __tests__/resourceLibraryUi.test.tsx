@@ -11,6 +11,8 @@ jest.mock('../src/services/database', () => ({
   getAllPresets: jest.fn(async () => []),
   createPreset: jest.fn(async () => 77),
   updatePreset: jest.fn(async () => undefined),
+  updateCharacter: jest.fn(async () => undefined),
+  updateCharacterTokenBudget: jest.fn(async () => undefined),
   getProjectActiveWriterStyleId: jest.fn(async () => null),
   setProjectActiveWriterStyle: jest.fn(async () => undefined),
   setProjectResourceEnabled: jest.fn(async () => undefined),
@@ -153,6 +155,43 @@ describe('ResourceLibrary UI', () => {
     for (const label of ['导入角色卡', '批量导入角色卡', '导入文件夹', '新建角色合集', '整理已导入']) {
       expect(await findByText(label)).toBeTruthy();
     }
+  });
+
+  it('saves the latest CharacterEditor JSON when Save is pressed immediately', async () => {
+    (db.getAllCharacters as jest.Mock).mockResolvedValue([
+      {
+        id: 1,
+        name: '角色 A',
+        source_type: 'json',
+        data_json: JSON.stringify({
+          spec: 'chara_card_v3',
+          spec_version: '3.0',
+          data: { name: '角色 A', first_mes: '旧开场' },
+        }),
+        collection_id: 9,
+        enabled_for_project: 1,
+        max_tokens: 50000,
+        estimated_tokens: 3,
+      },
+    ]);
+    (db.updateCharacter as jest.Mock).mockClear();
+
+    const { findByText, getAllByText, getByDisplayValue, getByText } = render(
+      <ResourceLibrary />,
+    );
+    await findByText('角色合集 A');
+    fireEvent.press(getByText('打开'));
+    await findByText('角色 A');
+    fireEvent.press(getAllByText('编辑')[0]);
+
+    fireEvent.changeText(getByDisplayValue('旧开场'), '最后一个字符Z');
+    fireEvent.press(getByText('保存'));
+
+    await waitFor(() => expect(db.updateCharacter).toHaveBeenCalledTimes(1));
+    const savedJson = JSON.parse(
+      (db.updateCharacter as jest.Mock).mock.calls[0][2],
+    );
+    expect(savedJson.data.first_mes).toBe('最后一个字符Z');
   });
 
   it('opens a character collection and toggles collection enablement', async () => {

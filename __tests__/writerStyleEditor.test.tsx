@@ -124,6 +124,127 @@ describe('WriterStyleEditor', () => {
     alertSpy.mockRestore();
   });
 
+  it('saves a trimmed prohibition draft immediately without adding it first', async () => {
+    (db.updatePreset as jest.Mock).mockClear();
+    const onSaved = jest.fn();
+    const { getByTestId } = render(
+      <WriterStyleEditor
+        visible
+        asset={asset as any}
+        projectId={1}
+        activeWriterStyleId={null}
+        onClose={jest.fn()}
+        onSaved={onSaved}
+      />,
+    );
+
+    fireEvent.changeText(
+      getByTestId('writer-style-prohibition-draft'),
+      '  禁止直接保存  ',
+    );
+    expect(getByTestId('writer-style-save-status').props.children).toBe('未保存');
+
+    fireEvent.press(getByTestId('writer-style-save'));
+    await waitFor(() => expect(db.updatePreset).toHaveBeenCalledTimes(1));
+
+    const payload = (db.updatePreset as jest.Mock).mock.calls[0][1];
+    expect(JSON.parse(payload.semantic_json).prohibitions).toEqual([
+      '作者旁白',
+      '禁止直接保存',
+    ]);
+    expect(getByTestId('writer-style-prohibition-draft').props.value).toBe('');
+    expect(getByTestId('writer-style-save-status').props.children).toBe('已保存');
+    expect(onSaved).toHaveBeenCalled();
+  });
+
+  it('keeps the prohibition draft when persistence fails', async () => {
+    (db.updatePreset as jest.Mock).mockClear();
+    (db.updatePreset as jest.Mock).mockRejectedValueOnce(new Error('写入失败'));
+    const { getByTestId } = render(
+      <WriterStyleEditor
+        visible
+        asset={asset as any}
+        projectId={1}
+        activeWriterStyleId={null}
+        onClose={jest.fn()}
+        onSaved={jest.fn()}
+      />,
+    );
+
+    fireEvent.changeText(
+      getByTestId('writer-style-prohibition-draft'),
+      '保存失败后仍保留',
+    );
+    fireEvent.press(getByTestId('writer-style-save'));
+
+    await waitFor(() =>
+      expect(getByTestId('writer-style-save-status').props.children).toBe('保存失败'),
+    );
+    expect(getByTestId('writer-style-prohibition-draft').props.value).toBe(
+      '保存失败后仍保留',
+    );
+    (db.updatePreset as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it('does not add blank or duplicate prohibition drafts', async () => {
+    (db.updatePreset as jest.Mock).mockClear();
+    const { getByTestId } = render(
+      <WriterStyleEditor
+        visible
+        asset={asset as any}
+        projectId={1}
+        activeWriterStyleId={null}
+        onClose={jest.fn()}
+        onSaved={jest.fn()}
+      />,
+    );
+
+    fireEvent.changeText(getByTestId('writer-style-prohibition-draft'), '   ');
+    fireEvent.press(getByTestId('writer-style-save'));
+    await waitFor(() => expect(db.updatePreset).toHaveBeenCalledTimes(1));
+    expect(JSON.parse((db.updatePreset as jest.Mock).mock.calls[0][1].semantic_json).prohibitions).toEqual([
+      '作者旁白',
+    ]);
+
+    (db.updatePreset as jest.Mock).mockClear();
+    fireEvent.changeText(getByTestId('writer-style-prohibition-draft'), ' 作者旁白 ');
+    expect(getByTestId('writer-style-save-status').props.children).toBe('未保存');
+    fireEvent.press(getByTestId('writer-style-save'));
+    await waitFor(() => expect(db.updatePreset).toHaveBeenCalledTimes(1));
+    expect(JSON.parse((db.updatePreset as jest.Mock).mock.calls[0][1].semantic_json).prohibitions).toEqual([
+      '作者旁白',
+    ]);
+  });
+
+  it('protects a prohibition draft when leaving before it is added', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const onClose = jest.fn();
+    const { getByTestId } = render(
+      <WriterStyleEditor
+        visible
+        asset={asset as any}
+        projectId={1}
+        activeWriterStyleId={null}
+        onClose={onClose}
+        onSaved={jest.fn()}
+      />,
+    );
+
+    fireEvent.changeText(
+      getByTestId('writer-style-prohibition-draft'),
+      '禁止退出时丢失',
+    );
+    fireEvent.press(getByTestId('writer-style-cancel'));
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(alertSpy).toHaveBeenCalledWith(
+      '作家风格尚未保存',
+      expect.any(String),
+      expect.any(Array),
+    );
+    alertSpy.mockRestore();
+  });
+
   it('can set the current project writer style', async () => {
     const { getByTestId } = render(
       <WriterStyleEditor

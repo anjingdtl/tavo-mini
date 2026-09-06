@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -132,6 +132,20 @@ function sourceLabel(asset: WriterStyleAsset): string {
   }
 }
 
+function formWithPendingProhibition(
+  form: WriterStyleFormState,
+  draftItem: string,
+): WriterStyleFormState {
+  const normalizedDraft = draftItem.trim();
+  if (!normalizedDraft || form.prohibitions.includes(normalizedDraft)) {
+    return form;
+  }
+  return {
+    ...form,
+    prohibitions: [...form.prohibitions, normalizedDraft],
+  };
+}
+
 export function WriterStyleEditor({
   visible,
   asset,
@@ -153,6 +167,7 @@ export function WriterStyleEditor({
   const [status, setStatus] = useState<WriterStyleSaveStatus>('clean');
   const [errorMessage, setErrorMessage] = useState('');
   const [draftItem, setDraftItem] = useState('');
+  const draftItemRef = useRef('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showSampler, setShowSampler] = useState(false);
   const [showProjections, setShowProjections] = useState(false);
@@ -163,6 +178,7 @@ export function WriterStyleEditor({
       setBaseline('');
       setStatus('clean');
       setErrorMessage('');
+      draftItemRef.current = '';
       setDraftItem('');
       setShowAdvanced(false);
       setShowSampler(false);
@@ -174,13 +190,21 @@ export function WriterStyleEditor({
     setBaseline(writerStyleFormSnapshot(next));
     setStatus('clean');
     setErrorMessage('');
+    draftItemRef.current = '';
     setDraftItem('');
   }, [asset, visible]);
 
-  const dirty = Boolean(form && writerStyleFormSnapshot(form) !== baseline);
+  const normalizedDraft = draftItem.trim();
+  const effectiveForm = form
+    ? formWithPendingProhibition(form, normalizedDraft)
+    : null;
+  const dirty = Boolean(
+    form &&
+      (writerStyleFormSnapshot(form) !== baseline || Boolean(normalizedDraft)),
+  );
   const isActive = Boolean(asset && activeWriterStyleId === asset.id);
   const compatibility = parseCompatibility(asset?.compatibility_json);
-  const semantic = form ? formToWriterStyleSemantic(form) : null;
+  const semantic = effectiveForm ? formToWriterStyleSemantic(effectiveForm) : null;
   const runtime = semantic ? semanticToRuntimeText(semantic) : null;
   const projections = useMemo(() => {
     if (!semantic || !runtime) return null;
@@ -198,9 +222,15 @@ export function WriterStyleEditor({
   };
 
   const addListItem = (key: 'prohibitions' | 'extraInstructions') => {
-    const value = draftItem.trim();
+    const value = draftItemRef.current.trim();
     if (!value || !form) return;
+    if (form[key].includes(value)) {
+      draftItemRef.current = '';
+      setDraftItem('');
+      return;
+    }
     patch({ [key]: [...form[key], value] });
+    draftItemRef.current = '';
     setDraftItem('');
   };
 
@@ -221,29 +251,36 @@ export function WriterStyleEditor({
   };
 
   const save = async (andSetActive = false) => {
-    if (!asset || !form || !semantic) return;
+    if (!asset || !form) return;
+    // Build one immutable save snapshot. Do not depend on setForm completing
+    // before the semantic is compiled or persisted.
+    const saveForm = formWithPendingProhibition(form, draftItemRef.current);
+    const saveSemantic = formToWriterStyleSemantic(saveForm);
     setStatus('saving');
     setErrorMessage('');
     try {
       const semanticUpdate = buildWriterStyleSemanticUpdate({
         asset,
-        semantic,
+        semantic: saveSemantic,
       });
       await db.updatePreset(asset.id, {
         ...semanticUpdate,
         name: semanticUpdate.name || '未命名作家风格',
-        is_default: form.isDefault ? 1 : 0,
-        temperature: Number(form.temperature) || 0.8,
-        top_p: Number(form.topP) || 0.9,
+        is_default: saveForm.isDefault ? 1 : 0,
+        temperature: Number(saveForm.temperature) || 0.8,
+        top_p: Number(saveForm.topP) || 0.9,
         // Writer-style max_tokens is legacy asset metadata. Blank/invalid is
         // AUTO (0); the active model capability owns runtime output sizing.
-        max_tokens: Number(form.maxTokens) || 0,
+        max_tokens: Number(saveForm.maxTokens) || 0,
       });
       if (andSetActive && projectId) {
         await db.setProjectResourceEnabled(projectId, 'preset', asset.id, true);
         await db.setProjectActiveWriterStyle(projectId, asset.id);
       }
-      setBaseline(writerStyleFormSnapshot(form));
+      draftItemRef.current = '';
+      setDraftItem('');
+      setForm(saveForm);
+      setBaseline(writerStyleFormSnapshot(saveForm));
       setStatus('saved');
       await onSaved();
     } catch (error: any) {
@@ -400,7 +437,12 @@ export function WriterStyleEditor({
                     testID="writer-style-prohibition-draft"
                     label="新增禁止项"
                     value={draftItem}
-                    onChangeText={setDraftItem}
+                    onChangeText={value => {
+                      draftItemRef.current = value;
+                      setDraftItem(value);
+                      setStatus('dirty');
+                      setErrorMessage('');
+                    }}
                     placeholder="例如：禁止作者旁白解释写法"
                   />
                   <Button
