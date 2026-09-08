@@ -5,11 +5,11 @@
 把灵感、资料和章节放在一台手机里，安心写完你的长篇故事。
 
 [![Platform](https://img.shields.io/badge/Platform-Android-3DDC84.svg)](#开始使用)
-[![Version](https://img.shields.io/badge/Version-V3.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-V3.0.1-blue.svg)](CHANGELOG.md)
 
 </div>
 
-当前版本：**V3.0.0** · 支持 Android 7.0 及以上设备
+当前版本：**V3.0.1** · 支持 Android 7.0 及以上设备
 
 ShineWriter 是一款面向中文小说创作的 Android 应用。它可以帮助你管理作品、写章节、整理人物和世界观，也可以按你的设置调用 AI 辅助创作。作品数据默认保存在手机本地；是否使用在线模型，始终由你决定。
 
@@ -90,13 +90,13 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 
 ## 获取正式安装包
 
-正式 APK 文件：`dist/apk/release/ShineWriter-V3.0.0-release.apk`
+正式 APK 文件：`dist/apk/release/ShineWriter-V3.0.1-release.apk`
 
-构建标识：`versionName=V3.0.0`，`versionCode=3000000`。
+构建标识：`versionName=V3.0.1`，`versionCode=3000100`。
 
 从 V3.0.0 开始，应用支持通过公开 GitHub Releases 检查、下载并覆盖升级正式 APK。Release 必须同时包含：
 
-- `ShineWriter-V3.0.0-release.apk`
+- `ShineWriter-V3.0.1-release.apk`
 - `update.json`
 
 更新过程会校验 SHA-256、包名、正式签名证书和 versionCode，再交给 Android 系统安装器确认；网络不可用时不影响本地写作和资料访问。完整协议与发布步骤见 [GitHub 应用内更新文档](docs/GITHUB_APP_UPDATE.md)。
@@ -111,4 +111,4 @@ AI 给出的续写内容仍由你决定是否采纳、修改或定稿。涉及�
 - [V4 FULL-Control 验收报告](docs/optimization/continuation-full-control-v4-validation-report.md)
 - [完整版本变更](CHANGELOG.md)
 
-The current version is **V3.0.0**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, text-to-speech, and verified GitHub Releases updates.
+The current version is **V3.0.1**. ShineWriter is an Android-first writing workspace. It supports outline writing, Canon-driven continuation, optional online AI, backups, text-to-speech, and verified GitHub Releases updates.
