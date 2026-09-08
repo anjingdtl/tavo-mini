@@ -120,6 +120,7 @@ describe('user revision persistence boundary', () => {
     // revision-advanced opt-in so memory describes the new body.
     expect(mockFinalizeChapterMemory).toHaveBeenCalledWith(8, {
       revisionAdvancedBody: true,
+      revisionBaseBodyFingerprint: preview.baseBodyFingerprint,
     });
   });
 

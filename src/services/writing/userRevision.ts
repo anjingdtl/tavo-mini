@@ -56,9 +56,7 @@ import {
   insertFinalArtifactAndActivate,
 } from '../continuation/generation/generationRepository';
 import { usePipelineTaskStore } from '../../store/pipelineTaskStore';
-import {
-  upsertWritingRequestReceipt,
-} from '../../data/repositories/writingRequestReceiptRepository';
+import { upsertWritingRequestReceipt } from '../../data/repositories/writingRequestReceiptRepository';
 
 export type UserRevisionKind = 'targeted_revision' | 'whole_chapter_rewrite';
 export type UserRevisionScenario = 'outline' | 'continuation';
@@ -717,11 +715,14 @@ function addUserRevisionAuditAliases(input: {
   Object.defineProperties(
     receipt,
     Object.fromEntries(
-      Object.entries(aliases).map(([key, value]) => [key, {
-        configurable: true,
-        enumerable: false,
-        value,
-      }]),
+      Object.entries(aliases).map(([key, value]) => [
+        key,
+        {
+          configurable: true,
+          enumerable: false,
+          value,
+        },
+      ]),
     ),
   );
   return receipt;
@@ -759,8 +760,7 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
       stage,
       provider: requestConfig?.provider_type || 'openai_compatible',
       providerAdapterId: requestConfig?.provider_adapter_id,
-      llmConfigId:
-        requestConfig?.id ?? input.frozenTruth.modelConfigId ?? null,
+      llmConfigId: requestConfig?.id ?? input.frozenTruth.modelConfigId ?? null,
       model: requestConfig?.model_name || input.frozenTruth.modelName,
       contextWindow: requestConfig?.context_window,
       maxOutputTokens: requestConfig?.max_output_tokens,
@@ -768,8 +768,7 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
       responseFormat: 'text',
       thinking: { type: 'enabled' },
       freezeFingerprint: input.frozenTruth.freezeFingerprint,
-      truthProjectionFingerprint:
-        input.frozenTruth.truthProjectionFingerprint,
+      truthProjectionFingerprint: input.frozenTruth.truthProjectionFingerprint,
     }),
     actionId,
     actionKind: input.kind,
@@ -862,7 +861,8 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
           outcome: receipt.outcome,
           requestMayHaveExecuted:
             event.outcome === 'response' || physicalKinds.length > 0,
-          providerRequestId: event.providerRequestId ?? receipt.providerRequestId,
+          providerRequestId:
+            event.providerRequestId ?? receipt.providerRequestId,
           failureClass:
             event.outcome === 'transport_error'
               ? 'outcome_unknown'
@@ -895,17 +895,17 @@ async function callUserRevisionOnce(input: RevisionCallInput): Promise<{
     );
   } catch (error) {
     const requestMayHaveExecuted =
-      physicalKinds.length > 0 || Boolean((error as any)?.requestMayHaveExecuted);
+      physicalKinds.length > 0 ||
+      Boolean((error as any)?.requestMayHaveExecuted);
     receipt = completeWritingRequestReceipt(receipt, {
-      outcome:
-        requestMayHaveExecuted
-          ? 'outcome_unknown'
-          : (error as any)?.code === 'cancelled'
-          ? 'cancelled'
-          : 'failed',
+      outcome: requestMayHaveExecuted
+        ? 'outcome_unknown'
+        : (error as any)?.code === 'cancelled'
+        ? 'cancelled'
+        : 'failed',
       failureClass: requestMayHaveExecuted
         ? 'outcome_unknown'
-        : ((error as any)?.failureClass || 'fatal'),
+        : (error as any)?.failureClass || 'fatal',
       failurePhase:
         (error as any)?.failurePhase ||
         (requestMayHaveExecuted ? 'outcome_unknown' : 'provider'),
@@ -1413,7 +1413,8 @@ export async function applyUserRevisionPreview(input: {
               start: preview.selection.selectionStart,
               end: preview.selection.selectionEnd,
               baseBodyFingerprint: preview.selection.baseBodyFingerprint,
-              selectedTextFingerprint: preview.selection.selectedTextFingerprint,
+              selectedTextFingerprint:
+                preview.selection.selectedTextFingerprint,
             }
           : null,
       }),
@@ -1437,7 +1438,10 @@ export async function applyUserRevisionPreview(input: {
         allowRevisionAdvancedBody: true,
       });
     } else {
-      await finalizeChapterMemory(chapter.id, { revisionAdvancedBody: true });
+      await finalizeChapterMemory(chapter.id, {
+        revisionAdvancedBody: true,
+        revisionBaseBodyFingerprint: preview.baseBodyFingerprint,
+      });
     }
   } catch (error) {
     // The chapter write without its PostWriting handoff would leave memory
@@ -1516,7 +1520,9 @@ export async function loadUserRevisionCandidateBase(input: {
       !String(artifact.content || '').trim()
     ) {
       throw new UserRevisionError(
-        ref.artifactId ? 'USER_REVISION_CANDIDATE_STALE' : 'USER_REVISION_CANDIDATE_MISSING',
+        ref.artifactId
+          ? 'USER_REVISION_CANDIDATE_STALE'
+          : 'USER_REVISION_CANDIDATE_MISSING',
         ref.artifactId
           ? '当前续写候选已发生变化，请重新打开结果页。'
           : '本次续写没有可修订的当前候选正文。',
@@ -1580,11 +1586,14 @@ export async function loadUserRevisionCandidateBase(input: {
   const frozen = readFrozenFromSnapshot(contextPayload);
   if (!frozen) {
     throw new UserRevisionError(
-        'USER_REVISION_FROZEN_TRUTH_MISSING',
-        '找不到本次生成的冻结上下文，无法修订候选正文。',
-      );
+      'USER_REVISION_FROZEN_TRUTH_MISSING',
+      '找不到本次生成的冻结上下文，无法修订候选正文。',
+    );
   }
-  if (frozen.projectId !== ref.projectId || frozen.chapterId !== ref.chapterId) {
+  if (
+    frozen.projectId !== ref.projectId ||
+    frozen.chapterId !== ref.chapterId
+  ) {
     throw new UserRevisionError(
       'USER_REVISION_FROZEN_TRUTH_MISSING',
       '大纲结果与当前章节的冻结身份不一致，无法修订候选正文。',
@@ -1711,7 +1720,8 @@ export async function applyUserRevisionPreviewToCandidate(input: {
               start: preview.selection.selectionStart,
               end: preview.selection.selectionEnd,
               baseBodyFingerprint: preview.selection.baseBodyFingerprint,
-              selectedTextFingerprint: preview.selection.selectedTextFingerprint,
+              selectedTextFingerprint:
+                preview.selection.selectedTextFingerprint,
             }
           : null,
       }),
@@ -1750,9 +1760,7 @@ export async function applyUserRevisionPreviewToCandidate(input: {
       parentArtifactId: currentArtifactId,
       expectedCurrentArtifactId: currentArtifactId,
     });
-    const verify = await getCurrentEligibleArtifact(
-      preview.candidateRef.runId,
-    );
+    const verify = await getCurrentEligibleArtifact(preview.candidateRef.runId);
     if (
       !verify ||
       verify.id === currentArtifactId ||

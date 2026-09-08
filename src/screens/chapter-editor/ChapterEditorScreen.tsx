@@ -38,6 +38,14 @@ type ChapterNavigation = NativeStackNavigationProp<
   'ChapterEditor'
 >;
 
+function isChapterFinalized(chapter: Chapter): boolean {
+  return (
+    String(chapter.status) === 'final' ||
+    String(chapter.status) === 'finalized' ||
+    chapter.finalized_at != null
+  );
+}
+
 interface Props {
   chapterId: number;
   revisionMode?: 'targeted' | 'whole';
@@ -266,7 +274,17 @@ export const ChapterEditor: React.FC<Props> = ({
       if (clearingRef.current) return;
       const currentChapter = latestChapterRef.current;
       if (currentChapter) {
-        latestChapterRef.current = { ...currentChapter, [field]: value };
+        const bodyChanged =
+          field === 'content' && value !== currentChapter.content;
+        latestChapterRef.current =
+          bodyChanged && isChapterFinalized(currentChapter)
+            ? {
+                ...currentChapter,
+                [field]: value,
+                status: 'draft',
+                finalized_at: null,
+              }
+            : { ...currentChapter, [field]: value };
       }
       changeField(field, value);
     },
@@ -314,7 +332,6 @@ export const ChapterEditor: React.FC<Props> = ({
     [],
   );
 
-
   const handleRevisionApplied = useCallback(
     (content: string) => {
       const current = latestChapterRef.current;
@@ -323,8 +340,9 @@ export const ChapterEditor: React.FC<Props> = ({
       latestChapterRef.current = updated;
       setChapter(updated);
       setSaveStatus('saved');
+      loadChapter().catch(() => {});
     },
-    [setChapter, setSaveStatus],
+    [loadChapter, setChapter, setSaveStatus],
   );
 
   const manualCheckpoint = useCallback(async () => {
@@ -383,6 +401,10 @@ export const ChapterEditor: React.FC<Props> = ({
       : saveStatus === 'saving'
       ? '保存中...'
       : '保存失败';
+  const finalizationLabel =
+    chapter && isChapterFinalized(chapter)
+      ? '当前正文已定稿'
+      : '当前正文待重新定稿';
   const estimatedTokenCount = useMemo(
     () => estimateTokens(chapter?.content || ''),
     [chapter?.content],
@@ -477,7 +499,7 @@ export const ChapterEditor: React.FC<Props> = ({
       <Header
         testID="chapter-editor"
         title={focusMode ? '专注模式' : '章节编辑'}
-        subtitle={saveLabel}
+        subtitle={`${saveLabel} · ${finalizationLabel}`}
         action={
           <View style={styles.headerActions}>
             <Button

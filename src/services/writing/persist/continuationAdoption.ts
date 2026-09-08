@@ -1526,7 +1526,7 @@ export async function adoptArtifactAsDraft(input: {
       ],
     },
     {
-      sql: `UPDATE chapters SET content = ?, status = CASE WHEN status = 'finalized' THEN status ELSE 'draft' END, updated_at = ?
+      sql: `UPDATE chapters SET content = ?, status = 'draft', finalized_at = NULL, updated_at = ?
         WHERE id = ? AND updated_at = ?`,
       params: [artifact.content, ts, run.chapterId, currentUpdatedAt],
     },

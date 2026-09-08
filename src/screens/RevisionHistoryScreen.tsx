@@ -32,6 +32,7 @@ const SOURCE_LABELS: Record<RevisionSource, string> = {
   before_import_replace: '导入替换前',
   before_targeted_revision: '精准修订前',
   before_whole_chapter_rewrite: '整章重写前',
+  before_manual_edit: '定稿后手动编辑前',
 };
 
 function formatTime(iso: string): string {

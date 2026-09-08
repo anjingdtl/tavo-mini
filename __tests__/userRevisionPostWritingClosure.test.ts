@@ -1,10 +1,9 @@
 /**
- * P0-2: after a user revision (body A → B) the ONE existing PostWriting
- * closure must accept the revision-advanced body: a NEW fingerprint-keyed
- * outbox row describes body B, while the frozen Kernel trace keeps body A's
- * immutable persisted event. Duplicate finalize for the same body stays
- * idempotent, and without the revision-advanced opt-in the drift guard still
- * fails closed.
+ * P1: after a finalized chapter is edited through the real chapter repository
+ * boundary (body A → B), the chapter becomes draft and the ONE existing
+ * PostWriting closure safely advances to body B. Body A remains in trace
+ * history, duplicate finalize stays idempotent, and a body change that bypasses
+ * the lineage boundary still fails closed.
  */
 import { createCanonInMemoryDb } from './helpers/canonInMemoryDb';
 import type { InMemorySqliteDb } from './helpers/canonInMemoryDb';
@@ -16,7 +15,10 @@ import {
 import { execute } from '../src/data/connection/execute';
 import { all, one } from '../src/data/connection/query';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
+import { updateChapter } from '../src/data/repositories/projectRepository';
 import { finalizeChapterMemory } from '../src/services/storyMemory/storyMemoryService';
+import { persistOutlinePostWritingClosure } from '../src/services/writing/flow/outlinePostWritingClosure';
+import { buildWritingPersistedEvent } from '../src/services/writing/flow/writingPersistedEvent';
 import { buildWritingKernelFreezeTrace } from '../src/services/writing/unifiedWritingKernel';
 import { emptyWritingChapterObservability } from '../src/services/writing/observability/writingChapterObservability';
 import { outlineRequest } from './helpers/oneShotFixtures';
@@ -97,11 +99,11 @@ async function closeOriginalBody(): Promise<void> {
 async function listOutbox(): Promise<
   Array<{ id: string; dedupe_key: string; payload_json: string }>
 > {
-  return await all(
+  return (await all(
     `SELECT id, dedupe_key, payload_json FROM continuation_state_sync_outbox
       WHERE project_id = ? ORDER BY dedupe_key`,
     [PROJECT_ID],
-  ) as any;
+  )) as any;
 }
 
 describe('user revision → revision-advanced ONE Memory closure', () => {
@@ -123,41 +125,56 @@ describe('user revision → revision-advanced ONE Memory closure', () => {
     const before = await listOutbox();
     expect(before).toHaveLength(1);
     expect(before[0].dedupe_key).toBe(
-      `rebuild_story_memory:outline:${PROJECT_ID}:${CHAPTER_ID}:${sha256Hex(BODY_A)}`,
+      `rebuild_story_memory:outline:${PROJECT_ID}:${CHAPTER_ID}:${sha256Hex(
+        BODY_A,
+      )}`,
     );
 
-    // Simulate the user revision apply: chapter body A → B, plus the audit
-    // snapshot row the apply writes BEFORE the closure runs. The PostWriting
-    // binding must look through the non-pipeline snapshot row and still find
-    // the originating pipeline task.
-    await execute(
-      await openDatabase(),
-      `INSERT INTO content_revisions (
-         project_id, target_type, target_id, title, content, source, source_ref, created_at
-       ) VALUES (?, 'chapter', ?, '第一章', ?, 'before_targeted_revision', 'ur_snapshot', 't2')`,
-      [PROJECT_ID, CHAPTER_ID, BODY_A],
+    // The repository boundary must atomically write the body, downgrade the
+    // presentation state, and record the old body as the revision parent.
+    await updateChapter(CHAPTER_ID, { content: BODY_B });
+    const editedChapter = await one<{
+      content: string;
+      status: string;
+      finalized_at: string | null;
+    }>('SELECT content, status, finalized_at FROM chapters WHERE id = ?', [
+      CHAPTER_ID,
+    ]);
+    expect(editedChapter).toEqual({
+      content: BODY_B,
+      status: 'draft',
+      finalized_at: null,
+    });
+    const parentSnapshot = await one<{
+      content: string;
+      source: string;
+      source_ref: string;
+    }>(
+      `SELECT content, source, source_ref FROM content_revisions
+       WHERE target_type = 'chapter' AND target_id = ?
+         AND source = 'before_manual_edit'
+       ORDER BY id DESC LIMIT 1`,
+      [CHAPTER_ID],
     );
-    await execute(
-      await openDatabase(),
-      'UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?',
-      [BODY_B, 't2', CHAPTER_ID],
-    );
+    expect(parentSnapshot?.content).toBe(BODY_A);
+    expect(parentSnapshot?.source).toBe('before_manual_edit');
+    expect(parentSnapshot?.source_ref).toContain(sha256Hex(BODY_A));
+    expect(parentSnapshot?.source_ref).toContain(sha256Hex(BODY_B));
 
-    await expect(
-      finalizeChapterMemory(CHAPTER_ID, { revisionAdvancedBody: true }),
-    ).resolves.toBeTruthy();
+    await expect(finalizeChapterMemory(CHAPTER_ID)).resolves.toBeTruthy();
 
     const after = await listOutbox();
     expect(after).toHaveLength(2);
-    const fingerPrints = after.map(row =>
-      JSON.parse(String(row.payload_json)).writingPersistedEvent
-        .finalBodyFingerprint,
+    const fingerPrints = after.map(
+      row =>
+        JSON.parse(String(row.payload_json)).writingPersistedEvent
+          .finalBodyFingerprint,
     );
     expect(fingerPrints).toContain(sha256Hex(BODY_A));
     expect(fingerPrints).toContain(sha256Hex(BODY_B));
 
-    // The frozen trace still carries the original body's immutable event and
-    // exactly one postWritingUpdate closure.
+    // The current trace event now describes body B; body A is retained as a
+    // historical event and there is still exactly one closure marker.
     const task = await one<{ pipeline_context_json: string }>(
       'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
       [TASK_ID],
@@ -165,6 +182,10 @@ describe('user revision → revision-advanced ONE Memory closure', () => {
     const trace = JSON.parse(String(task?.pipeline_context_json)).draftContext
       .writingKernelTrace;
     expect(trace.writingPersistedEvent.finalBodyFingerprint).toBe(
+      sha256Hex(BODY_B),
+    );
+    expect(trace.writingPersistedEventHistory).toHaveLength(1);
+    expect(trace.writingPersistedEventHistory[0].finalBodyFingerprint).toBe(
       sha256Hex(BODY_A),
     );
     expect(
@@ -177,17 +198,48 @@ describe('user revision → revision-advanced ONE Memory closure', () => {
 
   test('duplicate revision-advanced finalize for the same body stays idempotent', async () => {
     await closeOriginalBody();
-    await execute(
-      await openDatabase(),
-      'UPDATE chapters SET content = ? WHERE id = ?',
-      [BODY_B, CHAPTER_ID],
-    );
-    await finalizeChapterMemory(CHAPTER_ID, { revisionAdvancedBody: true });
+    await updateChapter(CHAPTER_ID, { content: BODY_B });
+    await finalizeChapterMemory(CHAPTER_ID);
     const first = await listOutbox();
 
-    await finalizeChapterMemory(CHAPTER_ID, { revisionAdvancedBody: true });
+    await finalizeChapterMemory(CHAPTER_ID);
     const second = await listOutbox();
     expect(second).toEqual(first);
+  });
+
+  test('an identical repository save does not invalidate a finalized body', async () => {
+    await closeOriginalBody();
+    const before = await all<{
+      source: string;
+    }>(
+      `SELECT source FROM content_revisions
+       WHERE target_type = 'chapter' AND target_id = ?`,
+      [CHAPTER_ID],
+    );
+
+    await updateChapter(CHAPTER_ID, { content: BODY_A });
+
+    const chapter = await one<{
+      content: string;
+      status: string;
+      finalized_at: string | null;
+    }>('SELECT content, status, finalized_at FROM chapters WHERE id = ?', [
+      CHAPTER_ID,
+    ]);
+    expect(chapter?.content).toBe(BODY_A);
+    expect(chapter?.status).toBe('final');
+    expect(chapter?.finalized_at).not.toBeNull();
+
+    const after = await all<{
+      source: string;
+    }>(
+      `SELECT source FROM content_revisions
+       WHERE target_type = 'chapter' AND target_id = ?`,
+      [CHAPTER_ID],
+    );
+    expect(after).toHaveLength(before.length);
+    await expect(finalizeChapterMemory(CHAPTER_ID)).resolves.toBeTruthy();
+    expect(await listOutbox()).toHaveLength(1);
   });
 
   test('without the revision-advanced opt-in the trace re-closure still fails closed', async () => {
@@ -205,6 +257,11 @@ describe('user revision → revision-advanced ONE Memory closure', () => {
     // stale), but the frozen trace keeps body A's immutable event.
     const rows = await listOutbox();
     expect(rows).toHaveLength(2);
+    const chapter = await one<{ status: string; finalized_at: string | null }>(
+      'SELECT status, finalized_at FROM chapters WHERE id = ?',
+      [CHAPTER_ID],
+    );
+    expect(chapter).toEqual({ status: 'draft', finalized_at: null });
     const task = await one<{ pipeline_context_json: string }>(
       'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
       [TASK_ID],
@@ -214,5 +271,52 @@ describe('user revision → revision-advanced ONE Memory closure', () => {
     expect(trace.writingPersistedEvent.finalBodyFingerprint).toBe(
       sha256Hex(BODY_A),
     );
+  });
+
+  test('rejects a revision whose parent fingerprint is not the closed body', async () => {
+    await closeOriginalBody();
+    await updateChapter(CHAPTER_ID, { content: BODY_B });
+
+    await expect(
+      finalizeChapterMemory(CHAPTER_ID, {
+        revisionAdvancedBody: true,
+        revisionBaseBodyFingerprint: sha256Hex('unrelated body'),
+      }),
+    ).rejects.toThrow(/WRITING_POST_WRITING_REVISION_DRIFT/);
+
+    const chapter = await one<{
+      status: string;
+      finalized_at: string | null;
+    }>('SELECT status, finalized_at FROM chapters WHERE id = ?', [CHAPTER_ID]);
+    expect(chapter).toEqual({ status: 'draft', finalized_at: null });
+  });
+
+  test('rejects a different chapter even when revision advance is requested', async () => {
+    await closeOriginalBody();
+    const task = await one<{ pipeline_context_json: string }>(
+      'SELECT pipeline_context_json FROM pipeline_tasks WHERE id = ?',
+      [TASK_ID],
+    );
+    const trace = JSON.parse(String(task?.pipeline_context_json)).draftContext
+      .writingKernelTrace;
+    const event = buildWritingPersistedEvent({
+      generationTraceId: trace.generationTraceId,
+      freezeFingerprint: trace.freezeFingerprint,
+      projectId: PROJECT_ID,
+      chapterId: CHAPTER_ID + 1,
+      chapterPosition: 1,
+      finalBody: BODY_B,
+      scenario: 'outline',
+    });
+
+    await expect(
+      persistOutlinePostWritingClosure({
+        taskId: TASK_ID,
+        persistedEvent: event,
+        durationMs: 0,
+        revisionAdvancedBody: true,
+        revisionBaseBodyFingerprint: sha256Hex(BODY_A),
+      }),
+    ).rejects.toThrow(/WRITING_POST_WRITING_REVISION_DRIFT/);
   });
 });

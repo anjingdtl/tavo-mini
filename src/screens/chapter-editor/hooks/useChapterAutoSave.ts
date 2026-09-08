@@ -11,6 +11,14 @@ import type { Chapter } from '../../../types/novel';
 
 export type SaveStatus = 'saved' | 'saving' | 'failed';
 
+function isChapterFinalized(chapter: Chapter): boolean {
+  return (
+    String(chapter.status) === 'final' ||
+    String(chapter.status) === 'finalized' ||
+    chapter.finalized_at != null
+  );
+}
+
 export function useChapterAutoSave(
   chapter: Chapter | null,
   setChapter: Dispatch<SetStateAction<Chapter | null>>,
@@ -41,9 +49,20 @@ export function useChapterAutoSave(
   const changeField = useCallback(
     (field: keyof Chapter, value: string) => {
       if (!chapter) return;
-      setChapter(current =>
-        current ? { ...current, [field]: value } : current,
-      );
+      setChapter(current => {
+        const nextChapter = current || chapter;
+        if (!nextChapter) return current;
+        const bodyChanged =
+          field === 'content' && value !== String(nextChapter.content ?? '');
+        return bodyChanged && isChapterFinalized(nextChapter)
+          ? {
+              ...nextChapter,
+              [field]: value,
+              status: 'draft',
+              finalized_at: null,
+            }
+          : { ...nextChapter, [field]: value };
+      });
       setSaveError(null);
       setSaveStatus('saving');
       pendingFieldsRef.current = {

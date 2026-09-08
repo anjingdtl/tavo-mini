@@ -29,8 +29,22 @@ const chapter: Chapter = {
   updated_at: '2026-07-16T00:00:00.000Z',
 };
 
+const finalizedChapter: Chapter = {
+  ...chapter,
+  content: '已定稿正文',
+  status: 'final',
+  finalized_at: '2026-07-16T00:10:00.000Z',
+};
+
 function useAutosaveHarness() {
   const [currentChapter, setCurrentChapter] = useState<Chapter | null>(chapter);
+  const autosave = useChapterAutoSave(currentChapter, setCurrentChapter);
+  return { ...autosave, currentChapter };
+}
+
+function useFinalizedAutosaveHarness() {
+  const [currentChapter, setCurrentChapter] =
+    useState<Chapter | null>(finalizedChapter);
   const autosave = useChapterAutoSave(currentChapter, setCurrentChapter);
   return { ...autosave, currentChapter };
 }
@@ -89,5 +103,35 @@ describe('chapter autosave failure propagation', () => {
     });
     expect(result.current.saveStatus).toBe('saved');
     expect(result.current.autoSaveRef.current.pending()).toBe(false);
+  });
+
+  it('downgrades a finalized chapter only after the body really changes', () => {
+    const { result } = renderHook(() => useFinalizedAutosaveHarness());
+
+    act(() => {
+      result.current.changeField('content', '已定稿正文，增加一个字');
+    });
+
+    expect(result.current.currentChapter).toMatchObject({
+      content: '已定稿正文，增加一个字',
+      status: 'draft',
+      finalized_at: null,
+    });
+    result.current.autoSaveRef.current.cancel();
+  });
+
+  it('keeps a finalized chapter finalized for an identical body save', () => {
+    const { result } = renderHook(() => useFinalizedAutosaveHarness());
+
+    act(() => {
+      result.current.changeField('content', '已定稿正文');
+    });
+
+    expect(result.current.currentChapter).toMatchObject({
+      content: '已定稿正文',
+      status: 'final',
+      finalized_at: '2026-07-16T00:10:00.000Z',
+    });
+    result.current.autoSaveRef.current.cancel();
   });
 });

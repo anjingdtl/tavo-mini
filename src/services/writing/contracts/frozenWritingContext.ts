@@ -145,8 +145,14 @@ export interface WritingKernelTrace {
   unexpectedLiveReadCount: number;
   fatalCount: number;
   falseAppliedRequirementCount: number;
-  /** Durable Persist → PostWriting handoff for the trace's final body. */
+  /** Durable Persist → PostWriting handoff for the trace's current body. */
   writingPersistedEvent?: WritingPersistedEvent;
+  /**
+   * Earlier finalized bodies for this same trace. The current event above is
+   * authoritative; this list preserves the old PostWriting result as
+   * history when a finalized chapter is legally revised and finalized again.
+   */
+  writingPersistedEventHistory?: WritingPersistedEvent[];
   /**
    * Reconstructable identities of actual model-visible requests.
    * Optional on historical traces. Never part of freezeFingerprint.

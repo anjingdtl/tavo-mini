@@ -149,7 +149,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expectNoStandaloneChapterWrite();
 
     const stmts = txStatements();
-    expect(stmts).toHaveLength(6); // chapter + stats projection + touch + memory effects
+    expect(stmts).toHaveLength(7); // + finalized-body lineage snapshot
 
     const chapterUpdate = findTx(
       sql =>
@@ -158,6 +158,18 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(chapterUpdate).toBeTruthy();
     expect(chapterUpdate!.params).toEqual(
       expect.arrayContaining(['林岚发现蓝色徽章。', 42]),
+    );
+    expect(chapterUpdate!.params).toEqual(
+      expect.arrayContaining(['draft', null]),
+    );
+    const manualEditSnapshot = findTx(
+      sql =>
+        sql.includes('source, source_ref, created_at') &&
+        sql.includes("'before_manual_edit'"),
+    );
+    expect(manualEditSnapshot).toBeTruthy();
+    expect(manualEditSnapshot!.params).toEqual(
+      expect.arrayContaining([7, 42, '林岚发现红色钥匙。']),
     );
 
     const projectTouch = findTx(sql =>
@@ -203,7 +215,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
 
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
-    // All six statements were prepared for the single transaction — no
+    // All seven statements were prepared for the single transaction — no
     // sequential fallback path that could leave chapter committed alone.
     const stmts = txStatements();
     expect(stmts.map(s => s.sql).join('\n')).toEqual(
@@ -233,7 +245,7 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
     const stmts = txStatements();
-    expect(stmts).toHaveLength(6);
+    expect(stmts).toHaveLength(7);
     expect(
       stmts.some(
         s =>
@@ -322,7 +334,8 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
         id: 99,
         position: 8,
         content: '后续草稿',
-        finalized_at: '2026-07-19T00:00:00.000Z',
+        status: 'draft',
+        finalized_at: null,
       }),
       memory: memoryRow({ projectId: 7, through: 5, status: 'clean' }),
     });
@@ -371,9 +384,10 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(mockExecuteTransaction).toHaveBeenCalledTimes(1);
     expectNoStandaloneChapterWrite();
     let stmts = txStatements();
-    expect(stmts).toHaveLength(4); // chapter + stats projection + project touch
+    expect(stmts).toHaveLength(5); // + finalized-body lineage snapshot
     expect(stmts.some(s => s.sql.includes('dirty_from_position'))).toBe(false);
     expect(stmts.some(s => s.sql.includes('story_memory_batches'))).toBe(false);
+    expect(findTx(sql => sql.includes("'before_manual_edit'"))).toBeTruthy();
 
     jest.clearAllMocks();
     mockExecuteTransaction.mockResolvedValue(undefined);
@@ -476,6 +490,14 @@ describe('updateChapter / deleteChapter → atomic story-memory dirty transactio
     expect(findTx(sql => sql.includes('dirty_from_position = CASE'))).toBe(
       undefined,
     );
+    expect(findTx(sql => sql.includes("'before_manual_edit'"))).toBeUndefined();
+    const chapterUpdate = findTx(
+      sql =>
+        sql.includes('UPDATE chapters SET') && sql.includes('WHERE id = ?'),
+    );
+    expect(chapterUpdate?.params).not.toEqual(
+      expect.arrayContaining(['draft', null]),
+    );
   });
 });
 
@@ -492,10 +514,11 @@ describe('createProject → resources start disabled', () => {
 
     expect(ensureDefaultPreset).toHaveBeenCalledWith(mockDatabase);
     const statements = txStatements();
-    const presetLink = statements.find(statement =>
-      statement.sql.includes('project_resources') &&
-      statement.params?.[1] === 'preset' &&
-      statement.params?.[2] === 11,
+    const presetLink = statements.find(
+      statement =>
+        statement.sql.includes('project_resources') &&
+        statement.params?.[1] === 'preset' &&
+        statement.params?.[2] === 11,
     );
     expect(presetLink?.params).toEqual([77, 'preset', 11, 0]);
     expect(presetLink?.params?.[2]).not.toBe(0);
@@ -503,11 +526,15 @@ describe('createProject → resources start disabled', () => {
     expect(statements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          sql: expect.stringContaining("SELECT ?, 'character', id, 0 FROM characters"),
+          sql: expect.stringContaining(
+            "SELECT ?, 'character', id, 0 FROM characters",
+          ),
           params: [77],
         }),
         expect.objectContaining({
-          sql: expect.stringContaining("SELECT ?, 'worldbook', id, 0 FROM worldbook_entries"),
+          sql: expect.stringContaining(
+            "SELECT ?, 'worldbook', id, 0 FROM worldbook_entries",
+          ),
           params: [77],
         }),
         expect.objectContaining({
@@ -515,11 +542,15 @@ describe('createProject → resources start disabled', () => {
           params: [77],
         }),
         expect.objectContaining({
-          sql: expect.stringContaining("SELECT ?, 'preset', id, 0 FROM presets"),
+          sql: expect.stringContaining(
+            "SELECT ?, 'preset', id, 0 FROM presets",
+          ),
           params: [77],
         }),
         expect.objectContaining({
-          sql: expect.stringContaining("SELECT ?, 'worldbook', id, 0 FROM worldbook_collections"),
+          sql: expect.stringContaining(
+            "SELECT ?, 'worldbook', id, 0 FROM worldbook_collections",
+          ),
           params: [77],
         }),
       ]),

@@ -28,6 +28,7 @@ import {
   getBatchById,
 } from '../src/data/repositories/multiChapterBatchRepository';
 import { savePipelineTask } from '../src/data/repositories/pipelineTaskRepository';
+import { getChapterById } from '../src/data/repositories/projectRepository';
 import { adoptPipelineTaskResultAtomic } from '../src/services/multiChapterBatch/batchAdoption';
 import { adoptPipelineTaskResult } from '../src/services/multiChapterBatch/batchAdoption';
 import { usePipelineTaskStore } from '../src/store/pipelineTaskStore';
@@ -207,6 +208,10 @@ describe('F2-02: Adoption durable close-loop（post-commit 崩溃模拟）', () 
       completionQuality: 'full_pipeline',
       chapterCount: 1,
     });
+
+    const adoptedChapter = await getChapterById(chapterId);
+    expect(adoptedChapter?.status).toBe('draft');
+    expect(adoptedChapter?.finalized_at).toBeNull();
 
     const task = await taskResolved();
     expect(task.resolvedAt).not.toBeNull();

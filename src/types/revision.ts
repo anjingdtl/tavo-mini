@@ -9,7 +9,8 @@ export type RevisionSource =
   | 'before_batch_replace'
   | 'before_import_replace'
   | 'before_targeted_revision'
-  | 'before_whole_chapter_rewrite';
+  | 'before_whole_chapter_rewrite'
+  | 'before_manual_edit';
 
 export interface ContentRevision {
   id: number;

@@ -147,6 +147,13 @@ const sampleChapter = {
   updated_at: '2026-06-14T00:00:00.000Z',
 };
 
+const finalizedSampleChapter = {
+  ...sampleChapter,
+  content: '已经定稿的正文',
+  status: 'final' as const,
+  finalized_at: '2026-06-14T00:10:00.000Z',
+};
+
 describe('ChapterEditor toolbar', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -222,6 +229,21 @@ describe('ChapterEditor toolbar', () => {
     expect(await findByText('整章重写')).toBeTruthy();
     expect(getByTestId('chapter-targeted-revision')).toBeTruthy();
     expect(getByTestId('chapter-whole-rewrite')).toBeTruthy();
+  });
+
+  it('shows that a real body edit needs re-finalization immediately', async () => {
+    mockGetChapterById.mockResolvedValue(finalizedSampleChapter as any);
+    const { findByText, findByTestId } = render(
+      <ChapterEditor chapterId={1} onClose={jest.fn()} />,
+    );
+
+    expect(await findByText('已保存 · 当前正文已定稿')).toBeTruthy();
+    const contentInput = await findByTestId('chapter-content-input');
+    fireEvent.changeText(contentInput, '已经定稿的正文，用户改过');
+
+    expect(
+      await findByText('保存中... · 当前正文待重新定稿'),
+    ).toBeTruthy();
   });
 
   it('opens a range picker for reading and reads the whole book selection', async () => {

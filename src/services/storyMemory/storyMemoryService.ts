@@ -7,7 +7,10 @@ import * as db from '../database';
 import { callLLMResult, type LLMResult } from '../llm';
 import { generateMemorySummary } from '../summaryGenerator';
 import { fingerprintChapterSource } from './storyMemoryFingerprint';
-import { applyStoryMemoryPatch, batchPatchToChapterDraft } from './storyMemoryMerger';
+import {
+  applyStoryMemoryPatch,
+  batchPatchToChapterDraft,
+} from './storyMemoryMerger';
 import {
   buildStoryMemoryFreshRetryMessages,
   buildStoryMemoryPatchMessages,
@@ -31,6 +34,7 @@ import { validateChapterMemoryPatch } from './storyMemoryValidator';
 import {
   assertWritingPersistedEventAllowsMemoryUpdate,
   buildWritingPersistedEvent,
+  fingerprintPersistedBody,
 } from '../writing/flow/writingPersistedEvent';
 import {
   createDefaultStoryMemoryPolicy,
@@ -84,6 +88,57 @@ interface OutlinePostWritingTraceBinding {
 }
 
 /**
+ * Return the parent body fingerprint for a real edit made after finalization.
+ * The snapshot is written by updateChapter in the same transaction that
+ * downgrades the chapter, so a plain draft (or a focus/no-op save) cannot
+ * silently opt into revision advance.
+ */
+async function resolveManualEditParentFingerprint(
+  chapter: Chapter,
+): Promise<string | null> {
+  if (
+    String(chapter.status) !== 'draft' &&
+    String(chapter.status) !== 'revision'
+  ) {
+    return null;
+  }
+  if (chapter.finalized_at != null) return null;
+
+  try {
+    type ManualEditLineageDatabase = typeof db & {
+      getLatestManualEditRevision?: (
+        targetType: string,
+        targetId: number,
+      ) => Promise<{ content: string } | null>;
+    };
+    const lookup = (
+      db as unknown as ManualEditLineageDatabase
+    ).getLatestManualEditRevision;
+    if (typeof lookup !== 'function') return null;
+    const snapshot = await lookup('chapter', chapter.id);
+    if (!snapshot) return null;
+    const parentFingerprint = fingerprintPersistedBody(
+      String(snapshot.content ?? ''),
+    );
+    // A stale marker without a new body is not evidence of a revision
+    // advance. This also protects idempotent finalize retries.
+    if (parentFingerprint === fingerprintPersistedBody(chapter.content)) {
+      return null;
+    }
+    return parentFingerprint;
+  } catch (error) {
+    // This lookup is a safety capability, not a reason to bypass the closure
+    // guard. If it is unavailable, the normal drift check remains fail-closed.
+    console.warn(
+      '[story-memory] MANUAL_EDIT_LINEAGE_LOOKUP_FAILED:',
+      chapter.id,
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+}
+
+/**
  * Resolve the durable Pipeline identity before building the finalize event.
  * Outline adoption stores a `pipeline` content revision with the originating
  * task id; current tasks also carry the authoritative Kernel trace. Keeping
@@ -95,7 +150,10 @@ async function resolveOutlinePostWritingTraceBinding(
 ): Promise<OutlinePostWritingTraceBinding | null> {
   let latestRevision: any | null = null;
   try {
-    latestRevision = await getLatestPipelineContentRevision('chapter', chapterId);
+    latestRevision = await getLatestPipelineContentRevision(
+      'chapter',
+      chapterId,
+    );
   } catch (error) {
     console.warn(
       '[story-memory] OUTLINE_POST_WRITING_SOURCE_LOOKUP_FAILED:',
@@ -329,7 +387,10 @@ function phaseLabel(phase: StoryMemoryTaskPhase): string {
   }
 }
 
-function rangeLabel(fromPosition: number | null, throughPosition: number | null): string {
+function rangeLabel(
+  fromPosition: number | null,
+  throughPosition: number | null,
+): string {
   if (fromPosition == null || throughPosition == null) return '';
   const from = fromPosition + 1;
   const through = throughPosition + 1;
@@ -415,7 +476,10 @@ async function startTaskProgress(input: {
 
 function completeTaskProgress(
   projectId: number,
-  phase: Extract<StoryMemoryTaskPhase, 'completed' | 'failed' | 'cancelled' | 'outcome_unknown'>,
+  phase: Extract<
+    StoryMemoryTaskPhase,
+    'completed' | 'failed' | 'cancelled' | 'outcome_unknown'
+  >,
   message: string,
   error?: string,
 ): void {
@@ -447,12 +511,11 @@ export async function requestStoryMemoryMaintenance(
       ]);
       if (input.userAcknowledgedUnknown && unknown.length > 0) {
         const firstLogicalBatch = unknown[0].logicalBatchId;
-        const selectedIds =
-          input.acknowledgedAttemptIds?.length
-            ? input.acknowledgedAttemptIds
-            : unknown
-                .filter(row => row.logicalBatchId === firstLogicalBatch)
-                .map(row => row.attemptId);
+        const selectedIds = input.acknowledgedAttemptIds?.length
+          ? input.acknowledgedAttemptIds
+          : unknown
+              .filter(row => row.logicalBatchId === firstLogicalBatch)
+              .map(row => row.attemptId);
         await acknowledgeStoryMemoryOutcomeUnknown({
           projectId: input.projectId,
           attemptIds: selectedIds,
@@ -498,14 +561,22 @@ export async function requestStoryMemoryMaintenance(
         record.status === 'failed' ||
         record.status === 'empty';
       const startPosition = rebuild
-        ? record.dirtyFromPosition ?? Math.max(0, record.state.throughChapterPosition + 1)
+        ? record.dirtyFromPosition ??
+          Math.max(0, record.state.throughChapterPosition + 1)
         : record.state.throughChapterPosition + 1;
       const workChapters = finalChapters.filter(
-        chapter => chapter.position >= startPosition && chapter.position <= throughPosition,
+        chapter =>
+          chapter.position >= startPosition &&
+          chapter.position <= throughPosition,
       );
       const totalChapters = workChapters.length;
-      const totalBatches = Math.ceil(totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
-      const kind = maintenanceKind({ reason: input.reason, status: record.status });
+      const totalBatches = Math.ceil(
+        totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE,
+      );
+      const kind = maintenanceKind({
+        reason: input.reason,
+        status: record.status,
+      });
       await startTaskProgress({
         projectId: input.projectId,
         kind,
@@ -516,11 +587,14 @@ export async function requestStoryMemoryMaintenance(
       const forwardAbort = () => controller.abort();
       if (input.signal) {
         if (input.signal.aborted) controller.abort();
-        else input.signal.addEventListener('abort', forwardAbort, { once: true });
+        else
+          input.signal.addEventListener('abort', forwardAbort, { once: true });
       }
       activeMaintenanceControllers.set(input.projectId, controller);
       const taskId = storyMemoryTaskId(input.projectId);
-      const checkpointProgress = (progress: StoryMemoryCheckpointProgressEvent) => {
+      const checkpointProgress = (
+        progress: StoryMemoryCheckpointProgressEvent,
+      ) => {
         const phase = progress.phase as StoryMemoryTaskPhase;
         publishTaskProgress(input.projectId, {
           phase,
@@ -545,15 +619,19 @@ export async function requestStoryMemoryMaintenance(
           progress.status === 'preparing'
             ? 'preparing'
             : progress.status === 'saving'
-              ? 'saving'
-              : progress.status === 'completed'
-                ? 'completed'
-                : 'planning';
-        const batches = Math.ceil(progress.totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
+            ? 'saving'
+            : progress.status === 'completed'
+            ? 'completed'
+            : 'planning';
+        const batches = Math.ceil(
+          progress.totalChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE,
+        );
         const completedBatches =
           progress.completedChapters >= progress.totalChapters
             ? batches
-            : Math.floor(progress.completedChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE);
+            : Math.floor(
+                progress.completedChapters / STORY_MEMORY_DEFAULT_BATCH_SIZE,
+              );
         publishTaskProgress(input.projectId, {
           phase,
           totalChapters: progress.totalChapters,
@@ -571,7 +649,10 @@ export async function requestStoryMemoryMaintenance(
         });
       };
       try {
-        publishTaskProgress(input.projectId, { phase: 'preparing', message: '正在准备' });
+        publishTaskProgress(input.projectId, {
+          phase: 'preparing',
+          message: '正在准备',
+        });
         // Reset the per-maintenance split-child progress accumulator so
         // onBatchComplete does not double-count chapters already credited by
         // onChildBatchComplete (governance §9).
@@ -584,7 +665,9 @@ export async function requestStoryMemoryMaintenance(
             onProgress: rebuildProgress,
             onCheckpointProgress: checkpointProgress,
           });
-          const rebuiltPending = (await db.getChaptersByProject(input.projectId)).filter(
+          const rebuiltPending = (
+            await db.getChaptersByProject(input.projectId)
+          ).filter(
             chapter =>
               Boolean(chapter.content?.trim()) &&
               chapter.position > rebuilt.state.throughChapterPosition &&
@@ -609,9 +692,7 @@ export async function requestStoryMemoryMaintenance(
             // completedChapters now, before the rest of the logical batch
             // finishes, so the percent reflects real progress and a later
             // child failure cannot hide the work already persisted.
-            const current = useStoryMemoryTaskStore
-              .getState()
-              .getTask(taskId);
+            const current = useStoryMemoryTaskStore.getState().getTask(taskId);
             if (!current) return;
             const childCount = finalChapters.filter(
               chapter =>
@@ -662,22 +743,35 @@ export async function requestStoryMemoryMaintenance(
           pendingRemaining: advanced.pendingRemaining,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : '长期记忆整理失败';
-        const latestUnknown = await listStoryMemoryRequestAttempts(input.projectId, [
-          'outcome_unknown',
-        ]);
-        const phase: Extract<StoryMemoryTaskPhase, 'failed' | 'cancelled' | 'outcome_unknown'> =
+        const message =
+          error instanceof Error ? error.message : '长期记忆整理失败';
+        const latestUnknown = await listStoryMemoryRequestAttempts(
+          input.projectId,
+          ['outcome_unknown'],
+        );
+        const phase: Extract<
+          StoryMemoryTaskPhase,
+          'failed' | 'cancelled' | 'outcome_unknown'
+        > =
           controller.signal.aborted ||
-          (error as { code?: string } | null)?.code === 'MEMORY_REBUILD_CANCELLED' ||
-          (error as { code?: string } | null)?.code === 'MEMORY_CHECKPOINT_CANCELLED'
+          (error as { code?: string } | null)?.code ===
+            'MEMORY_REBUILD_CANCELLED' ||
+          (error as { code?: string } | null)?.code ===
+            'MEMORY_CHECKPOINT_CANCELLED'
             ? 'cancelled'
             : latestUnknown.length > 0
-              ? 'outcome_unknown'
-              : 'failed';
-        completeTaskProgress(input.projectId, phase, phaseLabel(phase), message);
+            ? 'outcome_unknown'
+            : 'failed';
+        completeTaskProgress(
+          input.projectId,
+          phase,
+          phaseLabel(phase),
+          message,
+        );
         throw error;
       } finally {
-        if (input.signal) input.signal.removeEventListener('abort', forwardAbort);
+        if (input.signal)
+          input.signal.removeEventListener('abort', forwardAbort);
         if (activeMaintenanceControllers.get(input.projectId) === controller) {
           activeMaintenanceControllers.delete(input.projectId);
         }
@@ -714,9 +808,19 @@ async function generateLegacyChapterMemoryPatchFallback(
   frozenConfig: FrozenStoryMemoryLLMConfig,
   attemptBudget: StoryMemoryAttemptBudget,
 ): Promise<ChapterMemoryPatchDraft> {
-  const baseMessages = buildStoryMemoryPatchMessages(input.chapter, input.previousState);
-  let messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = baseMessages;
-  for (let attempt = 1; attempt <= STORY_MEMORY_MAX_PHYSICAL_REQUESTS; attempt += 1) {
+  const baseMessages = buildStoryMemoryPatchMessages(
+    input.chapter,
+    input.previousState,
+  );
+  let messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+  }> = baseMessages;
+  for (
+    let attempt = 1;
+    attempt <= STORY_MEMORY_MAX_PHYSICAL_REQUESTS;
+    attempt += 1
+  ) {
     const plan = planStoryMemoryRequest({
       config: frozenConfig,
       messages,
@@ -736,8 +840,8 @@ async function generateLegacyChapterMemoryPatchFallback(
             attempt === 1
               ? input.scenario || 'story_memory_patch'
               : attempt === 2
-                ? 'story_memory_patch_repair'
-                : 'story_memory_patch_retry',
+              ? 'story_memory_patch_repair'
+              : 'story_memory_patch_retry',
           projectId: input.chapter.project_id,
           physicalRequestHooks: attemptBudget.hooks(),
           requestConfig: frozenConfig.requestConfig,
@@ -758,10 +862,17 @@ async function generateLegacyChapterMemoryPatchFallback(
     const text = result?.text?.trim() || '';
     if (text) {
       try {
-        return parseAndValidateMemoryPatch(text, input.previousState, input.chapter.content);
+        return parseAndValidateMemoryPatch(
+          text,
+          input.previousState,
+          input.chapter.content,
+        );
       } catch (error) {
         if (attempt >= STORY_MEMORY_MAX_PHYSICAL_REQUESTS) {
-          if (error instanceof StoryMemoryError && error.code === 'MEMORY_EVIDENCE_NOT_FOUND') {
+          if (
+            error instanceof StoryMemoryError &&
+            error.code === 'MEMORY_EVIDENCE_NOT_FOUND'
+          ) {
             return parseAndValidateMemoryPatch(
               text,
               input.previousState,
@@ -771,7 +882,8 @@ async function generateLegacyChapterMemoryPatchFallback(
           }
           throw error;
         }
-        const message = error instanceof Error ? error.message : '记忆补丁校验失败';
+        const message =
+          error instanceof Error ? error.message : '记忆补丁校验失败';
         messages =
           attempt === 1
             ? buildStoryMemoryRepairMessages(baseMessages, text, message)
@@ -782,17 +894,25 @@ async function generateLegacyChapterMemoryPatchFallback(
     const action = decideEmptyResponseAction({
       emptyReason: result?.emptyReason,
       finishReason: result?.finishReason,
-      attempt: attemptBudget.hasObservedPhysicalRequest ? attemptBudget.used : attempt,
+      attempt: attemptBudget.hasObservedPhysicalRequest
+        ? attemptBudget.used
+        : attempt,
       maxAttempts: STORY_MEMORY_MAX_PHYSICAL_REQUESTS,
       currentBudget: plan.maxTokens,
       nextBudget: plan.maxTokens,
     });
     if (action.type === 'fail') {
-      throw new StoryMemoryError(action.code as StoryMemoryError['code'], action.reason);
+      throw new StoryMemoryError(
+        action.code as StoryMemoryError['code'],
+        action.reason,
+      );
     }
     messages = baseMessages;
   }
-  throw new StoryMemoryError('MEMORY_PATCH_INVALID_JSON', '记忆补丁生成失败，已超过最大尝试次数。');
+  throw new StoryMemoryError(
+    'MEMORY_PATCH_INVALID_JSON',
+    '记忆补丁生成失败，已超过最大尝试次数。',
+  );
 }
 
 export function parseAndValidateMemoryPatch(
@@ -916,7 +1036,10 @@ async function previousStateForChapter(
     const displayOf = await loadDisplayNumberFn(chapter.project_id);
     throw new StoryMemoryError(
       'MEMORY_DIRTY',
-      `故事记忆从${chapterLabel(displayOf, record.dirtyFromPosition)}起已过期，请先重建。`,
+      `故事记忆从${chapterLabel(
+        displayOf,
+        record.dirtyFromPosition,
+      )}起已过期，请先重建。`,
     );
   }
   if (
@@ -1062,13 +1185,13 @@ export async function finalizeChapterMemory(
     executionProfile?: 'standard' | 'one_shot';
     appliedRequirementIds?: string[];
     /**
-     * P0-2: the finalized body is a user-revision advance of the same
-     * generation. The frozen Kernel trace keeps the original body's immutable
-     * persisted event, so its REVISION_DRIFT guard fires; the new fingerprint-
-     * keyed outbox row (already enqueued) is the memory authority for the new
-     * body. Only the trace re-closure is skipped in that case.
+     * The finalized body is a user-revision advance of the same generation.
+     * The trace keeps the previous persisted event in its history and moves
+     * its current event to this body after the lineage checks pass.
      */
     revisionAdvancedBody?: boolean;
+    /** Parent body fingerprint when the caller has a concrete revision base. */
+    revisionBaseBodyFingerprint?: string | null;
   } = {},
 ): Promise<FinalizeChapterMemoryResult> {
   const startedAt = Date.now();
@@ -1077,31 +1200,49 @@ export async function finalizeChapterMemory(
   if (!chapter.content.trim())
     throw new Error('章节正文为空，无法更新故事记忆。');
   const outlineBinding = await resolveOutlinePostWritingTraceBinding(chapterId);
-  const writingPersistedEvent = buildWritingPersistedEvent({
-    generationTraceId:
-      options.generationTraceId ||
-      outlineBinding?.generationTraceId ||
-      `outline-finalize:${chapter.project_id}:${chapter.id}`,
-    freezeFingerprint:
-      options.freezeFingerprint ||
-      outlineBinding?.freezeFingerprint ||
-      'outline-local-finalize',
-    projectId: chapter.project_id,
-    chapterId: chapter.id,
-    chapterPosition: Number(chapter.position) || 0,
-    finalBody: chapter.content,
-    executionProfile: options.executionProfile || outlineBinding?.executionProfile,
-    appliedRequirementIds: options.appliedRequirementIds,
-    scenario: 'outline',
-  });
+  const buildEventForChapter = (sourceChapter: Chapter) =>
+    buildWritingPersistedEvent({
+      generationTraceId:
+        options.generationTraceId ||
+        outlineBinding?.generationTraceId ||
+        `outline-finalize:${sourceChapter.project_id}:${sourceChapter.id}`,
+      freezeFingerprint:
+        options.freezeFingerprint ||
+        outlineBinding?.freezeFingerprint ||
+        'outline-local-finalize',
+      projectId: sourceChapter.project_id,
+      chapterId: sourceChapter.id,
+      chapterPosition: Number(sourceChapter.position) || 0,
+      finalBody: sourceChapter.content,
+      executionProfile:
+        options.executionProfile || outlineBinding?.executionProfile,
+      appliedRequirementIds: options.appliedRequirementIds,
+      scenario: 'outline',
+    });
+  let writingPersistedEvent = buildEventForChapter(chapter);
   assertWritingPersistedEventAllowsMemoryUpdate(writingPersistedEvent);
 
   let maintenance: StoryMemoryMaintenanceRequest | null = null;
   let backgroundJob: (() => Promise<void>) | null = null;
+  let allowRevisionAdvancedBody = options.revisionAdvancedBody === true;
+  let revisionBaseBodyFingerprint = options.revisionBaseBodyFingerprint ?? null;
+  let localFinalizationCompleted = false;
 
   const result = await withProjectMemoryLock(chapter.project_id, async () => {
     const freshChapter = await db.getChapterById(chapterId);
     if (!freshChapter) throw new Error('章节不存在。');
+
+    const manualEditParentFingerprint =
+      await resolveManualEditParentFingerprint(freshChapter);
+    if (manualEditParentFingerprint) {
+      allowRevisionAdvancedBody = true;
+      revisionBaseBodyFingerprint ??= manualEditParentFingerprint;
+    }
+    // Rebuild the event from the row read under the project lock. The editor
+    // normally flushes first, but this closes the race where a finalization
+    // request observes a newer autosave than its initial chapter snapshot.
+    writingPersistedEvent = buildEventForChapter(freshChapter);
+    assertWritingPersistedEventAllowsMemoryUpdate(writingPersistedEvent);
 
     // Step A is deliberately local and atomic. Nothing below this point may
     // make the user wait for Story Memory LLM work.
@@ -1114,6 +1255,7 @@ export async function finalizeChapterMemory(
         finalized_at: finalizedAt,
       });
     }
+    localFinalizationCompleted = true;
 
     const scheduleLegacySummary =
       typeof (db as any).getStructuredStoryMemoryEnabled === 'function' &&
@@ -1270,10 +1412,10 @@ export async function finalizeChapterMemory(
       record.status === 'dirty' || due.reason === 'dirty_rebuild'
         ? 'dirty'
         : due.reason === 'coverage_gap'
-          ? 'coverage_gap'
-          : due.reason === 'manual'
-            ? 'manual'
-            : 'interval';
+        ? 'coverage_gap'
+        : due.reason === 'manual'
+        ? 'manual'
+        : 'interval';
     maintenance = {
       projectId: freshChapter.project_id,
       throughPosition,
@@ -1314,28 +1456,13 @@ export async function finalizeChapterMemory(
         persistedEvent: writingPersistedEvent,
         taskId: pipelineTaskId,
       });
-      try {
-        await persistOutlinePostWritingClosure({
-          taskId: pipelineTaskId,
-          persistedEvent: writingPersistedEvent,
-          durationMs: Date.now() - startedAt,
-        });
-      } catch (closureError) {
-        const isRevisionDrift =
-          closureError instanceof Error &&
-          closureError.message.startsWith(
-            'WRITING_POST_WRITING_REVISION_DRIFT',
-          );
-        if (!(options.revisionAdvancedBody && isRevisionDrift)) {
-          throw closureError;
-        }
-        // The trace's immutable event belongs to the pre-revision body; the
-        // new fingerprint-keyed outbox row above is the memory authority.
-        console.warn(
-          '[story-memory] OUTLINE_POST_WRITING_REVISION_ADVANCED:',
-          chapterId,
-        );
-      }
+      await persistOutlinePostWritingClosure({
+        taskId: pipelineTaskId,
+        persistedEvent: writingPersistedEvent,
+        durationMs: Date.now() - startedAt,
+        revisionAdvancedBody: allowRevisionAdvancedBody,
+        revisionBaseBodyFingerprint,
+      });
 
       // Cold-start processing is the reliable delivery path. This import is
       // only a best-effort acceleration while the app remains open.
@@ -1345,9 +1472,25 @@ export async function finalizeChapterMemory(
         )
         .catch(() => undefined);
     } catch (error) {
-      // The chapter itself is already durable. Do not claim a successful
-      // PostWriting handoff when the outbox/trace transaction failed; the next
-      // finalize/resume can retry the idempotent boundary.
+      // A finalized presentation is only valid with its PostWriting handoff.
+      // Roll it back to the editable state when the local trace/outbox closure
+      // cannot be committed; never leave a false Finalized label behind.
+      if (localFinalizationCompleted) {
+        await db
+          .updateChapter(chapterId, {
+            status: 'draft',
+            finalized_at: null,
+          })
+          .catch(rollbackError => {
+            console.warn(
+              '[story-memory] OUTLINE_POST_WRITING_ROLLBACK_FAILED:',
+              chapterId,
+              rollbackError instanceof Error
+                ? rollbackError.message
+                : String(rollbackError),
+            );
+          });
+      }
       console.warn(
         '[story-memory] OUTLINE_POST_WRITING_CLOSURE_FAILED:',
         chapterId,

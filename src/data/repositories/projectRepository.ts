@@ -7,6 +7,7 @@ import type {
   ProjectMode,
 } from '../../types/novel';
 import { normalizeProjectMode } from '../../services/continuation/projectMode';
+import { sha256Hex } from '../../services/continuation/hashUtils';
 import { execute } from '../connection/execute';
 import { all, one } from '../connection/query';
 import {
@@ -484,22 +485,56 @@ const CHAPTER_COLUMNS = new Set([
   'position',
 ]);
 
+function isChapterFinalized(chapter: Chapter): boolean {
+  return (
+    String(chapter.status) === 'final' ||
+    String(chapter.status) === 'finalized' ||
+    chapter.finalized_at != null
+  );
+}
+
 export async function updateChapter(
   id: number,
   fields: Partial<Chapter>,
 ): Promise<void> {
   const chapter = await getChapterById(id);
   const timestamp = now();
+  const hasContentField = Object.prototype.hasOwnProperty.call(
+    fields,
+    'content',
+  );
+  const nextContent = hasContentField ? String(fields.content ?? '') : null;
+  const contentChanged = Boolean(
+    chapter && hasContentField && nextContent !== String(chapter.content ?? ''),
+  );
+  // A chapter's status is presentation state, not an independent claim that
+  // survives a body replacement. Keep the transition at this repository
+  // boundary so autosave, restore, AI adoption, and other writers share the
+  // same Finalized -> draft rule.
+  const invalidatesFinalized = Boolean(
+    chapter && contentChanged && isChapterFinalized(chapter),
+  );
   const sets = ['updated_at = ?'];
   const values: any[] = [timestamp];
   for (const [key, value] of Object.entries(fields)) {
     if (!CHAPTER_COLUMNS.has(key)) continue;
+    // A caller must not smuggle a new body through this generic update while
+    // retaining the old finalized presentation state. The dedicated
+    // finalizeChapterLocally boundary is the only path that may set Finalized
+    // after the body and its PostWriting handoff have been validated.
+    if (invalidatesFinalized && (key === 'status' || key === 'finalized_at')) {
+      continue;
+    }
     sets.push(`${key} = ?`);
     values.push(
       key === 'summary_json' && value !== null && typeof value !== 'string'
         ? JSON.stringify(value)
         : value,
     );
+  }
+  if (invalidatesFinalized) {
+    sets.push('status = ?', 'finalized_at = ?');
+    values.push('draft', null);
   }
   if (sets.length === 1) return;
   values.push(id);
@@ -515,8 +550,27 @@ export async function updateChapter(
   ];
 
   if (chapter) {
-    if ('content' in fields) {
-      const nextContent = String(fields.content ?? '');
+    if (hasContentField) {
+      if (invalidatesFinalized) {
+        statements.push({
+          sql: `INSERT INTO content_revisions (
+            project_id, target_type, target_id, title, content, source, source_ref, created_at
+          ) VALUES (?, 'chapter', ?, ?, ?, 'before_manual_edit', ?, ?)`,
+          params: [
+            chapter.project_id,
+            chapter.id,
+            chapter.title,
+            chapter.content,
+            JSON.stringify({
+              version: 1,
+              reason: 'finalized_chapter_content_edit',
+              previousBodyFingerprint: sha256Hex(String(chapter.content ?? '')),
+              nextBodyFingerprint: sha256Hex(String(nextContent ?? '')),
+            }),
+            timestamp,
+          ],
+        });
+      }
       statements.push(
         buildEnsureProjectWritingStatsStatement(chapter.project_id, timestamp),
         buildProjectWritingStatsDeltaStatement(
@@ -536,11 +590,12 @@ export async function updateChapter(
     const continuityFields = ['title', 'synopsis', 'content', 'position'];
     const changedContinuity = continuityFields.some(key => {
       if (!(key in fields)) return false;
+      if (key === 'content') return contentChanged;
       return fields[key as keyof Chapter] !== chapter[key as keyof Chapter];
     });
     if (
       changedContinuity &&
-      (chapter.finalized_at != null || Boolean(chapter.memory_summary?.trim()))
+      (isChapterFinalized(chapter) || Boolean(chapter.memory_summary?.trim()))
     ) {
       const affectedPosition =
         typeof fields.position === 'number'

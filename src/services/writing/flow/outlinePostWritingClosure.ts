@@ -153,6 +153,10 @@ export async function persistOutlinePostWritingClosure(input: {
   taskId: string;
   persistedEvent: WritingPersistedEvent;
   durationMs: number;
+  /** Explicit, lineage-checked successor of the trace's current body. */
+  revisionAdvancedBody?: boolean;
+  /** Optional parent fingerprint from the durable before-edit snapshot. */
+  revisionBaseBodyFingerprint?: string | null;
 }): Promise<void> {
   const storeState = usePipelineTaskStore.getState() as any;
   const projectedTask = Array.isArray(storeState.tasks)
@@ -201,17 +205,35 @@ export async function persistOutlinePostWritingClosure(input: {
       | WritingPersistedEvent
       | undefined;
     const existingEvent = trace.writingPersistedEvent || legacyContextEvent;
+    let revisionAdvanced = false;
     if (existingEvent) {
       assertWritingPersistedEvent(existingEvent);
+      const sameTraceIdentity =
+        existingEvent.generationTraceId ===
+          input.persistedEvent.generationTraceId &&
+        existingEvent.freezeFingerprint ===
+          input.persistedEvent.freezeFingerprint;
+      const sameBody =
+        existingEvent.finalBodyFingerprint ===
+        input.persistedEvent.finalBodyFingerprint;
+      const sameChapter =
+        existingEvent.chapterId === input.persistedEvent.chapterId &&
+        existingEvent.projectId === input.persistedEvent.projectId;
+      const parentMatches =
+        !input.revisionBaseBodyFingerprint ||
+        input.revisionBaseBodyFingerprint ===
+          existingEvent.finalBodyFingerprint;
+      revisionAdvanced = Boolean(
+        !sameBody &&
+          input.revisionAdvancedBody &&
+          sameChapter &&
+          sameTraceIdentity &&
+          parentMatches,
+      );
       if (
-        existingEvent.finalBodyFingerprint !==
-          input.persistedEvent.finalBodyFingerprint ||
-        existingEvent.chapterId !== input.persistedEvent.chapterId ||
-        (mustClose &&
-          (existingEvent.generationTraceId !==
-            input.persistedEvent.generationTraceId ||
-            existingEvent.freezeFingerprint !==
-              input.persistedEvent.freezeFingerprint))
+        !sameChapter ||
+        (mustClose && !sameTraceIdentity) ||
+        (!sameBody && !revisionAdvanced)
       ) {
         throw new Error(
           'WRITING_POST_WRITING_REVISION_DRIFT: Outline trace already belongs to another finalized revision or Freeze',
@@ -222,9 +244,34 @@ export async function persistOutlinePostWritingClosure(input: {
       trace,
       durationMs: input.durationMs,
     });
-    const closedTrace = existingEvent
-      ? nextTrace
-      : { ...nextTrace, writingPersistedEvent: input.persistedEvent };
+    let closedTrace = nextTrace;
+    if (!existingEvent || !trace.writingPersistedEvent) {
+      // Migrate the historical envelope-level field into the trace while
+      // making the event for the body being finalized the current authority.
+      closedTrace = {
+        ...closedTrace,
+        writingPersistedEvent: input.persistedEvent,
+      };
+    }
+    if (revisionAdvanced && existingEvent) {
+      const history = Array.isArray(trace.writingPersistedEventHistory)
+        ? trace.writingPersistedEventHistory
+        : [];
+      const alreadyRecorded = history.some(
+        event =>
+          event.finalBodyFingerprint === existingEvent.finalBodyFingerprint &&
+          event.chapterId === existingEvent.chapterId &&
+          event.generationTraceId === existingEvent.generationTraceId &&
+          event.freezeFingerprint === existingEvent.freezeFingerprint,
+      );
+      closedTrace = {
+        ...closedTrace,
+        writingPersistedEvent: input.persistedEvent,
+        writingPersistedEventHistory: alreadyRecorded
+          ? history
+          : [...history, existingEvent],
+      };
+    }
     if (closedTrace !== trace || legacyContextEvent) {
       context.writingKernelTrace = closedTrace;
       if (legacyContextEvent) delete context.writingPersistedEvent;
@@ -268,6 +315,8 @@ export async function persistOutlinePostWritingClosureForPersistedBody(input: {
   chapterPosition: number;
   finalBody: string;
   durationMs?: number;
+  revisionAdvancedBody?: boolean;
+  revisionBaseBodyFingerprint?: string | null;
 }): Promise<boolean> {
   const task = await getPipelineTaskById(input.taskId).catch(() => null);
   const mustClose = Number(task?.pipelineTopologyVersion || 1) >= 2;
@@ -325,6 +374,8 @@ export async function persistOutlinePostWritingClosureForPersistedBody(input: {
     taskId: input.taskId,
     persistedEvent,
     durationMs: input.durationMs ?? 0,
+    revisionAdvancedBody: input.revisionAdvancedBody,
+    revisionBaseBodyFingerprint: input.revisionBaseBodyFingerprint,
   });
   return true;
 }

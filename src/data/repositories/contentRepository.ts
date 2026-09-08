@@ -94,6 +94,26 @@ export async function getLatestPipelineContentRevision(
   );
 }
 
+/**
+ * A body replacement after finalization records the previous body here. The
+ * normal editor path uses `before_manual_edit`; atomic pipeline adoption uses
+ * `adoption_previous` in the same role. Both are compact lineage anchors for
+ * a later safe PostWriting revision advance; the current body remains
+ * authoritative in chapters.content, so no parallel pointer is introduced.
+ */
+export async function getLatestManualEditRevision(
+  targetType: string,
+  targetId: number,
+): Promise<{ content: string } | null> {
+  return one<{ content: string }>(
+    `SELECT * FROM content_revisions
+      WHERE target_type = ? AND target_id = ?
+        AND source IN ('before_manual_edit', 'adoption_previous')
+      ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [targetType, targetId],
+  );
+}
+
 export async function deleteContentRevision(id: number): Promise<void> {
   await execute(
     await openDatabase(),

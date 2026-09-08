@@ -348,7 +348,8 @@ export async function adoptPipelineTaskResultAtomic(
     });
   }
   statements.push({
-    sql: `UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?`,
+    sql: `UPDATE chapters SET content = ?, status = 'draft',
+            finalized_at = NULL, updated_at = ? WHERE id = ?`,
     params: [finalText, statsTimestamp, chapter.id],
   });
   statements.push(
