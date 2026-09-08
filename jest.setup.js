@@ -43,9 +43,31 @@ jest.mock('react-native-fs', () => ({
   mkdir: jest.fn(),
   readDir: jest.fn(),
   stat: jest.fn(async () => ({ size: 0, mtime: Date.now() })),
+  downloadFile: jest.fn(() => ({
+    promise: Promise.resolve({ statusCode: 200, bytesWritten: 0 }),
+    jobId: 1,
+    begin: jest.fn(),
+    progress: jest.fn(),
+  })),
   unlink: jest.fn(() => Promise.resolve()),
   exists: jest.fn(),
 }));
+
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const values = new Map();
+  return {
+    getItem: jest.fn(async key => values.get(key) ?? null),
+    setItem: jest.fn(async (key, value) => {
+      values.set(key, value);
+    }),
+    removeItem: jest.fn(async key => {
+      values.delete(key);
+    }),
+    clear: jest.fn(async () => {
+      values.clear();
+    }),
+  };
+});
 
 jest.mock('@react-native-documents/picker', () => ({
   pick: jest.fn(),
@@ -183,6 +205,33 @@ jest.mock('react-native', () => {
     decodeChunk: jest.fn(() =>
       Promise.resolve({ text: '', nextByteOffset: 0, decodedChars: 0, bytesConsumed: 0, atEof: true }),
     ),
+    addListener: jest.fn(),
+    removeListeners: jest.fn(),
+  };
+  RN.NativeModules.AppUpdate = {
+    getInstalledAppInfo: jest.fn(() =>
+      Promise.resolve({
+        packageName: 'com.shinewriter',
+        versionName: 'V3.0.0',
+        versionCode: 3000000,
+      }),
+    ),
+    canInstallUnknownApps: jest.fn(() => Promise.resolve(true)),
+    openUnknownAppSettings: jest.fn(() => Promise.resolve(true)),
+    sha256File: jest.fn(() => Promise.resolve('a'.repeat(64))),
+    validateApk: jest.fn(() =>
+      Promise.resolve({
+        valid: true,
+        packageName: 'com.shinewriter',
+        versionName: 'V3.0.0',
+        versionCode: 3000000,
+        signerSha256: '017b3fbed4001083f2f70a0c51e8e463322df66b095e1c3a476fdd0d86dc2a0a',
+        packageMatches: true,
+        versionMatches: true,
+        signerMatches: true,
+      }),
+    ),
+    installApk: jest.fn(() => Promise.resolve()),
     addListener: jest.fn(),
     removeListeners: jest.fn(),
   };

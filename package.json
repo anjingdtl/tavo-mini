@@ -1,6 +1,6 @@
 {
   "name": "ShineWriter",
-  "version": "2.30.2",
+  "version": "3.0.0",
   "private": true,
   "scripts": {
     "android": "react-native run-android",
@@ -8,6 +8,9 @@
     "apk:debug": "npm run prebuild && node scripts/build-apk.js debug",
     "apk:release": "npm run prebuild && node scripts/build-apk.js release",
     "apk:release:minified": "npm run prebuild && node scripts/build-apk.js release --minify",
+    "release:metadata": "node scripts/generate-update-metadata.js",
+    "release:verify": "node scripts/verify-release-metadata.js",
+    "release:prepare": "npm run apk:release && npm run release:metadata && npm run release:verify",
     "ios": "react-native run-ios",
     "zspace:probe": "node scripts/zspace-webdav.mjs probe",
     "zspace:list": "node scripts/zspace-webdav.mjs list",

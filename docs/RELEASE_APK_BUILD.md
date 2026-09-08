@@ -177,6 +177,17 @@ adb shell monkey -p com.shinewriter 1
 - 覆盖安装验收不得执行 `adb uninstall`、`pm clear` 或其他清空应用数据操作；用户已保存的章节正文必须保留。
 - 如本轮包含数据库、迁移、备份、LLM 或关键写作流程改动，按 `docs/EMULATOR_QA_PLAYBOOK.md` 和对应专项测试报告补做功能回归。
 
+## 7.1 GitHub Release 更新资产
+
+V3.0.0 起，正式 APK 硬验收通过后继续生成并校验 GitHub 应用内更新 metadata：
+
+```powershell
+npm run release:metadata
+npm run release:verify
+```
+
+脚本只读取已验收的 `dist/apk/release/ShineWriter-V<版本>-release.apk`，流式计算 SHA-256、读取文件大小并生成同目录 `update.json`。GitHub Release 必须同时上传同名 APK 和 `update.json`；默认使用公开 `releases/latest`，不要上传 Token。完整协议、asset 命名和回滚策略见 [GitHub 应用内更新规范](GITHUB_APP_UPDATE.md)。
+
 ## 8. 提交与推送前复核
 
 正式 APK、`dist/`、Gradle 中间产物和签名文件均不提交。提交前执行：
@@ -223,3 +234,4 @@ git rev-list --left-right --count HEAD...origin/main
 | Release signing 环境变量缺失 | 只补齐 User/Process 环境变量，不把密码写入脚本、仓库或日志。 |
 | 证书、v2、signer、zipalign 或版本验收失败 | 停止发版，禁止改用 Debug 签名或新建 keystore 规避。 |
 | `versionCode` 回退 | 提升 `package.json` 版本，或在明确的 CI 构建场景使用合法的 `SHINE_WRITER_BUILD_NUMBER`（0–99）；不要手改 `version.json`。 |
+| `release:verify` 失败 | 停止上传，重新生成 metadata，确认 `update.json.sha256` 与正式 APK 实际 SHA-256 一致。 |

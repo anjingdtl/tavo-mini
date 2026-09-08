@@ -28,6 +28,9 @@ import { UpgradeScreen } from '../screens/UpgradeScreen';
 import { PipelineForeground } from '../native/PipelineForegroundModule';
 import { useSettingsStore } from '../store/settingsStore';
 import appVersionJson from '../constants/version.json';
+import { UpdateModal } from '../components/UpdateModal';
+import { checkForUpdate } from '../services/updateService';
+import type { AvailableUpdate } from '../services/updateProtocol';
 import {
   createOutlineResumeWritingKernelExecution,
   runWritingKernel,
@@ -74,6 +77,9 @@ export const App: React.FC = () => {
   // around after navigating" UX bug.
   const [pendingPrompt, setPendingPrompt] = React.useState<PipelineTask | null>(null);
   const pendingPromptIdRef = React.useRef<string | null>(null);
+  const automaticUpdateCheckStartedRef = React.useRef(false);
+  const [automaticUpdate, setAutomaticUpdate] = React.useState<AvailableUpdate | null>(null);
+  const [automaticUpdateVisible, setAutomaticUpdateVisible] = React.useState(false);
 
   const handlePromptResume = React.useCallback(async (task: PipelineTask) => {
     pendingPromptIdRef.current = null;
@@ -345,6 +351,41 @@ export const App: React.FC = () => {
 
     return () => clearTimeout(timer);
   }, [retryNonce]);
+
+  // Automatic checks happen only after the main workspace is ready. A slow or
+  // unavailable GitHub endpoint therefore cannot delay splash, database init,
+  // migration, or the first usable screen.
+  React.useEffect(() => {
+    if (startupState !== 'ready' || automaticUpdateCheckStartedRef.current) {
+      return undefined;
+    }
+    automaticUpdateCheckStartedRef.current = true;
+    if (process.env.NODE_ENV === 'test') return undefined;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      checkForUpdate()
+        .then(result => {
+          if (
+            cancelled ||
+            (result.status !== 'update' && result.status !== 'skipped') ||
+            !result.release
+          ) {
+            return;
+          }
+          setAutomaticUpdate(result.release);
+          setAutomaticUpdateVisible(true);
+        })
+        .catch(error => {
+          // Automatic checks are intentionally silent on network/API errors.
+          // Manual checks in Settings surface an actionable message.
+          console.warn('[update] automatic check skipped:', error);
+        });
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [startupState]);
 
   // Watch for newly-completed / failed pipeline tasks and surface a result
   // prompt. The original ChapterEditor-local `executeRunPipeline` only worked
@@ -622,6 +663,12 @@ export const App: React.FC = () => {
             setPendingPrompt(null);
             navigateToPipelineResult(taskId);
           }}
+        />
+        <UpdateModal
+          visible={automaticUpdateVisible}
+          release={automaticUpdate}
+          currentVersionName={appVersionJson.versionName}
+          onClose={() => setAutomaticUpdateVisible(false)}
         />
         <Toast />
       </ThemeProvider>

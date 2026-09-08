@@ -16,6 +16,7 @@ import {
   TreePine,
   BarChart3,
   Volume2,
+  RefreshCw,
 } from 'lucide-react-native';
 import { usePipelineTaskStore } from '../store/pipelineTaskStore';
 import { useNavigation } from '@react-navigation/native';
@@ -36,6 +37,13 @@ import { listRunsForProject } from '../services/continuation/generation';
 import { isUnfinishedContinuationRun } from '../services/continuation/generation/runStatus';
 import type { ThemeMode } from '../types/theme';
 import appVersionJson from '../constants/version.json';
+import { UpdateModal } from '../components/UpdateModal';
+import {
+  checkForUpdate,
+  formatUpdateError,
+  type UpdateCheckResult,
+} from '../services/updateService';
+import type { AvailableUpdate } from '../services/updateProtocol';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'light', label: '明亮' },
@@ -51,6 +59,13 @@ export const SettingsScreen: React.FC = () => {
   const loadFromDB = usePipelineTaskStore(s => s.loadFromDB);
   const [continuationUnfinishedCount, setContinuationUnfinishedCount] =
     useState(0);
+  const [updateCheckState, setUpdateCheckState] = useState<
+    'idle' | 'checking' | 'latest' | 'failed'
+  >('idle');
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(
+    null,
+  );
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
 
   useEffect(() => {
     loadFromDB();
@@ -84,6 +99,32 @@ export const SettingsScreen: React.FC = () => {
     setMode(next);
     await db.setSetting('theme_mode', next);
     Toast.show({ type: 'success', text1: '主题已切换' });
+  };
+
+  const handleCheckUpdate = async () => {
+    if (updateCheckState === 'checking') return;
+    setUpdateCheckState('checking');
+    try {
+      const result: UpdateCheckResult = await checkForUpdate({ force: true });
+      if (result.status === 'update' && result.release) {
+        setAvailableUpdate(result.release);
+        setUpdateModalVisible(true);
+        setUpdateCheckState('idle');
+        return;
+      }
+      setUpdateCheckState('latest');
+      Toast.show({
+        type: 'success',
+        text1: `已是最新版本 ${appVersionJson.versionName}`,
+      });
+    } catch (error) {
+      setUpdateCheckState('failed');
+      Toast.show({
+        type: 'error',
+        text1: '检查更新失败，请稍后重试',
+        text2: formatUpdateError(error),
+      });
+    }
   };
 
   return (
@@ -228,9 +269,33 @@ export const SettingsScreen: React.FC = () => {
             >
               软件作者：ShineHe
             </Text>
+            <Button
+              testID="settings-check-update"
+              label={updateCheckState === 'checking' ? '正在检查更新…' : '检查更新'}
+              icon={RefreshCw}
+              disabled={updateCheckState === 'checking'}
+              onPress={() => {
+                handleCheckUpdate();
+              }}
+            />
+            {updateCheckState === 'latest' ? (
+              <Text style={[styles.updateStatus, { color: theme.colors.success }]}>
+                已是最新版本 {appVersionJson.versionName}
+              </Text>
+            ) : updateCheckState === 'failed' ? (
+              <Text style={[styles.updateStatus, { color: theme.colors.danger }]}>
+                检查更新失败，请稍后重试
+              </Text>
+            ) : null}
           </Card>
         </Section>
       </ScrollView>
+      <UpdateModal
+        visible={updateModalVisible}
+        release={availableUpdate}
+        currentVersionName={appVersionJson.versionName}
+        onClose={() => setUpdateModalVisible(false)}
+      />
     </Screen>
   );
 };
@@ -245,4 +310,5 @@ const styles = StyleSheet.create({
   },
   cardMeta: { fontSize: 13, lineHeight: 21, marginBottom: spacing.md },
   themeHints: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  updateStatus: { fontSize: 12, marginTop: spacing.sm },
 });

@@ -24,6 +24,8 @@
 - [ ] `npm run apk:release` 成功。
 - [ ] 产物位于 `dist/apk/release/ShineWriter-V<版本>-release.apk`。
 - [ ] `scripts/verify-release-apk.ps1` 通过：v2、signer、证书、zipalign、包名、版本和 APK SHA-256 均通过。
+- [ ] `npm run release:metadata` 生成 `dist/apk/release/update.json`。
+- [ ] `npm run release:verify` 通过：update.json 的 APK 文件名、versionCode、大小和 SHA-256 与正式 APK 一致。
 - [ ] `adb install -r` 成功，设备可冷启动，且没有启动崩溃。
 - [ ] 未执行卸载或清空应用数据，用户已保存章节正文保留。
 
@@ -32,4 +34,5 @@
 - [ ] `package-lock.json` 在暂存区，且与 `package.json` 版本一致。
 - [ ] 测试报告已加入提交（如本轮要求）。
 - [ ] 未提交 APK、keystore、密码、数据库、截图或日志产物。
+- [ ] GitHub Release 准备上传 `ShineWriter-V<版本>-release.apk` 和 `update.json`，Tag/Title 与版本一致。
 - [ ] 提交号、推送分支、APK 路径、版本、证书指纹和仍存在的问题已记录。

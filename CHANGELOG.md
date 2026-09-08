@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-08
+
+### Added — GitHub Releases 应用内更新与正式发版能力
+
+- 新增公开 GitHub Releases 更新检查，支持启动后异步自动检查和“设置 → 关于 → 检查更新”手动检查；网络失败不会阻塞应用启动或本地写作。
+- 固化 `update.json` 更新协议，正式更新优先使用整数 `versionCode` 比较，拒绝降级、Draft、Prerelease、缺失 asset 和字段类型异常的 Release。
+- 新增 APK 下载临时文件、进度展示、SHA-256 完整性校验、`com.shinewriter` 包名校验、正式签名证书校验和 versionCode 校验；校验失败会删除无效文件并禁止安装。
+- 新增 Android 受限 FileProvider 与系统安装器桥接，兼容未知来源授权流程，不绕过 Android 系统安装确认。
+- 新增 `release:metadata`、`release:verify`、`release:prepare` 命令，形成“正式 APK → update.json → GitHub Release”发布链路。
+
 ## [2.30.2] - 2026-09-04
 
 ### Fixed — Android 阅读器滚动与数据库冷启动
