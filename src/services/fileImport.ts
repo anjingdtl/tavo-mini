@@ -375,9 +375,18 @@ export interface BatchImportResult<T> {
 
 export async function pickLocalFiles(
   allowedTypes: string[],
-  max: number = 50,
+  max?: number,
 ): Promise<PickedFile[] | null> {
-  const selected = await pick({ type: allowedTypes, allowMultiSelection: true, mode: 'import', limit: max });
+  // Character/world-book callers pass an explicit product limit. Notes leave
+  // the picker unbounded so Android's document provider can offer the full
+  // multi-select set; the importer still processes each selected file in a
+  // bounded, sequential loop.
+  const selected = await pick({
+    type: allowedTypes,
+    allowMultiSelection: true,
+    mode: 'import',
+    ...(max == null ? {} : { limit: max }),
+  });
   if (!selected || selected.length === 0) return null;
 
   const [firstSelected, ...remainingSelected] = selected;

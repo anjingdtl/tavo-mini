@@ -241,6 +241,23 @@ describe('ResourceLibrary UI', () => {
     }
   });
 
+  it('does not impose the 50-file picker limit on batch note imports', async () => {
+    const fileImport = require('../src/services/fileImport') as {
+      pickLocalFiles: jest.Mock;
+    };
+    const { findByText, getByText } = render(<ResourceLibrary />);
+    await findByText('导入角色卡');
+    fireEvent.press(getByText('笔记'));
+    fireEvent.press(getByText('批量导入 TXT'));
+
+    await waitFor(() => {
+      expect(fileImport.pickLocalFiles).toHaveBeenCalledWith([
+        'text/plain',
+        '*/*',
+      ]);
+    });
+  });
+
   it('仿写选择器只展示当前项目已启用的笔记，并把空名单显示为全选', async () => {
     (db.getAllNotes as jest.Mock).mockResolvedValue([
       {
@@ -307,7 +324,14 @@ describe('ResourceLibrary UI', () => {
 
   it('opens an imported note collection and exposes a parent switch', async () => {
     (db.getNoteCollections as jest.Mock).mockResolvedValue([
-      { id: 12, name: '超长设定', enabled: 1, note_count: 2, estimated_tokens: 60000 },
+      {
+        id: 12,
+        name: '超长设定',
+        enabled: 1,
+        enabled_for_project: 0,
+        note_count: 2,
+        estimated_tokens: 60000,
+      },
     ]);
     (db.getAllNotes as jest.Mock).mockResolvedValue([
       { id: 21, collection_id: 12, title: '超长设定 (1/2)', content: '上半部分', enabled_for_project: 1, collection_enabled: 1 },
@@ -318,8 +342,9 @@ describe('ResourceLibrary UI', () => {
     await findByText('导入角色卡');
     fireEvent.press(getByText('笔记'));
     expect(await findByText('超长设定')).toBeTruthy();
-    fireEvent(getByTestId('note-collection-toggle-12'), 'valueChange', false);
-    expect(db.setNoteCollectionEnabledForProject).toHaveBeenCalledWith(1, 12, false);
+    expect(getByTestId('note-collection-toggle-12').props.value).toBe(false);
+    fireEvent(getByTestId('note-collection-toggle-12'), 'valueChange', true);
+    expect(db.setNoteCollectionEnabledForProject).toHaveBeenCalledWith(1, 12, true);
     fireEvent.press(getByText('打开'));
     expect(await findByText('超长设定 (1/2)')).toBeTruthy();
     expect(await findByText('超长设定 (2/2)')).toBeTruthy();

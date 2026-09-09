@@ -19,6 +19,30 @@ export interface ApkValidationResult {
   errorMessage?: string;
 }
 
+export type UpdateDownloadStatusName =
+  | 'pending'
+  | 'running'
+  | 'paused'
+  | 'successful'
+  | 'failed';
+
+export interface UpdateDownloadStatus {
+  downloadId: number;
+  status: UpdateDownloadStatusName;
+  bytesDownloaded: number;
+  totalBytes: number;
+  reason: number;
+  reasonMessage?: string;
+  versionCode: number;
+  versionName: string;
+  apkName: string;
+  apkUrl: string;
+  sha256: string;
+  releaseInfo?: string;
+  createdAt: number;
+  localUri?: string;
+}
+
 export interface AppUpdateNativeModule {
   getInstalledAppInfo(): Promise<InstalledAppInfo>;
   canInstallUnknownApps(): Promise<boolean>;
@@ -30,6 +54,17 @@ export interface AppUpdateNativeModule {
     expectedVersionCode: number,
     expectedSignerSha256: string,
   ): Promise<ApkValidationResult>;
+  enqueueUpdateDownload(
+    apkUrl: string,
+    apkName: string,
+    versionCode: number,
+    versionName: string,
+    sha256: string,
+    releaseInfo: string,
+  ): Promise<UpdateDownloadStatus>;
+  getUpdateDownloadStatus(): Promise<UpdateDownloadStatus | null>;
+  cancelUpdateDownload(): Promise<boolean>;
+  materializeDownloadedUpdate(versionCode: number): Promise<string>;
   installApk(path: string): Promise<void>;
   addListener(eventName: string): void;
   removeListeners(count: number): void;

@@ -1,7 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
 import appVersionJson from '../constants/version.json';
-import { AppUpdate } from '../native/AppUpdateModule';
+import {
+  AppUpdate,
+  type UpdateDownloadStatus,
+  type UpdateDownloadStatusName,
+} from '../native/AppUpdateModule';
 import {
   buildAvailableUpdate,
   displayVersionName,
@@ -32,6 +36,7 @@ export type UpdateErrorCode =
   | 'MISSING_METADATA_ASSET'
   | 'MISSING_APK_ASSET'
   | 'DOWNLOAD_FAILED'
+  | 'DOWNLOAD_PAUSED'
   | 'HASH_MISMATCH'
   | 'PACKAGE_MISMATCH'
   | 'SIGNER_MISMATCH'
@@ -73,6 +78,7 @@ export interface DownloadProgress {
   bytesWritten: number;
   contentLength: number;
   percent: number;
+  status?: UpdateDownloadStatusName;
 }
 
 export interface VerifiedDownloadedUpdate {
@@ -94,7 +100,8 @@ interface UpdateCacheRecord {
 }
 
 let checkInFlight: Promise<UpdateCheckResult> | null = null;
-let downloadInFlight: Promise<VerifiedDownloadedUpdate> | null = null;
+const downloadInFlight = new Map<number, Promise<VerifiedDownloadedUpdate>>();
+const DOWNLOAD_STATUS_POLL_MS = 750;
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -412,26 +419,114 @@ function updateErrorForValidation(
   return new UpdateServiceError('VERSION_MISMATCH', '安装包验证失败，已拒绝安装。');
 }
 
-async function unlinkIfExists(path: string): Promise<void> {
+function progressFromDownloadStatus(
+  task: UpdateDownloadStatus,
+): DownloadProgress {
+  const bytesWritten = Math.max(0, Number(task.bytesDownloaded) || 0);
+  const contentLength = Math.max(0, Number(task.totalBytes) || 0);
+  return {
+    bytesWritten,
+    contentLength,
+    percent:
+      contentLength > 0
+        ? clampPercent((bytesWritten / contentLength) * 100)
+        : task.status === 'successful'
+          ? 100
+          : 0,
+    status: task.status,
+  };
+}
+
+function statusMetadataMatches(
+  task: UpdateDownloadStatus,
+  update: AvailableUpdate,
+): boolean {
+  return (
+    task.versionCode === update.versionCode &&
+    task.apkName === update.apkName &&
+    task.sha256.toLowerCase() === update.sha256.toLowerCase()
+  );
+}
+
+function releaseInfoFor(update: AvailableUpdate): string {
+  return JSON.stringify({
+    title: update.title,
+    notes: update.notes,
+    releaseTag: update.releaseTag,
+    releaseUrl: update.releaseUrl || '',
+  });
+}
+
+async function enqueueSystemDownload(
+  update: AvailableUpdate,
+): Promise<UpdateDownloadStatus> {
+  if (!AppUpdate?.enqueueUpdateDownload) {
+    throw new UpdateServiceError(
+      'DOWNLOAD_FAILED',
+      '当前 Android 版本未加载系统更新下载模块。',
+    );
+  }
+  return AppUpdate.enqueueUpdateDownload(
+    update.apkUrl,
+    update.apkName,
+    update.versionCode,
+    update.versionName,
+    update.sha256,
+    releaseInfoFor(update),
+  );
+}
+
+async function cancelSystemDownload(): Promise<void> {
+  const cancel = AppUpdate?.cancelUpdateDownload;
+  if (!cancel) return;
   try {
-    if (await RNFS.exists(path)) await RNFS.unlink(path);
+    await cancel();
   } catch {
-    // Cleanup is best effort; the next attempt will use a new temp path.
+    // The original validation error is more useful to the caller. Native
+    // cleanup is best effort and the next explicit retry can replace the row.
   }
 }
 
-function updateDownloadPath(apkName: string): {
-  directory: string;
-  finalPath: string;
-  tempPath: string;
-} {
-  const directory = `${RNFS.CachesDirectoryPath}/${UPDATE_DOWNLOAD_DIRECTORY}`;
-  const finalPath = `${directory}/${apkName}`;
-  return {
-    directory,
-    finalPath,
-    tempPath: `${finalPath}.part`,
-  };
+async function waitForSystemDownload(
+  update: AvailableUpdate,
+  initialTask: UpdateDownloadStatus,
+  onProgress?: (progress: DownloadProgress) => void,
+): Promise<UpdateDownloadStatus> {
+  let task = initialTask;
+  while (true) {
+    if (!statusMetadataMatches(task, update)) {
+      throw new UpdateServiceError(
+        'DOWNLOAD_FAILED',
+        '系统下载任务与当前 Release 不一致，已拒绝继续处理。',
+      );
+    }
+    onProgress?.(progressFromDownloadStatus(task));
+    if (task.status === 'successful') return task;
+    if (task.status === 'paused') {
+      throw new UpdateServiceError(
+        'DOWNLOAD_PAUSED',
+        task.reasonMessage || '系统下载已暂停，网络可用后会继续。',
+      );
+    }
+    if (task.status === 'failed') {
+      throw new UpdateServiceError(
+        'DOWNLOAD_FAILED',
+        task.reasonMessage || 'Android 系统下载失败，请重试。',
+      );
+    }
+
+    // This timer only refreshes foreground UI state. DownloadManager owns the
+    // actual transfer and continues independently when JS is suspended/killed.
+    await new Promise<void>(resolve => setTimeout(resolve, DOWNLOAD_STATUS_POLL_MS));
+    const nextTask = await AppUpdate?.getUpdateDownloadStatus();
+    if (!nextTask) {
+      throw new UpdateServiceError(
+        'DOWNLOAD_FAILED',
+        'Android 系统下载任务已丢失，请重试。',
+      );
+    }
+    task = nextTask;
+  }
 }
 
 async function downloadAndVerifyUpdateOnce(
@@ -444,59 +539,30 @@ async function downloadAndVerifyUpdateOnce(
       '当前 Android 版本未加载更新原生模块。',
     );
   }
-  const paths = updateDownloadPath(update.apkName);
-  if (!(await RNFS.exists(paths.directory))) await RNFS.mkdir(paths.directory);
-  // A .part file is never considered installable. Remove any old interrupted
-  // download before starting a fresh, deterministic retry.
-  await unlinkIfExists(paths.tempPath);
-
-  let downloadResult: { statusCode?: number; bytesWritten?: number };
-  try {
-    const task = RNFS.downloadFile({
-      fromUrl: update.apkUrl,
-      toFile: paths.tempPath,
-      progressDivider: 1,
-      begin: response => {
-        onProgress?.({
-          bytesWritten: 0,
-          contentLength: response.contentLength,
-          percent: 0,
-        });
-      },
-      progress: response => {
-        const contentLength = response.contentLength;
-        const bytesWritten = response.bytesWritten;
-        onProgress?.({
-          bytesWritten,
-          contentLength,
-          percent:
-            contentLength > 0
-              ? clampPercent((bytesWritten / contentLength) * 100)
-              : 0,
-        });
-      },
-    });
-    downloadResult = await task.promise;
-  } catch (error) {
-    await unlinkIfExists(paths.tempPath);
-    throw new UpdateServiceError('DOWNLOAD_FAILED', '更新包下载失败，请重试。', {
-      cause: error,
-    });
+  let task = await AppUpdate.getUpdateDownloadStatus();
+  if (
+    !task ||
+    task.status === 'failed' ||
+    !statusMetadataMatches(task, update)
+  ) {
+    if (task && !statusMetadataMatches(task, update)) {
+      await cancelSystemDownload();
+    }
+    task = await enqueueSystemDownload(update);
   }
-  if (!downloadResult || !isHttpSuccess(downloadResult.statusCode || 0)) {
-    await unlinkIfExists(paths.tempPath);
-    throw new UpdateServiceError(
-      'DOWNLOAD_FAILED',
-      `更新包下载失败（HTTP ${downloadResult?.statusCode || 0}）。`,
-    );
-  }
+  const completedTask = await waitForSystemDownload(update, task, onProgress);
 
+  let path: string;
   try {
-    const stats = await RNFS.stat(paths.tempPath);
+    if (!AppUpdate.materializeDownloadedUpdate) {
+      throw new Error('系统下载结果读取模块不可用。');
+    }
+    path = await AppUpdate.materializeDownloadedUpdate(update.versionCode);
+    const stats = await RNFS.stat(path);
     if (!stats || Number(stats.size) <= 0) {
       throw new Error('empty APK');
     }
-    const actualHash = (await AppUpdate.sha256File(paths.tempPath)).toLowerCase();
+    const actualHash = (await AppUpdate.sha256File(path)).toLowerCase();
     if (actualHash !== update.sha256.toLowerCase()) {
       throw new UpdateServiceError(
         'HASH_MISMATCH',
@@ -504,7 +570,7 @@ async function downloadAndVerifyUpdateOnce(
       );
     }
     const validation = await AppUpdate.validateApk(
-      paths.tempPath,
+      path,
       RELEASE_PACKAGE_NAME,
       update.versionCode,
       RELEASE_SIGNER_SHA256,
@@ -517,15 +583,9 @@ async function downloadAndVerifyUpdateOnce(
     ) {
       throw updateErrorForValidation(validation);
     }
-    await unlinkIfExists(paths.finalPath);
-    await RNFS.moveFile(paths.tempPath, paths.finalPath);
-    onProgress?.({
-      bytesWritten: Number(stats.size),
-      contentLength: Number(stats.size),
-      percent: 100,
-    });
+    onProgress?.({ ...progressFromDownloadStatus(completedTask), percent: 100 });
     return {
-      path: paths.finalPath,
+      path,
       sha256: actualHash,
       apk: {
         packageName: validation.packageName || RELEASE_PACKAGE_NAME,
@@ -535,8 +595,10 @@ async function downloadAndVerifyUpdateOnce(
       },
     };
   } catch (error) {
-    await unlinkIfExists(paths.tempPath);
-    await unlinkIfExists(paths.finalPath);
+    // Remove the completed DownloadManager row and the private cache copy on
+    // any local validation failure. A retry must create a fresh task and must
+    // never reuse bytes that failed SHA/package/version/signer validation.
+    await cancelSystemDownload();
     if (error instanceof UpdateServiceError) throw error;
     throw new UpdateServiceError('DOWNLOAD_FAILED', '安装包校验失败，已删除无效文件。', {
       cause: error,
@@ -548,11 +610,37 @@ export function downloadAndVerifyUpdate(
   update: AvailableUpdate,
   onProgress?: (progress: DownloadProgress) => void,
 ): Promise<VerifiedDownloadedUpdate> {
-  if (downloadInFlight) return downloadInFlight;
-  downloadInFlight = downloadAndVerifyUpdateOnce(update, onProgress);
-  return downloadInFlight.finally(() => {
-    downloadInFlight = null;
+  const existing = downloadInFlight.get(update.versionCode);
+  if (existing) return existing;
+  const pending = downloadAndVerifyUpdateOnce(update, onProgress);
+  const tracked = pending.finally(() => {
+    if (downloadInFlight.get(update.versionCode) === tracked) {
+      downloadInFlight.delete(update.versionCode);
+    }
   });
+  downloadInFlight.set(update.versionCode, tracked);
+  return tracked;
+}
+
+export async function getUpdateDownloadStatus(): Promise<UpdateDownloadStatus | null> {
+  if (!AppUpdate?.getUpdateDownloadStatus) return null;
+  return AppUpdate.getUpdateDownloadStatus();
+}
+
+/** Resume/verify only an already persisted task; never enqueue on app resume. */
+export async function resumeUpdateDownload(
+  update: AvailableUpdate,
+  onProgress?: (progress: DownloadProgress) => void,
+): Promise<VerifiedDownloadedUpdate | null> {
+  const task = await getUpdateDownloadStatus();
+  if (!task || task.versionCode !== update.versionCode) return null;
+  if (task.status === 'failed') {
+    throw new UpdateServiceError(
+      'DOWNLOAD_FAILED',
+      task.reasonMessage || 'Android 系统下载失败，请明确重试。',
+    );
+  }
+  return downloadAndVerifyUpdate(update, onProgress);
 }
 
 export function formatUpdateError(error: unknown): string {

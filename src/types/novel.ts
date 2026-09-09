@@ -107,6 +107,7 @@ export interface Note {
   updated_at: string;
   enabled_for_project?: number;
   collection_enabled?: number;
+  collection_enabled_for_project?: number;
 }
 
 export interface Preset {

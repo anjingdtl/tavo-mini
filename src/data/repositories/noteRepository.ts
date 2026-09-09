@@ -316,10 +316,18 @@ export async function repairOversizedNotes(
 }
 
 export async function getAllNotes(projectId?: number): Promise<Note[]> {
+  const collectionUsage = projectId
+    ? `COALESCE((SELECT pcs.enabled
+         FROM project_collection_settings pcs
+         WHERE pcs.project_id = ${Number(projectId)}
+           AND pcs.resource_type = 'note'
+           AND pcs.collection_id = n.collection_id), 1) AS collection_enabled_for_project`
+    : '1 AS collection_enabled_for_project';
   return all<Note>(
     `SELECT n.id, n.project_id, n.title, substr(n.content, 1, ${NOTE_LIST_PREVIEW_CHARS}) AS content,
             n.collection_id, nc.name AS collection_name, nc.enabled AS collection_enabled,
-            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at, ${usageJoin(
+            n.max_tokens, n.estimated_tokens, n.created_at, n.updated_at,
+            ${collectionUsage}, ${usageJoin(
               'note',
               'n',
               projectId,

@@ -90,6 +90,10 @@ import {
 import { novelCharacterDraftToCharaCard } from '../services/construction/characterDraftAdapter';
 import { WriterStyleEditor } from './writer-style/WriterStyleEditor';
 import type { WriterStyleAsset } from '../services/writerStyle/types';
+import {
+  effectiveNoteIds,
+  toggleNoteSelection,
+} from '../services/noteSelection';
 
 // 续写 as a first-class tab of the resource library (Spec §8.3 flattened):
 // the old ResourceHomeScreen entry-list layer is removed, and 续写 sits beside
@@ -217,24 +221,48 @@ export const ResourceLibrary: React.FC<{
   const [continuationBindings, setContinuationBindings] = useState<any[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const loadGenerationRef = useRef(0);
+  const noteConfigRevisionRef = useRef(0);
+  const noteConfigWriteTailRef = useRef<Promise<void>>(Promise.resolve());
+  const noteToggleRevisionRef = useRef(0);
+  const lastNoteToggleRevisionRef = useRef(new Map<string, number>());
   const projectId = currentProject?.id || 0;
   const projectEnabledNotes = useMemo(
-    () => items.notes.filter((note: any) => note.enabled_for_project === 1),
+    () =>
+      items.notes.filter(
+        (note: any) =>
+          note.enabled_for_project === 1 &&
+          (note.collection_enabled_for_project ?? 1) === 1,
+      ),
     [items.notes],
   );
   const effectiveEnabledNoteIds = useMemo(() => {
-    const eligibleIds = projectEnabledNotes.map((note: any) => Number(note.id));
-    if (enabledNoteIds.length === 0) return eligibleIds;
-    const eligibleSet = new Set(eligibleIds);
-    return enabledNoteIds.map(Number).filter(id => eligibleSet.has(id));
-  }, [enabledNoteIds, projectEnabledNotes]);
+    return effectiveNoteIds(
+      enabledNoteIds,
+      projectEnabledNotes.map((note: any) => note.id),
+      noteMode,
+    );
+  }, [enabledNoteIds, noteMode, projectEnabledNotes]);
 
   useEffect(() => {
     enabledNoteIdsRef.current = enabledNoteIds;
   }, [enabledNoteIds]);
 
+  const persistNoteConfig = useCallback(
+    (
+      config: Parameters<typeof db.setProjectNoteConfig>[1],
+    ): Promise<void> => {
+      const pending = noteConfigWriteTailRef.current
+        .catch(() => undefined)
+        .then(() => db.setProjectNoteConfig(projectId, config));
+      noteConfigWriteTailRef.current = pending.catch(() => undefined);
+      return pending;
+    },
+    [projectId],
+  );
+
   const loadData = useCallback(async () => {
     const loadGeneration = ++loadGenerationRef.current;
+    const noteConfigRevisionAtStart = noteConfigRevisionRef.current;
     try {
     const [
       characters,
@@ -244,7 +272,6 @@ export const ResourceLibrary: React.FC<{
       characterCollectionRows,
       worldbookCollections,
       noteCollectionRows,
-      noteConfig,
       bindings,
       activeStyleId,
     ] = await Promise.all([
@@ -255,7 +282,6 @@ export const ResourceLibrary: React.FC<{
       db.getCharacterCollections(projectId),
       db.getWorldbookCollections(projectId),
       db.getNoteCollections(projectId),
-      db.getProjectNoteConfig(projectId),
       // Keep older test doubles and pre-migration databases readable while the
       // v25 repository facade is unavailable.
       typeof (db as any).listContinuationResourceBindings === 'function'
@@ -280,35 +306,54 @@ export const ResourceLibrary: React.FC<{
     setActiveWriterStyleId(
       activeStyleId == null ? null : Number(activeStyleId),
     );
-    if (noteConfig) {
-      // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
-      setNoteMode(noteConfig.mode || 'none');
-      setStyleWeights({
-        ...DEFAULT_STYLE_WEIGHTS,
-        ...(noteConfig.styleWeights || {}),
-      });
-      setRetrievalTopK(
-        typeof noteConfig.retrievalTopK === 'number'
-          ? noteConfig.retrievalTopK
-          : 5,
-      );
-      setRetrievalFragmentChars(
-        typeof noteConfig.retrievalFragmentChars === 'number'
-          ? noteConfig.retrievalFragmentChars
-          : 1000,
-      );
-      const loadedIds = Array.isArray(noteConfig.enabledNoteIds)
-        ? noteConfig.enabledNoteIds.map(Number)
-        : [];
-      enabledNoteIdsRef.current = loadedIds;
-      setEnabledNoteIds(loadedIds);
-    } else {
-      setNoteMode('none');
-      setStyleWeights(DEFAULT_STYLE_WEIGHTS);
-      setRetrievalTopK(5);
-      setRetrievalFragmentChars(1000);
-      enabledNoteIdsRef.current = [];
-      setEnabledNoteIds([]);
+    // A focus/collection reload can overlap an optimistic note toggle. Wait
+    // for writes already queued by this screen, then only apply the config if
+    // no newer local mutation happened while the read was in flight. The
+    // resource lists still refresh normally, but an older config snapshot can
+    // never roll a just-clicked note back on screen.
+    const noteConfigWriteTail = noteConfigWriteTailRef.current;
+    await noteConfigWriteTail.catch(() => undefined);
+    if (
+      loadGeneration === loadGenerationRef.current &&
+      noteConfigRevisionRef.current === noteConfigRevisionAtStart
+    ) {
+      const noteConfig = await db.getProjectNoteConfig(projectId);
+      if (
+        loadGeneration !== loadGenerationRef.current ||
+        noteConfigRevisionRef.current !== noteConfigRevisionAtStart
+      ) {
+        return;
+      }
+      if (noteConfig) {
+        // 防御性归一化：DB 异常返回 null/undefined 时回退默认，避免渲染时 .length 报错
+        setNoteMode(noteConfig.mode || 'none');
+        setStyleWeights({
+          ...DEFAULT_STYLE_WEIGHTS,
+          ...(noteConfig.styleWeights || {}),
+        });
+        setRetrievalTopK(
+          typeof noteConfig.retrievalTopK === 'number'
+            ? noteConfig.retrievalTopK
+            : 5,
+        );
+        setRetrievalFragmentChars(
+          typeof noteConfig.retrievalFragmentChars === 'number'
+            ? noteConfig.retrievalFragmentChars
+            : 1000,
+        );
+        const loadedIds = Array.isArray(noteConfig.enabledNoteIds)
+          ? noteConfig.enabledNoteIds.map(Number)
+          : [];
+        enabledNoteIdsRef.current = loadedIds;
+        setEnabledNoteIds(loadedIds);
+      } else {
+        setNoteMode('none');
+        setStyleWeights(DEFAULT_STYLE_WEIGHTS);
+        setRetrievalTopK(5);
+        setRetrievalFragmentChars(1000);
+        enabledNoteIdsRef.current = [];
+        setEnabledNoteIds([]);
+      }
     }
     if (
       selectedNoteCollectionId &&
@@ -616,7 +661,10 @@ export const ResourceLibrary: React.FC<{
   };
 
   const importNotesBatch = async () => {
-    const files = await pickLocalFiles([types.plainText, types.allFiles], 50);
+    // Do not impose the character/world-book 50-file cap on notes. The
+    // document provider decides its own safe selection limit, and the note
+    // importer processes the returned files sequentially.
+    const files = await pickLocalFiles([types.plainText, types.allFiles]);
     if (!files) return;
     try {
       const result = await importNotes(projectId, files);
@@ -644,8 +692,9 @@ export const ResourceLibrary: React.FC<{
 
   const handleNoteModeChange = async (mode: 'none' | 'style' | 'retrieval') => {
     setNoteMode(mode);
+    noteConfigRevisionRef.current += 1;
     try {
-      await db.setProjectNoteConfig(projectId, { mode });
+      await persistNoteConfig({ mode });
     } catch (error: any) {
       Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
     }
@@ -654,9 +703,10 @@ export const ResourceLibrary: React.FC<{
   const handleWeightChange = async (key: keyof StyleWeights, value: number) => {
     const newWeights = { ...styleWeights, [key]: value };
     setStyleWeights(newWeights);
+    noteConfigRevisionRef.current += 1;
     try {
       // 用当前 noteMode 而非写死 'style'，避免在 retrieval 模式下被误调时覆盖
-      await db.setProjectNoteConfig(projectId, { styleWeights: newWeights });
+      await persistNoteConfig({ styleWeights: newWeights });
     } catch {
       // 静默失败，不打断用户调整
     }
@@ -664,9 +714,10 @@ export const ResourceLibrary: React.FC<{
 
   const handleTopKChange = async (value: number) => {
     setRetrievalTopK(value);
+    noteConfigRevisionRef.current += 1;
     try {
       // 用当前 noteMode 而非写死 'retrieval'
-      await db.setProjectNoteConfig(projectId, { retrievalTopK: value });
+      await persistNoteConfig({ retrievalTopK: value });
     } catch {
       // 静默失败
     }
@@ -674,8 +725,9 @@ export const ResourceLibrary: React.FC<{
 
   const handleFragmentCharsChange = async (value: number) => {
     setRetrievalFragmentChars(value);
+    noteConfigRevisionRef.current += 1;
     try {
-      await db.setProjectNoteConfig(projectId, {
+      await persistNoteConfig({
         retrievalFragmentChars: value,
       });
     } catch {
@@ -685,16 +737,12 @@ export const ResourceLibrary: React.FC<{
 
   const handleToggleNoteId = async (noteId: number) => {
     const eligibleIds = projectEnabledNotes.map((note: any) => Number(note.id));
-    const eligibleSet = new Set(eligibleIds);
-    const configuredIds = enabledNoteIdsRef.current;
-    const selectedIds =
-      configuredIds.length > 0
-        ? configuredIds.map(Number).filter(id => eligibleSet.has(id))
-        : eligibleIds;
-    const newIds = selectedIds.includes(noteId)
-      ? selectedIds.filter(id => id !== noteId)
-      : [...selectedIds, noteId];
-    if (newIds.length === 0 && eligibleIds.length > 0) {
+    const toggle = toggleNoteSelection(
+      enabledNoteIdsRef.current,
+      eligibleIds,
+      noteId,
+    );
+    if (toggle.selectedIds.length === 0 && eligibleIds.length > 0) {
       Toast.show({
         type: 'info',
         text1: '请至少保留一篇笔记',
@@ -702,12 +750,42 @@ export const ResourceLibrary: React.FC<{
       });
       return;
     }
+
+    const operationId = ++noteToggleRevisionRef.current;
+    const noteKey = `${projectId}:${Number(noteId)}`;
+    lastNoteToggleRevisionRef.current.set(noteKey, operationId);
+    const newIds = toggle.storedIds;
     enabledNoteIdsRef.current = newIds;
     setEnabledNoteIds(newIds);
+    noteConfigRevisionRef.current += 1;
     try {
-      await db.setProjectNoteConfig(projectId, { enabledNoteIds: newIds });
+      await persistNoteConfig({ enabledNoteIds: newIds });
     } catch (error: any) {
-      await loadData();
+      // Roll back only this stable note id. A later click on the same note is
+      // newer and must win; clicks on other notes remain untouched.
+      if (lastNoteToggleRevisionRef.current.get(noteKey) === operationId) {
+        const currentSelected = effectiveNoteIds(
+          enabledNoteIdsRef.current,
+          eligibleIds,
+        );
+        const rollbackSelected = toggle.wasSelected
+          ? Array.from(new Set([...currentSelected, Number(noteId)]))
+          : currentSelected.filter(id => id !== Number(noteId));
+        const rollbackIds =
+          rollbackSelected.length === eligibleIds.length
+            ? []
+            : rollbackSelected;
+        enabledNoteIdsRef.current = rollbackIds;
+        setEnabledNoteIds(rollbackIds);
+        noteConfigRevisionRef.current += 1;
+        // The failed native write may have committed before reporting an
+        // error. Queue a precise corrective write, without reloading the
+        // entire library or disturbing another note's optimistic state.
+        persistNoteConfig({ enabledNoteIds: rollbackIds }).catch(() => {
+          // The UI is already rolled back; a later focus reload will surface
+          // any durable database error instead of masking it as a toggle race.
+        });
+      }
       Toast.show({ type: 'error', text1: '保存失败', text2: error.message });
     }
   };
@@ -1204,7 +1282,7 @@ export const ResourceLibrary: React.FC<{
       ) : tab === 'outlines' && currentProject ? (
         <OutlineListBody projectId={currentProject.id} />
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.scrollContent}>
         <View style={styles.actions}>
           {tab === 'presets' ? (
             <View style={styles.presetCatalogTabs}>
@@ -1585,7 +1663,8 @@ export const ResourceLibrary: React.FC<{
             ) : (
               <FlatList
                 data={characterCollections}
-                scrollEnabled={false}
+                style={styles.virtualizedList}
+                scrollEnabled
                 keyExtractor={item => String(item.id)}
                 contentContainerStyle={styles.list}
                 renderItem={({ item }) => (
@@ -1666,7 +1745,8 @@ export const ResourceLibrary: React.FC<{
             ) : (
               <FlatList
                 data={collections}
-                scrollEnabled={false}
+                style={styles.virtualizedList}
+                scrollEnabled
                 keyExtractor={item => String(item.id)}
                 contentContainerStyle={styles.list}
                 renderItem={({ item }) => (
@@ -1751,7 +1831,8 @@ export const ResourceLibrary: React.FC<{
                 })),
                 ...items.notes.filter(item => !item.collection_id),
               ]}
-              scrollEnabled={false}
+              style={styles.virtualizedList}
+              scrollEnabled
               keyExtractor={item =>
                 `${item._isNoteCollection ? 'collection' : 'note'}-${item.id}`
               }
@@ -1791,7 +1872,7 @@ export const ResourceLibrary: React.FC<{
                           </Text>
                           <Switch
                             testID={`note-collection-toggle-${item.id}`}
-                            value={item.enabled === 1}
+                            value={isCollectionEnabledForProject(item)}
                             onValueChange={() => toggleNoteCollection(item)}
                           />
                         </View>
@@ -1901,7 +1982,8 @@ export const ResourceLibrary: React.FC<{
           ) : (
             <FlatList
               data={activeItems}
-              scrollEnabled={false}
+              style={styles.virtualizedList}
+              scrollEnabled
               keyExtractor={item => String(item.id)}
               contentContainerStyle={styles.list}
               renderItem={({ item }) => (
@@ -2077,7 +2159,7 @@ export const ResourceLibrary: React.FC<{
             />
           )}
         </View>
-      </ScrollView>
+        </View>
       )}
 
       <Modal
@@ -2408,12 +2490,16 @@ export const ResourceLibrary: React.FC<{
             >
               选择笔记
             </Text>
-            <ScrollView style={styles.notePickerList}>
-              {projectEnabledNotes.map((note: any) => {
-                const isSelected = effectiveEnabledNoteIds.includes(note.id);
+            <FlatList
+              style={styles.notePickerList}
+              data={projectEnabledNotes}
+              keyExtractor={(note: any) => String(note.id)}
+              renderItem={({ item: note }: { item: any }) => {
+                const isSelected = effectiveEnabledNoteIds.includes(
+                  Number(note.id),
+                );
                 return (
                   <Pressable
-                    key={note.id}
                     style={[
                       styles.notePickerItem,
                       {
@@ -2422,7 +2508,7 @@ export const ResourceLibrary: React.FC<{
                           : theme.colors.border,
                       },
                     ]}
-                    onPress={() => handleToggleNoteId(note.id)}
+                    onPress={() => handleToggleNoteId(Number(note.id))}
                   >
                     <Text
                       style={[
@@ -2446,8 +2532,8 @@ export const ResourceLibrary: React.FC<{
                     </Text>
                   </Pressable>
                 );
-              })}
-            </ScrollView>
+              }}
+            />
             <View style={styles.modalActions}>
               <Button
                 label="关闭"
@@ -2630,8 +2716,9 @@ const styles = StyleSheet.create({
   },
   rowActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   inlineInput: { minHeight: 40 },
-  scrollContent: { paddingBottom: 120 },
-  listContainer: { minHeight: 240 },
+  scrollContent: { flex: 1, minHeight: 0 },
+  listContainer: { flex: 1, minHeight: 240 },
+  virtualizedList: { flex: 1 },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   rowText: { flex: 1 },
