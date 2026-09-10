@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  LLMMessageContent,
   LLMGenerateOptions,
   LLMResult,
   LLMProviderType,
@@ -10,7 +11,7 @@ export interface LLMProvider {
   readonly type: LLMProviderType;
   test(config: LLMRequestConfig, signal?: AbortSignal): Promise<string>;
   generate(
-    messages: ChatMessage[],
+    messages: Array<ChatMessage<LLMMessageContent>>,
     options: LLMGenerateOptions,
     signal?: AbortSignal,
   ): Promise<LLMResult>;

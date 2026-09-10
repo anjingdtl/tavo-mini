@@ -362,6 +362,7 @@ export const SCHEMA_MANIFEST: readonly TableManifest[] = [
       'provider_type',
       'context_window',
       'max_output_tokens',
+      'vision_support',
     ],
     backup: true,
     restoreOrder: 110,

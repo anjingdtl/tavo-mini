@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../services/llm';
+import type { ChatMessage, LLMMessageContent } from '../services/llm';
 
 const MESSAGE_OVERHEAD_TOKENS = 4;
 
@@ -43,9 +43,25 @@ export function estimateTokens(text?: string | null): number {
   return Math.max(1, tokens);
 }
 
-export function estimateMessagesTokens(messages: ChatMessage[]): number {
+/** Estimate only textual parts; image Base64 is intentionally never tokenized. */
+export function estimateMessageContentTokens(content: LLMMessageContent): number {
+  if (typeof content === 'string') return estimateTokens(content);
+  return content.reduce(
+    (total, part) =>
+      total + (part.type === 'text' ? estimateTokens(part.text) : 0),
+    0,
+  );
+}
+
+export function estimateMessagesTokens(
+  messages: Array<ChatMessage<LLMMessageContent>>,
+): number {
   return messages.reduce(
-    (total, message) => total + MESSAGE_OVERHEAD_TOKENS + estimateTokens(message.role) + estimateTokens(message.content),
+    (total, message) =>
+      total +
+      MESSAGE_OVERHEAD_TOKENS +
+      estimateTokens(message.role) +
+      estimateMessageContentTokens(message.content),
     0,
   );
 }

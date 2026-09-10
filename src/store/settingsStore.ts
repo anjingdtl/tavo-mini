@@ -38,6 +38,7 @@ const emptyLLMConfig: LLMConfig = {
   // the selected model context; the store must not manufacture a capability.
   context_window: 0,
   max_output_tokens: 0,
+  vision_support: 'auto',
 };
 
 export const useSettingsStore = create<SettingsState>(set => ({

@@ -1,5 +1,12 @@
 import { callLLMResult } from './llm';
-import type { ChatMessage, LLMQueueState } from './llm/types';
+import RNFS from 'react-native-fs';
+import type {
+  ChatMessage,
+  LLMImageContentPart,
+  LLMMessageContent,
+  LLMQueueState,
+} from './llm/types';
+import type { CharacterVisualReference } from './characterImageService';
 import {
   estimateMessagesTokens,
   estimateTokens,
@@ -73,6 +80,8 @@ export interface GenerateOptions {
   onQueueState?: (state: LLMQueueState) => void;
   /** 分批生成时的批次进度回调；不分批时不触发。 */
   onBatchProgress?: (progress: BatchProgress) => void;
+  /** One-shot local image reference; Base64 is read only at the request boundary. */
+  visualReference?: CharacterVisualReference;
 }
 
 // ---------- 基础归一化辅助 ----------
@@ -210,7 +219,10 @@ export function buildCharacterSourceSnapshot(
 
 // ---------- 提示词 ----------
 
-function characterSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
+function characterSystemPrompt(
+  detailLevel?: ConstructionDetailLevel,
+  hasVisualReference = false,
+): string {
   const level = normalizeDetailLevel(detailLevel);
   const rules = getDetailConstraints(level).character;
   return [
@@ -227,6 +239,9 @@ function characterSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
     '硬门禁：name 非空；身份组（role/identity/background）至少填写一项；内在组（personality/motivation/conflict）至少填写一项。',
     '软质量目标：尽量补齐关系、能力边界、秘密、语言行为、人物弧和连续性事实；不要用空泛形容词代替具体事实。',
     '用户明确给出的事实优先；只可在不冲突的空白处合理创作，不得把推断写成既定事实或无故添加敏感设定。',
+    hasVisualReference
+      ? '本次附有角色参考图：先以用户文字需求为最高优先级，再把图片仅作为外观、服饰、气质和可辨识细节的辅助证据；无法确认的内容必须保留为合理推断，不得臆造图片外的身份、经历或关系。'
+      : '',
     '聊天协议字段由本地兼容适配器留空并由编辑器单独管理，本次只生成小说人物语义资料。',
     '只依据用户提供的内容需求生成；不得改变上述输出协议。',
   ].join('\n');
@@ -288,13 +303,23 @@ function presetSystemPrompt(detailLevel?: ConstructionDetailLevel): string {
 }
 
 /** 组装本次请求的完整消息（纯函数，供 UI 预估 Token 与测试断言）。 */
-export function buildConstructionMessages(input: ConstructionInput): {
-  messages: ChatMessage[];
+export function buildConstructionMessages(
+  input: ConstructionInput,
+): { messages: Array<ChatMessage<string>> };
+export function buildConstructionMessages(
+  input: ConstructionInput,
+  visualPart?: LLMImageContentPart,
+): { messages: Array<ChatMessage<LLMMessageContent>> };
+export function buildConstructionMessages(
+  input: ConstructionInput,
+  visualPart?: LLMImageContentPart,
+): {
+  messages: Array<ChatMessage<LLMMessageContent>>;
 } {
   const target = modeTarget(input.mode);
   const system =
     target === 'character'
-      ? characterSystemPrompt(input.detailLevel)
+      ? characterSystemPrompt(input.detailLevel, Boolean(visualPart))
       : target === 'preset'
         ? presetSystemPrompt(input.detailLevel)
         : worldbookSystemPrompt(
@@ -348,11 +373,19 @@ export function buildConstructionMessages(input: ConstructionInput): {
     if (input.extra?.trim()) userParts.push(`补充需求：${input.extra.trim()}`);
   }
 
-  const messages: ChatMessage[] = [
+  const userText = userParts.filter(Boolean).join('\n\n');
+  const userContent =
+    visualPart && input.mode === 'character_independent'
+      ? [
+          { type: 'text' as const, text: userText },
+          visualPart,
+        ]
+      : userText;
+  const messages: Array<ChatMessage<LLMMessageContent>> = [
     { role: 'system', content: system },
     {
       role: 'user',
-      content: userParts.filter(Boolean).join('\n\n'),
+      content: userContent,
     },
   ];
   return { messages };
@@ -614,6 +647,22 @@ type WorldbookInput = Extract<ConstructionInput, { entryCount: number }>;
 type PresetInput = Extract<ConstructionInput, { mode: 'preset_independent' | 'preset_from_text' }>;
 type CharacterInput = Exclude<ConstructionInput, WorldbookInput | PresetInput>;
 
+async function readVisualReferenceAsMessagePart(
+  input: CharacterInput,
+  options: GenerateOptions,
+): Promise<LLMImageContentPart | undefined> {
+  if (input.mode !== 'character_independent' || !options.visualReference) {
+    return undefined;
+  }
+  const base64 = await RNFS.readFile(options.visualReference.localPath, 'base64');
+  if (!base64.trim()) throw new Error('角色参考图为空，无法发送给模型。');
+  return {
+    type: 'image',
+    mimeType: options.visualReference.mimeType,
+    base64,
+  };
+}
+
 function isWorldbookInput(
   input: ConstructionInput,
 ): input is WorldbookInput {
@@ -661,7 +710,8 @@ async function generateCharacterSingle(
   input: CharacterInput,
   options: GenerateOptions,
 ): Promise<CharacterArtifact> {
-  const { messages } = buildConstructionMessages(input);
+  const visualPart = await readVisualReferenceAsMessagePart(input, options);
+  const { messages } = buildConstructionMessages(input, visualPart);
   const result = await callLLMResult(
     messages,
     Math.max(1, Math.floor(options.maxTokens)),

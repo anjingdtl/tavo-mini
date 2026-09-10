@@ -19,6 +19,12 @@ import {
   parseSillyTavernOpenAIPreset,
 } from './writerStyle/tavernAdapter';
 import { normalizeWriterStyleSemantic } from './writerStyle/semantic';
+import {
+  deleteCharacterImageFile,
+  persistCharacterImage,
+  withCharacterImageAsset,
+} from './characterImageService';
+import type { CharacterVisualReference } from './characterImageService';
 import type {
   CharacterArtifact,
   ConstructionArtifact,
@@ -130,6 +136,12 @@ export type ImportToLibraryResult =
   | { kind: 'preset'; id: number; name: string }
   | { kind: 'worldbook'; name: string; entriesImported: number };
 
+export interface ImportConstructionOptions {
+  visualReference?: CharacterVisualReference;
+  /** Defaults to true when a character visual reference is supplied. */
+  saveImageAsCharacterImage?: boolean;
+}
+
 /** 为用户作家风格生成不覆盖旧资料的名称。 */
 export function avoidPresetNameCollision(
   baseName: string,
@@ -201,6 +213,7 @@ export function parsePresetArtifactJSON(
 export async function importConstructionArtifactToLibrary(
   artifact: ConstructionArtifact,
   projectId: number,
+  options: ImportConstructionOptions = {},
 ): Promise<ImportToLibraryResult> {
   if (!Number.isFinite(projectId) || projectId <= 0) {
     throw new Error('请先在「项目」中选择一个项目。');
@@ -217,6 +230,35 @@ export async function importConstructionArtifactToLibrary(
       sourceName,
       collectionId,
     );
+    let persistedImagePath: string | null = null;
+    try {
+      if (
+        options.visualReference &&
+        options.saveImageAsCharacterImage !== false
+      ) {
+        persistedImagePath = await persistCharacterImage(
+          options.visualReference,
+        );
+        const data = withCharacterImageAsset(
+          artifact.card.data,
+          persistedImagePath,
+          options.visualReference.name,
+          {
+            imageMimeType: options.visualReference.mimeType,
+            imageSize: options.visualReference.size,
+          },
+        );
+        await db.updateCharacter(
+          id,
+          artifact.name || artifact.card.data.name || '角色卡',
+          JSON.stringify({ ...artifact.card, data }),
+        );
+      }
+    } catch (error) {
+      await deleteCharacterImageFile(persistedImagePath).catch(() => {});
+      await db.deleteCharacter(id).catch(() => {});
+      throw error;
+    }
     return {
       kind: 'character',
       id,

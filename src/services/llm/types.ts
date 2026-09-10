@@ -1,7 +1,27 @@
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+export type VisionSupportPreference = 'auto' | 'supported' | 'unsupported';
+
+export interface LLMTextContentPart {
+  type: 'text';
+  text: string;
 }
+
+export interface LLMImageContentPart {
+  type: 'image';
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  base64: string;
+}
+
+export type LLMMessageContent =
+  | string
+  | Array<LLMTextContentPart | LLMImageContentPart>;
+
+/** Platform-neutral logical message. Providers own wire-protocol translation. */
+export interface ChatMessage<Content extends LLMMessageContent = string> {
+  role: 'system' | 'user' | 'assistant';
+  content: Content;
+}
+
+export type MultimodalChatMessage = ChatMessage<LLMMessageContent>;
 
 /**
  * Optional transport lifecycle hooks used by callers that need to account for
@@ -192,6 +212,8 @@ export interface LLMRequestConfig {
   url: string;
   context_window?: number;
   max_output_tokens?: number;
+  /** User preference for image-input capability resolution. */
+  vision_support?: VisionSupportPreference;
   /** Optional explicit provider capability adapter id. */
   provider_adapter_id?: string | null;
   allow_insecure_lan_http?: boolean;

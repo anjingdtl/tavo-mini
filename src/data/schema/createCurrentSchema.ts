@@ -220,7 +220,8 @@ export function createCurrentSchemaStatements(): string[] {
         -- same model context_window, there is no product-sized capability
         -- default in the schema.
         context_window INTEGER NOT NULL DEFAULT 0,
-        max_output_tokens INTEGER NOT NULL DEFAULT 0
+        max_output_tokens INTEGER NOT NULL DEFAULT 0,
+        vision_support TEXT NOT NULL DEFAULT 'auto'
       )
     `,
     `

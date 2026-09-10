@@ -59,8 +59,9 @@ import { migrateV57ToV58 } from './v57-to-v58';
 import { migrateV58ToV59 } from './v58-to-v59';
 import { migrateV59ToV60 } from './v59-to-v60';
 import { migrateV60ToV61 } from './v60-to-v61';
+import { migrateV61ToV62 } from './v61-to-v62';
 
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 
 // Logic migrations own their idempotent statement plan. Keeping a shared
@@ -454,6 +455,14 @@ const MIGRATIONS: Migration[] = [
     buildStatements: noSchemaStatements,
     migrate: migrateV60ToV61,
   },
+  {
+    from: 61,
+    to: 62,
+    breaking: false,
+    // Persist explicit auto/supported/unsupported image-input capability.
+    buildStatements: noSchemaStatements,
+    migrate: migrateV61ToV62,
+  },
 ];
 
 export async function runMigrations(
@@ -523,6 +532,8 @@ export async function runMigrations(
       await migrateV59ToV60(db);
     } else if (migration.from === 60 && migration.to === 61) {
       await migrateV60ToV61(db);
+    } else if (migration.from === 61 && migration.to === 62) {
+      await migrateV61ToV62(db);
     } else if (migration.migrate) {
       await migration.migrate(db);
     } else {

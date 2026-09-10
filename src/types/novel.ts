@@ -78,6 +78,8 @@ export interface ChapterSummary {
   sceneChanges: string[];
 }
 
+import type { VisionSupportPreference } from '../services/llm/types';
+
 export interface Fragment {
   id: number;
   project_id: number;
@@ -142,6 +144,7 @@ export interface LLMConfig {
   is_active: number;
   context_window: number;
   max_output_tokens: number;
+  vision_support: VisionSupportPreference;
 }
 
 export interface WorldbookCollection {

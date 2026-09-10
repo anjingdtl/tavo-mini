@@ -10,6 +10,10 @@ import {
   usageJoin,
 } from './projectRepository';
 import { now, updateColumns, type Row } from './shared';
+import {
+  deleteCharacterImageFile,
+  getCharacterImagePath,
+} from '../../services/characterImageService';
 
 export async function getAllCharacters(projectId?: number): Promise<Row[]> {
   return all<Row>(
@@ -178,8 +182,8 @@ export async function setAllCharactersCollectionId(
 
 export async function deleteCharacterCollection(id: number): Promise<void> {
   const database = await openDatabase();
-  const characters = await all<{ id: number }>(
-    'SELECT id FROM characters WHERE collection_id = ?',
+  const characters = await all<{ id: number; data_json?: string }>(
+    'SELECT id, data_json FROM characters WHERE collection_id = ?',
     [id],
   );
   const stmts: Array<{ sql: string; params: any[] }> = [];
@@ -202,6 +206,11 @@ export async function deleteCharacterCollection(id: number): Promise<void> {
     params: [id],
   });
   await executeTransaction(database, stmts);
+  await Promise.all(
+    characters.map(character =>
+      deleteCharacterImageFile(getCharacterImagePath(character.data_json)),
+    ),
+  );
 }
 
 export async function createCharacter(
@@ -268,6 +277,7 @@ export async function updateCharacterTokenBudget(
 
 export async function deleteCharacter(id: number): Promise<void> {
   const existing = await getCharacterById(id);
+  const imagePath = getCharacterImagePath(existing?.data_json);
   await deleteProjectResourceLinks('character', id);
   await execute(await openDatabase(), 'DELETE FROM continuation_resource_bindings WHERE resource_kind = ? AND resource_id = ?', ['character', id]);
   await execute(await openDatabase(), 'DELETE FROM characters WHERE id = ?', [
@@ -277,4 +287,5 @@ export async function deleteCharacter(id: number): Promise<void> {
     await updateCharacterCollectionTokenEstimate(
       Number(existing.collection_id),
     );
+  await deleteCharacterImageFile(imagePath);
 }

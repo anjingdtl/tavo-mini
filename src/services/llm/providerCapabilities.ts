@@ -4,6 +4,7 @@ import type {
   LLMProviderCapabilitySupport,
   LLMProviderType,
   ReasoningEffort,
+  VisionSupportPreference,
 } from './types';
 
 export type LLMReasoningEffortMapping = Readonly<
@@ -22,6 +23,7 @@ export interface LLMProviderCapability
   extends LLMProviderReasoningCapability {
   adapterId: string;
   providerWireMaxOutput: number | null;
+  supportsVision: LLMProviderCapabilitySupport;
 }
 
 /**
@@ -54,6 +56,8 @@ export type ProviderCapabilityConfig = {
   max_output_tokens?: number | null;
   /** Optional explicit adapter selected by a future persisted configuration. */
   provider_adapter_id?: string | null;
+  /** User override; auto delegates to the exact provider/model registry. */
+  vision_support?: VisionSupportPreference | null;
 };
 
 export interface LLMOutputBudgetResolution {
@@ -143,6 +147,18 @@ const BIGMODEL_REASONING_MODELS = new Set([
 
 const DEEPSEEK_REASONING_MODELS = new Set(['deepseek-v4-flash']);
 
+// Vision registrations are deliberately exact provider-host + model matches.
+// Generic OpenAI-compatible gateways remain unknown even when their model name
+// happens to contain words such as "vision" or "vl".
+const OPENAI_VISION_MODELS = new Set([
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
+]);
+const OPENAI_NON_VISION_MODELS = new Set(['gpt-3.5-turbo']);
+
 function normalizeModelName(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
@@ -161,6 +177,25 @@ function resolveBigModelReasoningCapability(
   return BIGMODEL_REASONING_MODELS.has(normalizeModelName(config.model_name))
     ? BIGMODEL_REASONING_CAPABILITY
     : UNKNOWN_REASONING_CAPABILITY;
+}
+
+function resolveRegisteredVisionCapability(
+  config: ProviderCapabilityConfig,
+): LLMProviderCapabilitySupport {
+  if (config.provider_type !== 'openai_compatible') return 'unknown';
+  if (!isHost(config.url, 'api.openai.com')) return 'unknown';
+  const model = normalizeModelName(config.model_name);
+  if (OPENAI_VISION_MODELS.has(model)) return 'supported';
+  if (OPENAI_NON_VISION_MODELS.has(model)) return 'unsupported';
+  return 'unknown';
+}
+
+export function resolveVisionSupport(
+  config: ProviderCapabilityConfig,
+): LLMProviderCapabilitySupport {
+  if (config.vision_support === 'supported') return 'supported';
+  if (config.vision_support === 'unsupported') return 'unsupported';
+  return resolveRegisteredVisionCapability(config);
 }
 
 const BIGMODEL_V4_ADAPTER: LLMProviderCapabilityAdapter = {
@@ -299,6 +334,7 @@ export function resolveProviderCapability(
     providerWireMaxOutput: positiveInteger(
       adapter.resolveMaxOutputTokens(config),
     ),
+    supportsVision: resolveVisionSupport(config),
     ...reasoningCapability,
   };
 }

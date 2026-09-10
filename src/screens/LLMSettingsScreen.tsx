@@ -25,6 +25,7 @@ import { useThemeStore } from '../store/themeStore';
 import { testLLMConnection } from '../services/llm';
 import type { LLMQueueState } from '../services/llm';
 import type { LLMConfig } from '../types/novel';
+import type { VisionSupportPreference } from '../services/llm';
 import type { SettingsStackParamList } from '../navigation/TabNavigator';
 import { mergeDraftCapabilityFromPersisted } from '../data/repositories/llmConfigRepository';
 import RNFS from 'react-native-fs';
@@ -41,7 +42,18 @@ const emptyDraft: LLMConfig = {
   // declared context window by the shared capability resolver.
   context_window: 0,
   max_output_tokens: 0,
+  vision_support: 'auto',
 };
+
+const visionSupportOptions: Array<{
+  value: VisionSupportPreference;
+  label: string;
+  description: string;
+}> = [
+  { value: 'auto', label: '自动', description: '按精确模型注册表判断' },
+  { value: 'supported', label: '支持', description: '确认该配置接受图片' },
+  { value: 'unsupported', label: '不支持', description: '明确禁止图片请求' },
+];
 
 export const LLMSettingsScreen: React.FC = () => {
   const { theme } = useThemeStore();
@@ -187,6 +199,7 @@ export const LLMSettingsScreen: React.FC = () => {
         model_name?: string;
         context_window?: number;
         max_output_tokens?: number;
+        vision_support?: VisionSupportPreference;
         allow_insecure_lan_http?: boolean;
       };
       if (!parsed.base_url || !parsed.api_key || !parsed.model_name) {
@@ -221,6 +234,12 @@ export const LLMSettingsScreen: React.FC = () => {
           parsed.max_output_tokens,
           current.max_output_tokens,
         ),
+        vision_support:
+          parsed.vision_support === 'supported' ||
+          parsed.vision_support === 'unsupported' ||
+          parsed.vision_support === 'auto'
+            ? parsed.vision_support
+            : current.vision_support,
       }));
       if (typeof parsed.allow_insecure_lan_http === 'boolean') {
         await setAllowInsecureLanHttp(parsed.allow_insecure_lan_http);
@@ -466,6 +485,60 @@ export const LLMSettingsScreen: React.FC = () => {
             />
             <View
               style={[
+                styles.visionCard,
+                {
+                  backgroundColor: theme.colors.card,
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            >
+              <Text style={[styles.networkPolicyTitle, { color: theme.colors.textPrimary }]}>
+                图像输入能力
+              </Text>
+              <Text style={[styles.networkPolicyDescription, { color: theme.colors.textSecondary }]}>
+                自动模式只认可精确的官方模型注册；兼容网关未知时会安全拒绝图片请求。
+              </Text>
+              <View style={styles.visionOptions}>
+                {visionSupportOptions.map(option => {
+                  const selected = draft.vision_support === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      testID={`llm-vision-${option.value}`}
+                      style={[
+                        styles.visionOption,
+                        {
+                          backgroundColor: selected
+                            ? theme.colors.accentSoft
+                            : theme.colors.background,
+                          borderColor: selected
+                            ? theme.colors.accent
+                            : theme.colors.border,
+                        },
+                      ]}
+                      onPress={() => updateDraft({ vision_support: option.value })}
+                    >
+                      <Text
+                        style={{
+                          color: selected
+                            ? theme.colors.accent
+                            : theme.colors.textPrimary,
+                          fontWeight: '800',
+                          fontSize: 13,
+                        }}
+                      >
+                        {option.label}
+                      </Text>
+                      <Text style={{ color: theme.colors.textSecondary, fontSize: 10 }}>
+                        {option.description}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+            <View
+              style={[
                 styles.networkPolicy,
                 {
                   backgroundColor: theme.colors.card,
@@ -657,6 +730,22 @@ const styles = StyleSheet.create({
   networkPolicyText: { flex: 1, gap: spacing.xs },
   networkPolicyTitle: { fontSize: 14, fontWeight: '800' },
   networkPolicyDescription: { fontSize: 12, lineHeight: 18 },
+  visionCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.md,
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  visionOptions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  visionOption: {
+    flex: 1,
+    minHeight: 54,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    padding: spacing.sm,
+    gap: 2,
+  },
   fieldHint: { fontSize: 12, lineHeight: 18, marginTop: spacing.xs },
   contextAutomation: {
     flexDirection: 'row',

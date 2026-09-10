@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   LLMFailurePhase,
   LLMGenerateOptions,
+  LLMMessageContent,
   LLMOutputBudgetTrace,
   LLMRequestConfig,
   LLMRequestMetrics,
@@ -30,7 +31,43 @@ import {
   resolveProviderCapability,
   resolveProviderOutputBudget,
   resolveProviderReasoningEffort,
+  resolveVisionSupport,
 } from './providerCapabilities';
+
+export const VISION_INPUT_UNSUPPORTED_MESSAGE =
+  '当前 LLM 配置不支持图像输入；请在设置中把视觉能力设为“支持”或切换支持视觉的模型。';
+
+export function containsVisualInput(
+  messages: Array<ChatMessage<LLMMessageContent>>,
+): boolean {
+  return messages.some(
+    message =>
+      Array.isArray(message.content) &&
+      message.content.some(part => part.type === 'image'),
+  );
+}
+
+/** Translate the platform-neutral message model to the OpenAI-compatible wire shape. */
+export function serializeChatMessagesForOpenAI(
+  messages: Array<ChatMessage<LLMMessageContent>>,
+): Array<{ role: ChatMessage['role']; content: unknown }> {
+  return messages.map(message => ({
+    role: message.role,
+    content:
+      typeof message.content === 'string'
+        ? message.content
+        : message.content.map(part =>
+            part.type === 'text'
+              ? { type: 'text', text: part.text }
+              : {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${part.mimeType};base64,${part.base64}`,
+                  },
+                },
+          ),
+  }));
+}
 
 export function normalizeChatCompletionUrl(baseUrl: string): string {
   let url = baseUrl.trim();
@@ -185,6 +222,17 @@ export function formatLLMError(
     message = String(error?.message || message);
   } catch {
     // Keep raw text for non-JSON providers.
+  }
+
+  if (
+    (status === 400 || status === 422) &&
+    /(image|vision|multimodal|visual|image_url)/i.test(responseText) &&
+    /(unsupported|not support|not allowed|invalid|unknown|cannot|does not|must be text|text.?only)/i.test(
+      responseText,
+    )
+  ) {
+    code = 'VISION_UNSUPPORTED';
+    message = VISION_INPUT_UNSUPPORTED_MESSAGE;
   }
 
   // Phase 3: surface Retry-After and provider request id for durable attempts.
@@ -349,7 +397,7 @@ export const openAICompatibleProvider: LLMProvider = {
   },
 
   async generate(
-    messages: ChatMessage[],
+    messages: Array<ChatMessage<LLMMessageContent>>,
     options: LLMGenerateOptions,
     externalSignal?: AbortSignal,
   ): Promise<LLMResult> {
@@ -359,6 +407,12 @@ export const openAICompatibleProvider: LLMProvider = {
     }
     if (!config.url || !config.api_key || !config.model_name) {
       throw createLLMConfigError();
+    }
+    if (
+      containsVisualInput(messages) &&
+      resolveVisionSupport(config) !== 'supported'
+    ) {
+      throw new Error(VISION_INPUT_UNSUPPORTED_MESSAGE);
     }
     assertAllowedLLMEndpoint(
       config.url,
@@ -410,7 +464,7 @@ export const openAICompatibleProvider: LLMProvider = {
             outputBudgetTrace = outputBudget.trace;
             const requestBody: Record<string, unknown> = {
               model: config.model_name,
-              messages,
+              messages: serializeChatMessagesForOpenAI(messages),
               temperature: options.temperature ?? 0.8,
               top_p: options.top_p ?? 0.9,
               max_tokens: outputBudget.wireMaxTokens,

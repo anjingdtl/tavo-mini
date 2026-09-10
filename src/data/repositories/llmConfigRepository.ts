@@ -1,4 +1,5 @@
 import type { LLMConfig } from '../../types/novel';
+import type { VisionSupportPreference } from '../../services/llm/types';
 import {
   clearSecureLLMApiKey,
   getSecureLLMApiKey,
@@ -18,6 +19,10 @@ import { executeTransaction } from '../connection/transaction';
 function normalizeStoredCapability(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : 0;
+}
+
+function normalizeVisionSupport(value: unknown): VisionSupportPreference {
+  return value === 'supported' || value === 'unsupported' ? value : 'auto';
 }
 
 /** Keep the legacy settings key as a display mirror, never as runtime truth. */
@@ -47,6 +52,7 @@ function normalizeLLMConfig(row?: Partial<LLMConfig> | null): LLMConfig {
     is_active: Number(row?.is_active ?? 1),
     context_window: normalizeStoredCapability(row?.context_window),
     max_output_tokens: normalizeStoredCapability(row?.max_output_tokens),
+    vision_support: normalizeVisionSupport(row?.vision_support),
   };
 }
 
@@ -78,9 +84,9 @@ export async function getLLMConfigs(): Promise<LLMConfig[]> {
       await openDatabase(),
       `INSERT INTO llm_config (
         name, provider_type, base_url, api_key, model_name, is_active,
-        context_window, max_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-      ['默认配置', 'openai_compatible', '', '', '', 0, 0],
+        context_window, max_output_tokens, vision_support
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      ['默认配置', 'openai_compatible', '', '', '', 0, 0, 'auto'],
     );
     return getLLMConfigs();
   }
@@ -139,8 +145,9 @@ export async function saveLLMConfig(
       is_active: number;
       context_window: number;
       max_output_tokens: number;
+      vision_support?: VisionSupportPreference;
     }>(
-      'SELECT is_active, context_window, max_output_tokens FROM llm_config WHERE id = ?',
+      'SELECT is_active, context_window, max_output_tokens, vision_support FROM llm_config WHERE id = ?',
       [id],
     );
     const contextWindow =
@@ -151,11 +158,14 @@ export async function saveLLMConfig(
       config.max_output_tokens === undefined
         ? normalizeStoredCapability(existing?.max_output_tokens)
         : normalizeStoredCapability(config.max_output_tokens);
+    const visionSupport = normalizeVisionSupport(
+      config.vision_support ?? existing?.vision_support,
+    );
     await execute(
       database,
       `UPDATE llm_config SET
         name = ?, provider_type = ?, base_url = ?, api_key = ?, model_name = ?,
-        context_window = ?, max_output_tokens = ?
+        context_window = ?, max_output_tokens = ?, vision_support = ?
       WHERE id = ?`,
       [
         name,
@@ -165,6 +175,7 @@ export async function saveLLMConfig(
         modelName,
         contextWindow,
         maxOutputTokens,
+        visionSupport,
         id,
       ],
     );
@@ -174,12 +185,13 @@ export async function saveLLMConfig(
   } else {
     const contextWindow = normalizeStoredCapability(config.context_window);
     const maxOutputTokens = normalizeStoredCapability(config.max_output_tokens);
+    const visionSupport = normalizeVisionSupport(config.vision_support);
     const result = await execute(
       database,
       `INSERT INTO llm_config (
         name, provider_type, base_url, api_key, model_name, is_active,
-        context_window, max_output_tokens
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        context_window, max_output_tokens, vision_support
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name,
         providerType,
@@ -189,6 +201,7 @@ export async function saveLLMConfig(
         shouldActivate ? 1 : 0,
         contextWindow,
         maxOutputTokens,
+        visionSupport,
       ],
     );
     id = Number(result.insertId);

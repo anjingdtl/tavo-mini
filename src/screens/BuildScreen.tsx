@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Image,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -64,6 +66,12 @@ import {
   parseWorldBookJSON,
   pickSourceFile,
 } from '../services/fileImport';
+import {
+  CHARACTER_IMAGE_MAX_MB,
+  cleanupTemporaryCharacterVisualReference,
+  pickCharacterVisualReference,
+} from '../services/characterImageService';
+import type { CharacterVisualReference } from '../services/characterImageService';
 import {
   buildTextSourceSnapshot,
   parseConstructionTextSource,
@@ -134,6 +142,10 @@ function formatGenerationError(error: unknown): string {
   return message || '请检查 LLM 配置与网络后重试。';
 }
 
+function imageUriFromLocalPath(path: string): string {
+  return /^(?:file|content|https?):\/\//i.test(path) ? path : `file://${path}`;
+}
+
 export const BuildScreen: React.FC = () => {
   const { theme } = useThemeStore();
   const { llmConfig } = useSettingsStore();
@@ -191,6 +203,10 @@ export const BuildScreen: React.FC = () => {
 
   const [reservePercent, setReservePercent] = useState(DEFAULT_RESERVE_PERCENT);
   const [source, setSource] = useState<SourceState | null>(null);
+  const [characterVisualReference, setCharacterVisualReference] =
+    useState<CharacterVisualReference | null>(null);
+  const [saveImageAsCharacterImage, setSaveImageAsCharacterImage] =
+    useState(true);
   const [status, setStatus] = useState<GenerateStatus>('idle');
   const [queueLabel, setQueueLabel] = useState<string>('');
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -203,6 +219,51 @@ export const BuildScreen: React.FC = () => {
     current: number;
     total: number;
   } | null>(null);
+  const visualReferenceRef = useRef<CharacterVisualReference | null>(null);
+
+  useEffect(() => {
+    visualReferenceRef.current = characterVisualReference;
+  }, [characterVisualReference]);
+
+  useEffect(
+    () => () => {
+      void cleanupTemporaryCharacterVisualReference(visualReferenceRef.current);
+    },
+    [],
+  );
+
+  const clearCharacterVisualReference = () => {
+    const previous = visualReferenceRef.current;
+    visualReferenceRef.current = null;
+    setCharacterVisualReference(null);
+    void cleanupTemporaryCharacterVisualReference(previous);
+  };
+
+  const chooseCharacterVisualReference = async () => {
+    try {
+      const next = await pickCharacterVisualReference();
+      if (!next) return;
+      const previous = visualReferenceRef.current;
+      visualReferenceRef.current = next;
+      setCharacterVisualReference(next);
+      await cleanupTemporaryCharacterVisualReference(previous);
+      setArtifact(null);
+      setStatus('idle');
+      Toast.show({
+        type: 'success',
+        text1: '已选择角色参考图',
+        text2: `${next.name} · ${(next.size / 1024 / 1024).toFixed(2)} MB`,
+      });
+    } catch (error: any) {
+      Toast.show({
+        type: 'error',
+        text1: '参考图不可用',
+        text2:
+          error?.message ||
+          `请选择 JPEG、PNG 或 WebP，且不超过 ${CHARACTER_IMAGE_MAX_MB} MB。`,
+      });
+    }
+  };
 
   const target: IndependentTarget = useMemo(() => {
     if (mode === 'fromWorldbook') return 'character';
@@ -265,7 +326,7 @@ export const BuildScreen: React.FC = () => {
     charConflict,
     charRelationships,
     extra,
-  ].some(v => v.trim().length > 0);
+  ].some(v => v.trim().length > 0) || Boolean(characterVisualReference);
   const independentPresetFilled = [
     presetName,
     presetGenre,
@@ -465,6 +526,9 @@ export const BuildScreen: React.FC = () => {
     nextMode: BuildMode,
     nextTarget: IndependentTarget,
   ) => {
+    if (!(nextMode === 'independent' && nextTarget === 'character')) {
+      clearCharacterVisualReference();
+    }
     setReservePercent(DEFAULT_RESERVE_PERCENT);
     setArtifact(null);
     setStatus('idle');
@@ -728,6 +792,10 @@ export const BuildScreen: React.FC = () => {
       const result = await generateConstruction(input, {
         maxTokens: budget.outputReserve,
         signal: controller.signal,
+        visualReference:
+          input.mode === 'character_independent'
+            ? characterVisualReference || undefined
+            : undefined,
         onQueueState: state => {
           const batch = batchProgressRef.current;
           const prefix = batch
@@ -822,6 +890,12 @@ export const BuildScreen: React.FC = () => {
       const result = await importConstructionArtifactToLibrary(
         artifact,
         currentProject.id,
+        artifact.kind === 'character'
+          ? {
+              visualReference: characterVisualReference || undefined,
+              saveImageAsCharacterImage,
+            }
+          : undefined,
       );
       if (result.kind === 'character') {
         Toast.show({
@@ -946,6 +1020,11 @@ export const BuildScreen: React.FC = () => {
                 setConflict={setCharConflict}
                 relationships={charRelationships}
                 setRelationships={setCharRelationships}
+                visualReference={characterVisualReference}
+                onPickVisualReference={chooseCharacterVisualReference}
+                onRemoveVisualReference={clearCharacterVisualReference}
+                saveImageAsCharacterImage={saveImageAsCharacterImage}
+                onToggleSaveImage={setSaveImageAsCharacterImage}
               />
             ) : null}
             {mode === 'independent' && target === 'preset' ? (
@@ -1096,6 +1175,7 @@ export const BuildScreen: React.FC = () => {
                 onSave={handleSave}
                 onImportToLibrary={handleImportToLibrary}
                 importingToLibrary={importingToLibrary}
+                visualReference={characterVisualReference}
               />
             ) : (
               <>
@@ -1266,6 +1346,11 @@ const IndependentCharacterForm: React.FC<{
   setConflict: (v: string) => void;
   relationships: string;
   setRelationships: (v: string) => void;
+  visualReference: CharacterVisualReference | null;
+  onPickVisualReference: () => void;
+  onRemoveVisualReference: () => void;
+  saveImageAsCharacterImage: boolean;
+  onToggleSaveImage: (value: boolean) => void;
 }> = ({
   name,
   setName,
@@ -1287,8 +1372,15 @@ const IndependentCharacterForm: React.FC<{
   setConflict,
   relationships,
   setRelationships,
-}) => (
-  <>
+  visualReference,
+  onPickVisualReference,
+  onRemoveVisualReference,
+  saveImageAsCharacterImage,
+  onToggleSaveImage,
+}) => {
+  const { theme } = useThemeStore();
+  return (
+    <>
     <Field
       testID="build-char-name"
       label="角色名称（可选）"
@@ -1373,8 +1465,60 @@ const IndependentCharacterForm: React.FC<{
       inputStyle={styles.mediumInput}
       placeholder="例如：与工会会长合作但互相提防；与妹妹保持秘密通信"
     />
-  </>
-);
+    <View style={styles.visualBlock}>
+      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>角色参考图（可选）</Text>
+      <Text style={[styles.hint, { color: theme.colors.textMuted }]}>支持 JPEG、PNG、WebP，最大 {CHARACTER_IMAGE_MAX_MB} MB。文字需求优先于图片内容。</Text>
+      {visualReference ? (
+        <View style={styles.visualPreviewRow}>
+          <Image
+            source={{ uri: imageUriFromLocalPath(visualReference.localPath) }}
+            style={styles.visualThumbnail}
+          />
+          <View style={styles.visualMeta}>
+            <Text style={[styles.sourceName, { color: theme.colors.textPrimary }]} numberOfLines={1}>
+              {visualReference.name}
+            </Text>
+            <Text style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}>
+              {visualReference.mimeType} · {(visualReference.size / 1024 / 1024).toFixed(2)} MB
+            </Text>
+          </View>
+        </View>
+      ) : null}
+      <View style={styles.visualActions}>
+        <Button
+          testID="build-character-image"
+          label={visualReference ? '替换参考图' : '选择参考图'}
+          icon={Download}
+          variant="secondary"
+          onPress={onPickVisualReference}
+          compact
+        />
+        {visualReference ? (
+          <Button
+            testID="build-character-image-remove"
+            label="移除"
+            variant="ghost"
+            onPress={onRemoveVisualReference}
+            compact
+          />
+        ) : null}
+      </View>
+      {visualReference ? (
+        <View style={styles.saveImageRow}>
+          <Switch
+            testID="build-save-character-image"
+            value={saveImageAsCharacterImage}
+            onValueChange={onToggleSaveImage}
+          />
+          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+            导入资料库时保存为角色永久图片
+          </Text>
+        </View>
+      ) : null}
+    </View>
+    </>
+  );
+};
 
 interface PresetFormField {
   key: string;
@@ -1739,6 +1883,7 @@ const PreviewPanel: React.FC<{
   onSave: () => void;
   onImportToLibrary: () => void;
   importingToLibrary: boolean;
+  visualReference: CharacterVisualReference | null;
 }> = ({
   artifact,
   onRegenerate,
@@ -1747,6 +1892,7 @@ const PreviewPanel: React.FC<{
   onSave,
   onImportToLibrary,
   importingToLibrary,
+  visualReference,
 }) => {
   const { theme } = useThemeStore();
   const qualityReport = artifact.qualityReport;
@@ -1791,7 +1937,7 @@ const PreviewPanel: React.FC<{
         </View>
       ) : null}
       {artifact.kind === 'character' ? (
-        <CharacterPreview artifact={artifact} />
+        <CharacterPreview artifact={artifact} visualReference={visualReference} />
       ) : artifact.kind === 'worldbook' ? (
         <WorldbookPreview artifact={artifact} />
       ) : (
@@ -1833,7 +1979,8 @@ const PreviewPanel: React.FC<{
 
 const CharacterPreview: React.FC<{
   artifact: Extract<ConstructionArtifact, { kind: 'character' }>;
-}> = ({ artifact }) => {
+  visualReference: CharacterVisualReference | null;
+}> = ({ artifact, visualReference }) => {
   const { theme } = useThemeStore();
   const novel = readNovelCharacterDraft(artifact.card);
   const novelRows = novel
@@ -1850,6 +1997,12 @@ const CharacterPreview: React.FC<{
     : [];
   return (
     <View>
+      {visualReference ? (
+        <Image
+          source={{ uri: imageUriFromLocalPath(visualReference.localPath) }}
+          style={styles.previewImage}
+        />
+      ) : null}
       <Text style={[styles.previewTitle, { color: theme.colors.textPrimary }]}>
         {artifact.card.data.name}
       </Text>
@@ -2042,6 +2195,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   sourceBlock: { gap: spacing.xs, marginBottom: spacing.md },
+  visualBlock: { gap: spacing.xs, marginTop: spacing.md },
+  visualPreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  visualThumbnail: { width: 72, height: 72, borderRadius: 8 },
+  visualMeta: { flex: 1, gap: 2 },
+  visualActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  saveImageRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   sourceSummary: { marginTop: spacing.xs },
   sourceName: { fontSize: 15, fontWeight: '800' },
   sourceMeta: { fontSize: 12, marginTop: 2 },
@@ -2080,6 +2244,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   previewTitle: { fontSize: 17, fontWeight: '800', marginBottom: spacing.xs },
+  previewImage: { width: 128, height: 128, borderRadius: 10, marginBottom: spacing.sm },
   previewText: { fontSize: 13, lineHeight: 20, marginBottom: 4 },
   presetPreviewBlock: { marginBottom: spacing.sm },
   entryRow: {

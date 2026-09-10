@@ -160,7 +160,7 @@ describe('database startup Fast Path / deep-path safety boundary', () => {
     expect(lastStartupDeepReason).toBe('schema_version_mismatch');
     expect(lastMigrationResult?.fromVersion).toBe(60);
     expect(lastMigrationResult?.toVersion).toBe(SCHEMA_VERSION);
-    expect(lastMigrationResult?.migrationsRun).toBe(1);
+    expect(lastMigrationResult?.migrationsRun).toBe(2);
     expect(lastSchemaRecovery?.backupCreated).toBe(true);
     expect(fingerprintSpy).toHaveBeenCalledTimes(2);
     expect(recallSpy).toHaveBeenCalledTimes(2);

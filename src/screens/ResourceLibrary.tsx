@@ -71,10 +71,18 @@ import {
   importSelectedWorldBook,
   importWorldBooks,
   pickCharacterFolderFiles,
-  pickCharacterPngImageReplacement,
   pickLocalFiles,
   withCharacterImageAsset,
 } from '../services/fileImport';
+import {
+  cleanupTemporaryCharacterVisualReference,
+  deleteCharacterImageFile,
+  pickCharacterVisualReference,
+  persistCharacterImage,
+  removeCharacterImageAsset,
+  withCharacterImageAsset as withPersistedCharacterImageAsset,
+} from '../services/characterImageService';
+import type { CharacterVisualReference } from '../services/characterImageService';
 import {
   avoidPresetNameCollision,
   importSelectedPreset,
@@ -137,6 +145,10 @@ function collectionTokenEstimate(collection: any): number {
   return Number(collection.estimated_tokens || 0);
 }
 
+function imageUriFromPath(path: string): string {
+  return /^(?:file|content|https?):\/\//i.test(path) ? path : `file://${path}`;
+}
+
 interface EditorState {
   kind: EditorKind;
   item: any;
@@ -146,6 +158,9 @@ interface EditorState {
   comment: string;
   dataJson: string;
   imagePath: string;
+  originalImagePath: string;
+  pendingImageReference: CharacterVisualReference | null;
+  removeImage: boolean;
   systemPrompt: string;
   writingStyle: string;
   extraInstructions: string;
@@ -194,6 +209,7 @@ export const ResourceLibrary: React.FC<{
   const [draft, setDraft] = useState('');
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<PresetCatalogItem | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [largeImagePath, setLargeImagePath] = useState<string | null>(null);
   const [writerStyleAsset, setWriterStyleAsset] = useState<WriterStyleAsset | null>(null);
   const [activeWriterStyleId, setActiveWriterStyleId] = useState<number | null>(null);
   const [showNoteChapters, setShowNoteChapters] = useState(false);
@@ -921,6 +937,7 @@ export const ResourceLibrary: React.FC<{
     }
     setShowNoteChapters(false);
     setNoteSelection({ start: 0, end: 0 });
+    const existingImagePath = getCharacterImagePath(item.data_json) || '';
     setEditor({
       kind: editorKind,
       item,
@@ -934,7 +951,10 @@ export const ResourceLibrary: React.FC<{
       secondary: item.keyword_secondary || '',
       comment: item.comment || '',
       dataJson: item.data_json || '{}',
-      imagePath: getCharacterImagePath(item.data_json) || '',
+      imagePath: existingImagePath,
+      originalImagePath: existingImagePath,
+      pendingImageReference: null,
+      removeImage: false,
       systemPrompt: item.system_prompt || '',
       writingStyle: item.writing_style || '',
       extraInstructions: item.extra_instructions || '',
@@ -950,24 +970,59 @@ export const ResourceLibrary: React.FC<{
     });
   };
 
+  const closeEditor = () => {
+    const pending = editor?.pendingImageReference;
+    setEditor(null);
+    void cleanupTemporaryCharacterVisualReference(pending);
+  };
+
   const saveEditor = async () => {
     if (!editor) return;
     const item = editor.item;
     const maxTokens = Number(editor.maxTokens) || defaultMaxTokens(editor.kind);
+    let newCharacterImagePath: string | null = null;
+    let characterDatabaseUpdated = false;
     try {
       if (editor.kind === 'characters') {
         const latestDataJson =
           characterEditorRef.current?.flushPending() ?? editor.dataJson;
         const parsed = JSON.parse(latestDataJson);
-        const data = editor.imagePath
-          ? withCharacterImageAsset(parsed, editor.imagePath)
-          : parsed;
+        let data = parsed;
+        if (editor.removeImage) {
+          data = removeCharacterImageAsset(parsed);
+        } else if (editor.pendingImageReference) {
+          newCharacterImagePath = await persistCharacterImage(
+            editor.pendingImageReference,
+          );
+          data = withPersistedCharacterImageAsset(
+            parsed,
+            newCharacterImagePath,
+            editor.pendingImageReference.name,
+            {
+              imageMimeType: editor.pendingImageReference.mimeType,
+              imageSize: editor.pendingImageReference.size,
+            },
+          );
+        } else if (editor.imagePath) {
+          data = withCharacterImageAsset(parsed, editor.imagePath);
+        }
         await db.updateCharacter(
           item.id,
           editor.name.trim() || '未命名角色',
           JSON.stringify(data),
         );
+        characterDatabaseUpdated = true;
         await db.updateCharacterTokenBudget(item.id, maxTokens);
+        if (
+          editor.originalImagePath &&
+          editor.originalImagePath !== newCharacterImagePath &&
+          (editor.removeImage || editor.pendingImageReference)
+        ) {
+          await deleteCharacterImageFile(editor.originalImagePath);
+        }
+        await cleanupTemporaryCharacterVisualReference(
+          editor.pendingImageReference,
+        );
       }
       if (editor.kind === 'characterCollection') {
         await db.updateCharacterCollection(item.id, {
@@ -1027,6 +1082,9 @@ export const ResourceLibrary: React.FC<{
       await loadData();
       Toast.show({ type: 'success', text1: '资料已保存' });
     } catch (error: any) {
+      if (newCharacterImagePath && !characterDatabaseUpdated) {
+        await deleteCharacterImageFile(newCharacterImagePath);
+      }
       Alert.alert(
         '保存失败',
         editor.kind === 'characters'
@@ -1036,15 +1094,48 @@ export const ResourceLibrary: React.FC<{
     }
   };
 
-  const replaceCharacterPng = async () => {
+  const replaceCharacterImage = async () => {
     if (!editor) return;
     try {
-      const imagePath = await pickCharacterPngImageReplacement();
-      if (!imagePath) return;
-      setEditor({ ...editor, imagePath });
+      const reference = await pickCharacterVisualReference();
+      if (!reference) return;
+      await cleanupTemporaryCharacterVisualReference(
+        editor.pendingImageReference,
+      );
+      setEditor({
+        ...editor,
+        imagePath: reference.localPath,
+        pendingImageReference: reference,
+        removeImage: false,
+      });
     } catch (error: any) {
-      Alert.alert('替换图片失败', error?.message || '请选择有效的 PNG 图片。');
+      Alert.alert(
+        '替换图片失败',
+        error?.message || '请选择有效的 JPEG、PNG 或 WebP 图片。',
+      );
     }
+  };
+
+  const removeCharacterImage = () => {
+    if (!editor) return;
+    Alert.alert('移除角色图片', '保存后将删除当前角色的永久图片，确定继续吗？', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '移除',
+        style: 'destructive',
+        onPress: () => {
+          void cleanupTemporaryCharacterVisualReference(
+            editor.pendingImageReference,
+          );
+          setEditor({
+            ...editor,
+            imagePath: '',
+            pendingImageReference: null,
+            removeImage: true,
+          });
+        },
+      },
+    ]);
   };
 
   const handleExportCharacter = async (item: any) => {
@@ -1993,7 +2084,14 @@ export const ResourceLibrary: React.FC<{
                   }
                 >
                   <View style={styles.row}>
-                    {iconFor(tab, theme.colors.accent)}
+                    {tab === 'characters' && getCharacterImagePath(item.data_json) ? (
+                      <Image
+                        source={{ uri: imageUriFromPath(getCharacterImagePath(item.data_json)!) }}
+                        style={styles.characterListThumbnail}
+                      />
+                    ) : (
+                      iconFor(tab, theme.colors.accent)
+                    )}
                     <View style={styles.rowText}>
                       <View style={styles.titleRow}>
                         <Text
@@ -2166,12 +2264,12 @@ export const ResourceLibrary: React.FC<{
         visible={Boolean(editor)}
         transparent
         animationType="fade"
-        onRequestClose={() => setEditor(null)}
+        onRequestClose={closeEditor}
       >
         <View style={styles.overlay}>
           <Pressable
             style={StyleSheet.absoluteFill}
-            onPress={() => setEditor(null)}
+            onPress={closeEditor}
           />
           <View
             style={[styles.modal, { backgroundColor: theme.colors.surface }]}
@@ -2208,21 +2306,37 @@ export const ResourceLibrary: React.FC<{
                 </Text>
                 {editor.kind === 'characters' ? (
                   <>
-                    {editor.imagePath ? (
-                      <Image
-                        source={{ uri: `file://${editor.imagePath}` }}
-                        style={styles.characterImage}
-                        resizeMode="cover"
-                      />
+                    {editor.imagePath && !editor.removeImage ? (
+                      <Pressable
+                        onPress={() => setLargeImagePath(editor.imagePath)}
+                        accessibilityRole="button"
+                        accessibilityLabel="查看角色图片"
+                      >
+                        <Image
+                          source={{ uri: imageUriFromPath(editor.imagePath) }}
+                          style={styles.characterImage}
+                          resizeMode="cover"
+                        />
+                      </Pressable>
                     ) : null}
                     <Button
                       label={
-                        editor.imagePath ? '替换 PNG 图片' : '选择 PNG 图片'
+                        editor.imagePath && !editor.removeImage
+                          ? '替换角色图片'
+                          : '添加角色图片'
                       }
                       icon={Import}
                       variant="secondary"
-                      onPress={replaceCharacterPng}
+                      onPress={replaceCharacterImage}
                     />
+                    {editor.imagePath && !editor.removeImage ? (
+                      <Button
+                        label="删除角色图片"
+                        icon={Trash2}
+                        variant="ghost"
+                        onPress={removeCharacterImage}
+                      />
+                    ) : null}
                     <CharacterEditor
                       ref={characterEditorRef}
                       dataJson={editor.dataJson}
@@ -2385,11 +2499,37 @@ export const ResourceLibrary: React.FC<{
               <Button
                 label="取消"
                 variant="ghost"
-                onPress={() => setEditor(null)}
+                onPress={closeEditor}
               />
               <Button label="保存" onPress={saveEditor} />
             </View>
           </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={Boolean(largeImagePath)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLargeImagePath(null)}
+      >
+        <View style={styles.imageOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setLargeImagePath(null)}
+          />
+          {largeImagePath ? (
+            <Image
+              source={{ uri: imageUriFromPath(largeImagePath) }}
+              style={styles.largeCharacterImage}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Button
+            label="关闭"
+            variant="secondary"
+            onPress={() => setLargeImagePath(null)}
+          />
         </View>
       </Modal>
 
@@ -2721,6 +2861,7 @@ const styles = StyleSheet.create({
   virtualizedList: { flex: 1 },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
+  characterListThumbnail: { width: 48, height: 64, borderRadius: 6 },
   rowText: { flex: 1 },
   itemTitle: { fontSize: 16, fontWeight: '800', marginBottom: 4, flexShrink: 1 },
   itemMeta: { fontSize: 13, lineHeight: 18 },
@@ -2767,6 +2908,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     alignSelf: 'center',
   },
+  imageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+    gap: spacing.lg,
+  },
+  largeCharacterImage: { width: '100%', height: '72%' },
   numberRow: { flexDirection: 'row', gap: spacing.sm },
   numberInput: { minWidth: 80 },
   // 笔记双模式 UI

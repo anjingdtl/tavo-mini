@@ -3,6 +3,7 @@ import { getProvider } from './llm/providerRegistry';
 import { normalizeChatCompletionUrl } from './llm/openAICompatibleProvider';
 import type {
   ChatMessage,
+  LLMMessageContent,
   LLMProviderType,
   LLMRequestConfig,
   LLMResult,
@@ -17,6 +18,10 @@ import { scheduleLLMRequest } from './llm/requestScheduler';
 
 export type {
   ChatMessage,
+  LLMImageContentPart,
+  LLMMessageContent,
+  LLMTextContentPart,
+  MultimodalChatMessage,
   LLMGenerateOptions,
   LLMProviderType,
   LLMRequestConfig,
@@ -31,6 +36,7 @@ export type {
   LLMCompletionUsageSemantics,
   ReasoningEffort,
   LLMFailurePhase,
+  VisionSupportPreference,
 } from './llm/types';
 
 export {
@@ -40,6 +46,7 @@ export {
   createConcurrencyLimiter,
   supportsReasoningEffort,
   parseReasoningTokens,
+  serializeChatMessagesForOpenAI,
 } from './llm/openAICompatibleProvider';
 export { classifyLLMFailurePhase } from './llm/requestPolicy';
 export type {
@@ -59,9 +66,17 @@ export {
   resolveProviderCapability,
   resolveProviderOutputBudget,
   resolveProviderReasoningEffort,
+  resolveVisionSupport,
 } from './llm/providerCapabilities';
 
-import { resolveModelOutputCapability } from './llm/providerCapabilities';
+import {
+  resolveModelOutputCapability,
+  resolveVisionSupport,
+} from './llm/providerCapabilities';
+import {
+  VISION_INPUT_UNSUPPORTED_MESSAGE,
+  containsVisualInput,
+} from './llm/openAICompatibleProvider';
 
 export interface LLMCallConfig {
   temperature?: number;
@@ -113,6 +128,7 @@ export async function resolveLLMRequestConfig(): Promise<LLMRequestConfig> {
         ? undefined
         : Number(raw.context_window),
     max_output_tokens: capability.maxOutputTokens ?? undefined,
+    vision_support: raw.vision_support ?? 'auto',
     provider_adapter_id: raw.provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
   };
@@ -146,6 +162,7 @@ export async function resolveLLMRequestConfigById(
         ? undefined
         : Number(config.context_window),
     max_output_tokens: capability.maxOutputTokens ?? undefined,
+    vision_support: config.vision_support ?? 'auto',
     provider_adapter_id: (config as typeof config & { provider_adapter_id?: string | null })
       .provider_adapter_id,
     allow_insecure_lan_http: Boolean(allowInsecureLanHttp),
@@ -187,7 +204,7 @@ export async function testLLMConnection(
 }
 
 export async function callLLM(
-  messages: ChatMessage[],
+  messages: Array<ChatMessage<LLMMessageContent>>,
   maxTokens?: number,
   config?: LLMCallConfig,
 ): Promise<string | null> {
@@ -196,13 +213,19 @@ export async function callLLM(
 }
 
 export async function callLLMResult(
-  messages: ChatMessage[],
+  messages: Array<ChatMessage<LLMMessageContent>>,
   maxTokens?: number,
   config?: LLMCallConfig,
   externalSignal?: AbortSignal,
 ): Promise<LLMResult> {
   const requestConfig =
     config?.requestConfig ?? (await resolveLLMRequestConfig());
+  if (
+    containsVisualInput(messages) &&
+    resolveVisionSupport(requestConfig) !== 'supported'
+  ) {
+    throw new Error(VISION_INPUT_UNSUPPORTED_MESSAGE);
+  }
   const provider = getProvider(requestConfig.provider_type);
   return provider.generate(
     messages,
