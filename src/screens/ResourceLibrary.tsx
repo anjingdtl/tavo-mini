@@ -1320,6 +1320,390 @@ export const ResourceLibrary: React.FC<{
           item => item.collection_id === selectedNoteCollectionId,
         )
       : items[tab as ContentTab];
+
+  const noteListItems = useMemo(() => {
+    if (selectedNoteCollectionId) {
+      return items.notes.filter(
+        item => item.collection_id === selectedNoteCollectionId,
+      );
+    }
+    if (noteCollections.length > 0) {
+      return [
+        ...noteCollections.map(item => ({
+          ...item,
+          _isNoteCollection: true,
+        })),
+        ...items.notes.filter(item => !item.collection_id),
+      ];
+    }
+    return items.notes;
+  }, [items.notes, noteCollections, selectedNoteCollectionId]);
+
+  const noteListEmptyState =
+    loadError || recoveryLoadState === 'error' ? (
+      <EmptyState
+        title="资料暂时无法读取"
+        description="本地数据可能仍然存在。请先完成数据库修复，或重启应用后重试。不要卸载或清除应用数据。"
+      />
+    ) : recoveryLoadState === 'repairing' ? (
+      <EmptyState
+        title="正在修复本地资料数据库"
+        description="不会删除角色卡、世界书或章节，请勿关闭应用。"
+      />
+    ) : (
+      <EmptyState
+        title={
+          selectedNoteCollectionId ? '合集里还没有笔记' : emptyTitle('notes')
+        }
+        description="使用上方按钮导入或创建笔记。"
+      />
+    );
+  const noteListLoadBlocked =
+    Boolean(loadError) ||
+    recoveryLoadState === 'error' ||
+    recoveryLoadState === 'repairing';
+
+  const notesHeader = (
+    <View testID="resource-notes-header" style={styles.notesHeader}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.actionScroll}
+      >
+        <Button
+          testID="resource-note-import"
+          label="导入 TXT 笔记"
+          icon={Import}
+          compact
+          onPress={importNoteText}
+        />
+        <Button
+          testID="resource-note-batch-import"
+          label="批量导入 TXT"
+          icon={Import}
+          variant="secondary"
+          compact
+          onPress={importNotesBatch}
+        />
+        {selectedNoteCollectionId ? (
+          <Button
+            label="返回合集"
+            variant="secondary"
+            compact
+            onPress={() => setSelectedNoteCollectionId(null)}
+          />
+        ) : null}
+      </ScrollView>
+
+      <View testID="resource-note-summary" style={styles.noteSummary}>
+        <Text
+          testID="resource-note-total"
+          style={[styles.noteSummaryPrimary, { color: theme.colors.textPrimary }]}
+        >
+          {noteCollections.length > 0
+            ? `${noteCollections.length} 个合集 · 共 ${items.notes.length} 篇笔记`
+            : `共 ${items.notes.length} 篇笔记`}
+        </Text>
+        <Text
+          testID="resource-note-available"
+          style={[styles.noteSummarySecondary, { color: theme.colors.textSecondary }]}
+        >
+          当前项目可用：{projectEnabledNotes.length} 篇
+        </Text>
+      </View>
+
+      {currentProject ? (
+        <View testID="resource-note-mode-panel" style={styles.noteModePanel}>
+          <Text
+            style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}
+          >
+            笔记模式
+          </Text>
+          <SegmentedControl
+            value={noteMode}
+            testIDPrefix="resource-note-mode"
+            options={[
+              { value: 'none', label: '禁用' },
+              { value: 'style', label: '仿写' },
+              { value: 'retrieval', label: '资料库' },
+            ]}
+            onChange={value => handleNoteModeChange(value)}
+          />
+          {noteMode === 'style' ? (
+            <View style={styles.noteModeSection}>
+              <Pressable onPress={() => setShowNotePicker(true)}>
+                <Text
+                  testID="resource-note-style-participation"
+                  style={[styles.noteModeLink, { color: theme.colors.accent }]}
+                >
+                  参与仿写：{effectiveEnabledNoteIds.length} /{' '}
+                  {projectEnabledNotes.length} 篇
+                </Text>
+              </Pressable>
+              <Text
+                style={[
+                  styles.noteModeLabel,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                风格要素权重：
+              </Text>
+              {[
+                { key: 'sentence_structure' as const, label: '句式结构' },
+                { key: 'tone_emotion' as const, label: '语气与情感' },
+                { key: 'vocabulary' as const, label: '常用词汇搭配' },
+                { key: 'character_voice' as const, label: '角色设定' },
+                { key: 'narrative_rhythm' as const, label: '叙事节奏' },
+              ].map(item => (
+                <View key={item.key} style={styles.weightRow}>
+                  <Text
+                    style={[styles.weightLabel, { color: theme.colors.textPrimary }]}
+                  >
+                    {item.label}
+                  </Text>
+                  <SegmentedControl
+                    value={String(styleWeights[item.key] ?? 0)}
+                    options={[
+                      { value: '0', label: '关' },
+                      { value: '1', label: '弱' },
+                      { value: '2', label: '中' },
+                      { value: '3', label: '强' },
+                    ]}
+                    onChange={val =>
+                      handleWeightChange(item.key, Number(val))
+                    }
+                  />
+                </View>
+              ))}
+              <View style={styles.rowActions}>
+                <Button
+                  label={analyzing ? '分析中...' : '重新分析风格'}
+                  icon={RefreshCw}
+                  variant="secondary"
+                  onPress={handleReanalyze}
+                  disabled={analyzing}
+                />
+                <Button
+                  label="查看画像"
+                  variant="ghost"
+                  onPress={handleViewProfile}
+                />
+              </View>
+            </View>
+          ) : null}
+          {noteMode === 'retrieval' ? (
+            <View style={styles.noteModeSection}>
+              <Pressable onPress={() => setShowNotePicker(true)}>
+                <Text
+                  testID="resource-note-retrieval-participation"
+                  style={[styles.noteModeLink, { color: theme.colors.accent }]}
+                >
+                  参与检索：{effectiveEnabledNoteIds.length} /{' '}
+                  {projectEnabledNotes.length} 篇
+                </Text>
+              </Pressable>
+              <Text
+                style={[
+                  styles.noteModeLabel,
+                  { color: theme.colors.textSecondary },
+                ]}
+              >
+                检索片段数上限：
+              </Text>
+              <SegmentedControl
+                value={String(retrievalTopK)}
+                options={[
+                  { value: '3', label: '3' },
+                  { value: '5', label: '5' },
+                  { value: '8', label: '8' },
+                  { value: '10', label: '10' },
+                ]}
+                onChange={val => handleTopKChange(Number(val))}
+              />
+              <Text
+                style={[styles.noteModeLabel, { color: theme.colors.textSecondary }]}
+              >
+                单条命中片段长度：
+              </Text>
+              <SegmentedControl
+                value={String(retrievalFragmentChars)}
+                options={[
+                  { value: '500', label: '500 字' },
+                  { value: '1000', label: '1000 字' },
+                  { value: '2000', label: '2000 字' },
+                  { value: '4000', label: '4000 字' },
+                ]}
+                onChange={val => handleFragmentCharsChange(Number(val))}
+              />
+              <Text
+                style={[styles.noteModeHint, { color: theme.colors.textMuted }]}
+              >
+                生成正文时会自动从笔记中检索相关内容
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {!selectedNoteCollectionId ? (
+        <>
+          <Field
+            value={draft}
+            onChangeText={setDraft}
+            placeholder={placeholderFor('notes', false)}
+            inputStyle={styles.inlineInput}
+          />
+          <Button
+            label="添加"
+            icon={FilePlus2}
+            onPress={addManual}
+            disabled={!draft.trim()}
+          />
+        </>
+      ) : null}
+    </View>
+  );
+
+  const renderNoteItem = ({ item }: { item: any }) =>
+    item._isNoteCollection ? (
+      <Card
+        testID={`resource-note-collection-${item.id}`}
+        style={styles.noteListCard}
+      >
+        <View style={styles.row}>
+          <NotebookPen size={20} color={theme.colors.accent} />
+          <View style={styles.rowText}>
+            <Text
+              style={[styles.itemTitle, { color: theme.colors.textPrimary }]}
+            >
+              {item.name || '未命名笔记合集'}
+            </Text>
+            <Text
+              style={[styles.itemMeta, { color: theme.colors.textSecondary }]}
+            >
+              {item.note_count || 0} 篇分片 · 预估 {item.estimated_tokens || 0} / 软上限{' '}
+              {item.max_tokens || 50000} tokens
+            </Text>
+            <View style={styles.usageRow}>
+              <Text
+                style={[styles.usageText, { color: theme.colors.textSecondary }]}
+              >
+                合集启用
+              </Text>
+              <Switch
+                testID={`note-collection-toggle-${item.id}`}
+                value={isCollectionEnabledForProject(item)}
+                onValueChange={() => toggleNoteCollection(item)}
+              />
+            </View>
+          </View>
+        </View>
+        <View style={styles.cardActions}>
+          <Button
+            label="打开"
+            variant="secondary"
+            onPress={() => setSelectedNoteCollectionId(item.id)}
+          />
+          <Button
+            label="编辑"
+            icon={Pencil}
+            variant="secondary"
+            onPress={() => openEditor('noteCollection', item)}
+          />
+          <Button
+            label="删除"
+            icon={Trash2}
+            variant="ghost"
+            onPress={() => remove('noteCollection', item.id, item.name)}
+          />
+        </View>
+      </Card>
+    ) : (
+      <Card testID={`resource-note-item-${item.id}`} style={styles.noteListCard}>
+        <View style={styles.row}>
+          <NotebookPen size={20} color={theme.colors.accent} />
+          <View style={styles.rowText}>
+            <View style={styles.titleRow}>
+              <Text
+                style={[styles.itemTitle, { color: theme.colors.textPrimary }]}
+              >
+                {titleFor('notes', item)}
+              </Text>
+            </View>
+            <View style={styles.tagRow}>
+              {noteMode !== 'none' ? (
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.modeTag,
+                    {
+                      color: theme.colors.accent,
+                      borderColor: theme.colors.accent,
+                    },
+                  ]}
+                >
+                  {noteMode === 'style' ? '仿写' : '资料库'}
+                </Text>
+              ) : null}
+            </View>
+            <Text
+              style={[styles.itemMeta, { color: theme.colors.textSecondary }]}
+              numberOfLines={2}
+            >
+              {metaFor('notes', item)}
+            </Text>
+            <Text
+              style={[styles.tokenMeta, { color: theme.colors.textSecondary }]}
+            >
+              预估 {item.estimated_tokens ?? estimateTokens(item.content || '')} / 软上限{' '}
+              {item.max_tokens ?? defaultMaxTokens('notes')} tokens（弹性注入，上下文充足时按需借调）
+            </Text>
+            <View style={styles.usageRow}>
+              <Text
+                style={[styles.usageText, { color: theme.colors.textSecondary }]}
+              >
+                当前项目使用
+              </Text>
+              <Switch
+                testID={`resource-note-toggle-${item.id}`}
+                value={item.enabled_for_project === 1}
+                disabled={!currentProject}
+                onValueChange={() => toggleProjectUsage(item)}
+                trackColor={{
+                  false: theme.colors.border,
+                  true: theme.colors.accentSoft,
+                }}
+                thumbColor={
+                  item.enabled_for_project === 1
+                    ? theme.colors.accent
+                    : theme.colors.textMuted
+                }
+              />
+            </View>
+          </View>
+        </View>
+        <View style={styles.cardActions}>
+          <Button
+            label="编辑"
+            icon={Pencil}
+            variant="secondary"
+            onPress={() => openEditor('notes', item)}
+          />
+          <Button
+            label="导出"
+            icon={Download}
+            variant="secondary"
+            onPress={() => handleExportNote(item)}
+          />
+          <Button
+            label="删除"
+            icon={Trash2}
+            variant="ghost"
+            onPress={() => remove('notes', item.id, titleFor('notes', item))}
+          />
+        </View>
+      </Card>
+    );
   const canAddManual = tab !== 'characters';
   const editorTitle = useMemo(
     () => (editor ? `编辑${tabLabel(editor.kind)}` : ''),
@@ -1372,6 +1756,19 @@ export const ResourceLibrary: React.FC<{
         <ContinuationHomeBody navigation={navigation} />
       ) : tab === 'outlines' && currentProject ? (
         <OutlineListBody projectId={currentProject.id} />
+      ) : tab === 'notes' ? (
+        <FlatList
+          testID="resource-notes-list"
+          style={styles.notesList}
+          data={noteListLoadBlocked ? [] : noteListItems}
+          keyExtractor={item =>
+            `${item._isNoteCollection ? 'collection' : 'note'}-${item.id}`
+          }
+          contentContainerStyle={styles.notesListContent}
+          ListHeaderComponent={notesHeader}
+          ListEmptyComponent={noteListEmptyState}
+          renderItem={renderNoteItem}
+        />
       ) : (
         <View style={styles.scrollContent}>
         <View style={styles.actions}>
@@ -1491,35 +1888,6 @@ export const ResourceLibrary: React.FC<{
               ) : null}
             </ScrollView>
           ) : null}
-          {tab === 'notes' ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.actionScroll}
-            >
-              <Button
-                label="导入 TXT 笔记"
-                icon={Import}
-                compact
-                onPress={importNoteText}
-              />
-              <Button
-                label="批量导入 TXT"
-                icon={Import}
-                variant="secondary"
-                compact
-                onPress={importNotesBatch}
-              />
-              {selectedNoteCollectionId ? (
-                <Button
-                  label="返回合集"
-                  variant="secondary"
-                  compact
-                  onPress={() => setSelectedNoteCollectionId(null)}
-                />
-              ) : null}
-            </ScrollView>
-          ) : null}
           {tab === 'presets' ? (
             <ScrollView
               horizontal
@@ -1534,155 +1902,6 @@ export const ResourceLibrary: React.FC<{
                 onPress={importPreset}
               />
             </ScrollView>
-          ) : null}
-          {tab === 'notes' && currentProject ? (
-            <View style={styles.noteModePanel}>
-              <Text
-                style={[
-                  styles.noteModeTitle,
-                  { color: theme.colors.textPrimary },
-                ]}
-              >
-                笔记模式
-              </Text>
-              <SegmentedControl
-                value={noteMode}
-                options={[
-                  { value: 'none', label: '禁用' },
-                  { value: 'style', label: '仿写' },
-                  { value: 'retrieval', label: '资料库' },
-                ]}
-                onChange={value => handleNoteModeChange(value)}
-              />
-              {noteMode === 'style' ? (
-                <View style={styles.noteModeSection}>
-                  <Pressable onPress={() => setShowNotePicker(true)}>
-                    <Text
-                      style={[
-                        styles.noteModeLink,
-                        { color: theme.colors.accent },
-                      ]}
-                    >
-                      参与仿写的笔记：
-                      {effectiveEnabledNoteIds.length}/
-                      {projectEnabledNotes.length} 篇
-                    </Text>
-                  </Pressable>
-                  <Text
-                    style={[
-                      styles.noteModeLabel,
-                      { color: theme.colors.textSecondary },
-                    ]}
-                  >
-                    风格要素权重：
-                  </Text>
-                  {[
-                    { key: 'sentence_structure' as const, label: '句式结构' },
-                    { key: 'tone_emotion' as const, label: '语气与情感' },
-                    { key: 'vocabulary' as const, label: '常用词汇搭配' },
-                    { key: 'character_voice' as const, label: '角色设定' },
-                    { key: 'narrative_rhythm' as const, label: '叙事节奏' },
-                  ].map(item => (
-                    <View key={item.key} style={styles.weightRow}>
-                      <Text
-                        style={[
-                          styles.weightLabel,
-                          { color: theme.colors.textPrimary },
-                        ]}
-                      >
-                        {item.label}
-                      </Text>
-                      <SegmentedControl
-                        value={String(styleWeights[item.key] ?? 0)}
-                        options={[
-                          { value: '0', label: '关' },
-                          { value: '1', label: '弱' },
-                          { value: '2', label: '中' },
-                          { value: '3', label: '强' },
-                        ]}
-                        onChange={val =>
-                          handleWeightChange(item.key, Number(val))
-                        }
-                      />
-                    </View>
-                  ))}
-                  <View style={styles.rowActions}>
-                    <Button
-                      label={analyzing ? '分析中...' : '重新分析风格'}
-                      icon={RefreshCw}
-                      variant="secondary"
-                      onPress={handleReanalyze}
-                      disabled={analyzing}
-                    />
-                    <Button
-                      label="查看画像"
-                      variant="ghost"
-                      onPress={handleViewProfile}
-                    />
-                  </View>
-                </View>
-              ) : null}
-              {noteMode === 'retrieval' ? (
-                <View style={styles.noteModeSection}>
-                  <Pressable onPress={() => setShowNotePicker(true)}>
-                    <Text
-                      style={[
-                        styles.noteModeLink,
-                        { color: theme.colors.accent },
-                      ]}
-                    >
-                      参与检索的笔记：
-                      {effectiveEnabledNoteIds.length}/
-                      {projectEnabledNotes.length} 篇
-                    </Text>
-                  </Pressable>
-                  <Text
-                    style={[
-                      styles.noteModeLabel,
-                      { color: theme.colors.textSecondary },
-                    ]}
-                  >
-                    检索片段数上限：
-                  </Text>
-                  <SegmentedControl
-                    value={String(retrievalTopK)}
-                    options={[
-                      { value: '3', label: '3' },
-                      { value: '5', label: '5' },
-                      { value: '8', label: '8' },
-                      { value: '10', label: '10' },
-                    ]}
-                    onChange={val => handleTopKChange(Number(val))}
-                  />
-                  <Text
-                    style={[
-                      styles.noteModeLabel,
-                      { color: theme.colors.textSecondary },
-                    ]}
-                  >
-                    单条命中片段长度：
-                  </Text>
-                  <SegmentedControl
-                    value={String(retrievalFragmentChars)}
-                    options={[
-                      { value: '500', label: '500 字' },
-                      { value: '1000', label: '1000 字' },
-                      { value: '2000', label: '2000 字' },
-                      { value: '4000', label: '4000 字' },
-                    ]}
-                    onChange={val => handleFragmentCharsChange(Number(val))}
-                  />
-                  <Text
-                    style={[
-                      styles.noteModeHint,
-                      { color: theme.colors.textMuted },
-                    ]}
-                  >
-                    生成正文时会自动从笔记中检索相关内容
-                  </Text>
-                </View>
-              ) : null}
-            </View>
           ) : null}
           {canAddManual && !selectedNoteCollectionId ? (
             <>
@@ -1911,145 +2130,6 @@ export const ResourceLibrary: React.FC<{
                 )}
               />
             )
-          ) : tab === 'notes' &&
-            !selectedNoteCollectionId &&
-            noteCollections.length > 0 ? (
-            <FlatList
-              data={[
-                ...noteCollections.map(item => ({
-                  ...item,
-                  _isNoteCollection: true,
-                })),
-                ...items.notes.filter(item => !item.collection_id),
-              ]}
-              style={styles.virtualizedList}
-              scrollEnabled
-              keyExtractor={item =>
-                `${item._isNoteCollection ? 'collection' : 'note'}-${item.id}`
-              }
-              contentContainerStyle={styles.list}
-              renderItem={({ item }) =>
-                item._isNoteCollection ? (
-                  <Card>
-                    <View style={styles.row}>
-                      <NotebookPen size={20} color={theme.colors.accent} />
-                      <View style={styles.rowText}>
-                        <Text
-                          style={[
-                            styles.itemTitle,
-                            { color: theme.colors.textPrimary },
-                          ]}
-                        >
-                          {item.name || '未命名笔记合集'}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.itemMeta,
-                            { color: theme.colors.textSecondary },
-                          ]}
-                        >
-                          {item.note_count || 0} 篇分片 · 预估{' '}
-                          {item.estimated_tokens || 0} / 软上限{' '}
-                          {item.max_tokens || 50000} tokens
-                        </Text>
-                        <View style={styles.usageRow}>
-                          <Text
-                            style={[
-                              styles.usageText,
-                              { color: theme.colors.textSecondary },
-                            ]}
-                          >
-                            合集启用
-                          </Text>
-                          <Switch
-                            testID={`note-collection-toggle-${item.id}`}
-                            value={isCollectionEnabledForProject(item)}
-                            onValueChange={() => toggleNoteCollection(item)}
-                          />
-                        </View>
-                      </View>
-                    </View>
-                    <View style={styles.cardActions}>
-                      <Button
-                        label="打开"
-                        variant="secondary"
-                        onPress={() => setSelectedNoteCollectionId(item.id)}
-                      />
-                      <Button
-                        label="编辑"
-                        icon={Pencil}
-                        variant="secondary"
-                        onPress={() => openEditor('noteCollection', item)}
-                      />
-                      <Button
-                        label="删除"
-                        icon={Trash2}
-                        variant="ghost"
-                        onPress={() =>
-                          remove('noteCollection', item.id, item.name)
-                        }
-                      />
-                    </View>
-                  </Card>
-                ) : (
-                  <Card>
-                    <View style={styles.row}>
-                      <NotebookPen size={20} color={theme.colors.accent} />
-                      <View style={styles.rowText}>
-                        <Text
-                          style={[
-                            styles.itemTitle,
-                            { color: theme.colors.textPrimary },
-                          ]}
-                        >
-                          {titleFor('notes', item)}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.itemMeta,
-                            { color: theme.colors.textSecondary },
-                          ]}
-                          numberOfLines={2}
-                        >
-                          {metaFor('notes', item)}
-                        </Text>
-                        <View style={styles.usageRow}>
-                          <Text
-                            style={[
-                              styles.usageText,
-                              { color: theme.colors.textSecondary },
-                            ]}
-                          >
-                            当前项目使用
-                          </Text>
-                          <Switch
-                            value={item.enabled_for_project === 1}
-                            disabled={!currentProject}
-                            onValueChange={() => toggleProjectUsage(item)}
-                          />
-                        </View>
-                      </View>
-                    </View>
-                    <View style={styles.cardActions}>
-                      <Button
-                        label="编辑"
-                        icon={Pencil}
-                        variant="secondary"
-                        onPress={() => openEditor('notes', item)}
-                      />
-                      <Button
-                        label="删除"
-                        icon={Trash2}
-                        variant="ghost"
-                        onPress={() =>
-                          remove('notes', item.id, titleFor('notes', item))
-                        }
-                      />
-                    </View>
-                  </Card>
-                )
-              }
-            />
           ) : loadError || recoveryLoadState === 'error' ? (
             // Database read failed — do NOT show a fake empty state. The user's
             // data may still be intact in the DB; this card tells them to
@@ -2105,20 +2185,6 @@ export const ResourceLibrary: React.FC<{
                         </Text>
                       </View>
                       <View style={styles.tagRow}>
-                        {tab === 'notes' && noteMode !== 'none' ? (
-                          <Text
-                            numberOfLines={1}
-                            style={[
-                              styles.modeTag,
-                              {
-                                color: theme.colors.accent,
-                                borderColor: theme.colors.accent,
-                              },
-                            ]}
-                          >
-                            {noteMode === 'style' ? '仿写' : '资料库'}
-                          </Text>
-                        ) : null}
                         {(tab as ResourceTab) === 'presets' ? (
                           <>
                             <Text
@@ -2216,14 +2282,6 @@ export const ResourceLibrary: React.FC<{
                         icon={Download}
                         variant="secondary"
                         onPress={() => handleExportCharacter(item)}
-                      />
-                    )}
-                    {tab === 'notes' && (
-                      <Button
-                        label="导出"
-                        icon={Download}
-                        variant="secondary"
-                        onPress={() => handleExportNote(item)}
                       />
                     )}
                     {(tab as ResourceTab) === 'presets' && (
@@ -2859,6 +2917,18 @@ const styles = StyleSheet.create({
   scrollContent: { flex: 1, minHeight: 0 },
   listContainer: { flex: 1, minHeight: 240 },
   virtualizedList: { flex: 1 },
+  notesList: { flex: 1 },
+  notesListContent: { paddingBottom: 96 },
+  notesHeader: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  noteSummary: { gap: spacing.xs },
+  noteSummaryPrimary: { fontSize: 16, fontWeight: '800' },
+  noteSummarySecondary: { fontSize: 13, fontWeight: '600' },
+  noteListCard: { marginHorizontal: spacing.lg },
   list: { padding: spacing.lg, paddingBottom: 96 },
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
   characterListThumbnail: { width: 48, height: 64, borderRadius: 6 },

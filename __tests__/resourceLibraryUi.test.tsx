@@ -1,5 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { FlatList } from 'react-native';
 
 jest.mock('../src/services/database', () => ({
   getAllCharacters: jest.fn(async () => [
@@ -23,6 +24,7 @@ jest.mock('../src/services/database', () => ({
   getNoteCollections: jest.fn(async () => []),
   updateWorldbookEntry: jest.fn(async () => undefined),
   getProjectNoteConfig: jest.fn(async () => null),
+  setProjectNoteConfig: jest.fn(async () => undefined),
   setCharacterCollectionEnabledForProject: jest.fn(async () => undefined),
   setNoteCollectionEnabledForProject: jest.fn(async () => undefined),
   updateNoteCollection: jest.fn(async () => undefined),
@@ -91,6 +93,16 @@ jest.mock('../src/store/themeStore', () => ({
 
 import { ResourceLibrary } from '../src/screens/ResourceLibrary';
 import * as db from '../src/services/database';
+
+function makeNotes(total: number, enabledCount = total) {
+  return Array.from({ length: total }, (_, index) => ({
+    id: index + 1,
+    title: `笔记${index + 1}`,
+    content: `内容${index + 1}`,
+    enabled_for_project: index < enabledCount ? 1 : 0,
+    collection_enabled_for_project: 1,
+  }));
+}
 
 describe('ResourceLibrary UI', () => {
   it('shows preset catalog categories and copies a catalog item into a DB preset', async () => {
@@ -258,6 +270,111 @@ describe('ResourceLibrary UI', () => {
     });
   });
 
+  it('keeps the imported total visible when note mode is disabled', async () => {
+    (db.getAllNotes as jest.Mock).mockResolvedValue(makeNotes(200, 183));
+    (db.getNoteCollections as jest.Mock).mockResolvedValue(
+      Array.from({ length: 12 }, (_, index) => ({
+        id: index + 1,
+        name: `合集${index + 1}`,
+        enabled: 1,
+        enabled_for_project: 1,
+        note_count: 0,
+      })),
+    );
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue({
+      mode: 'none',
+      styleWeights: {},
+      retrievalTopK: 5,
+      retrievalFragmentChars: 1000,
+      enabledNoteIds: [],
+    });
+
+    const { findByTestId, findByText, queryByTestId } = render(
+      <ResourceLibrary />,
+    );
+    fireEvent.press(await findByTestId('resource-tab-notes'));
+
+    expect(await findByText('12 个合集 · 共 200 篇笔记')).toBeTruthy();
+    expect(await findByText('当前项目可用：183 篇')).toBeTruthy();
+    await waitFor(() => {
+      expect(queryByTestId('resource-note-style-participation')).toBeNull();
+      expect(queryByTestId('resource-note-retrieval-participation')).toBeNull();
+    });
+  });
+
+  it('shows total, available, and style participation counts separately', async () => {
+    const notes = makeNotes(200, 183);
+    (db.getAllNotes as jest.Mock).mockResolvedValue(notes);
+    (db.getNoteCollections as jest.Mock).mockResolvedValue([]);
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue({
+      mode: 'style',
+      styleWeights: {},
+      retrievalTopK: 5,
+      retrievalFragmentChars: 1000,
+      enabledNoteIds: notes.slice(0, 160).map(note => note.id),
+    });
+
+    const { findByTestId, findByText } = render(<ResourceLibrary />);
+    fireEvent.press(await findByTestId('resource-tab-notes'));
+
+    expect(await findByText('共 200 篇笔记')).toBeTruthy();
+    expect(await findByText('当前项目可用：183 篇')).toBeTruthy();
+    expect(await findByText('参与仿写：160 / 183 篇')).toBeTruthy();
+  });
+
+  it('uses the effective eligible set for retrieval participation counts', async () => {
+    const notes = makeNotes(200, 183);
+    (db.getAllNotes as jest.Mock).mockResolvedValue(notes);
+    (db.getNoteCollections as jest.Mock).mockResolvedValue([]);
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue({
+      mode: 'retrieval',
+      styleWeights: {},
+      retrievalTopK: 5,
+      retrievalFragmentChars: 1000,
+      enabledNoteIds: notes.slice(0, 160).map(note => note.id),
+    });
+
+    const { findByTestId, findByText } = render(<ResourceLibrary />);
+    fireEvent.press(await findByTestId('resource-tab-notes'));
+
+    expect(await findByText('参与检索：160 / 183 篇')).toBeTruthy();
+    expect(await findByText('共 200 篇笔记')).toBeTruthy();
+  });
+
+  it('uses one notes FlatList as the vertical scroll owner with a header', async () => {
+    (db.getAllNotes as jest.Mock).mockResolvedValue(makeNotes(2));
+    (db.getNoteCollections as jest.Mock).mockResolvedValue([]);
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue(null);
+
+    const { findByTestId, UNSAFE_getByType } = render(<ResourceLibrary />);
+    fireEvent.press(await findByTestId('resource-tab-notes'));
+
+    const list = UNSAFE_getByType(FlatList);
+    expect(list.props.testID).toBe('resource-notes-list');
+    expect(list.props.ListHeaderComponent).toBeTruthy();
+    expect(list.props.scrollEnabled).not.toBe(false);
+    expect(list.props.ListHeaderComponent.props.testID).toBe(
+      'resource-notes-header',
+    );
+  });
+
+  it('keeps 200 notes in the virtualized data source without flattening them into a header', async () => {
+    (db.getAllNotes as jest.Mock).mockResolvedValue(makeNotes(200));
+    (db.getNoteCollections as jest.Mock).mockResolvedValue([]);
+    (db.getProjectNoteConfig as jest.Mock).mockResolvedValue(null);
+
+    const { findByTestId, UNSAFE_getByType } = render(<ResourceLibrary />);
+    fireEvent.press(await findByTestId('resource-tab-notes'));
+
+    const list = UNSAFE_getByType(FlatList);
+    expect(list.props.data).toHaveLength(200);
+    expect(list.props.data[199]).toEqual(
+      expect.objectContaining({ id: 200, title: '笔记200' }),
+    );
+    expect(list.props.ListHeaderComponent).toBeTruthy();
+    expect(await findByTestId('resource-note-total')).toBeTruthy();
+  });
+
   it('仿写选择器只展示当前项目已启用的笔记，并把空名单显示为全选', async () => {
     (db.getAllNotes as jest.Mock).mockResolvedValue([
       {
@@ -285,7 +402,7 @@ describe('ResourceLibrary UI', () => {
 
     const { findByText, getAllByText, getByText } = render(<ResourceLibrary />);
     fireEvent.press(await findByText('笔记'));
-    fireEvent.press(await findByText('参与仿写的笔记：1/1 篇'));
+    fireEvent.press(await findByText('参与仿写：1 / 1 篇'));
 
     expect(getAllByText('笔记A')).toHaveLength(2);
     expect(getAllByText('笔记B')).toHaveLength(1);
@@ -337,6 +454,7 @@ describe('ResourceLibrary UI', () => {
       { id: 21, collection_id: 12, title: '超长设定 (1/2)', content: '上半部分', enabled_for_project: 1, collection_enabled: 1 },
       { id: 22, collection_id: 12, title: '超长设定 (2/2)', content: '下半部分', enabled_for_project: 0, collection_enabled: 1 },
     ]);
+    (db.setProjectResourceEnabled as jest.Mock).mockClear();
 
     const { findByText, getByText, getByTestId } = render(<ResourceLibrary />);
     await findByText('导入角色卡');
@@ -349,6 +467,13 @@ describe('ResourceLibrary UI', () => {
     expect(await findByText('超长设定 (1/2)')).toBeTruthy();
     expect(await findByText('超长设定 (2/2)')).toBeTruthy();
     expect(await findByText('返回合集')).toBeTruthy();
+    fireEvent(getByTestId('resource-note-toggle-21'), 'valueChange', false);
+    expect(db.setProjectResourceEnabled).toHaveBeenCalledWith(
+      1,
+      'note',
+      21,
+      false,
+    );
   });
 
   it('renders the list container with scrollable minHeight style', async () => {
