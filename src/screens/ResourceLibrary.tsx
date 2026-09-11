@@ -1358,7 +1358,7 @@ export const ResourceLibrary: React.FC<{
         description="使用上方按钮导入或创建笔记。"
       />
     );
-  const noteListLoadBlocked =
+  const resourceListLoadBlocked =
     Boolean(loadError) ||
     recoveryLoadState === 'error' ||
     recoveryLoadState === 'repairing';
@@ -1564,6 +1564,98 @@ export const ResourceLibrary: React.FC<{
     </View>
   );
 
+  // Scroll ownership invariant: this header lives INSIDE the
+  // resource-writer-style-list FlatList (ListHeaderComponent). The built-in
+  // catalog and its expandable previews grow dynamically, so they must never
+  // be moved back into a plain View above the list — that would squeeze the
+  // user style list out of the screen again.
+  const writerStyleHeader = (
+    <View testID="resource-writer-style-header" style={styles.writerStyleHeader}>
+      <View style={styles.presetCatalogTabs}>
+        <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>作家风格</Text>
+        <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。</Text>
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.actionScroll}
+      >
+        <Button
+          testID="writer-style-import"
+          label="导入作家风格"
+          icon={Import}
+          compact
+          onPress={importPreset}
+        />
+      </ScrollView>
+      <Field
+        testID="writer-style-add-name"
+        value={draft}
+        onChangeText={setDraft}
+        placeholder={placeholderFor('presets', false)}
+        inputStyle={styles.inlineInput}
+      />
+      <Button
+        testID="writer-style-add"
+        label="添加"
+        icon={FilePlus2}
+        onPress={addManual}
+        disabled={!draft.trim()}
+      />
+      <View style={styles.catalogList} testID="writer-style-catalog-list">
+        <Text
+          testID="writer-style-catalog-title"
+          style={[styles.writerStyleSectionTitle, { color: theme.colors.textPrimary }]}
+        >
+          内置作家风格目录
+        </Text>
+        {PRESET_CATALOG.map(item => (
+          <Card key={item.id} testID={`writer-style-catalog-item-${item.id}`}>
+            <View style={styles.titleRow}>
+              <Text numberOfLines={2} style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
+            </View>
+            <View style={styles.tagRow}>
+              <Text numberOfLines={1} style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：内置</Text>
+            </View>
+            <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
+            <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
+            <View style={styles.cardActions}>
+              <Button
+                testID={`writer-style-catalog-preview-${item.id}`}
+                label={selectedCatalogItem?.id === item.id ? '收起预览' : '预览'}
+                variant="secondary"
+                onPress={() => setSelectedCatalogItem(selectedCatalogItem?.id === item.id ? null : item)}
+              />
+              <Button
+                testID={`writer-style-catalog-add-${item.id}`}
+                label="添加到作家风格库"
+                onPress={() => copyCatalogPreset(item)}
+              />
+            </View>
+            {selectedCatalogItem?.id === item.id ? (
+              <View style={styles.catalogPreview} testID={`writer-style-catalog-preview-view-${item.id}`}>
+                <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>内置作家风格预览</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
+                <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>高级设置 · 运行时编译结果</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.system_prompt}</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.writing_style}</Text>
+                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.extra_instructions}</Text>
+              </View>
+            ) : null}
+          </Card>
+        ))}
+      </View>
+      {items.presets.length > 0 ? (
+        <Text
+          testID="resource-writer-style-user-section"
+          style={[styles.writerStyleSectionTitle, { color: theme.colors.textPrimary }]}
+        >
+          用户作家风格（{items.presets.length}）
+        </Text>
+      ) : null}
+    </View>
+  );
+
   const renderNoteItem = ({ item }: { item: any }) =>
     item._isNoteCollection ? (
       <Card
@@ -1704,6 +1796,185 @@ export const ResourceLibrary: React.FC<{
         </View>
       </Card>
     );
+
+  // Shared row renderer for the DB-backed item lists (character cards inside a
+  // collection, world-book entries inside a collection, and user writer
+  // styles). `tab` decides the per-kind badges/actions.
+  const renderResourceItem = ({ item }: { item: any }) => (
+    <Card
+      testID={
+        tab === 'presets' ? `writer-style-item-${item.id}` : undefined
+      }
+    >
+      <View style={styles.row}>
+        {tab === 'characters' && getCharacterImagePath(item.data_json) ? (
+          <Image
+            source={{ uri: imageUriFromPath(getCharacterImagePath(item.data_json)!) }}
+            style={styles.characterListThumbnail}
+          />
+        ) : (
+          iconFor(tab, theme.colors.accent)
+        )}
+        <View style={styles.rowText}>
+          <View style={styles.titleRow}>
+            <Text
+              numberOfLines={2}
+              style={[
+                styles.itemTitle,
+                { color: theme.colors.textPrimary },
+              ]}
+            >
+              {titleFor(tab, item)}
+            </Text>
+          </View>
+          <View style={styles.tagRow}>
+            {(tab as ResourceTab) === 'presets' ? (
+              <>
+                <Text
+                  testID={`writer-style-source-${item.id}`}
+                  numberOfLines={1}
+                  style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+                >
+                  来源：{writerStyleSourceLabel(item)}
+                </Text>
+                {activeWriterStyleId === item.id ? (
+                  <Text
+                    testID={`writer-style-active-${item.id}`}
+                    numberOfLines={1}
+                    style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+                  >
+                    当前项目正在使用
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
+            {currentProject?.mode === 'continuation' ? (
+              <Text
+                numberOfLines={1}
+                style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
+              >
+                {continuationUsageFor(tab, item.id) === 'external_supplement' ? '续写补充' : continuationUsageFor(tab, item.id) === 'original_mirror' ? '原著镜像' : continuationUsageFor(tab, item.id) === 'excluded' ? '不参与' : '待确认'}
+              </Text>
+            ) : null}
+          </View>
+          <Text
+            style={[
+              styles.itemMeta,
+              { color: theme.colors.textSecondary },
+            ]}
+            numberOfLines={2}
+          >
+            {metaFor(tab, item)}
+          </Text>
+          <Text
+            style={[
+              styles.tokenMeta,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
+            预估{' '}
+            {item.estimated_tokens ??
+              ((tab as ResourceTab) === 'presets'
+                ? estimatePresetTokens(item)
+                : estimateTokens(
+                    item.content || item.data_json || '',
+                  ))}{' '}
+            / 软上限 {item.max_tokens ?? defaultMaxTokens(tab)}{' '}
+            tokens（弹性注入，上下文充足时按需借调）
+          </Text>
+          <View style={styles.usageRow}>
+            <Text
+              style={[
+                styles.usageText,
+                { color: theme.colors.textSecondary },
+              ]}
+            >
+              当前项目使用
+            </Text>
+            <Switch
+              value={item.enabled_for_project === 1}
+              disabled={!currentProject}
+              onValueChange={() => toggleProjectUsage(item)}
+              trackColor={{
+                false: theme.colors.border,
+                true: theme.colors.accentSoft,
+              }}
+              thumbColor={
+                item.enabled_for_project === 1
+                  ? theme.colors.accent
+                  : theme.colors.textMuted
+              }
+            />
+          </View>
+        </View>
+      </View>
+      <View style={styles.cardActions}>
+        <Button
+          testID={tab === 'presets' ? `writer-style-edit-${item.id}` : undefined}
+          label="编辑"
+          icon={Pencil}
+          variant="secondary"
+          onPress={() => openEditor(tab, item)}
+        />
+        {currentProject?.mode === 'continuation' ? (
+          <Button label="续写用途" variant="secondary" onPress={() => chooseContinuationUsage(tab, item)} />
+        ) : null}
+        {tab === 'characters' && (
+          <Button
+            label="导出"
+            icon={Download}
+            variant="secondary"
+            onPress={() => handleExportCharacter(item)}
+          />
+        )}
+        {(tab as ResourceTab) === 'presets' && (
+          <>
+            {activeWriterStyleId === item.id ? null : (
+              <Button
+                testID={`writer-style-set-active-${item.id}`}
+                label="设为当前作家风格"
+                variant="secondary"
+                onPress={() => setActiveWriterStyle(item)}
+              />
+            )}
+            <Button
+              testID={`writer-style-export-${item.id}`}
+              label="导出"
+              icon={Download}
+              variant="secondary"
+              onPress={() => handleExportPreset(item)}
+            />
+          </>
+        )}
+        <Button
+          testID={tab === 'presets' ? `writer-style-delete-${item.id}` : undefined}
+          label="删除"
+          icon={Trash2}
+          variant="ghost"
+          onPress={() => remove(tab, item.id, titleFor(tab, item))}
+        />
+      </View>
+    </Card>
+  );
+
+  const writerStyleListEmptyState =
+    loadError || recoveryLoadState === 'error' ? (
+      <EmptyState
+        title="资料暂时无法读取"
+        description="本地数据可能仍然存在。请先完成数据库修复，或重启应用后重试。不要卸载或清除应用数据。"
+      />
+    ) : recoveryLoadState === 'repairing' ? (
+      <EmptyState
+        title="正在修复本地资料数据库"
+        description="不会删除角色卡、世界书或章节，请勿关闭应用。"
+      />
+    ) : (
+      <EmptyState
+        title={emptyTitle('presets')}
+        description="从上方内置目录添加、导入文件，或输入名称新建作家风格。"
+      />
+    );
+
   const canAddManual = tab !== 'characters';
   const editorTitle = useMemo(
     () => (editor ? `编辑${tabLabel(editor.kind)}` : ''),
@@ -1760,7 +2031,7 @@ export const ResourceLibrary: React.FC<{
         <FlatList
           testID="resource-notes-list"
           style={styles.notesList}
-          data={noteListLoadBlocked ? [] : noteListItems}
+          data={resourceListLoadBlocked ? [] : noteListItems}
           keyExtractor={item =>
             `${item._isNoteCollection ? 'collection' : 'note'}-${item.id}`
           }
@@ -1769,15 +2040,38 @@ export const ResourceLibrary: React.FC<{
           ListEmptyComponent={noteListEmptyState}
           renderItem={renderNoteItem}
         />
+      ) : tab === 'presets' ? (
+        /**
+         * Scroll ownership invariant:
+         * Each ResourceLibrary tab must have exactly one vertical scroll owner.
+         * Any dynamically growing header must live inside that owner's content,
+         * e.g. FlatList.ListHeaderComponent.
+         *
+         *   continuation → ContinuationHomeBody owns its own scrolling
+         *   outlines     → OutlineListBody owns its own scrolling
+         *   characters   → resource-characters-list FlatList (fixed action bar above)
+         *   worldbook    → resource-worldbook-list FlatList (fixed action bar above)
+         *   notes        → resource-notes-list FlatList, header = actions + mode panel
+         *   presets      → resource-writer-style-list FlatList, header = catalog + import + create
+         *
+         * Never wrap these lists in an outer vertical ScrollView, and never move
+         * a growing header (catalog previews, note mode weights) back outside
+         * the owning FlatList — that is exactly what made the lower content
+         * unreachable before.
+         */
+        <FlatList
+          testID="resource-writer-style-list"
+          style={styles.virtualizedList}
+          data={resourceListLoadBlocked ? [] : items.presets}
+          keyExtractor={item => String(item.id)}
+          contentContainerStyle={styles.list}
+          ListHeaderComponent={writerStyleHeader}
+          ListEmptyComponent={writerStyleListEmptyState}
+          renderItem={renderResourceItem}
+        />
       ) : (
         <View style={styles.scrollContent}>
         <View style={styles.actions}>
-          {tab === 'presets' ? (
-            <View style={styles.presetCatalogTabs}>
-              <Text style={[styles.noteModeTitle, { color: theme.colors.textPrimary }]}>作家风格</Text>
-              <Text style={[styles.noteModeHint, { color: theme.colors.textMuted }]}>所有作家风格统一列在此处；内置、AI、TXT、SillyTavern 与旧版只作为来源 Badge，不改变运行时语义。</Text>
-            </View>
-          ) : null}
           {tab === 'characters' ? (
             <ScrollView
               horizontal
@@ -1888,32 +2182,15 @@ export const ResourceLibrary: React.FC<{
               ) : null}
             </ScrollView>
           ) : null}
-          {tab === 'presets' ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.actionScroll}
-            >
-              <Button
-                testID="writer-style-import"
-                label="导入作家风格"
-                icon={Import}
-                compact
-                onPress={importPreset}
-              />
-            </ScrollView>
-          ) : null}
           {canAddManual && !selectedNoteCollectionId ? (
             <>
               <Field
-                testID={tab === 'presets' ? 'writer-style-add-name' : undefined}
                 value={draft}
                 onChangeText={setDraft}
                 placeholder={placeholderFor(tab, Boolean(selectedCollectionId))}
                 inputStyle={styles.inlineInput}
               />
               <Button
-                testID={tab === 'presets' ? 'writer-style-add' : undefined}
                 label="添加"
                 icon={FilePlus2}
                 onPress={addManual}
@@ -1922,46 +2199,6 @@ export const ResourceLibrary: React.FC<{
             </>
           ) : null}
         </View>
-
-        {tab === 'presets' ? (
-          <View style={styles.catalogList} testID="writer-style-catalog-list">
-            {PRESET_CATALOG.map(item => (
-              <Card key={item.id}>
-                <View style={styles.titleRow}>
-                  <Text numberOfLines={2} style={[styles.itemTitle, { color: theme.colors.textPrimary }]}>{item.name}</Text>
-                </View>
-                <View style={styles.tagRow}>
-                  <Text numberOfLines={1} style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>来源：内置</Text>
-                </View>
-                <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
-                <Text style={[styles.itemMeta, { color: theme.colors.accent }]}>{item.tags.join(' · ')}</Text>
-                <View style={styles.cardActions}>
-                  <Button
-                    testID={`writer-style-catalog-preview-${item.id}`}
-                    label={selectedCatalogItem?.id === item.id ? '收起预览' : '预览'}
-                    variant="secondary"
-                    onPress={() => setSelectedCatalogItem(selectedCatalogItem?.id === item.id ? null : item)}
-                  />
-                  <Button
-                    testID={`writer-style-catalog-add-${item.id}`}
-                    label="添加到作家风格库"
-                    onPress={() => copyCatalogPreset(item)}
-                  />
-                </View>
-                {selectedCatalogItem?.id === item.id ? (
-                  <View style={styles.catalogPreview}>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>内置作家风格预览</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.description}</Text>
-                    <Text style={[styles.catalogPreviewTitle, { color: theme.colors.textPrimary }]}>高级设置 · 运行时编译结果</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.system_prompt}</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.writing_style}</Text>
-                    <Text style={[styles.itemMeta, { color: theme.colors.textSecondary }]}>{item.preset.extra_instructions}</Text>
-                  </View>
-                ) : null}
-              </Card>
-            ))}
-          </View>
-        ) : null}
 
         <View testID="resource-list-container" style={styles.listContainer}>
           {tab === 'characters' && !selectedCharacterCollectionId ? (
@@ -1972,6 +2209,7 @@ export const ResourceLibrary: React.FC<{
               />
             ) : (
               <FlatList
+                testID="resource-characters-list"
                 data={characterCollections}
                 style={styles.virtualizedList}
                 scrollEnabled
@@ -2054,6 +2292,7 @@ export const ResourceLibrary: React.FC<{
               />
             ) : (
               <FlatList
+                testID="resource-worldbook-list"
                 data={collections}
                 style={styles.virtualizedList}
                 scrollEnabled
@@ -2144,174 +2383,19 @@ export const ResourceLibrary: React.FC<{
               description="不会删除角色卡、世界书或章节，请勿关闭应用。"
             />
           ) : activeItems.length === 0 ? (
-            tab === 'presets' ? null : (
             <EmptyState
               title={emptyTitle(tab)}
               description="使用上方按钮导入或创建资料。"
             />
-            )
           ) : (
             <FlatList
+              testID={`resource-${tab}-list`}
               data={activeItems}
               style={styles.virtualizedList}
               scrollEnabled
               keyExtractor={item => String(item.id)}
               contentContainerStyle={styles.list}
-              renderItem={({ item }) => (
-                <Card
-                  testID={
-                    tab === 'presets' ? `writer-style-item-${item.id}` : undefined
-                  }
-                >
-                  <View style={styles.row}>
-                    {tab === 'characters' && getCharacterImagePath(item.data_json) ? (
-                      <Image
-                        source={{ uri: imageUriFromPath(getCharacterImagePath(item.data_json)!) }}
-                        style={styles.characterListThumbnail}
-                      />
-                    ) : (
-                      iconFor(tab, theme.colors.accent)
-                    )}
-                    <View style={styles.rowText}>
-                      <View style={styles.titleRow}>
-                        <Text
-                          numberOfLines={2}
-                          style={[
-                            styles.itemTitle,
-                            { color: theme.colors.textPrimary },
-                          ]}
-                        >
-                          {titleFor(tab, item)}
-                        </Text>
-                      </View>
-                      <View style={styles.tagRow}>
-                        {(tab as ResourceTab) === 'presets' ? (
-                          <>
-                            <Text
-                              testID={`writer-style-source-${item.id}`}
-                              numberOfLines={1}
-                              style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
-                            >
-                              来源：{writerStyleSourceLabel(item)}
-                            </Text>
-                            {activeWriterStyleId === item.id ? (
-                              <Text
-                                testID={`writer-style-active-${item.id}`}
-                                numberOfLines={1}
-                                style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
-                              >
-                                当前项目正在使用
-                              </Text>
-                            ) : null}
-                          </>
-                        ) : null}
-                        {currentProject?.mode === 'continuation' ? (
-                          <Text
-                            numberOfLines={1}
-                            style={[styles.modeTag, { color: theme.colors.accent, borderColor: theme.colors.accent }]}
-                          >
-                            {continuationUsageFor(tab, item.id) === 'external_supplement' ? '续写补充' : continuationUsageFor(tab, item.id) === 'original_mirror' ? '原著镜像' : continuationUsageFor(tab, item.id) === 'excluded' ? '不参与' : '待确认'}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <Text
-                        style={[
-                          styles.itemMeta,
-                          { color: theme.colors.textSecondary },
-                        ]}
-                        numberOfLines={2}
-                      >
-                        {metaFor(tab, item)}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.tokenMeta,
-                          { color: theme.colors.textSecondary },
-                        ]}
-                      >
-                        预估{' '}
-                        {item.estimated_tokens ??
-                          ((tab as ResourceTab) === 'presets'
-                            ? estimatePresetTokens(item)
-                            : estimateTokens(
-                                item.content || item.data_json || '',
-                              ))}{' '}
-                        / 软上限 {item.max_tokens ?? defaultMaxTokens(tab)}{' '}
-                        tokens（弹性注入，上下文充足时按需借调）
-                      </Text>
-                      <View style={styles.usageRow}>
-                        <Text
-                          style={[
-                            styles.usageText,
-                            { color: theme.colors.textSecondary },
-                          ]}
-                        >
-                          当前项目使用
-                        </Text>
-                        <Switch
-                          value={item.enabled_for_project === 1}
-                          disabled={!currentProject}
-                          onValueChange={() => toggleProjectUsage(item)}
-                          trackColor={{
-                            false: theme.colors.border,
-                            true: theme.colors.accentSoft,
-                          }}
-                          thumbColor={
-                            item.enabled_for_project === 1
-                              ? theme.colors.accent
-                              : theme.colors.textMuted
-                          }
-                        />
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.cardActions}>
-                    <Button
-                      testID={tab === 'presets' ? `writer-style-edit-${item.id}` : undefined}
-                      label="编辑"
-                      icon={Pencil}
-                      variant="secondary"
-                      onPress={() => openEditor(tab, item)}
-                    />
-                    {currentProject?.mode === 'continuation' ? (
-                      <Button label="续写用途" variant="secondary" onPress={() => chooseContinuationUsage(tab, item)} />
-                    ) : null}
-                    {tab === 'characters' && (
-                      <Button
-                        label="导出"
-                        icon={Download}
-                        variant="secondary"
-                        onPress={() => handleExportCharacter(item)}
-                      />
-                    )}
-                    {(tab as ResourceTab) === 'presets' && (
-                      <>
-                        {activeWriterStyleId === item.id ? null : (
-                          <Button
-                            testID={`writer-style-set-active-${item.id}`}
-                            label="设为当前作家风格"
-                            variant="secondary"
-                            onPress={() => setActiveWriterStyle(item)}
-                          />
-                        )}
-                        <Button
-                          testID={`writer-style-export-${item.id}`}
-                          label="导出"
-                          icon={Download}
-                          variant="secondary"
-                          onPress={() => handleExportPreset(item)}
-                        />
-                      </>
-                    )}
-                    <Button
-                      label="删除"
-                      icon={Trash2}
-                      variant="ghost"
-                      onPress={() => remove(tab, item.id, titleFor(tab, item))}
-                    />
-                  </View>
-                </Card>
-              )}
+              renderItem={renderResourceItem}
             />
           )}
         </View>
@@ -2903,9 +2987,13 @@ const styles = StyleSheet.create({
   tabs: { padding: spacing.lg, paddingBottom: 0 },
   actions: { padding: spacing.lg, paddingBottom: 0, gap: spacing.sm },
   presetCatalogTabs: { gap: spacing.xs },
-  catalogList: { padding: spacing.lg, paddingBottom: spacing.sm, gap: spacing.md },
+  // The catalog renders inside the writer-style FlatList header, which is
+  // already inset by the list's contentContainerStyle — no extra padding here.
+  catalogList: { gap: spacing.md, marginTop: spacing.xs },
   catalogPreview: { marginTop: spacing.md, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm },
   catalogPreviewTitle: { fontSize: 13, fontWeight: '800', marginTop: spacing.xs },
+  writerStyleHeader: { gap: spacing.sm, paddingBottom: spacing.xs },
+  writerStyleSectionTitle: { fontSize: 15, fontWeight: '800', marginTop: spacing.xs },
   actionScroll: {
     flexDirection: 'row',
     gap: spacing.sm,
