@@ -111,6 +111,11 @@ export interface ConstructionQualityReport {
   };
 }
 
+export interface ConstructionQualityContext {
+  /** 是否有角色参考图参与本次生成；只影响视觉细节 warning，不改变通用核心门禁。 */
+  hasVisualReference?: boolean;
+}
+
 interface ConstructionInspection {
   character?: ConstructionQualityReport['character'];
   worldbook?: ConstructionQualityReport['worldbook'];
@@ -206,6 +211,7 @@ function extensionData(data: CharaCardV3Data): Record<string, unknown> | null {
 function inspectCharacter(
   data: CharaCardV3Data,
   detailLevel: ConstructionDetailLevel,
+  context: ConstructionQualityContext,
 ): ConstructionInspection {
   const extension = extensionData(data);
   let novel: ReturnType<typeof parseNovelCharacterDraft> | null = null;
@@ -300,6 +306,21 @@ function inspectCharacter(
       warnings.push({
         code: 'character_arc_missing',
         message: '角色暂未填写人物弧，后续可补充可能的变化方向。',
+      });
+    }
+    const appearance = asString(novel.appearance);
+    const appearanceLength = visibleCharacterCount(appearance);
+    if (
+      context.hasVisualReference &&
+      appearanceLength > 0 &&
+      (appearanceLength < 12 ||
+        /^(?:很帅|很漂亮|英俊|美丽|帅气|漂亮|美貌|冷峻英俊)[。！？!?…\s]*$/u.test(
+          appearance,
+        ))
+    ) {
+      warnings.push({
+        code: 'appearance_detail_low',
+        message: '参考图已生成外貌，但细节较少，可重新生成以获得更多具体的视觉特征。',
       });
     }
   }
@@ -465,6 +486,7 @@ export function assessConstructionArtifact(
   artifact: ConstructionArtifact,
   detailLevel?: ConstructionDetailLevel,
   providerOutputTokens?: number,
+  context: ConstructionQualityContext = {},
 ): ConstructionQualityReport {
   const level = normalizeDetailLevel(detailLevel);
   const requiredMinOutput = requiredConstructionOutput(
@@ -483,7 +505,7 @@ export function assessConstructionArtifact(
   );
   const inspection =
     artifact.kind === 'character'
-      ? inspectCharacter(artifact.card.data, level)
+      ? inspectCharacter(artifact.card.data, level, context)
       : artifact.kind === 'worldbook'
         ? inspectWorldbook(artifact.lorebook.data.entries, level)
         : inspectPreset(artifact.preset, level);

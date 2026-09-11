@@ -8,6 +8,16 @@ import type {
 function asString(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (value == null) return '';
+  if (Array.isArray(value)) return value.map(asString).filter(Boolean).join('、');
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, nested]) => {
+        const rendered = asString(nested);
+        return rendered ? `${key}：${rendered}` : '';
+      })
+      .filter(Boolean)
+      .join('；');
+  }
   return String(value).trim();
 }
 
@@ -36,13 +46,21 @@ export function parseNovelWorldbookDraft(value: unknown): NovelWorldbookDraft {
     const record = entry && typeof entry === 'object' && !Array.isArray(entry)
       ? (entry as Record<string, unknown>)
       : {};
-    const title = asString(record.title ?? record.comment ?? record.name);
-    const keywords = asStringArray(record.keywords ?? record.keys ?? record.keyword);
+    const title = asString(
+      record.title ?? record.comment ?? record.name ?? record.key,
+    );
+    const keywords = asStringArray(
+      record.keywords ??
+        record.keys ??
+        record.keyword ??
+        record.keyword_primary ??
+        record.key,
+    );
     return {
       title,
-      category: asString(record.category) || undefined,
+      category: asString(record.category ?? record.type ?? record.kind) || undefined,
       keywords,
-      content: asString(record.content),
+      content: asString(record.content ?? record.description ?? record.value),
     };
   });
   return { name: asString(data.name) || '未命名世界书', entries };

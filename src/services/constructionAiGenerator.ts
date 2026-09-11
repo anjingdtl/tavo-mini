@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   LLMImageContentPart,
   LLMMessageContent,
+  LLMResult,
   LLMQueueState,
 } from './llm/types';
 import type { CharacterVisualReference } from './characterImageService';
@@ -11,7 +12,11 @@ import {
   estimateMessagesTokens,
   estimateTokens,
 } from '../utils/tokenEstimator';
-import { extractJSON } from '../utils/jsonExtractor';
+import {
+  extractJSON,
+  looksLikeTruncatedJSON,
+  repairJSONTrailingCommas,
+} from '../utils/jsonExtractor';
 import { parseCharacterCardJSON, parseWorldBookJSON } from './fileImport';
 import {
   assessConstructionArtifact,
@@ -114,17 +119,51 @@ function normalizeKeys(value: unknown): string[] {
 
 function parseJsonObject(text: string): Record<string, unknown> {
   const json = extractJSON(text);
-  if (!json) throw new Error('模型没有返回有效 JSON。');
+  if (!json) {
+    if (looksLikeTruncatedJSON(text)) {
+      throw new Error('模型返回的 JSON 可能被输出长度截断，请提高输出预留后重试。');
+    }
+    throw new Error('模型没有返回有效 JSON。');
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {
-    throw new Error('模型返回的 JSON 无法解析。');
+    // 只做字符串外的尾逗号修复；其它语法错误仍然失败闭合。
+    const repaired = repairJSONTrailingCommas(json);
+    if (repaired === json) {
+      throw new Error('模型返回的 JSON 无法解析。');
+    }
+    try {
+      parsed = JSON.parse(repaired);
+    } catch {
+      throw new Error('模型返回的 JSON 无法解析。');
+    }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('模型返回的 JSON 格式不正确。');
   }
   return parsed as Record<string, unknown>;
+}
+
+function emptyConstructionResultMessage(
+  result: Pick<LLMResult, 'finishReason' | 'emptyReason'>,
+  prefix = '',
+): string {
+  const label = prefix ? `${prefix}` : '';
+  if (result.finishReason === 'length' || result.emptyReason === 'length') {
+    return `${label}模型输出因长度限制被截断，请提高输出预留后重试。`;
+  }
+  switch (result.emptyReason) {
+    case 'reasoning_only':
+      return `${label}模型只返回了 reasoning 内容，没有返回可用的生成结果，请关闭深度思考或提高可见输出预留后重试。`;
+    case 'content_filter':
+      return `${label}模型因内容安全策略未返回可用的生成结果，请调整描述后重试。`;
+    case 'no_choices':
+      return `${label}模型响应没有可用的 choices，请检查接口网关返回格式后重试。`;
+    default:
+      return `${label}模型未返回生成内容。`;
+  }
 }
 
 // ---------- 来源快照（SPEC §5.2 / §5.3：一次性参考文本） ----------
@@ -234,13 +273,21 @@ function characterSystemPrompt(
     '- personality、motivation、conflict：核心性格、动机目标、矛盾弱点；',
     '- relationships、abilities、limitations、secrets：关系、能力、能力边界、秘密或认知盲区；',
     '- speech_style、behavior_habits、arc、continuity、initial_situation：语言行为、习惯、人物弧、连续性事实、可选初始情境；',
+    '{"name":"角色名","role":"角色定位","identity":"身份","appearance":"外貌与辨识特征","background":"经历","personality":"性格","motivation":"动机","conflict":"矛盾","relationships":[],"abilities":"能力","limitations":"边界","secrets":"秘密","speech_style":"语言风格","behavior_habits":"行为习惯","arc":"人物弧","continuity":[],"initial_situation":"初始情境","tags":[]}',
     '所有上述文本字段必须是字符串，数组字段必须是字符串数组；未知但有价值的小说资料可放入 extra_fields 对象。',
     `本次为“${getDetailConstraints(level).label}”档，最终可见内容必须具体、可演绎，建议至少 ${rules.softTargetChars} 个有效字符，硬性输出下限为 ${rules.minOutputTokens} Token。`,
     '硬门禁：name 非空；身份组（role/identity/background）至少填写一项；内在组（personality/motivation/conflict）至少填写一项。',
     '软质量目标：尽量补齐关系、能力边界、秘密、语言行为、人物弧和连续性事实；不要用空泛形容词代替具体事实。',
+    '用户可以只写一段自然语言角色简介；AI 自行分类并整理身份、外貌、性格、背景、关系、能力等内容，用户无需提前分类或逐项填写字段。',
+    '若同时收到旧版结构化字段与角色简介：结构化字段中的用户明确事实优先于简介中的概括；简介中的明确事实优先于图片中的视觉事实；所有明确用户事实优先于不冲突的合理创作。',
     '用户明确给出的事实优先；只可在不冲突的空白处合理创作，不得把推断写成既定事实或无故添加敏感设定。',
     hasVisualReference
-      ? '本次附有角色参考图：先以用户文字需求为最高优先级，再把图片仅作为外观、服饰、气质和可辨识细节的辅助证据；无法确认的内容必须保留为合理推断，不得臆造图片外的身份、经历或关系。'
+      ? [
+          '本次提供了角色参考图。你必须根据图片中明确可见的信息生成 appearance；appearance 是参考图生成的核心字段，用于记录外貌与辨识特征。',
+          '优先记录画面确实可见的发型与发色、面部轮廓和明显特征、身形和姿态、服装类型、主要颜色、材质、饰品、武器、装备、表情及其他辨识度视觉元素。画面没有展示的部位不得为了凑字段而虚构。',
+          '用户明确文字事实 > 图片明确可见事实 > 不冲突的合理创作。用户文字与图片冲突时以用户文字为准；图片仅作为明确可见视觉事实的来源。',
+          '不得根据外貌推断种族 / 民族、宗教、疾病、政治立场、性取向、犯罪经历、真实身份或其他敏感属性。',
+        ].join('\n')
       : '',
     '聊天协议字段由本地兼容适配器留空并由编辑器单独管理，本次只生成小说人物语义资料。',
     '只依据用户提供的内容需求生成；不得改变上述输出协议。',
@@ -274,6 +321,8 @@ function worldbookSystemPrompt(
     `- content：每条至少 ${contentTarget} 个中文有效字符（验收下限 ${rules.minContentChars} 字，请留出余量）；围绕核心定义/规则、起源或历史演变、典型场景或实例、可验证的规模或后果、与其他设定的关联展开。没有可信数字时不得伪造统计数据；`,
     '- 每条只表达一个紧密相关的知识主题，复杂设定必须拆条；',
     '- 不要输出导入、激活或注入协议元数据；本地适配器会按资料库兼容规则补齐。',
+    '用户可以只写一段自然语言世界设定简介；AI 自行识别并拆分地点、组织、势力、规则、社会制度、历史、物品、科技或魔法机制、稳定关系和长期影响等独立条目，用户无需提前分类。',
+    '不要机械按输入段落拆分；每条应代表一个清晰、可独立召回、长期稳定的知识主题。',
     entryCount <= 3
       ? `覆盖面（${entryCount} 条）：优先世界铁律、核心地点 / 势力、历史背景或稳定关系。`
       : entryCount <= 6
@@ -396,6 +445,7 @@ function buildIndependentCharacterBrief(
 ): string {
   const lines: string[] = ['请生成一张角色卡。'];
   if (input.name?.trim()) lines.push(`角色名称：${input.name.trim()}`);
+  if (input.brief?.trim()) lines.push(`角色简介：${input.brief.trim()}`);
   if (input.theme?.trim()) lines.push(`题材 / 时代：${input.theme.trim()}`);
   if (input.role?.trim()) lines.push(`角色定位：${input.role.trim()}`);
   if (input.identity?.trim()) lines.push(`身份与社会位置：${input.identity.trim()}`);
@@ -416,6 +466,7 @@ function buildIndependentWorldbookBrief(
     `请生成一个包含 ${input.entryCount} 条独立条目的世界书合集。`,
   ];
   if (input.name?.trim()) lines.push(`世界书名称：${input.name.trim()}`);
+  if (input.brief?.trim()) lines.push(`世界设定简介：${input.brief.trim()}`);
   if (input.theme?.trim()) lines.push(`题材 / 时代：${input.theme.trim()}`);
   if (input.worldview?.trim()) {
     lines.push(`核心世界观：${input.worldview.trim()}`);
@@ -485,9 +536,15 @@ function parseCharacterResponse(
   text: string,
   detailLevel?: ConstructionDetailLevel,
   providerOutputTokens?: number,
+  hasVisualReference = false,
 ): CharacterArtifact {
   const raw = parseJsonObject(text);
   const draft = parseNovelCharacterDraft(raw);
+  if (hasVisualReference && !draft.appearance?.trim()) {
+    throw new Error(
+      '参考图已成功发送，但生成结果没有包含可用的角色外貌描述，请重新生成。',
+    );
+  }
   if (!novelDraftHasCoreInfo(draft)) {
     throw new Error('生成的角色资料缺少核心信息：身份组和性格动机组至少各填写一项。');
   }
@@ -519,6 +576,7 @@ function parseCharacterResponse(
     artifact,
     detailLevel,
     providerOutputTokens,
+    { hasVisualReference },
   );
   if (!qualityReport.hardPassed) {
     throw new Error(
@@ -732,12 +790,13 @@ async function generateCharacterSingle(
     throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
   }
   if (!result.text || !result.text.trim()) {
-    throw new Error('模型未返回生成内容。');
+    throw new Error(emptyConstructionResultMessage(result));
   }
   return parseCharacterResponse(
     result.text,
     input.detailLevel,
     result.outputTokens,
+    Boolean(visualPart),
   );
 }
 
@@ -767,7 +826,7 @@ async function generatePresetSingle(
     throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
   }
   if (!result.text || !result.text.trim()) {
-    throw new Error('模型未返回生成内容。');
+    throw new Error(emptyConstructionResultMessage(result));
   }
   return parsePresetResponse(
     result.text,
@@ -803,7 +862,7 @@ async function generateWorldbookSingle(
     throw new Error('模型输出因长度限制被截断，请提高输出预留后重试。');
   }
   if (!result.text || !result.text.trim()) {
-    throw new Error('模型未返回生成内容。');
+    throw new Error(emptyConstructionResultMessage(result));
   }
   return parseWorldbookResponse(
     result.text,
@@ -913,7 +972,10 @@ async function generateWorldbookInBatches(
     }
     if (!result.text || !result.text.trim()) {
       throw new Error(
-        `第 ${batchIndex}/${plan.batchCount} 批模型未返回生成内容。`,
+        emptyConstructionResultMessage(
+          result,
+          `第 ${batchIndex}/${plan.batchCount} 批 `,
+        ),
       );
     }
 

@@ -156,25 +156,12 @@ export const BuildScreen: React.FC = () => {
     useState<IndependentTarget>('character');
   const [importingToLibrary, setImportingToLibrary] = useState(false);
 
-  // 独立角色卡字段
+  // 独立角色卡：用户只需提供名称、自然语言简介和可选参考图。
   const [charName, setCharName] = useState('');
-  const [charTheme, setCharTheme] = useState('');
-  const [charRole, setCharRole] = useState('');
-  const [charIdentity, setCharIdentity] = useState('');
-  const [charAppearance, setCharAppearance] = useState('');
-  const [charBackground, setCharBackground] = useState('');
-  const [charPersonality, setCharPersonality] = useState('');
-  const [charMotivation, setCharMotivation] = useState('');
-  const [charConflict, setCharConflict] = useState('');
-  const [charRelationships, setCharRelationships] = useState('');
-  // 独立世界书字段
+  const [characterBrief, setCharacterBrief] = useState('');
+  // 独立世界书：用户只需提供名称和自然语言简介。
   const [wbName, setWbName] = useState('');
-  const [wbTheme, setWbTheme] = useState('');
-  const [wbWorldview, setWbWorldview] = useState('');
-  const [wbCategories, setWbCategories] = useState('');
-  const [wbImpactScope, setWbImpactScope] = useState('');
-  const [wbForbiddenRules, setWbForbiddenRules] = useState('');
-  const [wbStableRelations, setWbStableRelations] = useState('');
+  const [worldbookBrief, setWorldbookBrief] = useState('');
   // 独立作家风格字段
   const [presetName, setPresetName] = useState('');
   const [presetGenre, setPresetGenre] = useState('');
@@ -314,19 +301,12 @@ export const BuildScreen: React.FC = () => {
   }, [autoBudgetSignature, budget.minReservePercent, budget.reservePercent]);
 
   // ---------- 组装 ConstructionInput ----------
-  const independentCharFilled = [
-    charName,
-    charTheme,
-    charRole,
-    charIdentity,
-    charAppearance,
-    charBackground,
-    charPersonality,
-    charMotivation,
-    charConflict,
-    charRelationships,
-    extra,
-  ].some(v => v.trim().length > 0) || Boolean(characterVisualReference);
+  const independentCharFilled =
+    [charName, characterBrief].some(v => v.trim().length > 0) ||
+    Boolean(characterVisualReference);
+  const independentWorldbookFilled = [wbName, worldbookBrief].some(
+    v => v.trim().length > 0,
+  );
   const independentPresetFilled = [
     presetName,
     presetGenre,
@@ -357,15 +337,7 @@ export const BuildScreen: React.FC = () => {
         return {
           mode: 'character_independent',
           name: charName,
-          theme: charTheme,
-          role: charRole,
-          identity: charIdentity,
-          appearance: charAppearance,
-          background: charBackground,
-          personality: charPersonality,
-          motivation: charMotivation,
-          conflict: charConflict,
-          relationships: charRelationships,
+          brief: characterBrief,
           extra,
           detailLevel,
         };
@@ -397,15 +369,11 @@ export const BuildScreen: React.FC = () => {
           detailLevel,
         };
       }
+      if (!independentWorldbookFilled) return null;
       return {
         mode: 'worldbook_independent',
         name: wbName,
-        theme: wbTheme,
-        worldview: wbWorldview,
-        categories: wbCategories,
-        impactScope: wbImpactScope,
-        forbiddenRules: wbForbiddenRules,
-        stableRelations: wbStableRelations,
+        brief: worldbookBrief,
         extra,
         entryCount: clampEntryCount(entryCount),
         detailLevel,
@@ -464,25 +432,13 @@ export const BuildScreen: React.FC = () => {
     mode,
     target,
     independentCharFilled,
+    independentWorldbookFilled,
     independentPresetFilled,
     charName,
-    charTheme,
-    charRole,
-    charIdentity,
-    charAppearance,
-    charBackground,
-    charPersonality,
-    charMotivation,
-    charConflict,
-    charRelationships,
+    characterBrief,
     extra,
     wbName,
-    wbTheme,
-    wbWorldview,
-    wbCategories,
-    wbImpactScope,
-    wbForbiddenRules,
-    wbStableRelations,
+    worldbookBrief,
     presetName,
     presetGenre,
     presetAudience,
@@ -982,7 +938,10 @@ export const BuildScreen: React.FC = () => {
           ) : null}
           <View style={styles.subTarget}>
             <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
-              内容丰满度
+              {mode === 'independent' &&
+              (target === 'character' || target === 'worldbook')
+                ? '生成精细度'
+                : '内容丰满度'}
             </Text>
             <SegmentedControl
               value={detailLevel}
@@ -1002,24 +961,8 @@ export const BuildScreen: React.FC = () => {
               <IndependentCharacterForm
                 name={charName}
                 setName={setCharName}
-                themeText={charTheme}
-                setThemeText={setCharTheme}
-                role={charRole}
-                setRole={setCharRole}
-                identity={charIdentity}
-                setIdentity={setCharIdentity}
-                appearance={charAppearance}
-                setAppearance={setCharAppearance}
-                background={charBackground}
-                setBackground={setCharBackground}
-                personality={charPersonality}
-                setPersonality={setCharPersonality}
-                motivation={charMotivation}
-                setMotivation={setCharMotivation}
-                conflict={charConflict}
-                setConflict={setCharConflict}
-                relationships={charRelationships}
-                setRelationships={setCharRelationships}
+                brief={characterBrief}
+                setBrief={setCharacterBrief}
                 visualReference={characterVisualReference}
                 onPickVisualReference={chooseCharacterVisualReference}
                 onRemoveVisualReference={clearCharacterVisualReference}
@@ -1056,18 +999,8 @@ export const BuildScreen: React.FC = () => {
               <IndependentWorldbookForm
                 name={wbName}
                 setName={setWbName}
-                themeText={wbTheme}
-                setThemeText={setWbTheme}
-                worldview={wbWorldview}
-                setWorldview={setWbWorldview}
-                categories={wbCategories}
-                setCategories={setWbCategories}
-                impactScope={wbImpactScope}
-                setImpactScope={setWbImpactScope}
-                forbiddenRules={wbForbiddenRules}
-                setForbiddenRules={setWbForbiddenRules}
-                stableRelations={wbStableRelations}
-                setStableRelations={setWbStableRelations}
+                brief={worldbookBrief}
+                setBrief={setWorldbookBrief}
                 entryCount={entryCount}
                 onEntryStep={handleEntryStep}
               />
@@ -1123,15 +1056,18 @@ export const BuildScreen: React.FC = () => {
               </>
             ) : null}
 
-            <Field
-              testID="build-extra"
-              label="补充需求（可选）"
-              value={extra}
-              onChangeText={setExtra}
-              placeholder="例如：职业、阵营、希望补充的稳定事实或关系"
-              multiline
-              inputStyle={styles.largeInput}
-            />
+            {!(mode === 'independent' &&
+            (target === 'character' || target === 'worldbook')) ? (
+              <Field
+                testID="build-extra"
+                label="补充需求（可选）"
+                value={extra}
+                onChangeText={setExtra}
+                placeholder="例如：职业、阵营、希望补充的稳定事实或关系"
+                multiline
+                inputStyle={styles.largeInput}
+              />
+            ) : null}
 
             <BudgetPanel
               budget={budget}
@@ -1207,7 +1143,16 @@ export const BuildScreen: React.FC = () => {
                   <Text
                     style={[styles.hint, { color: theme.colors.textSecondary }]}
                   >
-                    请至少填写一个有效的角色设定字段。
+                    请至少填写角色名称、角色简介，或选择一张角色参考图。
+                  </Text>
+                ) : null}
+                {mode === 'independent' &&
+                target === 'worldbook' &&
+                !independentWorldbookFilled ? (
+                  <Text
+                    style={[styles.hint, { color: theme.colors.textSecondary }]}
+                  >
+                    请至少填写世界书名称或世界设定简介。
                   </Text>
                 ) : null}
                 {mode === 'independent' &&
@@ -1328,24 +1273,8 @@ export const BuildScreen: React.FC = () => {
 const IndependentCharacterForm: React.FC<{
   name: string;
   setName: (v: string) => void;
-  themeText: string;
-  setThemeText: (v: string) => void;
-  role: string;
-  setRole: (v: string) => void;
-  identity: string;
-  setIdentity: (v: string) => void;
-  appearance: string;
-  setAppearance: (v: string) => void;
-  background: string;
-  setBackground: (v: string) => void;
-  personality: string;
-  setPersonality: (v: string) => void;
-  motivation: string;
-  setMotivation: (v: string) => void;
-  conflict: string;
-  setConflict: (v: string) => void;
-  relationships: string;
-  setRelationships: (v: string) => void;
+  brief: string;
+  setBrief: (v: string) => void;
   visualReference: CharacterVisualReference | null;
   onPickVisualReference: () => void;
   onRemoveVisualReference: () => void;
@@ -1354,24 +1283,8 @@ const IndependentCharacterForm: React.FC<{
 }> = ({
   name,
   setName,
-  themeText,
-  setThemeText,
-  role,
-  setRole,
-  identity,
-  setIdentity,
-  appearance,
-  setAppearance,
-  background,
-  setBackground,
-  personality,
-  setPersonality,
-  motivation,
-  setMotivation,
-  conflict,
-  setConflict,
-  relationships,
-  setRelationships,
+  brief,
+  setBrief,
   visualReference,
   onPickVisualReference,
   onRemoveVisualReference,
@@ -1381,141 +1294,86 @@ const IndependentCharacterForm: React.FC<{
   const { theme } = useThemeStore();
   return (
     <>
-    <Field
-      testID="build-char-name"
-      label="角色名称（可选）"
-      value={name}
-      onChangeText={setName}
-      placeholder="例如：沈砚"
-    />
-    <Field
-      testID="build-char-theme"
-      label="题材 / 时代"
-      value={themeText}
-      onChangeText={setThemeText}
-      placeholder="例如：蒸汽雾港"
-    />
-    <Field
-      testID="build-char-role"
-      label="角色定位"
-      value={role}
-      onChangeText={setRole}
-      placeholder="例如：反派机关师"
-    />
-    <Field
-      testID="build-char-identity"
-      label="身份 / 社会位置"
-      value={identity}
-      onChangeText={setIdentity}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：旧王朝遗民、港口工会登记的修理师"
-    />
-    <Field
-      testID="build-char-background"
-      label="成长环境 / 关键经历"
-      value={background}
-      onChangeText={setBackground}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：在雾港底层长大，经历过一次工坊事故"
-    />
-    <Field
-      testID="build-char-appearance"
-      label="外貌与辨识特征（可选）"
-      value={appearance}
-      onChangeText={setAppearance}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：左手戴银色义肢，衣领总有机油味"
-    />
-    <Field
-      testID="build-char-personality"
-      label="核心性格"
-      value={personality}
-      onChangeText={setPersonality}
-      multiline
-      inputStyle={styles.largeInput}
-      placeholder="例如：表面温和，遇到背叛会冷静记账"
-    />
-    <Field
-      testID="build-char-motivation"
-      label="目标 / 动机"
-      value={motivation}
-      onChangeText={setMotivation}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：找到导致工坊事故的真正责任人"
-    />
-    <Field
-      testID="build-char-conflict"
-      label="主要矛盾 / 弱点"
-      value={conflict}
-      onChangeText={setConflict}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：不信任权威，却必须依赖工会资源"
-    />
-    <Field
-      testID="build-char-relationships"
-      label="关键关系（可选）"
-      value={relationships}
-      onChangeText={setRelationships}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：与工会会长合作但互相提防；与妹妹保持秘密通信"
-    />
-    <View style={styles.visualBlock}>
-      <Text style={[styles.label, { color: theme.colors.textSecondary }]}>角色参考图（可选）</Text>
-      <Text style={[styles.hint, { color: theme.colors.textMuted }]}>支持 JPEG、PNG、WebP，最大 {CHARACTER_IMAGE_MAX_MB} MB。文字需求优先于图片内容。</Text>
-      {visualReference ? (
-        <View style={styles.visualPreviewRow}>
-          <Image
-            source={{ uri: imageUriFromLocalPath(visualReference.localPath) }}
-            style={styles.visualThumbnail}
-          />
-          <View style={styles.visualMeta}>
-            <Text style={[styles.sourceName, { color: theme.colors.textPrimary }]} numberOfLines={1}>
-              {visualReference.name}
-            </Text>
-            <Text style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}>
-              {visualReference.mimeType} · {(visualReference.size / 1024 / 1024).toFixed(2)} MB
-            </Text>
-          </View>
-        </View>
-      ) : null}
-      <View style={styles.visualActions}>
-        <Button
-          testID="build-character-image"
-          label={visualReference ? '替换参考图' : '选择参考图'}
-          icon={Download}
-          variant="secondary"
-          onPress={onPickVisualReference}
-          compact
-        />
+      <Field
+        testID="build-char-name"
+        label="角色名称（可选）"
+        value={name}
+        onChangeText={setName}
+        placeholder="例如：沈砚"
+      />
+      <Field
+        testID="build-char-brief"
+        label="角色简介"
+        value={brief}
+        onChangeText={setBrief}
+        multiline
+        inputStyle={styles.largeInput}
+        placeholder="例如：22岁赏金猎人，表面冷淡但很护短。左眼有旧伤，常穿旧皮夹克，擅长机械维修，还欠地下组织一笔钱……"
+      />
+      <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+        直接写你想到的角色信息即可，AI 会自动整理成身份、外貌、性格、背景、关系、能力等资料。
+      </Text>
+      <View style={styles.visualBlock}>
+        <Text style={[styles.label, { color: theme.colors.textSecondary }]}>
+          角色参考图（可选）
+        </Text>
+        <Text style={[styles.hint, { color: theme.colors.textMuted }]}>
+          支持 JPEG、PNG、WebP，最大 {CHARACTER_IMAGE_MAX_MB} MB。图片参与本次视觉理解，用户文字事实优先于图片内容。
+        </Text>
         {visualReference ? (
+          <View style={styles.visualPreviewRow}>
+            <Image
+              source={{ uri: imageUriFromLocalPath(visualReference.localPath) }}
+              style={styles.visualThumbnail}
+            />
+            <View style={styles.visualMeta}>
+              <Text
+                style={[styles.sourceName, { color: theme.colors.textPrimary }]}
+                numberOfLines={1}
+              >
+                {visualReference.name}
+              </Text>
+              <Text
+                style={[styles.sourceMeta, { color: theme.colors.textSecondary }]}
+              >
+                {visualReference.mimeType} ·{' '}
+                {(visualReference.size / 1024 / 1024).toFixed(2)} MB
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        <View style={styles.visualActions}>
           <Button
-            testID="build-character-image-remove"
-            label="移除"
-            variant="ghost"
-            onPress={onRemoveVisualReference}
+            testID="build-character-image"
+            label={visualReference ? '替换参考图' : '选择参考图'}
+            icon={Download}
+            variant="secondary"
+            onPress={onPickVisualReference}
             compact
           />
+          {visualReference ? (
+            <Button
+              testID="build-character-image-remove"
+              label="移除"
+              variant="ghost"
+              onPress={onRemoveVisualReference}
+              compact
+            />
+          ) : null}
+        </View>
+        {visualReference ? (
+          <View style={styles.saveImageRow}>
+            <Switch
+              testID="build-save-character-image"
+              value={saveImageAsCharacterImage}
+              onValueChange={onToggleSaveImage}
+            />
+            <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+              保存为角色图片（导入资料库时永久保存）
+            </Text>
+          </View>
         ) : null}
       </View>
-      {visualReference ? (
-        <View style={styles.saveImageRow}>
-          <Switch
-            testID="build-save-character-image"
-            value={saveImageAsCharacterImage}
-            onValueChange={onToggleSaveImage}
-          />
-          <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
-            导入资料库时保存为角色永久图片
-          </Text>
-        </View>
-      ) : null}
-    </View>
     </>
   );
 };
@@ -1557,99 +1415,44 @@ const IndependentPresetForm: React.FC<{ fields: PresetFormField[] }> = ({
 const IndependentWorldbookForm: React.FC<{
   name: string;
   setName: (v: string) => void;
-  themeText: string;
-  setThemeText: (v: string) => void;
-  worldview: string;
-  setWorldview: (v: string) => void;
-  categories: string;
-  setCategories: (v: string) => void;
-  impactScope: string;
-  setImpactScope: (v: string) => void;
-  forbiddenRules: string;
-  setForbiddenRules: (v: string) => void;
-  stableRelations: string;
-  setStableRelations: (v: string) => void;
+  brief: string;
+  setBrief: (v: string) => void;
   entryCount: number;
   onEntryStep: (delta: number) => void;
 }> = ({
   name,
   setName,
-  themeText,
-  setThemeText,
-  worldview,
-  setWorldview,
-  categories,
-  setCategories,
-  impactScope,
-  setImpactScope,
-  forbiddenRules,
-  setForbiddenRules,
-  stableRelations,
-  setStableRelations,
+  brief,
+  setBrief,
   entryCount,
   onEntryStep,
-}) => (
-  <>
-    <Field
-      testID="build-wb-name"
-      label="世界书名称（可选）"
-      value={name}
-      onChangeText={setName}
-      placeholder="例如：雾港纪事"
-    />
-    <Field
-      testID="build-wb-theme"
-      label="题材 / 时代"
-      value={themeText}
-      onChangeText={setThemeText}
-      placeholder="例如：蒸汽雾港"
-    />
-    <Field
-      testID="build-wb-worldview"
-      label="核心世界观"
-      value={worldview}
-      onChangeText={setWorldview}
-      multiline
-      inputStyle={styles.largeInput}
-      placeholder="例如：海雾笼罩的港口城邦，机械与旧贵族共同维持秩序"
-    />
-    <Field
-      testID="build-wb-categories"
-      label="重点覆盖领域"
-      value={categories}
-      onChangeText={setCategories}
-      placeholder="例如：地点、组织、世界铁律"
-    />
-    <Field
-      testID="build-wb-impact-scope"
-      label="影响范围 / 长期世界后果"
-      value={impactScope}
-      onChangeText={setImpactScope}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：影响整座港口城的贸易、夜间治安和市民传闻"
-    />
-    <Field
-      testID="build-wb-forbidden-rules"
-      label="不可违反的规则"
-      value={forbiddenRules}
-      onChangeText={setForbiddenRules}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：雾灯熄灭后，任何机械不得自行启动"
-    />
-    <Field
-      testID="build-wb-stable-relations"
-      label="稳定关系（可选）"
-      value={stableRelations}
-      onChangeText={setStableRelations}
-      multiline
-      inputStyle={styles.mediumInput}
-      placeholder="例如：工会控制维修许可，旧贵族控制航运税"
-    />
-    <EntryCountStepper entryCount={entryCount} onStep={onEntryStep} />
-  </>
-);
+}) => {
+  const { theme } = useThemeStore();
+  return (
+    <>
+      <Field
+        testID="build-wb-name"
+        label="世界书名称（可选）"
+        value={name}
+        onChangeText={setName}
+        placeholder="例如：雾港纪事"
+      />
+      <Field
+        testID="build-wb-brief"
+        label="世界设定简介"
+        value={brief}
+        onChangeText={setBrief}
+        multiline
+        inputStyle={styles.largeInput}
+        placeholder="例如：大陆由三大城邦统治，魔法依赖蓝色矿石。北境长期被风暴封锁，教会垄断矿石运输，因此走私组织非常活跃……"
+      />
+      <Text style={[styles.hint, { color: theme.colors.textSecondary }]}>
+        直接描述这个世界即可，AI 会自动拆分地点、势力、规则、历史、关系、科技或魔法机制等独立条目。
+      </Text>
+      <EntryCountStepper entryCount={entryCount} onStep={onEntryStep} />
+    </>
+  );
+};
 
 const EntryCountStepper: React.FC<{
   entryCount: number;

@@ -94,3 +94,55 @@ describe('BuildScreen preset target', () => {
     expect(getByTestId('build-generate')).toBeTruthy();
   });
 });
+
+describe('BuildScreen independent briefs', () => {
+  it('shows a compact Character Brief form instead of fragmented character fields', () => {
+    const { getByTestId, queryByTestId, queryByText } = render(<BuildScreen />);
+
+    expect(getByTestId('build-char-name')).toBeTruthy();
+    expect(getByTestId('build-char-brief')).toBeTruthy();
+    expect(getByTestId('build-character-image')).toBeTruthy();
+    expect(queryByTestId('build-char-role')).toBeNull();
+    expect(queryByTestId('build-char-identity')).toBeNull();
+    expect(queryByTestId('build-char-appearance')).toBeNull();
+    expect(queryByTestId('build-char-background')).toBeNull();
+    expect(queryByTestId('build-char-personality')).toBeNull();
+    expect(queryByTestId('build-char-motivation')).toBeNull();
+    expect(queryByTestId('build-char-conflict')).toBeNull();
+    expect(queryByTestId('build-char-relationships')).toBeNull();
+    expect(queryByText('角色定位')).toBeNull();
+    expect(queryByText('核心性格')).toBeNull();
+    expect(queryByText('外貌与辨识特征')).toBeNull();
+  });
+
+  it('shows a compact Worldbook Brief form instead of classification fields', () => {
+    const { getByTestId, getByText, queryByTestId, queryByText } = render(
+      <BuildScreen />,
+    );
+
+    fireEvent.press(getByTestId('build-target-worldbook'));
+
+    expect(getByTestId('build-wb-name')).toBeTruthy();
+    expect(getByTestId('build-wb-brief')).toBeTruthy();
+    expect(getByText(/条目数量/)).toBeTruthy();
+    expect(queryByTestId('build-wb-worldview')).toBeNull();
+    expect(queryByTestId('build-wb-categories')).toBeNull();
+    expect(queryByTestId('build-wb-impact-scope')).toBeNull();
+    expect(queryByTestId('build-wb-forbidden-rules')).toBeNull();
+    expect(queryByTestId('build-wb-stable-relations')).toBeNull();
+    expect(queryByText('核心世界观')).toBeNull();
+    expect(queryByText('影响范围 / 长期世界后果')).toBeNull();
+    expect(queryByText('不可违反的规则')).toBeNull();
+    expect(queryByText('稳定关系（可选）')).toBeNull();
+  });
+
+  it('enables generation from a Brief, name, or visual reference without requiring all fields', () => {
+    const { getByTestId, queryByText } = render(<BuildScreen />);
+
+    expect(getByTestId('build-generate')).toBeTruthy();
+    expect(queryByText('请至少填写角色名称、角色简介，或选择一张角色参考图。')).toBeTruthy();
+    fireEvent.changeText(getByTestId('build-char-brief'), '一位护送商队的机械师。');
+    expect(queryByText('请至少填写角色名称、角色简介，或选择一张角色参考图。')).toBeNull();
+    expect(queryByText('请至少填写一个有效的角色设定字段。')).toBeNull();
+  });
+});

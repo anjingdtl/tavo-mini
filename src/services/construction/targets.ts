@@ -122,6 +122,8 @@ interface ConstructionSharedInput {
 export interface IndependentCharacterInput extends ConstructionSharedInput {
   mode: 'character_independent';
   name?: string;
+  /** 自然语言角色简介；由构建层负责语义归类。 */
+  brief?: string;
   theme?: string;
   role?: string;
   identity?: string;
@@ -150,6 +152,8 @@ export interface CharacterFromWorldbookInput extends ConstructionSharedInput {
 export interface IndependentWorldbookInput extends ConstructionSharedInput {
   mode: 'worldbook_independent';
   name?: string;
+  /** 自然语言世界设定简介；由构建层负责拆分稳定知识主题。 */
+  brief?: string;
   theme?: string;
   worldview?: string;
   categories?: string;
