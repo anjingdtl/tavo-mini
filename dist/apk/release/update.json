@@ -1,0 +1,17 @@
+{
+  "versionName": "3.0.4",
+  "versionCode": 3000400,
+  "apkName": "ShineWriter-V3.0.4-release.apk",
+  "apkUrl": "",
+  "sha256": "20098841276305079c1f4825d7a4b21d0dcd67f99878b1894162a4c951ad2eea",
+  "forceUpdate": false,
+  "minimumVersionCode": 0,
+  "title": "ShineWriter V3.0.4",
+  "notes": [
+    "Schema 61 → 62 识别为 `schema_only` 轻量迁移，不再因新增 `llm_config.vision_support` 扫描章节/笔记正文、生成整库恢复备份或执行全库内容指纹；高风险历史迁移仍保留完整保护链。",
+    "增加迁移风险分级、启动诊断、批量指纹读取和有界 dirty-marker 恢复，覆盖中断升级、结构漂移和大数据库回归场景。",
+    "AI 角色视觉参考图恢复为单张不超过 5 MB；历史 PNG 角色卡导入不复用该上限，兼容包含大体积嵌入数据的旧 PNG。",
+    "PNG 角色卡单个及批量导入在数据库写入失败时删除新建的永久图片，避免产生孤儿资源；角色换图继续遵循先保存新图、数据库更新成功后再删除旧图。"
+  ],
+  "apkSizeBytes": 59426194
+}

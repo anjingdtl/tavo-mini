@@ -10,6 +10,7 @@ import { buildV9toV10Statements, migrateV9toV10 } from '../src/services/migratio
 import { buildV10toV11Statements, migrateV10toV11 } from '../src/services/migrations/v10-to-v11';
 import { buildV13toV14Statements, migrateV13ToV14 } from '../src/services/migrations/v13-to-v14';
 import { buildV47toV48Statements } from '../src/services/migrations/v47-to-v48';
+import { createMigrationDb } from './migrationTestUtils';
 import {
   buildV31toV32Statements,
   migrateV31ToV32,
@@ -17,6 +18,9 @@ import {
 import {
   hasBreakingMigration,
   isIncompatibleUpgrade,
+  getMigrationPlan,
+  getMigrationRisk,
+  MIGRATIONS,
   runMigrations,
   SCHEMA_VERSION,
 } from '../src/services/migrations';
@@ -43,6 +47,29 @@ function fakeDatabase(columns: string[] = []) {
 }
 
 describe('migration statement coverage', () => {
+  test('classifies every migration edge and keeps 61→62 schema-only', async () => {
+    expect(MIGRATIONS).toHaveLength(SCHEMA_VERSION - 2);
+    expect(MIGRATIONS.every(migration => migration.affectedTables.length > 0)).toBe(true);
+    expect(MIGRATIONS.every(migration => migration.risk)).toBe(true);
+    expect(getMigrationPlan(61).map(migration => `${migration.from}->${migration.to}`)).toEqual(['61->62']);
+    expect(getMigrationRisk(61)).toBe('schema_only');
+    expect(getMigrationRisk(60)).toBe('derived_data');
+    expect(getMigrationRisk(57)).toBe('content_transform');
+    expect(getMigrationRisk(46)).toBe('destructive');
+
+    const database = createMigrationDb({ schemaVersion: 61 });
+    const onBackup = jest.fn(async () => '/backup/should-not-be-used.json');
+    const result = await runMigrations(database.database as any, 61, onBackup);
+    expect(result).toMatchObject({
+      fromVersion: 61,
+      toVersion: SCHEMA_VERSION,
+      migrationsRun: 1,
+      risk: 'schema_only',
+      backupPath: null,
+    });
+    expect(onBackup).not.toHaveBeenCalled();
+  });
+
   test('builds and applies schema 3 through 11 migrations', async () => {
     const database = fakeDatabase();
     expect(buildV3toV4Statements()).toHaveLength(4);

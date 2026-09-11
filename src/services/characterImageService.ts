@@ -4,8 +4,15 @@ import { localFileUriToPath } from '../utils/localFileUri';
 
 export type CharacterImageMimeType = 'image/jpeg' | 'image/png' | 'image/webp';
 
-export const CHARACTER_IMAGE_MAX_MB = 20;
-export const CHARACTER_IMAGE_MAX_BYTES = CHARACTER_IMAGE_MAX_MB * 1024 * 1024;
+/** Product limit for AI visual-reference assets. Legacy PNG cards use a separate validator below. */
+export const CHARACTER_VISUAL_REFERENCE_MAX_MB = 5;
+export const CHARACTER_VISUAL_REFERENCE_MAX_BYTES =
+  CHARACTER_VISUAL_REFERENCE_MAX_MB * 1024 * 1024;
+
+// Keep the existing names as compatibility aliases for callers/tests that
+// treated the old generic image limit as the visual-reference limit.
+export const CHARACTER_IMAGE_MAX_MB = CHARACTER_VISUAL_REFERENCE_MAX_MB;
+export const CHARACTER_IMAGE_MAX_BYTES = CHARACTER_VISUAL_REFERENCE_MAX_BYTES;
 
 export interface CharacterVisualReference {
   localPath: string;
@@ -107,12 +114,48 @@ export async function validateCharacterVisualReference(input: {
   if (!Number.isFinite(size) || size <= 0) {
     throw new Error('角色参考图文件为空或无法读取。');
   }
-  if (size > CHARACTER_IMAGE_MAX_BYTES) {
-    throw new Error(`角色参考图不能超过 ${CHARACTER_IMAGE_MAX_MB} MB。`);
+  if (size > CHARACTER_VISUAL_REFERENCE_MAX_BYTES) {
+    throw new Error(
+      `角色参考图不能超过 ${CHARACTER_VISUAL_REFERENCE_MAX_MB} MB。`,
+    );
   }
   return {
     localPath: input.localPath,
     name: input.name || `character${extensionForMimeType(mimeType)}`,
+    mimeType,
+    size: Math.floor(size),
+  };
+}
+
+/**
+ * Validate a legacy PNG character card image.
+ *
+ * PNG cards predate the AI visual-reference limit and may legitimately be
+ * larger than 5MB because the PNG also carries the embedded card payload.
+ * Keep the safety checks (existence, non-empty file, PNG type) without applying
+ * the unrelated visual-reference size cap.
+ */
+export async function validateCharacterCardImportedImage(input: {
+  localPath: string;
+  name: string;
+  mimeType?: string | null;
+  size?: number | null;
+}): Promise<CharacterVisualReference> {
+  const mimeType = normalizeMimeType(input.name, input.mimeType);
+  if (mimeType !== 'image/png') {
+    throw new Error('角色卡图片仅支持 PNG 格式。');
+  }
+  if (!(await pathExists(input.localPath))) {
+    throw new Error('角色卡 PNG 临时文件不存在，请重新选择。');
+  }
+  const stat = await RNFS.stat(input.localPath);
+  const size = Number(input.size ?? stat.size ?? 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new Error('角色卡 PNG 文件为空或无法读取。');
+  }
+  return {
+    localPath: input.localPath,
+    name: input.name || 'character.png',
     mimeType,
     size: Math.floor(size),
   };
@@ -150,6 +193,19 @@ export async function persistCharacterImage(
   reference: CharacterVisualReference,
 ): Promise<string> {
   const validated = await validateCharacterVisualReference(reference);
+  return persistValidatedCharacterImage(validated);
+}
+
+export async function persistCharacterCardImage(
+  reference: CharacterVisualReference,
+): Promise<string> {
+  const validated = await validateCharacterCardImportedImage(reference);
+  return persistValidatedCharacterImage(validated);
+}
+
+async function persistValidatedCharacterImage(
+  validated: CharacterVisualReference,
+): Promise<string> {
   const directory = imageDirectory();
   await RNFS.mkdir(directory);
   const extension = extensionForMimeType(validated.mimeType);

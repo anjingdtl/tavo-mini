@@ -2,7 +2,9 @@ import RNFS from 'react-native-fs';
 import {
   CHARACTER_IMAGE_MAX_BYTES,
   deleteCharacterImageFile,
+  persistCharacterCardImage,
   persistCharacterImage,
+  validateCharacterCardImportedImage,
   validateCharacterVisualReference,
 } from '../src/services/characterImageService';
 
@@ -27,7 +29,7 @@ describe('character image asset lifecycle', () => {
     ).rejects.toThrow('仅支持 JPEG、PNG 或 WebP');
   });
 
-  it('rejects an image over the 20 MB boundary', async () => {
+  it('rejects a visual reference over the 5 MB boundary', async () => {
     (RNFS.stat as jest.Mock).mockResolvedValue({
       size: CHARACTER_IMAGE_MAX_BYTES + 1,
     });
@@ -37,10 +39,10 @@ describe('character image asset lifecycle', () => {
         name: 'large.png',
         mimeType: 'image/png',
       }),
-    ).rejects.toThrow('不能超过 20 MB');
+    ).rejects.toThrow('不能超过 5 MB');
   });
 
-  it('accepts an image exactly at the 20 MB boundary', async () => {
+  it('accepts a visual reference exactly at the 5 MB boundary', async () => {
     (RNFS.stat as jest.Mock).mockResolvedValue({
       size: CHARACTER_IMAGE_MAX_BYTES,
     });
@@ -54,6 +56,31 @@ describe('character image asset lifecycle', () => {
       size: CHARACTER_IMAGE_MAX_BYTES,
       mimeType: 'image/png',
     });
+  });
+
+  it('keeps legacy PNG card imports compatible above the visual-reference limit', async () => {
+    const legacySize = CHARACTER_IMAGE_MAX_BYTES + 1;
+    (RNFS.stat as jest.Mock).mockResolvedValue({ size: legacySize });
+
+    await expect(
+      validateCharacterCardImportedImage({
+        localPath: '/tmp/cache/legacy-large.png',
+        name: 'legacy-large.png',
+        mimeType: 'image/png',
+      }),
+    ).resolves.toMatchObject({
+      size: legacySize,
+      mimeType: 'image/png',
+    });
+
+    await expect(
+      persistCharacterCardImage({
+        localPath: '/tmp/cache/legacy-large.png',
+        name: 'legacy-large.png',
+        mimeType: 'image/png',
+        size: legacySize,
+      }),
+    ).resolves.toMatch(/^\/tmp\/documents\/character-images\//);
   });
 
   it('persists only validated supported images and deletes only app-owned assets', async () => {

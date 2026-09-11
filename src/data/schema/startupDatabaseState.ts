@@ -211,6 +211,10 @@ export async function markStartupDatabaseInProgress(
   options: {
     migrationInProgress: boolean;
     recoveryRequired: boolean;
+    /** Preserve an already-pending external recovery operation. */
+    databaseRestorePending?: boolean;
+    databaseImportPending?: boolean;
+    schemaRecoveryPending?: boolean;
   },
 ): Promise<void> {
   await executeTransaction(
@@ -220,9 +224,9 @@ export async function markStartupDatabaseInProgress(
       integrityMarker: STARTUP_INTEGRITY_CHECKING,
       migrationInProgress: options.migrationInProgress,
       recoveryRequired: options.recoveryRequired,
-      databaseRestorePending: false,
-      databaseImportPending: false,
-      schemaRecoveryPending: false,
+      databaseRestorePending: options.databaseRestorePending ?? false,
+      databaseImportPending: options.databaseImportPending ?? false,
+      schemaRecoveryPending: options.schemaRecoveryPending ?? false,
     }),
   );
 }

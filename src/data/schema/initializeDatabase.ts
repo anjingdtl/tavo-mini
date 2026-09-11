@@ -5,11 +5,14 @@ import {
   runMigrations,
   SCHEMA_VERSION,
   MIN_COMPATIBLE_SCHEMA_VERSION,
+  getMigrationRisk,
+  isMigrationRiskAtLeast,
 } from '../migrations';
 import type {
   InstallInfo,
   InstallType,
   MigrationResult,
+  MigrationRisk,
 } from '../migrations/types';
 import { assertValidSchema, validateSchema } from './schemaValidator';
 import { createCurrentSchema } from './createCurrentSchema';
@@ -51,6 +54,8 @@ import {
   markStartupDatabaseInProgress,
   readStartupDatabaseState,
   STARTUP_DB_STATE_CLEAN,
+  STARTUP_DB_STATE_IN_PROGRESS,
+  STARTUP_INTEGRITY_CHECKING,
   STARTUP_INTEGRITY_VERIFIED,
   type StartupDatabaseState,
 } from './startupDatabaseState';
@@ -63,7 +68,7 @@ export interface InitializeDatabaseOptions {
   onPhase?: (phase: StartupPhase) => void;
 }
 
-export type DatabaseStartupPath = 'fast' | 'deep';
+export type DatabaseStartupPath = 'fast' | 'light' | 'deep' | 'dirty_recovery';
 
 export interface DatabaseStartupTimings {
   detect_install_type: number;
@@ -74,15 +79,24 @@ export interface DatabaseStartupTimings {
   governor_hydration: number;
   receipt_reconciliation: number;
   metadata: number;
+  backup: number;
+  migration: number;
+  validation: number;
   total: number;
 }
 
-interface StartupDiagnostics {
+export interface DatabaseStartupDiagnostics {
   path: DatabaseStartupPath;
   deepReason: string;
   startedAt: number;
+  sourceSchemaVersion: number;
+  targetSchemaVersion: number;
+  migrationRisk: MigrationRisk;
+  databaseSizeBytes: number;
   timings: DatabaseStartupTimings;
 }
+
+type StartupDiagnostics = DatabaseStartupDiagnostics;
 
 function createStartupTimings(): DatabaseStartupTimings {
   return {
@@ -94,6 +108,9 @@ function createStartupTimings(): DatabaseStartupTimings {
     governor_hydration: 0,
     receipt_reconciliation: 0,
     metadata: 0,
+    backup: 0,
+    migration: 0,
+    validation: 0,
     total: 0,
   };
 }
@@ -388,6 +405,7 @@ export let lastSchemaRecovery: SchemaRecoveryState | null = null;
 export let lastStartupPath: DatabaseStartupPath | null = null;
 export let lastStartupDeepReason: string | null = null;
 export let lastStartupTimings: DatabaseStartupTimings | null = null;
+export let lastStartupDiagnostics: DatabaseStartupDiagnostics | null = null;
 
 interface FastPathDecision {
   useFastPath: boolean;
@@ -469,6 +487,74 @@ async function assessFastPath(
   };
 }
 
+function isPendingStartupFlag(value: string | null): boolean {
+  return value !== null && value !== 'false';
+}
+
+/**
+ * A dirty marker is not, by itself, evidence of a dirty database.  When the
+ * previous launch had already verified the current physical schema and no
+ * migration/recovery operation was pending, the bounded recovery only needs
+ * the marker, required-table probe, and schema signature.  This is the
+ * recovery path for a process kill between the final startup write and the
+ * clean marker; it deliberately does not scan user content.
+ */
+async function canUseBoundedDirtyRecovery(
+  database: SQLite.SQLiteDatabase,
+  installInfo: InstallInfo,
+  startupState: StartupDatabaseState,
+): Promise<boolean> {
+  if (
+    installInfo.installType === 'fresh' ||
+    installInfo.schemaVersion !== SCHEMA_VERSION ||
+    startupState.state !== STARTUP_DB_STATE_IN_PROGRESS ||
+    (startupState.integrityMarker !== STARTUP_INTEGRITY_CHECKING &&
+      startupState.integrityMarker !== STARTUP_INTEGRITY_VERIFIED)
+  ) {
+    return false;
+  }
+  if (
+    isPendingStartupFlag(startupState.migrationInProgress) ||
+    isPendingStartupFlag(startupState.recoveryRequired) ||
+    isPendingStartupFlag(startupState.databaseRestorePending) ||
+    isPendingStartupFlag(startupState.databaseImportPending) ||
+    isPendingStartupFlag(startupState.schemaRecoveryPending)
+  ) {
+    return false;
+  }
+  if (
+    Number(startupState.lastVerifiedSchemaVersion) !== SCHEMA_VERSION ||
+    Number(startupState.lastSuccessfulSchemaVersion) !== SCHEMA_VERSION ||
+    !startupState.schemaSignature
+  ) {
+    return false;
+  }
+  if ((await findMissingStartupTables(database)).length > 0) return false;
+  return (
+    (await captureDatabaseSchemaSignature(database)) ===
+    startupState.schemaSignature
+  );
+}
+
+async function readDatabaseSizeBytes(
+  database: SQLite.SQLiteDatabase,
+): Promise<number> {
+  try {
+    const [pageCount, pageSize] = await Promise.all([
+      execute(database, 'PRAGMA page_count'),
+      execute(database, 'PRAGMA page_size'),
+    ]);
+    const pages = Number(pageCount.rows.item(0)?.page_count ?? 0);
+    const size = Number(pageSize.rows.item(0)?.page_size ?? 0);
+    return Number.isFinite(pages) && Number.isFinite(size) && pages > 0 && size > 0
+      ? Math.floor(pages * size)
+      : 0;
+  } catch {
+    // Diagnostics must never make a healthy database fail to open.
+    return 0;
+  }
+}
+
 export async function initializeDatabase(
   database: SQLite.SQLiteDatabase,
   options?: InitializeDatabaseOptions,
@@ -477,11 +563,16 @@ export async function initializeDatabase(
     path: 'deep',
     deepReason: 'preflight',
     startedAt: Date.now(),
+    sourceSchemaVersion: 0,
+    targetSchemaVersion: SCHEMA_VERSION,
+    migrationRisk: 'schema_only',
+    databaseSizeBytes: 0,
     timings: createStartupTimings(),
   };
   lastStartupPath = null;
   lastStartupDeepReason = null;
   lastStartupTimings = null;
+  lastStartupDiagnostics = null;
   try {
     await initializeDatabaseCore(database, options, diagnostics);
   } finally {
@@ -490,8 +581,14 @@ export async function initializeDatabase(
     lastStartupDeepReason =
       diagnostics.path === 'deep' ? diagnostics.deepReason : null;
     lastStartupTimings = { ...diagnostics.timings };
+    lastStartupDiagnostics = {
+      ...diagnostics,
+      timings: { ...diagnostics.timings },
+    };
     const reason =
-      diagnostics.path === 'deep' ? ` reason=${diagnostics.deepReason}` : '';
+      diagnostics.path === 'fast'
+        ? ''
+        : ` reason=${diagnostics.deepReason} risk=${diagnostics.migrationRisk}`;
     if (process.env.NODE_ENV !== 'test') {
       console.info(
         `[database] startup path=${
@@ -540,16 +637,74 @@ async function initializeDatabaseCore(
         startupState,
       ),
   );
+  diagnostics.sourceSchemaVersion = installInfo.schemaVersion;
+  diagnostics.targetSchemaVersion = SCHEMA_VERSION;
+  diagnostics.databaseSizeBytes = await timeStartupStage(
+    diagnostics,
+    'metadata',
+    () => readDatabaseSizeBytes(database),
+  );
   const isFreshPath =
     installInfo.installType === 'fresh' || recoverInterruptedFreshInstall;
   const useFastPath = fastPathDecision.useFastPath;
-  diagnostics.path = useFastPath ? 'fast' : 'deep';
   diagnostics.deepReason = fastPathDecision.reason;
+
+  const schemaVersionIsSupported =
+    installInfo.schemaVersion >= MIN_COMPATIBLE_SCHEMA_VERSION &&
+    installInfo.schemaVersion <= SCHEMA_VERSION;
+  const needsMigration =
+    !isFreshPath &&
+    schemaVersionIsSupported &&
+    installInfo.schemaVersion < SCHEMA_VERSION;
+  let migrationRisk: MigrationRisk =
+    !schemaVersionIsSupported
+      ? 'destructive'
+      : needsMigration
+        ? getMigrationRisk(installInfo.schemaVersion)
+        : 'schema_only';
+  let drift: Awaited<ReturnType<typeof inspectKnownSchemaDrift>> | null = null;
+  const boundedDirtyRecovery = !useFastPath
+    ? await timeStartupStage(diagnostics, 'schema_check', () =>
+        canUseBoundedDirtyRecovery(database, installInfo, startupState),
+      )
+    : false;
+
+  // A supported version mismatch or a known physical drift needs one bounded
+  // schema inspection.  Only content-transform/destructive work escalates to
+  // the full recall + content-fingerprint + recovery-backup chain.
+  if (
+    !isFreshPath &&
+    !useFastPath &&
+    !boundedDirtyRecovery &&
+    schemaVersionIsSupported
+  ) {
+    drift = await timeStartupStage(diagnostics, 'deep_validation', () =>
+      inspectKnownSchemaDrift(database),
+    );
+    if (drift.needsRepair) migrationRisk = 'destructive';
+  }
+
+  const useLightPath =
+    !isFreshPath &&
+    !useFastPath &&
+    !boundedDirtyRecovery &&
+    needsMigration &&
+    !isMigrationRiskAtLeast(migrationRisk, 'content_transform') &&
+    !(drift?.needsRepair ?? false);
+
+  diagnostics.migrationRisk = migrationRisk;
+  diagnostics.path = useFastPath
+    ? 'fast'
+    : boundedDirtyRecovery
+      ? 'dirty_recovery'
+      : useLightPath
+        ? 'light'
+        : 'deep';
 
   // The marker is durable before any schema creation, migration, repair, or
   // other startup mutation.  A process kill after this point cannot leave a
   // clean marker behind for the next launch to trust.
-  if (!useFastPath) {
+  if (!useFastPath && !boundedDirtyRecovery) {
     if (
       !isFreshPath &&
       (installInfo.schemaVersion < MIN_COMPATIBLE_SCHEMA_VERSION ||
@@ -566,9 +721,18 @@ async function initializeDatabaseCore(
         migrationInProgress:
           !isFreshPath && installInfo.schemaVersion < SCHEMA_VERSION,
         recoveryRequired: true,
+        databaseRestorePending: isPendingStartupFlag(
+          startupState.databaseRestorePending,
+        ),
+        databaseImportPending: isPendingStartupFlag(
+          startupState.databaseImportPending,
+        ),
+        schemaRecoveryPending: isPendingStartupFlag(
+          startupState.schemaRecoveryPending,
+        ),
       }),
     );
-  } else {
+  } else if (useFastPath) {
     await timeStartupStage(diagnostics, 'metadata', () =>
       markStartupDatabaseInProgress(database, {
         migrationInProgress: false,
@@ -577,8 +741,8 @@ async function initializeDatabaseCore(
     );
   }
 
-  // beforeSnapshot is captured for the non-fresh path so we can verify after
-  // the repair that no user data was lost.
+  // beforeSnapshot is captured only on the protected deep path so we can
+  // verify after a repair that no user data was lost.
   let beforeSnapshot: UserDataRecallSnapshot | null = null;
   // CL-03: content-level fingerprint of the irreplaceable data. Compared
   // strictly after migration/repair — a same-count content rewrite now blocks
@@ -604,6 +768,11 @@ async function initializeDatabaseCore(
     // seeding.  The marker + physical signature + required-table probe above
     // are the bounded safety checks for a clean current database.
     onPhase?.('checking_schema');
+  } else if (boundedDirtyRecovery) {
+    // The previous launch had already verified the current physical schema;
+    // only its lifecycle marker was left dirty.  The marker is finalized
+    // below without re-reading user content or re-running migrations.
+    onPhase?.('checking_schema');
   } else {
     if (installInfo.schemaVersion < MIN_COMPATIBLE_SCHEMA_VERSION) {
       throw new Error(
@@ -616,34 +785,35 @@ async function initializeDatabaseCore(
       );
     }
 
-    // ── Upgrade / deep same-version path: inspect → backup → repair → migrate ──
-    const drift = await timeStartupStage(diagnostics, 'deep_validation', () =>
-      inspectKnownSchemaDrift(database),
-    );
-    const needsMigration = installInfo.schemaVersion < SCHEMA_VERSION;
-    const needsSchemaMutation = needsMigration || drift.needsRepair;
-    driftCodes = drift.repairCodes;
+    // ── Upgrade / recovery path: inspect → selectively protect → repair → migrate ──
+    const needsSchemaMutation = needsMigration || Boolean(drift?.needsRepair);
+    driftCodes = drift?.repairCodes ?? [];
+    const requiresFullProtection =
+      diagnostics.path === 'deep' && !useLightPath;
 
-    // Capture BEFORE recall and content fingerprints before any schema
-    // mutation.  Reads are fail-closed and are intentionally absent from the
-    // normal-launch fast path.
-    onPhase?.('capturing_fingerprint');
-    beforeSnapshot = await timeStartupStage(diagnostics, 'recall', () =>
-      captureUserDataRecallSnapshot(database),
-    );
-    beforeContentFingerprint = await timeStartupStage(
-      diagnostics,
-      'fingerprint',
-      () => captureUserContentFingerprint(database),
-    );
+    // Only content-transform/destructive migrations and an unknown same-
+    // version recovery retain the full before/after content protection chain.
+    // Schema-only and derived-data upgrades still get strict schema
+    // validation, but do not scan every chapter/note body or create a backup.
+    if (requiresFullProtection) {
+      onPhase?.('capturing_fingerprint');
+      beforeSnapshot = await timeStartupStage(diagnostics, 'recall', () =>
+        captureUserDataRecallSnapshot(database),
+      );
+      beforeContentFingerprint = await timeStartupStage(
+        diagnostics,
+        'fingerprint',
+        () => captureUserContentFingerprint(database),
+      );
+    }
 
     // Create + verify a schema-recovery backup BEFORE any schema mutation.
-    if (needsSchemaMutation) {
+    if (needsSchemaMutation && requiresFullProtection) {
       onPhase?.('creating_backup');
       try {
         recoveryBackup = await timeStartupStage(
           diagnostics,
-          'deep_validation',
+          'backup',
           () =>
             createSchemaRecoveryBackup(
               database,
@@ -676,7 +846,7 @@ async function initializeDatabaseCore(
 
     // Pre-migration known repair (idempotent — heals drift the versioned
     // migration engine would skip on a recorded-version-equals DB).
-    if (drift.needsRepair) {
+    if (drift?.needsRepair) {
       const repairResult = await timeStartupStage(
         diagnostics,
         'deep_validation',
@@ -706,8 +876,15 @@ async function initializeDatabaseCore(
       onPhase?.('migrating');
       lastMigrationResult = await timeStartupStage(
         diagnostics,
-        'deep_validation',
-        () => runMigrations(database, installInfo.schemaVersion),
+        'migration',
+        () =>
+          runMigrations(
+            database,
+            installInfo.schemaVersion,
+            recoveryBackup
+              ? async () => recoveryBackup?.path ?? null
+              : undefined,
+          ),
       );
     }
 
@@ -719,6 +896,20 @@ async function initializeDatabaseCore(
       () => inspectKnownSchemaDrift(database),
     );
     if (postDrift.needsRepair) {
+      if (!requiresFullProtection && !recoveryBackup) {
+        const err = makeSchemaRecoveryError(
+          'KNOWN_SCHEMA_REPAIR_FAILED',
+          '迁移后检测到未预先保护的物理漂移，已停止启动。',
+        );
+        lastSchemaRecovery = {
+          backupCreated: false,
+          repaired: false,
+          recallVerified: false,
+          driftCodes: postDrift.repairCodes,
+          error: err,
+        };
+        throw err;
+      }
       const postRepair = await timeStartupStage(
         diagnostics,
         'deep_validation',
@@ -744,15 +935,15 @@ async function initializeDatabaseCore(
     }
   }
 
-  if (!useFastPath) {
-    await timeStartupStage(diagnostics, 'deep_validation', async () => {
+  if (!useFastPath && !boundedDirtyRecovery) {
+    await timeStartupStage(diagnostics, 'validation', async () => {
       // Strict schema validation is deliberately AFTER drift repair.
       onPhase?.('validating_schema');
       await validateSchemaBeforeStartup(database);
 
-      // Seed defaults and deterministic indexes only on the deep path.  The
-      // fast path is read-light and does not perform startup writes other than
-      // its durable lifecycle markers and app metadata.
+      // Seed defaults and deterministic indexes on every non-fast path.  The
+      // light path still performs these bounded writes; unlike deep recovery,
+      // it deliberately omits content scans and recovery backups.
       await seedDefaults(database);
       await ensureCurrentIndexes(database);
 

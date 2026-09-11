@@ -7,8 +7,9 @@ import { localFileUriToPath } from '../utils/localFileUri';
 import { readTextFileWithAutoEncoding } from './textFileReader';
 import {
   cleanupTemporaryCharacterVisualReference,
-  persistCharacterImage,
-  validateCharacterVisualReference,
+  deleteCharacterImageFile,
+  persistCharacterCardImage,
+  validateCharacterCardImportedImage,
   withCharacterImageAsset,
 } from './characterImageService';
 import type { CharacterVisualReference } from './characterImageService';
@@ -333,18 +334,26 @@ async function persistPickedCharacterImage(file: PickedFile): Promise<{
   imagePath: string;
   reference: CharacterVisualReference;
 }> {
-  const reference = await validateCharacterVisualReference({
-    localPath: file.localPath,
-    name: file.name,
-    mimeType: file.mimeType,
-  });
+  let reference: CharacterVisualReference | null = null;
   try {
+    reference = await validateCharacterCardImportedImage({
+      localPath: file.localPath,
+      name: file.name,
+      mimeType: file.mimeType,
+    });
     return {
-      imagePath: await persistCharacterImage(reference),
+      imagePath: await persistCharacterCardImage(reference),
       reference,
     };
   } finally {
-    await cleanupTemporaryCharacterVisualReference(reference);
+    await cleanupTemporaryCharacterVisualReference(
+      reference || {
+        localPath: file.localPath,
+        name: file.name,
+        mimeType: 'image/png',
+        size: 0,
+      },
+    );
   }
 }
 
@@ -419,24 +428,61 @@ function isPngSelection(file: { name: string; mimeType?: string | null }): boole
   return file.name.toLowerCase().endsWith('.png') || file.mimeType === 'image/png';
 }
 
+async function importOneCharacterFromFile(
+  projectId: number,
+  file: PickedFile,
+  collectionId = 0,
+): Promise<number> {
+  let persistedImagePath: string | null = null;
+  try {
+    const isPng = isPngSelection(file);
+    let payload = isPng
+      ? await parseCharacterCardPNG(file.localPath)
+      : parseCharacterCardJSON(
+          await RNFS.readFile(file.localPath, 'utf8'),
+          file.name,
+        );
+    if (isPng) {
+      const persisted = await persistPickedCharacterImage(file);
+      persistedImagePath = persisted.imagePath;
+      payload = {
+        ...payload,
+        data: withCharacterImageAsset(
+          payload.data,
+          persisted.imagePath,
+          file.name,
+          {
+            imageMimeType: persisted.reference.mimeType,
+            imageSize: persisted.reference.size,
+          },
+        ),
+      };
+    }
+    const characterId = await db.createCharacter(
+      projectId,
+      payload.name,
+      payload.sourceType,
+      JSON.stringify(payload.data),
+      { collectionId },
+    );
+    // The database row now owns the permanent image path.
+    persistedImagePath = null;
+    return characterId;
+  } catch (error) {
+    // Persisting the file happens before the character row exists. If the DB
+    // insert (or payload construction) fails, compensate the permanent copy
+    // so single and batch imports cannot leak orphaned images.
+    if (persistedImagePath) {
+      await deleteCharacterImageFile(persistedImagePath).catch(() => {});
+    }
+    throw error;
+  }
+}
+
 export async function importSelectedCharacter(projectId: number, collectionId = 0): Promise<number | null> {
   const file = await pickLocalFile([types.json, types.images]);
   if (!file) return null;
-  const isPng = isPngSelection(file);
-  let payload = isPng
-    ? await parseCharacterCardPNG(file.localPath)
-    : parseCharacterCardJSON(await RNFS.readFile(file.localPath, 'utf8'), file.name);
-  if (isPng) {
-    const persisted = await persistPickedCharacterImage(file);
-    payload = {
-      ...payload,
-      data: withCharacterImageAsset(payload.data, persisted.imagePath, file.name, {
-        imageMimeType: persisted.reference.mimeType,
-        imageSize: persisted.reference.size,
-      }),
-    };
-  }
-  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data), { collectionId });
+  return importOneCharacterFromFile(projectId, file, collectionId);
 }
 
 export async function pickCharacterPngImageReplacement(): Promise<string | null> {
@@ -515,24 +561,6 @@ export async function importWorldBookFromJSON(
     await db.deleteWorldbookCollection(collectionId).catch(() => {});
     throw error;
   }
-}
-
-async function importOneCharacterFromFile(projectId: number, file: PickedFile, collectionId = 0): Promise<number> {
-  const isPng = isPngSelection(file);
-  let payload = isPng
-    ? await parseCharacterCardPNG(file.localPath)
-    : parseCharacterCardJSON(await RNFS.readFile(file.localPath, 'utf8'), file.name);
-  if (isPng) {
-    const persisted = await persistPickedCharacterImage(file);
-    payload = {
-      ...payload,
-      data: withCharacterImageAsset(payload.data, persisted.imagePath, file.name, {
-        imageMimeType: persisted.reference.mimeType,
-        imageSize: persisted.reference.size,
-      }),
-    };
-  }
-  return db.createCharacter(projectId, payload.name, payload.sourceType, JSON.stringify(payload.data), { collectionId });
 }
 
 export async function importCharacters(

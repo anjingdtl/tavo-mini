@@ -8,6 +8,7 @@ import {
   lastMigrationResult,
   lastSchemaRecovery,
   lastStartupDeepReason,
+  lastStartupDiagnostics,
   lastStartupPath,
   lastStartupTimings,
 } from '../src/data/schema/initializeDatabase';
@@ -143,7 +144,7 @@ describe('database startup Fast Path / deep-path safety boundary', () => {
     );
   });
 
-  it('schema upgrade is deep and keeps backup plus before/after content checks', async () => {
+  it('schema-only/derived-data upgrade uses the light path without content scans or backup', async () => {
     const db = await createCleanDatabase();
     await db.executeSql(
       `INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '60')`,
@@ -156,11 +157,80 @@ describe('database startup Fast Path / deep-path safety boundary', () => {
 
     await initializeDatabase(db as any);
 
-    expect(lastStartupPath).toBe('deep');
-    expect(lastStartupDeepReason).toBe('schema_version_mismatch');
+    expect(lastStartupPath).toBe('light');
+    expect(lastStartupDeepReason).toBeNull();
     expect(lastMigrationResult?.fromVersion).toBe(60);
     expect(lastMigrationResult?.toVersion).toBe(SCHEMA_VERSION);
     expect(lastMigrationResult?.migrationsRun).toBe(2);
+    expect(lastMigrationResult?.risk).toBe('derived_data');
+    expect(lastMigrationResult?.backupPath).toBeNull();
+    expect(lastSchemaRecovery).toBeNull();
+    expect(fingerprintSpy).not.toHaveBeenCalled();
+    expect(recallSpy).not.toHaveBeenCalled();
+    expect(lastStartupDiagnostics).toEqual(
+      expect.objectContaining({
+        path: 'light',
+        sourceSchemaVersion: 60,
+        targetSchemaVersion: SCHEMA_VERSION,
+        migrationRisk: 'derived_data',
+        databaseSizeBytes: expect.any(Number),
+      }),
+    );
+    expect(lastStartupTimings).toEqual(
+      expect.objectContaining({ backup: 0, fingerprint: 0, recall: 0 }),
+    );
+  });
+
+  it('61→62 adds vision_support on the light path without a content scan', async () => {
+    const db = await createCleanDatabase();
+    await db.executeSql('ALTER TABLE llm_config DROP COLUMN vision_support');
+    await db.executeSql(
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '61')`,
+    );
+    const fingerprintSpy = jest.spyOn(
+      fingerprintModule,
+      'captureUserContentFingerprint',
+    );
+    const recallSpy = jest.spyOn(recallModule, 'captureUserDataRecallSnapshot');
+
+    await initializeDatabase(db as any);
+
+    expect(lastStartupPath).toBe('light');
+    expect(lastMigrationResult).toEqual(
+      expect.objectContaining({
+        fromVersion: 61,
+        toVersion: SCHEMA_VERSION,
+        migrationsRun: 1,
+        risk: 'schema_only',
+        backupPath: null,
+      }),
+    );
+    expect(lastSchemaRecovery).toBeNull();
+    expect(fingerprintSpy).not.toHaveBeenCalled();
+    expect(recallSpy).not.toHaveBeenCalled();
+    const [columns] = await db.executeSql('PRAGMA table_info(llm_config)');
+    const columnNames = Array.from({ length: columns.rows.length }, (_, index) =>
+      String(columns.rows.item(index).name),
+    );
+    expect(columnNames).toContain('vision_support');
+  });
+
+  it('content-transform historical upgrade keeps backup and before/after content checks', async () => {
+    const db = await createCleanDatabase();
+    await db.executeSql(
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '57')`,
+    );
+    const fingerprintSpy = jest.spyOn(
+      fingerprintModule,
+      'captureUserContentFingerprint',
+    );
+    const recallSpy = jest.spyOn(recallModule, 'captureUserDataRecallSnapshot');
+
+    await initializeDatabase(db as any);
+
+    expect(lastStartupPath).toBe('deep');
+    expect(lastStartupDeepReason).toBe('schema_version_mismatch');
+    expect(lastMigrationResult?.risk).toBe('content_transform');
     expect(lastSchemaRecovery?.backupCreated).toBe(true);
     expect(fingerprintSpy).toHaveBeenCalledTimes(2);
     expect(recallSpy).toHaveBeenCalledTimes(2);
@@ -208,8 +278,12 @@ describe('database startup Fast Path / deep-path safety boundary', () => {
     expect(state.rows.item(0).value).toBe('clean');
   });
 
-  it('an interrupted startup marker forces deep recovery', async () => {
+  it('an interrupted clean startup marker uses bounded dirty recovery', async () => {
     const db = await createCleanDatabase();
+    const fingerprintSpy = jest.spyOn(
+      fingerprintModule,
+      'captureUserContentFingerprint',
+    );
     await db.executeSql(
       `INSERT OR REPLACE INTO settings (key, value)
        VALUES ('startup_db_state', 'in_progress')`,
@@ -217,7 +291,9 @@ describe('database startup Fast Path / deep-path safety boundary', () => {
 
     await initializeDatabase(db as any);
 
-    expect(lastStartupPath).toBe('deep');
-    expect(lastStartupDeepReason).toBe('startup_state_in_progress');
+    expect(lastStartupPath).toBe('dirty_recovery');
+    expect(lastStartupDeepReason).toBeNull();
+    expect(lastSchemaRecovery).toBeNull();
+    expect(fingerprintSpy).not.toHaveBeenCalled();
   });
 });

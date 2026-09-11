@@ -12,17 +12,20 @@ export {
   lastStartupPath,
   lastStartupDeepReason,
   lastStartupTimings,
+  lastStartupDiagnostics,
   repairKnownSchemaDefects,
 } from '../data/schema/initializeDatabase';
 export type {
   DatabaseStartupPath,
   DatabaseStartupTimings,
+  DatabaseStartupDiagnostics,
   SchemaRecoveryState,
 } from '../data/schema/initializeDatabase';
 export type {
   InstallInfo,
   InstallType,
   MigrationResult,
+  MigrationRisk,
 } from '../data/migrations/types';
 export type { ResourceType, RowRecord } from '../data/repositories/shared';
 

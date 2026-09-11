@@ -1,4 +1,4 @@
-import { pickLocalFiles, importCharacters, importCharactersAsCollection, importWorldBooks, importNotes } from '../src/services/fileImport';
+import { pickLocalFiles, importSelectedCharacter, importCharacters, importCharactersAsCollection, importWorldBooks, importNotes } from '../src/services/fileImport';
 import * as picker from '@react-native-documents/picker';
 import * as db from '../src/services/database';
 import RNFS from 'react-native-fs';
@@ -30,8 +30,12 @@ jest.mock('../src/services/database', () => ({
 jest.mock('react-native-fs', () => ({
   readFile: jest.fn(async () => '{"spec":"chara_card_v2","data":{"name":"x"}}'),
   DocumentDirectoryPath: '/app/docs',
+  CachesDirectoryPath: '/cache',
+  exists: jest.fn(async () => true),
+  stat: jest.fn(async () => ({ size: 1024 })),
   mkdir: jest.fn(async () => undefined),
   copyFile: jest.fn(async () => undefined),
+  unlink: jest.fn(async () => undefined),
   readDir: jest.fn(async () => []),
 }));
 
@@ -42,6 +46,25 @@ jest.mock('../src/native/PngMetadataModule', () => ({
 jest.mock('../src/services/textFileReader', () => ({
   readTextFileWithAutoEncoding: jest.fn(async () => '第一段\n\n第二段\n\n第三段'),
 }));
+
+function pngWithCharacterCard(name = 'x'): string {
+  const signature = Buffer.from('89504e470d0a1a0a', 'hex');
+  const text = Buffer.from(
+    `chara\0${JSON.stringify({ spec: 'chara_card_v2', data: { name } })}`,
+    'latin1',
+  );
+  const chunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    return Buffer.concat([
+      length,
+      Buffer.from(type, 'latin1'),
+      data,
+      Buffer.alloc(4),
+    ]);
+  };
+  return Buffer.concat([signature, chunk('tEXt', text), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+}
 
 describe('pickLocalFiles', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -87,6 +110,24 @@ describe('pickLocalFiles', () => {
 describe('importCharacters', () => {
   beforeEach(() => jest.clearAllMocks());
 
+  test('single PNG import removes the permanent copy when DB creation fails', async () => {
+    (picker.pick as jest.Mock).mockResolvedValueOnce([
+      { uri: 'content://legacy-large', name: 'legacy-large.png', type: 'image/png' },
+    ]);
+    (picker.keepLocalCopy as jest.Mock).mockResolvedValueOnce([
+      { status: 'success', localUri: 'file:///cache/legacy-large.png' },
+    ]);
+    (RNFS.readFile as jest.Mock).mockResolvedValueOnce(pngWithCharacterCard('legacy'));
+    (RNFS.stat as jest.Mock).mockResolvedValue({ size: 5 * 1024 * 1024 + 1 });
+    (db.createCharacter as jest.Mock).mockRejectedValueOnce(new Error('DB error'));
+
+    await expect(importSelectedCharacter(1)).rejects.toThrow('DB error');
+
+    const permanentPath = (RNFS.copyFile as jest.Mock).mock.calls[0][1];
+    expect(permanentPath).toMatch(/^\/app\/docs\/character-images\//);
+    expect(RNFS.unlink).toHaveBeenCalledWith(permanentPath);
+  });
+
   test('all files succeed', async () => {
     let idCounter = 1;
     (db.createCharacter as jest.Mock).mockImplementation(async () => idCounter++);
@@ -117,6 +158,31 @@ describe('importCharacters', () => {
     expect(result.success).toHaveLength(1);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0]).toEqual({ fileName: 'b.json', error: 'DB error' });
+  });
+
+  test('batch PNG import compensates only the failed row image', async () => {
+    (RNFS.readFile as jest.Mock)
+      .mockResolvedValueOnce(pngWithCharacterCard('ok'))
+      .mockResolvedValueOnce(pngWithCharacterCard('failed'));
+    (RNFS.stat as jest.Mock).mockResolvedValue({ size: 5 * 1024 * 1024 + 1 });
+    let call = 0;
+    (db.createCharacter as jest.Mock).mockImplementation(async () => {
+      call += 1;
+      if (call === 1) return 100;
+      throw new Error('DB error');
+    });
+
+    const result = await importCharacters(1, [
+      { localPath: '/cache/ok.png', name: 'ok.png', mimeType: 'image/png' },
+      { localPath: '/cache/failed.png', name: 'failed.png', mimeType: 'image/png' },
+    ]);
+
+    expect(result.success).toHaveLength(1);
+    expect(result.failed).toHaveLength(1);
+    const permanentPaths = (RNFS.copyFile as jest.Mock).mock.calls.map(callArgs => callArgs[1]);
+    expect(permanentPaths).toHaveLength(2);
+    expect(RNFS.unlink).toHaveBeenCalledWith(permanentPaths[1]);
+    expect(RNFS.unlink).not.toHaveBeenCalledWith(permanentPaths[0]);
   });
 
   test('empty file list returns empty result', async () => {

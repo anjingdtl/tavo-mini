@@ -129,9 +129,15 @@ export const CONTENT_FINGERPRINT_TABLES: readonly ContentFingerprintTableSpec[] 
 ];
 
 export const MAX_ROW_HASH_MAP_ROWS = 200_000;
+/** Keep deep-path reads bounded so a large table never arrives as one SQLite result. */
+export const FINGERPRINT_ROW_BATCH_SIZE = 256;
 
 /** Explicit normalization tokens — null ≠ '' ≠ 0 ≠ false ≠ missing column. */
 const MISSING_COLUMN_TOKEN = '<<column-missing>>';
+
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+}
 
 export function normalizeFingerprintValue(value: unknown): string {
   if (value === null || value === undefined) return 'null';
@@ -276,19 +282,6 @@ export async function captureUserContentFingerprint(
       );
     }
 
-    let result;
-    try {
-      result = await execute(
-        database,
-        `SELECT ${selectColumns.join(', ')} FROM ${spec.table}`,
-      );
-    } catch (error: any) {
-      // Fail-closed: never swallow a read error into an empty snapshot.
-      throw new Error(
-        `内容指纹读取失败：${spec.table}（${error?.message ?? String(error)}）`,
-      );
-    }
-
     const rows: Array<{ key: string; hash: string }> = [];
     // Per-column value hashes for column-set alignment (bounded by the cap).
     const columnValues: Record<string, string[]> = {};
@@ -299,17 +292,60 @@ export async function captureUserContentFingerprint(
       values: Record<string, string>;
     }> = [];
     for (const column of available) columnValues[column] = [];
+    let rowCount = 0;
+    let bounded = true;
+    let offset = 0;
+    const orderBy = keyAvailable.length
+      ? ` ORDER BY ${keyAvailable.join(', ')}`
+      : '';
 
-    for (let i = 0; i < result.rows.length; i += 1) {
-      const row = result.rows.item(i) as Record<string, unknown>;
-      rows.push({ key: rowKeyOf(spec, row), hash: rowHash(spec, row, missingColumns) });
-      const perRow: Record<string, string> = {};
-      for (const column of available) {
-        const valueHash = sha256Hex(normalizeFingerprintValue(row[column]));
-        columnValues[column].push(valueHash);
-        perRow[column] = valueHash;
+    // Read in deterministic pages. OFFSET is intentional here:
+    // startup is a quiescent boundary, and it keeps the SQL portable across
+    // the native SQLite and in-memory test adapters while bounding each
+    // result set and yielding between pages.
+    while (true) {
+      let result;
+      try {
+        result = await execute(
+          database,
+          `SELECT ${selectColumns.join(', ')} FROM ${spec.table}${orderBy} LIMIT ? OFFSET ?`,
+          [FINGERPRINT_ROW_BATCH_SIZE, offset],
+        );
+      } catch (error: any) {
+        // Fail-closed: never swallow a read error into an empty snapshot.
+        throw new Error(
+          `内容指纹读取失败：${spec.table}（${error?.message ?? String(error)}）`,
+        );
       }
-      rowColumnValueHashes.push({ key: rowKeyOf(spec, row), values: perRow });
+
+      const batchLength = result.rows.length;
+      for (let i = 0; i < batchLength; i += 1) {
+        const row = result.rows.item(i) as Record<string, unknown>;
+        rowCount += 1;
+        const key = rowKeyOf(spec, row);
+        rows.push({ key, hash: rowHash(spec, row, missingColumns) });
+        if (bounded) {
+          const perRow: Record<string, string> = {};
+          for (const column of available) {
+            const valueHash = sha256Hex(normalizeFingerprintValue(row[column]));
+            columnValues[column].push(valueHash);
+            perRow[column] = valueHash;
+          }
+          rowColumnValueHashes.push({ key, values: perRow });
+          if (rowCount > MAX_ROW_HASH_MAP_ROWS) {
+            // The comparator intentionally falls back to aggregate-only
+            // evidence above the cap. Drop the bounded maps as soon as the
+            // cap is crossed instead of retaining a mostly-useless prefix.
+            bounded = false;
+            rowColumnValueHashes.length = 0;
+            for (const column of available) columnValues[column] = [];
+          }
+        }
+      }
+
+      if (batchLength < FINGERPRINT_ROW_BATCH_SIZE) break;
+      offset += batchLength;
+      await yieldToEventLoop();
     }
     // Stable sort by key before hashing — insertion order must not matter.
     rows.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -320,7 +356,7 @@ export async function captureUserContentFingerprint(
     const rowHashes = new Map<string, string>();
     const rowColumnHashes = new Map<string, Record<string, string>>();
     const columnAggregates: Record<string, string> = {};
-    const bounded = rows.length <= MAX_ROW_HASH_MAP_ROWS;
+    bounded = rowCount <= MAX_ROW_HASH_MAP_ROWS;
     if (bounded) {
       for (const row of rows) rowHashes.set(row.key, row.hash);
       for (const row of rowColumnValueHashes) {
@@ -332,11 +368,11 @@ export async function captureUserContentFingerprint(
       }
     }
     const aggregateHash = sha256Hex(
-      JSON.stringify([rows.length, rows.map(r => r.hash)]),
+      JSON.stringify([rowCount, rows.map(r => r.hash)]),
     );
     tables[spec.label] = {
       missing: false,
-      rowCount: rows.length,
+      rowCount,
       columnsUsed: [...available].sort(),
       columnAggregates,
       rowHashes,

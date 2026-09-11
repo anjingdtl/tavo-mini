@@ -1,5 +1,9 @@
 import type SQLite from 'react-native-sqlite-storage';
-import type { Migration, MigrationResult } from './types';
+import type {
+  Migration,
+  MigrationResult,
+  MigrationRisk,
+} from './types';
 import { executeTransaction } from '../database/transaction';
 import { buildV3toV4Statements } from './v3-to-v4';
 import { buildV4toV5Statements } from './v4-to-v5';
@@ -70,7 +74,9 @@ export const MIN_COMPATIBLE_SCHEMA_VERSION = 3;
 // migrations.
 const noSchemaStatements = async () => [];
 
-const MIGRATIONS: Migration[] = [
+type MigrationDefinition = Omit<Migration, 'risk' | 'affectedTables'>;
+
+const MIGRATION_DEFINITIONS: MigrationDefinition[] = [
   { from: 2, to: 3, breaking: true, buildStatements: async () => [] },
   {
     from: 3,
@@ -465,18 +471,400 @@ const MIGRATIONS: Migration[] = [
   },
 ];
 
+export const MIGRATION_RISK_ORDER: readonly MigrationRisk[] = [
+  'schema_only',
+  'derived_data',
+  'content_transform',
+  'destructive',
+];
+
+const MIGRATION_RISK_RANK: Record<MigrationRisk, number> = {
+  schema_only: 0,
+  derived_data: 1,
+  content_transform: 2,
+  destructive: 3,
+};
+
+interface MigrationMetadata {
+  risk: MigrationRisk;
+  affectedTables: readonly string[];
+}
+
+/**
+ * Every migration edge is classified explicitly.  The classification is a
+ * startup-safety contract, not a product compatibility label:
+ * `schema_only` may use the light path, `derived_data` may rebuild bounded
+ * aggregates, while `content_transform` and `destructive` retain the full
+ * backup + before/after protection chain.
+ */
+const MIGRATION_METADATA: Record<string, MigrationMetadata> = {
+  '2->3': {
+    risk: 'destructive',
+    affectedTables: ['legacy schema boundary'],
+  },
+  '3->4': {
+    risk: 'derived_data',
+    affectedTables: ['project_resources'],
+  },
+  '4->5': {
+    risk: 'content_transform',
+    affectedTables: ['worldbook_collections', 'worldbook_entries'],
+  },
+  '5->6': {
+    risk: 'schema_only',
+    affectedTables: ['content_revisions'],
+  },
+  '6->7': {
+    risk: 'schema_only',
+    affectedTables: ['generation_drafts'],
+  },
+  '7->8': {
+    risk: 'schema_only',
+    affectedTables: ['llm_usage_logs'],
+  },
+  '8->9': {
+    risk: 'schema_only',
+    affectedTables: ['project_note_config', 'note_style_profiles'],
+  },
+  '9->10': {
+    risk: 'schema_only',
+    affectedTables: ['llm_usage_logs'],
+  },
+  '10->11': {
+    risk: 'content_transform',
+    affectedTables: ['character_collections', 'characters'],
+  },
+  '11->12': {
+    risk: 'schema_only',
+    affectedTables: ['local_llm_models', 'llm_config'],
+  },
+  '12->13': {
+    risk: 'content_transform',
+    affectedTables: ['local_llm_models', 'llm_config'],
+  },
+  '13->14': {
+    risk: 'schema_only',
+    affectedTables: ['project_note_config'],
+  },
+  '14->15': {
+    risk: 'derived_data',
+    affectedTables: [
+      'project_story_memory_policy',
+      'chapter_memory_patches',
+      'story_memory_snapshots',
+      'story_memory_batches',
+    ],
+  },
+  '15->16': {
+    risk: 'derived_data',
+    affectedTables: [
+      'project_story_memory_policy',
+      'story_memory_batches',
+      'story_memory_snapshots',
+    ],
+  },
+  '16->17': {
+    risk: 'schema_only',
+    affectedTables: ['note_collections', 'notes'],
+  },
+  '17->18': {
+    risk: 'schema_only',
+    affectedTables: ['project_collection_settings'],
+  },
+  '18->19': {
+    risk: 'schema_only',
+    affectedTables: [
+      'continuation_sources',
+      'continuation_source_text_chunks',
+      'continuation_source_chapters',
+      'continuation_settings',
+      'continuation_import_jobs',
+    ],
+  },
+  '19->20': {
+    risk: 'schema_only',
+    affectedTables: [
+      'continuation_canon_snapshots',
+      'continuation_analysis_runs',
+      'canon_evidence',
+      'canon_world_rules',
+      'canon_characters',
+      'canon_timeline_events',
+      'continuation_settings',
+    ],
+  },
+  '20->21': {
+    risk: 'schema_only',
+    affectedTables: [
+      'continuation_generation_settings',
+      'continuation_generation_runs',
+      'continuation_generation_artifacts',
+      'continuation_generation_stage_results',
+      'continuation_generation_checks',
+      'continuation_state_proposals',
+      'continuation_state_events',
+      'continuation_state_sync_outbox',
+      'continuation_style_profiles',
+    ],
+  },
+  '21->22': {
+    risk: 'derived_data',
+    affectedTables: ['continuation_analysis_work_items'],
+  },
+  '22->23': {
+    risk: 'destructive',
+    affectedTables: ['continuation_analysis_work_items'],
+  },
+  '23->24': {
+    risk: 'derived_data',
+    affectedTables: [
+      'continuation_analysis_digest_runs',
+      'continuation_analysis_digest_items',
+    ],
+  },
+  '24->25': {
+    risk: 'schema_only',
+    affectedTables: ['continuation_resource_bindings'],
+  },
+  '25->26': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_style_profiles',
+      'continuation_settings',
+      'continuation_analysis_runs',
+    ],
+  },
+  '26->27': {
+    risk: 'destructive',
+    affectedTables: ['llm_config', 'local_llm_models'],
+  },
+  '27->28': {
+    risk: 'destructive',
+    affectedTables: ['continuation_analysis_work_items'],
+  },
+  '28->29': {
+    risk: 'schema_only',
+    affectedTables: ['continuation_sources', 'continuation_source_chapters'],
+  },
+  '29->30': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_analysis_runs',
+      'continuation_analysis_work_items',
+      'canon_evidence',
+    ],
+  },
+  '30->31': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_analysis_runs',
+      'continuation_analysis_work_items',
+      'canon_evidence',
+    ],
+  },
+  '31->32': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_generation_settings',
+      'continuation_generation_runs',
+      'continuation_generation_stage_results',
+    ],
+  },
+  '32->33': {
+    risk: 'destructive',
+    affectedTables: ['canon_evidence', 'canon_evidence_links'],
+  },
+  '33->34': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_generation_runs',
+      'continuation_generation_artifacts',
+      'continuation_generation_stage_results',
+    ],
+  },
+  '34->35': {
+    risk: 'destructive',
+    affectedTables: [
+      'continuation_analysis_runs',
+      'continuation_analysis_work_items',
+      'canon_evidence',
+    ],
+  },
+  '35->36': {
+    risk: 'schema_only',
+    affectedTables: ['outlines'],
+  },
+  '36->37': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_tasks'],
+  },
+  '37->38': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_tasks'],
+  },
+  '38->39': {
+    risk: 'derived_data',
+    affectedTables: ['pipeline_tasks', 'pipeline_stage_checkpoints'],
+  },
+  '39->40': {
+    risk: 'derived_data',
+    affectedTables: ['canon_evidence'],
+  },
+  '40->41': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_stage_attempts'],
+  },
+  '41->42': {
+    risk: 'schema_only',
+    affectedTables: ['multi_chapter_batches', 'multi_chapter_batch_items'],
+  },
+  '42->43': {
+    risk: 'content_transform',
+    affectedTables: ['project_story_memory_policy'],
+  },
+  '43->44': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_tasks', 'multi_chapter_batches'],
+  },
+  '44->45': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_stage_attempts'],
+  },
+  '45->46': {
+    risk: 'schema_only',
+    affectedTables: ['multi_chapter_batches'],
+  },
+  '46->47': {
+    risk: 'destructive',
+    affectedTables: [
+      'pipeline_tasks',
+      'pipeline_stage_checkpoints',
+      'pipeline_stage_attempts',
+    ],
+  },
+  '47->48': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_tasks'],
+  },
+  '48->49': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_stage_attempts'],
+  },
+  '49->50': {
+    risk: 'schema_only',
+    affectedTables: ['story_memory_request_attempts'],
+  },
+  '50->51': {
+    risk: 'schema_only',
+    affectedTables: ['llm_usage_logs', 'pipeline_stage_attempts'],
+  },
+  '51->52': {
+    risk: 'content_transform',
+    affectedTables: ['presets'],
+  },
+  '52->53': {
+    risk: 'schema_only',
+    affectedTables: ['multi_chapter_batches', 'multi_chapter_batch_items'],
+  },
+  '53->54': {
+    risk: 'schema_only',
+    affectedTables: ['multi_chapter_batches'],
+  },
+  '54->55': {
+    risk: 'schema_only',
+    affectedTables: ['pipeline_tasks', 'multi_chapter_batches'],
+  },
+  '55->56': {
+    risk: 'destructive',
+    affectedTables: ['continuation_generation_stage_results'],
+  },
+  '56->57': {
+    risk: 'destructive',
+    affectedTables: ['continuation_generation_artifacts'],
+  },
+  '57->58': {
+    risk: 'content_transform',
+    affectedTables: ['llm_config'],
+  },
+  '58->59': {
+    risk: 'derived_data',
+    affectedTables: ['project_writing_stats', 'chapters'],
+  },
+  '59->60': {
+    risk: 'derived_data',
+    affectedTables: ['writing_governor_profiles'],
+  },
+  '60->61': {
+    risk: 'derived_data',
+    affectedTables: [
+      'continuation_current_final_authorities',
+      'writing_request_receipts',
+      'continuation_generation_artifacts',
+    ],
+  },
+  '61->62': {
+    risk: 'schema_only',
+    affectedTables: ['llm_config'],
+  },
+};
+
+function migrationKey(from: number, to: number): string {
+  return `${from}->${to}`;
+}
+
+export const MIGRATIONS: Migration[] = MIGRATION_DEFINITIONS.map(
+  migration => {
+    const metadata = MIGRATION_METADATA[migrationKey(migration.from, migration.to)];
+    if (!metadata) {
+      throw new Error(
+        `Migration ${migration.from}->${migration.to} is missing risk metadata`,
+      );
+    }
+    return { ...migration, ...metadata };
+  },
+);
+
+export function getMigrationPlan(fromVersion: number): Migration[] {
+  return MIGRATIONS.filter(
+    migration =>
+      migration.from >= fromVersion && migration.to <= SCHEMA_VERSION,
+  );
+}
+
+export function highestMigrationRisk(
+  migrations: readonly Pick<Migration, 'risk'>[],
+): MigrationRisk {
+  return migrations.reduce<MigrationRisk>(
+    (highest, migration) =>
+      MIGRATION_RISK_RANK[migration.risk] > MIGRATION_RISK_RANK[highest]
+        ? migration.risk
+        : highest,
+    'schema_only',
+  );
+}
+
+export function getMigrationRisk(fromVersion: number): MigrationRisk {
+  return highestMigrationRisk(getMigrationPlan(fromVersion));
+}
+
+export function isMigrationRiskAtLeast(
+  risk: MigrationRisk,
+  minimum: MigrationRisk,
+): boolean {
+  return MIGRATION_RISK_RANK[risk] >= MIGRATION_RISK_RANK[minimum];
+}
+
 export async function runMigrations(
   db: SQLite.SQLiteDatabase,
   fromVersion: number,
   onBackup?: () => Promise<string | null>,
 ): Promise<MigrationResult> {
-  const needed = MIGRATIONS.filter(
-    m => m.from >= fromVersion && m.to <= SCHEMA_VERSION,
-  );
+  const needed = getMigrationPlan(fromVersion);
   const hasBreaking = needed.some(m => m.breaking);
+  const risk = highestMigrationRisk(needed);
 
   let backupPath: string | null = null;
-  if (hasBreaking && onBackup) {
+  if (isMigrationRiskAtLeast(risk, 'content_transform') && onBackup) {
     backupPath = await onBackup();
   }
 
@@ -557,14 +945,16 @@ export async function runMigrations(
     toVersion: SCHEMA_VERSION,
     migrationsRun: needed.length,
     hadBreaking: hasBreaking,
+    risk,
+    affectedTables: [
+      ...new Set(needed.flatMap(migration => migration.affectedTables)),
+    ],
     backupPath,
   };
 }
 
 export function hasBreakingMigration(fromVersion: number): boolean {
-  return MIGRATIONS.some(
-    m => m.from >= fromVersion && m.to <= SCHEMA_VERSION && m.breaking,
-  );
+  return getMigrationPlan(fromVersion).some(migration => migration.breaking);
 }
 
 export function isIncompatibleUpgrade(fromVersion: number): boolean {
