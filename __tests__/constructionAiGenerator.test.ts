@@ -135,6 +135,32 @@ describe('constructionAiGenerator', () => {
     });
   });
 
+  describe('legacy independent extra compatibility', () => {
+    it('keeps legacy extra in independent character prompts', () => {
+      const { messages } = buildConstructionMessages({
+        mode: 'character_independent',
+        name: '测试角色',
+        extra: '必须使用左手剑',
+      });
+      const user = messages.find(message => message.role === 'user')!.content;
+
+      expect(user).toContain('补充需求：必须使用左手剑');
+    });
+
+    it('keeps legacy extra in independent worldbook prompts', () => {
+      const { messages } = buildConstructionMessages({
+        mode: 'worldbook_independent',
+        name: '测试世界',
+        brief: '一个需要展开的世界设定。',
+        extra: '重点生成宗教制度',
+        entryCount: 4,
+      });
+      const user = messages.find(message => message.role === 'user')!.content;
+
+      expect(user).toContain('补充需求：重点生成宗教制度');
+    });
+  });
+
   describe('mode: character_from_worldbook', () => {
     it('embeds all worldbook source semantics into the user prompt', () => {
       const snapshot = buildWorldbookSourceSnapshot({

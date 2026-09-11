@@ -338,7 +338,6 @@ export const BuildScreen: React.FC = () => {
           mode: 'character_independent',
           name: charName,
           brief: characterBrief,
-          extra,
           detailLevel,
         };
       }
@@ -374,7 +373,6 @@ export const BuildScreen: React.FC = () => {
         mode: 'worldbook_independent',
         name: wbName,
         brief: worldbookBrief,
-        extra,
         entryCount: clampEntryCount(entryCount),
         detailLevel,
       };

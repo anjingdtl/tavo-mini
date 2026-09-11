@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../src/store/settingsStore', () => ({
   useSettingsStore: () => ({
@@ -70,6 +70,11 @@ jest.mock('../src/services/construction/characterDraftAdapter', () => ({
 }));
 
 import { BuildScreen } from '../src/screens/BuildScreen';
+import { generateConstruction } from '../src/services/constructionAiGenerator';
+
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 
 describe('BuildScreen preset target', () => {
   it('shows preset as a peer target with independent mechanism fields', () => {
@@ -144,5 +149,78 @@ describe('BuildScreen independent briefs', () => {
     fireEvent.changeText(getByTestId('build-char-brief'), '一位护送商队的机械师。');
     expect(queryByText('请至少填写角色名称、角色简介，或选择一张角色参考图。')).toBeNull();
     expect(queryByText('请至少填写一个有效的角色设定字段。')).toBeNull();
+  });
+
+  it('does not forward stale extra when generating an independent character brief', async () => {
+    const { getByText, getByTestId } = render(<BuildScreen />);
+
+    fireEvent.press(getByText('由 TXT'));
+    fireEvent.changeText(getByTestId('build-extra'), '必须是一名反派角色');
+    fireEvent.press(getByText('独立构建'));
+    fireEvent.changeText(getByTestId('build-char-brief'), '一名善良的乡村医生');
+
+    await act(async () => {
+      fireEvent.press(getByTestId('build-generate'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(generateConstruction).toHaveBeenCalled());
+
+    const input = (generateConstruction as jest.Mock).mock.calls[0][0];
+    expect(input).toMatchObject({
+      mode: 'character_independent',
+      brief: '一名善良的乡村医生',
+    });
+    expect(input).not.toHaveProperty('extra');
+  });
+
+  it('does not forward stale extra when generating an independent worldbook brief', async () => {
+    const { getByText, getByTestId } = render(<BuildScreen />);
+
+    fireEvent.press(getByText('由 TXT'));
+    fireEvent.changeText(
+      getByTestId('build-extra'),
+      '所有设定必须服务于赛博朋克战争',
+    );
+    fireEvent.press(getByText('独立构建'));
+    fireEvent.press(getByTestId('build-target-worldbook'));
+    fireEvent.changeText(
+      getByTestId('build-wb-brief'),
+      '一个以海洋贸易为核心的群岛文明',
+    );
+
+    await act(async () => {
+      fireEvent.press(getByTestId('build-generate'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(generateConstruction).toHaveBeenCalled());
+
+    const input = (generateConstruction as jest.Mock).mock.calls[0][0];
+    expect(input).toMatchObject({
+      mode: 'worldbook_independent',
+      brief: '一个以海洋贸易为核心的群岛文明',
+    });
+    expect(input).not.toHaveProperty('extra');
+  });
+
+  it('keeps extra for an independent preset where the field remains visible', async () => {
+    const { getByTestId } = render(<BuildScreen />);
+
+    fireEvent.press(getByTestId('build-target-writer-style'));
+    fireEvent.changeText(
+      getByTestId('build-extra'),
+      '补充需求：年龄控制在30岁左右',
+    );
+
+    await act(async () => {
+      fireEvent.press(getByTestId('build-generate'));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(generateConstruction).toHaveBeenCalled());
+
+    const input = (generateConstruction as jest.Mock).mock.calls[0][0];
+    expect(input).toMatchObject({
+      mode: 'preset_independent',
+      extra: '补充需求：年龄控制在30岁左右',
+    });
   });
 });
