@@ -180,4 +180,19 @@ describe('FinalManuscriptCard：查看修改', () => {
     expect(onTargetedRevision).toHaveBeenCalledTimes(1);
     expect(onWholeChapterRewrite).toHaveBeenCalledTimes(1);
   });
+
+  it('wraps final-manuscript actions inside the card when space is narrow', () => {
+    const { getByTestId } = render(
+      <FinalManuscriptCard
+        artifact={makeArtifact()}
+        onEdit={jest.fn()}
+        onTargetedRevision={jest.fn()}
+        onWholeChapterRewrite={jest.fn()}
+      />,
+    );
+
+    expect(getByTestId('final-manuscript-actions').props.style).toEqual(
+      expect.objectContaining({ flexWrap: 'wrap' }),
+    );
+  });
 });

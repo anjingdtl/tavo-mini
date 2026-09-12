@@ -90,6 +90,11 @@ export const UserRevisionModal: React.FC<Props> = ({
     end: 0,
   });
   const candidateSelectionRef = useRef({ start: 0, end: 0 });
+  const candidateIdentity = candidate
+    ? candidate.candidateRef.kind === 'pipeline_task'
+      ? `outline:${candidate.candidateRef.taskId}:${candidate.candidateRef.projectId}:${candidate.candidateRef.chapterId}`
+      : `continuation:${candidate.candidateRef.runId}:${candidate.candidateRef.projectId}:${candidate.candidateRef.chapterId}:${candidate.candidateRef.artifactId ?? ''}`
+    : null;
 
   useEffect(() => {
     if (!visible) return;
@@ -114,7 +119,10 @@ export const UserRevisionModal: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [kind, visible, candidate]);
+  // Result screens create this prop inline; the semantic identity above is
+  // the dependency. Rerunning on object identity would erase the selection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, visible, candidateIdentity]);
 
   const close = () => {
     abortRef.current?.abort();

@@ -148,7 +148,7 @@ export const FinalManuscriptCard: React.FC<FinalManuscriptCardProps> = ({
           AI 本次修改：{changeCount} 处
         </Text>
       ) : null}
-      <View style={styles.actions}>
+      <View testID="final-manuscript-actions" style={styles.actions}>
         <Button
           label="阅读全文"
           compact
@@ -456,6 +456,7 @@ const styles = StyleSheet.create({
   meta: { fontSize: 12, marginTop: 2, lineHeight: 18 },
   actions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: spacing.sm,
     marginTop: spacing.md,
