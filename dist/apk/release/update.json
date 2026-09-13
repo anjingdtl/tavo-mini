@@ -1,17 +1,16 @@
 {
-  "versionName": "3.0.4",
-  "versionCode": 3000400,
-  "apkName": "ShineWriter-V3.0.4-release.apk",
+  "versionName": "3.0.8",
+  "versionCode": 3000800,
+  "apkName": "ShineWriter-V3.0.8-release.apk",
   "apkUrl": "",
-  "sha256": "20098841276305079c1f4825d7a4b21d0dcd67f99878b1894162a4c951ad2eea",
+  "sha256": "0634e592532376364097872d8c112f3c1120fa18ef8329fee660a45d927e234f",
   "forceUpdate": false,
   "minimumVersionCode": 0,
-  "title": "ShineWriter V3.0.4",
+  "title": "ShineWriter V3.0.8",
   "notes": [
-    "Schema 61 → 62 识别为 `schema_only` 轻量迁移，不再因新增 `llm_config.vision_support` 扫描章节/笔记正文、生成整库恢复备份或执行全库内容指纹；高风险历史迁移仍保留完整保护链。",
-    "增加迁移风险分级、启动诊断、批量指纹读取和有界 dirty-marker 恢复，覆盖中断升级、结构漂移和大数据库回归场景。",
-    "AI 角色视觉参考图恢复为单张不超过 5 MB；历史 PNG 角色卡导入不复用该上限，兼容包含大体积嵌入数据的旧 PNG。",
-    "PNG 角色卡单个及批量导入在数据库写入失败时删除新建的永久图片，避免产生孤儿资源；角色换图继续遵循先保存新图、数据库更新成功后再删除旧图。"
+    "完成 Android 模拟器 UI 全量验收，覆盖启动、导航、核心编辑与资料库交互路径。",
+    "确认结果操作区防溢出与修订选择保持修复已纳入发布版本，并完成对应回归验证。",
+    "升级版本元数据至 `V3.0.8` / `versionCode=3000800`，生成正式签名 APK 与更新元数据。"
   ],
-  "apkSizeBytes": 59426194
+  "apkSizeBytes": 59437446
 }
