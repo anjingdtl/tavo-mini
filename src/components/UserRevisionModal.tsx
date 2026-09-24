@@ -1,13 +1,22 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { Button, Card, Field, spacing } from './ui';
@@ -64,6 +73,164 @@ function kindTitle(kind: UserRevisionKind | null): string {
   return kind === 'targeted_revision' ? '精准修订' : '整章重写';
 }
 
+interface CandidateScrollbarHandle {
+  syncScroll: (offset: number) => void;
+}
+
+interface CandidateScrollbarProps {
+  contentHeight: number;
+  viewportHeight: number;
+  color: string;
+  trackColor: string;
+  onScrollToOffset: (offset: number) => void;
+}
+
+const MIN_SCROLLBAR_THUMB_HEIGHT = 28;
+
+const CandidateScrollbar = React.forwardRef<
+  CandidateScrollbarHandle,
+  CandidateScrollbarProps
+>(function CandidateScrollbar(
+  { contentHeight, viewportHeight, color, trackColor, onScrollToOffset },
+  forwardedRef,
+) {
+  const [scrollY, setScrollY] = useState(0);
+  const scrollYRef = useRef(0);
+  const dragOffsetRef = useRef(0);
+  const metricsRef = useRef({ contentHeight, viewportHeight });
+  const scrollToOffsetRef = useRef(onScrollToOffset);
+  metricsRef.current = { contentHeight, viewportHeight };
+  scrollToOffsetRef.current = onScrollToOffset;
+
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  const thumbHeight = Math.min(
+    viewportHeight,
+    Math.max(
+      MIN_SCROLLBAR_THUMB_HEIGHT,
+      (viewportHeight * viewportHeight) / contentHeight,
+    ),
+  );
+  const maxThumbTravel = Math.max(0, viewportHeight - thumbHeight);
+  const thumbTop =
+    maxScroll > 0 ? (scrollY / maxScroll) * maxThumbTravel : 0;
+
+  const updateScroll = useCallback((offset: number) => {
+    const currentMetrics = metricsRef.current;
+    const next = Math.max(
+      0,
+      Math.min(
+        offset,
+        Math.max(0, currentMetrics.contentHeight - currentMetrics.viewportHeight),
+      ),
+    );
+    scrollYRef.current = next;
+    setScrollY(previous => (previous === next ? previous : next));
+  }, []);
+
+  useImperativeHandle(forwardedRef, () => ({ syncScroll: updateScroll }), [
+    updateScroll,
+  ]);
+
+  const scrollToTrackPosition = useCallback((locationY: number) => {
+    const currentMetrics = metricsRef.current;
+    const currentMaxScroll = Math.max(
+      0,
+      currentMetrics.contentHeight - currentMetrics.viewportHeight,
+    );
+    const currentThumbHeight = Math.min(
+      currentMetrics.viewportHeight,
+      Math.max(
+        MIN_SCROLLBAR_THUMB_HEIGHT,
+        (currentMetrics.viewportHeight * currentMetrics.viewportHeight) /
+          currentMetrics.contentHeight,
+      ),
+    );
+    const travel = Math.max(0, currentMetrics.viewportHeight - currentThumbHeight);
+    const top = Math.max(
+      0,
+      Math.min(locationY - dragOffsetRef.current, travel),
+    );
+    const next = travel > 0 ? (top / travel) * currentMaxScroll : 0;
+    updateScroll(next);
+    scrollToOffsetRef.current(next);
+  }, [updateScroll]);
+
+  const responder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: event => {
+          const y = event.nativeEvent.locationY;
+          const currentMetrics = metricsRef.current;
+          const currentMaxScroll = Math.max(
+            0,
+            currentMetrics.contentHeight - currentMetrics.viewportHeight,
+          );
+          const currentThumbHeight = Math.min(
+            currentMetrics.viewportHeight,
+            Math.max(
+              MIN_SCROLLBAR_THUMB_HEIGHT,
+              (currentMetrics.viewportHeight * currentMetrics.viewportHeight) /
+                currentMetrics.contentHeight,
+            ),
+          );
+          const currentTravel = Math.max(
+            0,
+            currentMetrics.viewportHeight - currentThumbHeight,
+          );
+          const currentTop =
+            currentMaxScroll > 0
+              ? (scrollYRef.current / currentMaxScroll) * currentTravel
+              : 0;
+          const startsOnThumb = y >= currentTop && y <= currentTop + currentThumbHeight;
+          dragOffsetRef.current = startsOnThumb
+            ? y - currentTop
+            : currentThumbHeight / 2;
+          scrollToTrackPosition(y);
+        },
+        onPanResponderMove: event => {
+          scrollToTrackPosition(event.nativeEvent.locationY);
+        },
+      }),
+    [scrollToTrackPosition],
+  );
+
+  return (
+    <View
+      testID="candidate-revision-scrollbar"
+      accessible
+      accessibilityRole="adjustable"
+      accessibilityLabel="候选正文滚动位置"
+      accessibilityValue={{
+        min: 0,
+        max: maxScroll,
+        now: scrollY,
+      }}
+      style={[styles.candidateScrollbar, { height: viewportHeight }]}
+      {...responder.panHandlers}
+    >
+      <View
+        pointerEvents="none"
+        style={[styles.candidateScrollbarTrack, { backgroundColor: trackColor }]}
+      />
+      <View
+        testID="candidate-revision-scrollbar-thumb"
+        pointerEvents="none"
+        style={[
+          styles.candidateScrollbarThumb,
+          {
+            height: thumbHeight,
+            top: thumbTop,
+            backgroundColor: color,
+          },
+        ]}
+      />
+    </View>
+  );
+});
+
 export const UserRevisionModal: React.FC<Props> = ({
   visible,
   kind,
@@ -90,6 +257,10 @@ export const UserRevisionModal: React.FC<Props> = ({
     end: 0,
   });
   const candidateSelectionRef = useRef({ start: 0, end: 0 });
+  const [candidateContentHeight, setCandidateContentHeight] = useState(0);
+  const [candidateViewportHeight, setCandidateViewportHeight] = useState(0);
+  const candidateScrollRef = useRef<ScrollView | null>(null);
+  const candidateScrollbarRef = useRef<CandidateScrollbarHandle | null>(null);
   const candidateIdentity = candidate
     ? candidate.candidateRef.kind === 'pipeline_task'
       ? `outline:${candidate.candidateRef.taskId}:${candidate.candidateRef.projectId}:${candidate.candidateRef.chapterId}`
@@ -105,6 +276,8 @@ export const UserRevisionModal: React.FC<Props> = ({
     setCandidateBase(null);
     setCandidateSelection({ start: 0, end: 0 });
     candidateSelectionRef.current = { start: 0, end: 0 };
+    setCandidateContentHeight(0);
+    setCandidateViewportHeight(0);
     if (!candidate) return;
     let cancelled = false;
     loadUserRevisionCandidateBase({
@@ -336,28 +509,67 @@ export const UserRevisionModal: React.FC<Props> = ({
                       }
                       ，{selectedLength} 个单元）
                     </Text>
-                    <TextInput
-                      testID="candidate-revision-selection-box"
-                      style={[
-                        styles.candidateSelectionBox,
-                        {
-                          color: theme.colors.textPrimary,
-                          borderColor: theme.colors.border,
-                        },
-                      ]}
-                      value={candidateBase.baseBody}
-                      multiline
-                      scrollEnabled
-                      textAlignVertical="top"
-                      onSelectionChange={({
-                        nativeEvent: { selection: next },
-                      }) => {
-                        if (next.end > next.start) {
-                          candidateSelectionRef.current = next;
-                          setCandidateSelection(next);
-                        }
-                      }}
-                    />
+                    <View style={styles.candidateScrollRow}>
+                      <ScrollView
+                        ref={candidateScrollRef}
+                        testID="candidate-revision-scroll-view"
+                        style={[
+                          styles.candidateScrollView,
+                          { borderColor: theme.colors.border },
+                        ]}
+                        onLayout={({ nativeEvent: { layout } }) => {
+                          setCandidateViewportHeight(layout.height);
+                        }}
+                        onContentSizeChange={(_width, height) => {
+                          setCandidateContentHeight(height);
+                        }}
+                        onScroll={(
+                          event: NativeSyntheticEvent<NativeScrollEvent>,
+                        ) => {
+                          candidateScrollbarRef.current?.syncScroll(
+                            event.nativeEvent.contentOffset.y,
+                          );
+                        }}
+                        scrollEventThrottle={16}
+                        keyboardShouldPersistTaps="always"
+                      >
+                        <TextInput
+                          testID="candidate-revision-selection-box"
+                          style={[
+                            styles.candidateSelectionInput,
+                            { color: theme.colors.textPrimary },
+                          ]}
+                          value={candidateBase.baseBody}
+                          multiline
+                          scrollEnabled={false}
+                          textAlignVertical="top"
+                          onSelectionChange={({
+                            nativeEvent: { selection: next },
+                          }) => {
+                            if (next.end > next.start) {
+                              candidateSelectionRef.current = next;
+                              setCandidateSelection(next);
+                            }
+                          }}
+                        />
+                      </ScrollView>
+                      {candidateContentHeight > candidateViewportHeight + 1 &&
+                      candidateViewportHeight > 0 ? (
+                        <CandidateScrollbar
+                          ref={candidateScrollbarRef}
+                          contentHeight={candidateContentHeight}
+                          viewportHeight={candidateViewportHeight}
+                          color={theme.colors.accent}
+                          trackColor={theme.colors.border}
+                          onScrollToOffset={offset => {
+                            candidateScrollRef.current?.scrollTo({
+                              y: offset,
+                              animated: false,
+                            });
+                          }}
+                        />
+                      ) : null}
+                    </View>
                   </View>
                 ) : (
                   <Text
@@ -553,15 +765,43 @@ const styles = StyleSheet.create({
   metaBox: { marginVertical: spacing.md },
   meta: { fontSize: 12, lineHeight: 18 },
   candidateBoxWrap: { marginBottom: spacing.md },
-  candidateSelectionBox: {
+  candidateScrollRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginTop: spacing.xs,
+  },
+  candidateScrollView: {
+    flex: 1,
     minHeight: 160,
     maxHeight: 260,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 8,
+  },
+  candidateSelectionInput: {
+    minHeight: 160,
     padding: spacing.sm,
     fontSize: 14,
     lineHeight: 22,
-    marginTop: spacing.xs,
+    textAlignVertical: 'top',
+  },
+  candidateScrollbar: {
+    width: 32,
+    marginLeft: spacing.xs,
+    position: 'relative',
+  },
+  candidateScrollbarTrack: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 13,
+    width: 6,
+    borderRadius: 3,
+  },
+  candidateScrollbarThumb: {
+    position: 'absolute',
+    left: 7,
+    width: 18,
+    borderRadius: 9,
   },
   error: { fontSize: 13, lineHeight: 20, marginVertical: spacing.sm },
   spinner: { marginVertical: spacing.md },
